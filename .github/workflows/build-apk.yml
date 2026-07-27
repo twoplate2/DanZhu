@@ -1,0 +1,67 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git zip unzip openjdk-17-jdk \
+            python3-pip autoconf libtool pkg-config zlib1g-dev \
+            libncurses-dev libncursesw5-dev libtinfo6 cmake \
+            libffi-dev libssl-dev automake
+
+      - name: Install buildozer & Cython (锁定到 2024 兼容版本)
+        run: |
+          python -m pip install --upgrade pip wheel
+          pip install "cython<3.0" "buildozer==1.5.0"
+
+      - name: Cache Buildozer global cache
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.buildozer
+            .buildozer
+          key: buildozer-v3-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-v3-${{ runner.os }}-
+
+      - name: Build APK (debug)
+        run: |
+          yes | buildozer android debug
+        env:
+          BUILDOZER_WARN_ON_ROOT: "0"
+
+      - name: Show output
+        run: ls -lh bin/ || true
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: plinko-apk
+          path: bin/*.apk
+          if-no-files-found: error
+          retention-days: 30
