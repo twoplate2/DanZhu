@@ -20,10 +20,13 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.text import LabelBase, Label as CoreLabel
 from kivy.core.window import Window
-from kivy.graphics import Color, Rectangle, Line, Ellipse
+from kivy.graphics import Color, Rectangle, Line, Ellipse, RoundedRectangle
+from kivy.graphics.texture import Texture
 from kivy.metrics import dp
+from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
+from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 from kivy.utils import platform
@@ -1509,6 +1512,10 @@ def sfx_check(verbose=True):
 
 # -*- coding: utf-8 -*-
 # ======================= Kivy UI 层 =======================
+PANEL_W = 104                # 右侧面板宽(dp): 近10次积分 + 返还率
+BAR_H = (44, 32, 50, 58)     # 顶栏/信息栏/投入行/发射行 高(dp)
+
+
 def slot_color(m):
     if m <= 0:
         return "#2a3550"
@@ -1521,9 +1528,59 @@ def slot_color(m):
     return "#ffd451"
 
 
-class GameArea(Widget):
+_BALL_TEX = None
+
+
+def ball_texture():
+    """程序化径向渐变小球贴图(对应 tkinter 版 PIL 渐变, 纯 Python 生成, 零依赖)。"""
+    global _BALL_TEX
+    if _BALL_TEX is not None:
+        return _BALL_TEX
+    d = 64
+    r = d / 2.0
+    stops = [
+        (0.00, (254, 240, 138)), (0.20, (250, 220, 80)), (0.40, (234, 179, 8)),
+        (0.65, (202, 138, 4)), (0.85, (160, 100, 10)), (0.94, (120, 65, 10)),
+        (0.99, (50, 25, 5)),
+    ]
+    buf = bytearray(d * d * 4)
+    for y in range(d):
+        for x in range(d):
+            dx = x - r + 0.5
+            dy = y - r + 0.5
+            dist = math.hypot(dx, dy) / (r - 0.5)
+            if dist >= 1.0:
+                continue
+            rr, gg, bb = stops[-1][1]
+            for j in range(len(stops) - 1):
+                if stops[j][0] <= dist <= stops[j + 1][0]:
+                    s0, c0 = stops[j]
+                    s1, c1 = stops[j + 1]
+                    f = (dist - s0) / (s1 - s0) if s1 > s0 else 0
+                    rr = int(c0[0] + (c1[0] - c0[0]) * f)
+                    gg = int(c0[1] + (c1[1] - c0[1]) * f)
+                    bb = int(c0[2] + (c1[2] - c0[2]) * f)
+                    break
+            alpha = 255
+            if dist > 0.97:                      # 边缘抗锯齿
+                alpha = int(255 * (1.0 - dist) / 0.03)
+            i = (y * d + x) * 4
+            buf[i] = rr
+            buf[i + 1] = gg
+            buf[i + 2] = bb
+            buf[i + 3] = alpha
+    tex = Texture.create(size=(d, d), colorfmt="rgba")
+    tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
+    tex.mag_filter = "linear"
+    tex.min_filter = "linear"
+    _BALL_TEX = tex
+    return tex
+
+
+class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
-    静态元素(墙/钉/槽/弧)重绘只在尺寸变化或换盘面时; 球/力度条/柱塞每帧只改 pos。"""
+    静态元素(墙/钉/槽/弧)重绘只在尺寸变化或换盘面时; 球/力度条/柱塞每帧只改 pos;
+    特效(浮字/中奖大字)是 FloatLayout 子 Label, 每帧在 tick_draw 里驱动。"""
 
     def __init__(self, game, **kw):
         super().__init__(**kw)
@@ -1531,11 +1588,14 @@ class GameArea(Widget):
         self._s = 1.0
         self._ox = 0.0
         self._oyt = 0.0
+        self._slot_cols = []
         self._lamp_cols = []
         self._ball_e = None
         self._meter_fill = None
         self._meter_col = None
         self._plunger = None
+        self._pulse = None            # (槽号, 结束时刻)
+        self._effects = []            # 浮字/中奖大字
         self.bind(size=self._redraw, pos=self._redraw)
 
     # ---- 坐标换算: 逻辑(x, y向下) -> 控件像素(Kivy y向上); 返回 kwargs 便于 ** 展开 ----
@@ -1564,6 +1624,12 @@ class GameArea(Widget):
         self._ox = self.x + (self.width - CW * s) / 2.0
         self._oyt = self.y + (self.height + CH * s) / 2.0
         g = self.game
+        self._pulse = None
+        # 尺寸变了, 特效位置参考系失效, 直接清掉(存在时间短, 无伤大雅)
+        for e in self._effects:
+            for w in e["ws"]:
+                self.remove_widget(w)
+        self._effects = []
         self.canvas.clear()
         with self.canvas:
             Color(*hex_rgb(COL_CANVAS))
@@ -1589,11 +1655,14 @@ class GameArea(Widget):
             Color(*hex_rgb(COL_BUMPER))
             for d in g.geo["dividers"]:
                 Rectangle(**self._rect(*d))
-            # 倍率槽(颜色随盘面)
+            # 倍率槽(圆角, 颜色随盘面)
+            self._slot_cols = []
             for i in range(NUM_SLOTS):
-                Color(*hex_rgb(slot_color(g.multipliers[i])))
-                Rectangle(**self._rect(FIELD_L + i * SLOT_W + 2, SLOT_TOP + 3,
-                                      FIELD_L + (i + 1) * SLOT_W - 2, FLOOR - 3))
+                col = Color(*hex_rgb(slot_color(g.multipliers[i])))
+                self._slot_cols.append(col)
+                RoundedRectangle(radius=[max(1.0, 6 * s)],
+                                 **self._rect(FIELD_L + i * SLOT_W + 2, SLOT_TOP + 3,
+                                              FIELD_L + (i + 1) * SLOT_W - 2, FLOOR - 3))
             # 槽倍率文字(CoreLabel 烘成纹理)
             fs = max(9, int(12 * s))
             for i in range(NUM_SLOTS):
@@ -1624,7 +1693,7 @@ class GameArea(Widget):
             # 力度条底槽 + 哑火红线(玩家必须看得见阈值在哪)
             Color(*hex_rgb("#1b2b4a"))
             Rectangle(**self._rect(RIGHT_INNER - 9, SLOT_TOP - 210,
-                                  RIGHT_INNER - 4, SLOT_TOP - 6))
+                                   RIGHT_INNER - 4, SLOT_TOP - 6))
             Color(*hex_rgb(COL_FIRE))
             ty = (SLOT_TOP - 8) - MISFIRE_POWER * 200
             Rectangle(**self._rect(RIGHT_INNER - 12, ty - 1, RIGHT_INNER - 1, ty + 1))
@@ -1634,11 +1703,52 @@ class GameArea(Widget):
             # 柱塞(动态, 蓄力下压)
             Color(*hex_rgb("#7f8cb0"))
             self._plunger = Rectangle(**self._rect(LANE_L + 6, FLOOR - 6,
-                                                  RIGHT_INNER - 6, FLOOR - 2))
-            # 球(动态)
-            Color(*hex_rgb(COL_BALL))
-            self._ball_e = Ellipse(pos=(0, 0), size=(2 * BALL_R * s, 2 * BALL_R * s))
+                                                   RIGHT_INNER - 6, FLOOR - 2))
+            # 球(动态, 程序化渐变贴图)
+            Color(1, 1, 1)
+            self._ball_e = Rectangle(texture=ball_texture(), pos=(0, 0),
+                                     size=(2 * BALL_R * s, 2 * BALL_R * s))
         self.tick_draw()
+
+    # ------------------------------ 特效 ------------------------------
+    def float_text(self, lx, text, hexcolor):
+        """槽位上方小字上升淡出(对应 tkinter _float_text)。"""
+        if self._ball_e is None:
+            return
+        lbl = Label(text=text, font_size=max(10, int(16 * self._s)) if self._s > 0.7 else "16sp",
+                    bold=True, color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+        self.add_widget(lbl)
+        self._effects.append({"kind": "float", "ws": [lbl], "born": time.time(),
+                              "life": 0.9,
+                              "cx": self._px(lx) - self.x,
+                              "y0": self._py(SLOT_TOP - 10) - self.y})
+
+    def big_result_text(self, m, payout):
+        """画布中央中奖大字: 缩放+淡出+上浮(对应 tkinter _big_result_text)。"""
+        if self._ball_e is None:
+            return
+        if m > 0:
+            text = "+%d" % payout
+            hexcolor = COL_GREEN if m < 20 else COL_METER
+            size = 40
+        else:
+            text = "未中"
+            hexcolor = COL_FIRE
+            size = 32
+        main = Label(text=text, font_size=size, bold=True,
+                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+        shadow = Label(text=text, font_size=size, bold=True,
+                       color=(0, 0, 0, 0.6), size_hint=(None, None))
+        self.add_widget(shadow)
+        self.add_widget(main)
+        self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
+                              "life": 0.85, "size": size, "rgb": hex_rgb(hexcolor),
+                              "cx": self._px(CW / 2.0) - self.x,
+                              "cy": self._py(CH / 2.0 - 80) - self.y})
+
+    def pulse_slot(self, i):
+        if 0 <= i < len(self._slot_cols):
+            self._pulse = (i, time.time() + 0.30)
 
     def set_lamp(self, i, hex_color):
         if 0 <= i < len(self._lamp_cols):
@@ -1648,11 +1758,13 @@ class GameArea(Widget):
         for col in self._lamp_cols:
             col.rgb = hex_rgb(COL_LAMP_OFF)
 
+    # ------------------------------ 帧驱动 ------------------------------
     def tick_draw(self):
-        """每帧只更新动态元素(ball/meter/plunger)的位置和颜色, 不重排 canvas。"""
+        """每帧只更新动态元素(ball/meter/plunger) + 特效, 不重排 canvas。"""
         if self._ball_e is None:
             return
         g = self.game
+        now = time.time()
         b = g.ball
         if b is not None:
             self._ball_e.pos = (self._ox + (b["x"] - BALL_R) * self._s,
@@ -1670,16 +1782,57 @@ class GameArea(Widget):
         kw = self._rect(LANE_L + 6, py, RIGHT_INNER - 6, py + 4)
         self._plunger.pos = kw["pos"]
         self._plunger.size = kw["size"]
+        # 槽位白闪
+        if self._pulse is not None:
+            i, end = self._pulse
+            if now >= end or i >= len(self._slot_cols):
+                if i < len(self._slot_cols):
+                    self._slot_cols[i].rgb = hex_rgb(slot_color(g.multipliers[i]))
+                self._pulse = None
+            else:
+                self._slot_cols[i].rgb = (1, 1, 1)
+        # 特效推进
+        for e in list(self._effects):
+            p = (now - e["born"]) / e["life"]
+            if p >= 1.0:
+                for w in e["ws"]:
+                    self.remove_widget(w)
+                self._effects.remove(e)
+                continue
+            if e["kind"] == "float":
+                w = e["ws"][0]
+                w.center_x = e["cx"]
+                w.y = e["y0"] + 46 * (now - e["born"])
+            else:
+                if p < 0.3:
+                    sc = 1.0 + (p / 0.3) * 0.2       # 1.0 -> 1.2
+                else:
+                    sc = 1.2 - ((p - 0.3) / 0.7) * 0.2  # 1.2 -> 1.0
+                alpha = max(0.0, 1.0 - max(0.0, p - 0.4) / 0.6)
+                fs = max(8, int(e["size"] * sc))
+                rise = 38 * (now - e["born"])
+                main, shadow = e["ws"]
+                main.font_size = fs
+                shadow.font_size = fs
+                main.color = e["rgb"] + (alpha,)
+                shadow.color = (0, 0, 0, alpha * 0.6)
+                main.center = (e["cx"], e["cy"] + rise)
+                shadow.center = (e["cx"] + 2, e["cy"] + rise - 2)
 
 
 class RootWidget(BoxLayout):
-    """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应(MVP: 无特效/历史/滚动动画)。"""
+    """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
 
     def __init__(self, **kw):
         super().__init__(orientation="vertical", **kw)
         self.geo = build_geo()
         self.multipliers = roll_multipliers()
         self.balance = START_BEADS
+        self.display_balance = float(START_BEADS)
+        self._anim_target_balance = float(START_BEADS)
+        self._anim_start_balance = float(START_BEADS)
+        self._anim_start_time = 0.0
+        self._coin_until = 0.0
         self.bet = DEFAULT_BET
         self.state = "ready"          # ready | charging | flying | misfire | landing | landed
         self.power = 0.0
@@ -1688,6 +1841,8 @@ class RootWidget(BoxLayout):
         self._crossed = False
         self._risen = False
         self._misfire_frames = 0
+        self._space_held = False
+        self._release_power = None
         self.plays = 0
         self.hits = 0
         self.rtp_target = 0.90
@@ -1696,12 +1851,23 @@ class RootWidget(BoxLayout):
         self.target_slot = 0
         self.target_x = PLUNGER_X
         self.ball = None
+        self.win_history = []         # 近10次 [{idx, pts}]
+        self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
         self.sfx = Sfx(SOUND_ENABLED)
         self._build_ui()
         self.set_bet(self.bet)
         self.set_rtp(self.rtp_target)
         self.park_ball(reroll=False, silent=True)
+        Window.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
         Clock.schedule_interval(self._frame, FIXED_DT)
+
+    def _fit_width(self):
+        """内容最大宽度 = 让 520:660 场景恰好填满可用高度 + 右侧面板。
+        窄屏(手机竖屏)直接铺满宽度; 宽屏(16:10 桌面)内容列居中、两侧留深色边。"""
+        bars = dp(BAR_H[0]) + dp(BAR_H[1]) + dp(BAR_H[2]) + dp(BAR_H[3])
+        avail_h = max(100.0, Window.height - bars)
+        want = avail_h * (CW / CH) + dp(PANEL_W) + dp(8)
+        self.width = min(Window.width, want)
 
     # ------------------------------ UI ------------------------------
     def _mk_label(self, text, font_size, hexcolor, halign="left", bold=False, **kw):
@@ -1718,17 +1884,25 @@ class RootWidget(BoxLayout):
             b.bind(on_release=cb)
         return b
 
+    def _row_bg(self, row, hexcolor):
+        with row.canvas.before:
+            Color(*hex_rgb(hexcolor))
+            row._bg_rect = Rectangle(pos=row.pos, size=row.size)
+        row.bind(pos=lambda w, *_: setattr(w._bg_rect, "pos", w.pos),
+                 size=lambda w, *_: setattr(w._bg_rect, "size", w.size))
+
     def _build_ui(self):
         # 顶栏: 标题 + 状态
-        top = BoxLayout(size_hint_y=None, height=dp(44), padding=[dp(10), 0])
+        top = BoxLayout(size_hint_y=None, height=dp(BAR_H[0]), padding=[dp(10), 0])
+        self._row_bg(top, COL_PANEL)
         top.add_widget(self._mk_label("跳跳的弹珠机", "16sp", COL_TEXT,
                                       "left", True, size_hint_x=0.42))
-        self.status_lbl = self._mk_label("按住「发射」蓄力, 松开弹射", "12sp", COL_SUB,
+        self.status_lbl = self._mk_label("按住「发射」或空格蓄力, 松开弹射", "12sp", COL_SUB,
                                          "right", False, size_hint_x=0.58)
         top.add_widget(self.status_lbl)
         self.add_widget(top)
         # 信息栏: 珠子 / 投中统计 / 投入
-        info = BoxLayout(size_hint_y=None, height=dp(32))
+        info = BoxLayout(size_hint_y=None, height=dp(BAR_H[1]))
         info.add_widget(self._mk_label("珠子", "14sp", COL_TEXT, "right", True,
                                        size_hint_x=0.13))
         self.balance_lbl = self._mk_label(str(self.balance), "14sp", COL_BALL,
@@ -1743,24 +1917,37 @@ class RootWidget(BoxLayout):
                                       size_hint_x=0.21)
         info.add_widget(self.bet_lbl)
         self.add_widget(info)
-        # 游戏区 + 右侧返还率面板
+        # 游戏区 + 右侧面板(近10次积分 + 返还率)
         mid = BoxLayout()
         self.game_area = GameArea(self)
         mid.add_widget(self.game_area)
-        rtp = BoxLayout(orientation="vertical", size_hint_x=None, width=dp(86),
-                        padding=[dp(8), dp(8)], spacing=dp(10))
-        rtp.add_widget(self._mk_label("返还率", "13sp", COL_TEXT, "center", True,
-                                      size_hint_y=None, height=dp(28)))
+        panel = BoxLayout(orientation="vertical", size_hint_x=None, width=dp(PANEL_W),
+                          padding=[dp(6), dp(6)], spacing=dp(2))
+        self._row_bg(panel, COL_PANEL)
+        panel.add_widget(self._mk_label("近10次积分", "12sp", COL_TEXT, "center", True,
+                                        size_hint_y=None, height=dp(24)))
+        self.hist_labels = []
+        for _ in range(10):
+            lbl = self._mk_label("—", "11sp", COL_SUB, "center", False,
+                                 size_hint_y=None, height=dp(20))
+            self.hist_labels.append(lbl)
+            panel.add_widget(lbl)
+        div = Widget(size_hint_y=None, height=dp(8))
+        panel.add_widget(div)
+        panel.add_widget(self._mk_label("返还率", "13sp", COL_TEXT, "center", True,
+                                        size_hint_y=None, height=dp(26)))
         self.rtp_btns = {}
         for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
+            b.size_hint_y = None
+            b.height = dp(46)
             self.rtp_btns[val] = b
-            rtp.add_widget(b)
-        rtp.add_widget(Widget())   # 底部弹簧, 把按钮顶到上方
-        mid.add_widget(rtp)
+            panel.add_widget(b)
+        panel.add_widget(Widget())   # 弹簧: 把内容顶到上方
+        mid.add_widget(panel)
         self.add_widget(mid)
         # 投入行
-        bets = BoxLayout(size_hint_y=None, height=dp(50),
+        bets = BoxLayout(size_hint_y=None, height=dp(BAR_H[2]),
                          padding=[dp(6), dp(4)], spacing=dp(6))
         bets.add_widget(self._mk_label("投入珠子单位:", "12sp", COL_SUB, "center", False,
                                        size_hint_x=None, width=dp(96)))
@@ -1773,7 +1960,7 @@ class RootWidget(BoxLayout):
         bets.add_widget(self.reset_btn)
         self.add_widget(bets)
         # 发射行
-        fire = BoxLayout(size_hint_y=None, height=dp(58),
+        fire = BoxLayout(size_hint_y=None, height=dp(BAR_H[3]),
                          padding=[dp(6), dp(4), dp(6), dp(8)], spacing=dp(8))
         self.power_lbl = self._mk_label("", "13sp", COL_METER, "center", True,
                                         size_hint_x=None, width=dp(118))
@@ -1809,6 +1996,30 @@ class RootWidget(BoxLayout):
                 btn.background_color = off
 
     # ------------------------------ 交互 ------------------------------
+    def _on_key_down(self, win, key, *rest):
+        if key == 32:                     # 空格: 按住蓄力
+            if not self._space_held:
+                self._space_held = True
+                self.start_charge()
+            return True
+        return False
+
+    def _on_key_up(self, win, key, *rest):
+        if key == 32:
+            self._space_held = False
+            if self.state == "charging":
+                # 冻结松手瞬间的力度, 50ms 去抖后发射(与 tkinter 版一致)
+                self._release_power = self.power
+                Clock.schedule_once(self._space_fire, 0.05)
+            return True
+        return False
+
+    def _space_fire(self, dt):
+        if self._release_power is not None:
+            self.power = self._release_power
+            self._release_power = None
+        self.launch()
+
     def set_bet(self, v):
         self.bet = v
         self._restyle_selects()
@@ -1827,10 +2038,14 @@ class RootWidget(BoxLayout):
         if self.state in ("flying", "misfire", "landing"):
             return
         self.balance = START_BEADS
+        self.display_balance = float(START_BEADS)
+        self._anim_target_balance = float(START_BEADS)
+        self._anim_start_balance = float(START_BEADS)
         self.plays = 0
         self.hits = 0
+        self.win_history.clear()
+        self._refresh_history()
         self.stats_lbl.text = "0投0中"
-        self.balance_lbl.text = str(self.balance)
         self.status_lbl.text = "已重置"
         self.sfx.play("cash")
 
@@ -1857,10 +2072,9 @@ class RootWidget(BoxLayout):
             self._misfire_frames = 0
             self.sfx.play("launch", 0.45 + 0.30 * (self.power / MISFIRE_POWER))
             self._set_controls_enabled(False)
-            self.status_lbl.text = "力度不足, 球没飞出竖井 — 未扣珠子"
+            self.status_lbl.text = "力度不足未扣珠 — 过 %d%% 再松手" % int(MISFIRE_POWER * 100)
             return
         self.balance -= self.bet
-        self.balance_lbl.text = str(self.balance)
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
         self.ball = launch_ball(self.power)
@@ -1880,15 +2094,43 @@ class RootWidget(BoxLayout):
         self.balance += payout
         if m > 0:
             self.hits += 1
+        cx = FIELD_L + (i + 0.5) * SLOT_W
         rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
         self.stats_lbl.text = "%d投%d中 %.0f%%" % (self.plays, self.hits, rate)
         if payout > 0:
             self.status_lbl.text = "中奖!  +%d 珠 (x%d)" % (payout, m)
+            self.game_area.float_text(cx, "+%d" % payout, COL_GREEN if m < 20 else COL_METER)
         else:
             self.status_lbl.text = "未中"
+            self.game_area.float_text(cx, "0", COL_GRAY)
         self.game_area.set_lamp(i, COL_GREEN if m > 0 else COL_FIRE)
-        self.balance_lbl.text = str(self.balance)
+        self.game_area.pulse_slot(i)
         self._play_result_sound(m)
+        self.game_area.big_result_text(m, payout)
+        # 历史记录
+        self.win_history.insert(0, {"idx": self.plays, "pts": payout})
+        if len(self.win_history) > 10:
+            self.win_history.pop()
+        self._refresh_history()
+        # 数字滚动动画(中奖时伴随 coin 音)
+        self._anim_start_balance = self.display_balance
+        self._anim_target_balance = float(self.balance)
+        self._anim_start_time = time.time()
+        self._coin_until = (time.time() + 0.5) if payout > 0 else 0.0
+
+    def _refresh_history(self):
+        for k, lbl in enumerate(self.hist_labels):
+            if k < len(self.win_history):
+                w = self.win_history[k]
+                if w["pts"] > 0:
+                    lbl.text = "#%-4d +%d" % (w["idx"], w["pts"])
+                    lbl.color = hex_rgb(COL_GREEN) + (1,)
+                else:
+                    lbl.text = "#%-4d 0" % w["idx"]
+                    lbl.color = hex_rgb(COL_SUB) + (1,)
+            else:
+                lbl.text = "—"
+                lbl.color = hex_rgb(COL_SUB) + (1,)
 
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
@@ -1940,6 +2182,10 @@ class RootWidget(BoxLayout):
 
     # ------------------------------ 帧循环 ------------------------------
     def _frame(self, dt):
+        ws = (Window.width, Window.height)
+        if ws != self._last_win_size:          # 启动期/拖动/最大化: 每帧轮询, 变了才重算
+            self._last_win_size = ws
+            self._fit_width()
         if self.state == "charging":
             self.power = min(1.0, self.power + CHARGE_RATE * FIXED_DT)
             self._play_charge_sound(self.power)
@@ -2014,6 +2260,21 @@ class RootWidget(BoxLayout):
                 self.park_ball()
         if self.state != "charging" and self.power <= 0.01 and self.power_lbl.text:
             self.power_lbl.text = ""
+        # 余额数字滚动(老虎机式翻滚再落定), 中奖滚分时连播 coin
+        now = time.time()
+        if now < self._coin_until:
+            self.sfx.play("coin", 0.8, 0.055)
+        elapsed = now - self._anim_start_time
+        if elapsed < 0.5:
+            t = elapsed / 0.5
+            ease = 1.0 - (1.0 - t) ** 3
+            noise = (1.0 - t) * random.uniform(-0.15, 0.15) if t < 0.6 else 0
+            f = max(0.0, min(1.0, ease + noise))
+            self.display_balance = (self._anim_start_balance +
+                                    (self._anim_target_balance - self._anim_start_balance) * f)
+        else:
+            self.display_balance += (self.balance - self.display_balance) * 0.5
+        self.balance_lbl.text = str(int(round(self.display_balance)))
         self.game_area.tick_draw()
 
 
@@ -2024,10 +2285,13 @@ class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
         if platform != "android":
-            Window.size = (420, 780)       # 桌面预览模拟手机竖屏
+            Window.size = (540, 880)       # 桌面预览; 16:10 屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
-        self.rootw = RootWidget()
-        return self.rootw
+        anchor = AnchorLayout(anchor_x="center", anchor_y="center")
+        self.rootw = RootWidget(size_hint_x=None)
+        anchor.add_widget(self.rootw)
+        self.rootw._fit_width()
+        return anchor
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
@@ -2045,7 +2309,7 @@ class PlinkoApp(App):
 
 
 def _smoke():
-    """桌面自动冒烟: 建窗 -> 蓄力 -> 发射 -> 截图 -> 哑火 -> 截图。"""
+    """桌面自动冒烟: 建窗 -> 蓄力发射 -> 截图 -> 必中盘(验证中奖特效) -> 哑火。"""
     outdir = os.path.join(tempfile.gettempdir(), "plinko_smoke")
     os.makedirs(outdir, exist_ok=True)
     app = PlinkoApp()
@@ -2072,12 +2336,38 @@ def _smoke():
         shot("04_after_settle.png")
         r = app.rootw
         if r.state == "ready":
+            r.multipliers = [2, 3, 5, 10, 20, 2, 3, 5, 10]   # 必中盘: 验证中奖特效
+            r.game_area._redraw()
+            r.start_charge()
+
+    def s5(dt):
+        r = app.rootw
+        r.power = 1.0
+        r.launch()
+
+    def s6(dt):
+        shot("05_win_effect.png")
+
+    def s7(dt):
+        shot("06_win_done.png")
+        r = app.rootw
+        # 直接调 settle 定格特效: x20 大奖 -> 金色大字 + 浮字 + 槽闪 + 滚分
+        r.multipliers = [0, 0, 0, 0, 20, 0, 0, 0, 0]
+        r.game_area._redraw()
+        r.settle(4)
+
+    def s7b(dt):
+        shot("06b_fx_bigtext.png")
+
+    def s8(dt):
+        r = app.rootw
+        if r.state == "ready":
             r.start_charge()
             r.power = 0.05                 # 哑火
             r.launch()
 
-    def s5(dt):
-        shot("05_misfire_done.png")
+    def s9(dt):
+        shot("07_misfire_done.png")
         print("SMOKE DONE ->", outdir)
         App.get_running_app().stop()
 
@@ -2085,7 +2375,12 @@ def _smoke():
     Clock.schedule_once(s2, 2.5)
     Clock.schedule_once(s3, 4.0)
     Clock.schedule_once(s4, 8.5)
-    Clock.schedule_once(s5, 12.0)
+    Clock.schedule_once(s5, 9.3)
+    Clock.schedule_once(s6, 13.6)
+    Clock.schedule_once(s7, 15.0)
+    Clock.schedule_once(s7b, 15.4)
+    Clock.schedule_once(s8, 17.0)
+    Clock.schedule_once(s9, 20.0)
     app.run()
 
 
