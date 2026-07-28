@@ -2393,7 +2393,13 @@ class RootWidget(BoxLayout):
         # 结果只在画布中央报一次(Hero 大字)。槽位上方那行小飘字撤了: 手机屏上两处同时飘
         # "+50"/"0" 是重复信息, 而且下面那行按场景缩放只有 15sp, 小得只剩干扰。
         self.status_lbl.text = ("中奖!  +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
-        self.game_area.set_lamp(i, COL_GREEN if m > 0 else COL_FIRE)
+        if m <= 0:    lamp = COL_FIRE
+        elif m <= 2:  lamp = COL_GREEN
+        elif m <= 3:  lamp = "#3d8bfd"
+        elif m <= 5:  lamp = COL_FIRE
+        elif m <= 10: lamp = "#a335ee"
+        else:         lamp = COL_METER
+        self.game_area.set_lamp(i, lamp)
         self.game_area.pulse_slot(i)
         self._play_result_sound(m)
         self.game_area.big_result_text(m, payout)
