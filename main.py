@@ -2153,24 +2153,28 @@ class RootWidget(BoxLayout):
                  size=lambda w, *_: setattr(w._bg_rect, "size", w.size))
 
     def _build_ui(self):
-        # 顶栏: [音效钮 固定宽] [标题 弹性·文字居中] [状态 右对齐]
-        # 标题 size_hint_x=1 自适应宽度, 窄屏/横屏不重叠
+        # 顶栏: [左容器 flex] [标题 固定宽·居中] [右容器 flex]
+        # 左右等 flex → 标题严格全栏居中, 与两侧内容长短无关
         top = BoxLayout(size_hint_y=None, height=dp(H_TOP),
                         padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
         self._row_top = top
         self._row_bg(top, COL_PANEL)
+        left_box = BoxLayout()
         self.mute_btn = self._mk_button("音效已开", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
         self.mute_btn.width = dp(64)
         self.mute_btn.font_size = "13sp"
-        self.mute_btn.background_color = hex_rgb(COL_BTN) + (1,)   # 开=蓝底白字
-        top.add_widget(self.mute_btn)
+        self.mute_btn.background_color = hex_rgb(COL_BTN) + (1,)
+        left_box.add_widget(self.mute_btn)
+        left_box.add_widget(Widget())
+        top.add_widget(left_box)
         self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
-                                        "center", True, size_hint_x=1)
+                                        "center", True, size_hint_x=None, width=dp(112))
         top.add_widget(self.title_lbl)
-        self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False,
-                                         size_hint_x=None, width=dp(64))   # 和 mute_btn 等宽, 标题真正居中
-        top.add_widget(self.status_lbl)
+        right_box = BoxLayout()
+        self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
+        right_box.add_widget(self.status_lbl)
+        top.add_widget(right_box)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
@@ -2489,10 +2493,11 @@ class RootWidget(BoxLayout):
         self.fire_btn.font_size  = sp(16) * fs
 
         self.mute_btn.width    = dp(64)  * us
+        self.title_lbl.width    = dp(112) * us
         self.reset_btn.width   = dp(96)  * us
         self.fire_btn.width    = dp(110) * us
         self.power_lbl.width   = dp(100) * us
-        self.status_lbl.width  = dp(64) * us
+        self.status_lbl.width  = None  # flex, 不设固定宽
         self._rtp_title_lbl.width  = dp(115) * us
         self._bet_title_lbl.width  = dp(115) * us
         for b in self.rtp_btns.values():
