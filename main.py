@@ -1964,7 +1964,11 @@ class GameArea(FloatLayout):
             return
         if m > 0:
             text = "+%d" % payout
-            hexcolor = COL_GREEN if m < 20 else COL_METER
+            if m <= 2:       hexcolor = COL_GREEN
+            elif m <= 3:     hexcolor = "#3d8bfd"   # 蓝
+            elif m <= 5:     hexcolor = COL_FIRE    # 红
+            elif m <= 10:    hexcolor = "#a335ee"   # 紫
+            else:            hexcolor = COL_METER   # 金
             size = sp(48)
         else:
             text = "未中"
