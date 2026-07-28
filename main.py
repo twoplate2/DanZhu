@@ -2128,7 +2128,7 @@ class RootWidget(BoxLayout):
         us = self._ui_scale
         # 缩放后的固定高度(行高+间距), 与 _apply_sizes() 一致
         scaled_fixed = (dp(H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM) * us
-                        + dp(10) * 5 * us * us)
+                        + dp(10) * 5 * us * us + dp(28) * us)  # +底部留白
         avail_h = max(100.0, Window.height - scaled_fixed)
         want = avail_h * (CW / CH) + dp(8)
         if Window.width > Window.height * 1.2:            # 横屏容错
