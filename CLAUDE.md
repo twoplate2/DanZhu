@@ -57,10 +57,11 @@ python -m py_compile main.py
      (`Window.bind(size)` 对启动期程序化 resize 不触发, 这是实测坑)。
      `build()` 中 Android 运行时调 `setRequestedOrientation(PORTRAIT)` 强制竖屏,
      配合 `_fit_width()` 横屏容错(宽高比>1.2 时以宽度为限)。
-     **`_font_scale = min(1.0, width/360dp)` 让字体随宽度自适应**, 窄屏/横屏时
-     顶栏标题+状态+按钮自动缩小, 防止换行重叠。
-   - 返还率/投入行标签用比例宽度(`size_hint_x=0.15`) + 右对齐, 与信息行"珠子："对齐同一竖线。
-     中奖/未中大字加 `text_size` 绑定确保居中。
+     **`_font_scale = min(1.0, width/360dp)` + `_ui_scale = min(1.0, height/680dp)`**
+     双因子缩放: 窗口窄时字体缩小, 窗口矮时(横屏)所有固定 UI(行高/按钮宽/字号)等比缩小,
+     把垂直空间还给游戏区。`_apply_sizes()` 统一写到所有控件, 竖屏时两因子均为 1.0 不影响。
+   - 标签统一右对齐, 顶栏标题弹性宽度。中奖大字 2.4s 停留, 落地 0.3~0.7s 后即可再发射。
+   - 余额不足只在屏幕中央弹 toast, 不再在顶栏重复提示。
 
 ## 移植期踩过的坑(详解在 BUILD_APK.md 第三节)
 

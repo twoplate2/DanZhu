@@ -243,11 +243,13 @@ if platform == "android":
 所有 UI 文字用 sp 单位(密度自适应), 但 sp 不随窗口宽度缩放。横屏时 RootWidget
 宽度变窄, 19sp 的数字在 34dp 行高里必然换行。
 
-**解法: `_font_scale` 宽度缩放因子**:
+**解法: 双因子缩放 `_font_scale` + `_ui_scale`**:
 ```python
-self._font_scale = min(1.0, self.width / dp(360))  # 360dp ≈ 竖屏基准宽度
+self._font_scale = min(1.0, self.width / dp(360))   # 宽度缩放
+self._ui_scale    = min(1.0, Window.height / dp(680)) # 高度缩放(横屏激活)
 ```
-`_frame()` 检测到窗口尺寸变化时, 对顶栏标题/状态/静音按钮等关键文字应用 `sp(N) * _font_scale`。
+`_apply_sizes()` 方法在窗口尺寸变化时统一更新所有固定 UI 元素(5 行高、所有按钮宽、
+所有字号), 复合因子 `fs = _font_scale * _ui_scale`。竖屏时两因子均为 1.0, 不影响原有布局。
 
 
 ## 四、运维小贴士
