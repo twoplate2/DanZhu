@@ -2234,15 +2234,14 @@ class RootWidget(BoxLayout):
         self.add_widget(info)
         # 底行: [重置 96] —长距离— [力度 100] [蓄力发射 弹性]
         fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
-                         padding=[dp(6), dp(4), dp(12), dp(4)], spacing=dp(16))
+                         padding=[dp(6), dp(4), dp(12), dp(4)], spacing=dp(6))
         self._row_bottom = fire
         self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
         fire.add_widget(Widget(size_hint_x=None, width=dp(1)))     # 重置按钮微调
         fire.add_widget(self.reset_btn)
-        fire.add_widget(Widget(size_hint_x=None, width=dp(7)))     # 蓄力按钮左移
-        fire.add_widget(Widget(size_hint_x=1))                    # 长距离弹簧
+        fire.add_widget(Widget(size_hint_x=0.88))                 # 弹簧(让出部分给右侧)
         self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
                                         size_hint_x=None, width=dp(100))
         fire.add_widget(self.power_lbl)
@@ -2252,6 +2251,7 @@ class RootWidget(BoxLayout):
         self.fire_btn.bind(on_press=lambda _b: self.start_charge(),
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
+        fire.add_widget(Widget(size_hint_x=0.12))                 # 右侧弹簧(蓄力左移)
         self.add_widget(fire)
         self.padding = [0, 0, 0, dp(12)]  # 底部留白
         self._refresh_stats()
