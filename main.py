@@ -2169,7 +2169,7 @@ class RootWidget(BoxLayout):
                                         "center", True, size_hint_x=1)
         top.add_widget(self.title_lbl)
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False,
-                                         size_hint_x=None, width=dp(120))
+                                         size_hint_x=None, width=dp(64))   # 和 mute_btn 等宽, 标题真正居中
         top.add_widget(self.status_lbl)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
@@ -2347,7 +2347,7 @@ class RootWidget(BoxLayout):
         self.power = 0.0
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
-        self.status_lbl.text = "蓄力中…松开发射"
+        self.status_lbl.text = "蓄力中"
 
     def launch(self):
         if self.state != "charging":
@@ -2492,7 +2492,7 @@ class RootWidget(BoxLayout):
         self.reset_btn.width   = dp(96)  * us
         self.fire_btn.width    = dp(110) * us
         self.power_lbl.width   = dp(100) * us
-        self.status_lbl.width  = dp(120) * us
+        self.status_lbl.width  = dp(64) * us
         self._rtp_title_lbl.width  = dp(115) * us
         self._bet_title_lbl.width  = dp(115) * us
         for b in self.rtp_btns.values():
