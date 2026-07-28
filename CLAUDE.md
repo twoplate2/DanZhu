@@ -52,7 +52,7 @@ python -m py_compile main.py
    - `RootWidget(BoxLayout)`: 6 行上下结构(顶栏/返还/投入/游戏区/信息/底行),
      行间距 10dp。状态机 ready→charging→flying/misfire→landing→landed, 每帧 `_frame(FIXED_DT)`。
      发射不再播飞行音(已移除); launch 音量按哑火/成功分级(0.35→0.50 / 0.60→1.00)。
-     标签统一右对齐(130dp), 顶栏标题弹性宽度+字体缩放防横屏重叠。
+     页边距和行间距也纳入 `_ui_scale` 缩放, 横屏时不浪费垂直空间。
    - `PlinkoApp`: AnchorLayout 居中 + **每帧轮询窗口尺寸**调 `_fit_width`
      (`Window.bind(size)` 对启动期程序化 resize 不触发, 这是实测坑)。
      `build()` 中 Android 运行时调 `setRequestedOrientation(PORTRAIT)` 强制竖屏,
@@ -60,8 +60,11 @@ python -m py_compile main.py
      **`_font_scale = min(1.0, width/360dp)` + `_ui_scale = min(1.0, height/680dp)`**
      双因子缩放: 窗口窄时字体缩小, 窗口矮时(横屏)所有固定 UI(行高/按钮宽/字号)等比缩小,
      把垂直空间还给游戏区。`_apply_sizes()` 统一写到所有控件, 竖屏时两因子均为 1.0 不影响。
-   - 标签统一右对齐, 顶栏标题弹性宽度。中奖大字 2.4s 停留, 落地 0.3~0.7s 后即可再发射。
-   - 余额不足只在屏幕中央弹 toast, 不再在顶栏重复提示。
+   - 标签统一右对齐(115dp), 顶栏标题左右等 flex 居中。底部 RootWidget 12dp padding,
+     H_INFO 26dp, 底行双 flex(0.95/0.05)控制蓄力按钮位置。
+   - 余额不足只在屏幕中央弹 toast。中奖大字 2.4s 停留, 落地 0.3~0.7s 后可再发射。
+   - **颜色五档**: x2绿(#39d98a) x3蓝(#3d8bfd) x5红(#e0533b) x10紫(#a335ee) x20金(#f0b000),
+     大字/指示灯/槽位底三处统一。槽位底色用深色版(绿#1e8a5a 金#c88800)保证白字对比度。
 
 ## 移植期踩过的坑(详解在 BUILD_APK.md 第三节)
 
