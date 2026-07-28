@@ -678,7 +678,7 @@ def _sfx_tink(f0):
                                (2.01, 0.45, 0.012),
                                (3.42, 0.20, 0.007)])
     _add_noise(b, 0.0, 0.004, 0.28, 0.0015, 0.60)
-    return _pack(b, 0.55)
+    return _pack(b, 0.72)
 
 
 def _sfx_wall(f0):
@@ -688,7 +688,7 @@ def _sfx_wall(f0):
                                (1.87, 0.30, 0.018),
                                (3.10, 0.12, 0.008)])
     _add_noise(b, 0.0, 0.008, 0.35, 0.004, 0.18)
-    return _pack(b, 0.45)
+    return _pack(b, 0.59)
 
 
 def _sfx_div(f0):
@@ -698,7 +698,7 @@ def _sfx_div(f0):
                                (2.31, 0.40, 0.013),
                                (3.91, 0.16, 0.007)])
     _add_noise(b, 0.0, 0.005, 0.30, 0.002, 0.35)
-    return _pack(b, 0.50)
+    return _pack(b, 0.65)
 
 
 def _sfx_rail():
@@ -710,7 +710,7 @@ def _sfx_rail():
                                   (8.93, 0.15, 0.022)])
     _add_noise(b, 0.0, 0.006, 0.30, 0.003, 0.70)
     _reverb(b, 0.18, 0.35)
-    return _pack(b, 0.50)
+    return _pack(b, 0.65)
 
 
 def _sfx_launch():
@@ -720,7 +720,7 @@ def _sfx_launch():
     _add_chirp(b, 0.005, 640.0, 150.0, 0.11, 0.55, 0.085, 1.4)
     _add_partials(b, 0.005, 152.0, [(1.00, 0.80, 0.16),
                                     (2.40, 0.25, 0.06)])    # 弹簧余振
-    return _pack(b, 0.58)
+    return _pack(b, 0.75)
 
 
 # 飞行音包络: 实测 400 次飞行的中位速度曲线(归一化), 每 0.1s 一点。
@@ -769,7 +769,7 @@ def _sfx_flight():
         z1 = y
         b[i] = y * (1.0 - r) * (e ** 1.2) * (1.0 - grain + grain * math.sin(ph))
     _add_chirp(b, 0.00, 150.0, 96.0, 0.34, 0.10, 0.26, 1.0)  # 竖井内的低频管腔感
-    return _pack(b, 0.44, fi=0.004, fo=0.110)
+    return _pack(b, 0.57, fi=0.004, fo=0.110)
 
 
 def _sfx_top(hard):
@@ -783,7 +783,7 @@ def _sfx_top(hard):
                                (6.11, 0.11, 0.007)])
     _add_noise(b, 0.0, 0.007, 0.36, 0.0028, 0.72)
     _reverb(b, 0.10, 0.22)
-    return _pack(b, 0.60 if hard else 0.52)
+    return _pack(b, 0.78 if hard else 0.52)
 
 
 def _sfx_ratchet(lev):
@@ -794,7 +794,7 @@ def _sfx_ratchet(lev):
     _add_noise(b, 0.0, 0.003, 0.45, 0.0012, 0.70)
     _add_partials(b, 0.0, 380.0 + lev * 98.0, [(1.00, 1.00, 0.010),
                                                (2.70, 0.52, 0.005)])
-    return _pack(b, 0.46 + lev * 0.032)
+    return _pack(b, 0.6 + lev * 0.032)
 
 
 def _sfx_charge_full():
@@ -803,7 +803,7 @@ def _sfx_charge_full():
     _add_partials(b, 0.000, 178.0, [(1.00, 1.00, 0.050), (2.05, 0.30, 0.018)])
     _add_noise(b, 0.000, 0.009, 0.40, 0.004, 0.30)
     _add_partials(b, 0.014, 1260.0, [(1.00, 0.45, 0.020), (2.02, 0.18, 0.010)])
-    return _pack(b, 0.46)
+    return _pack(b, 0.6)
 
 
 def _sfx_pocket():
@@ -812,7 +812,7 @@ def _sfx_pocket():
     _add_partials(b, 0.0, 138.0, [(1.00, 1.00, 0.055), (2.10, 0.28, 0.020)])
     _add_noise(b, 0.0, 0.012, 0.40, 0.006, 0.20)
     _add_partials(b, 0.004, 330.0, [(1.00, 0.35, 0.018)])
-    return _pack(b, 0.55)
+    return _pack(b, 0.72)
 
 
 def _sfx_bounce():
@@ -820,7 +820,7 @@ def _sfx_bounce():
     b = _buf(0.12)
     _add_partials(b, 0.0, 172.0, [(1.00, 1.00, 0.032), (2.20, 0.22, 0.012)])
     _add_noise(b, 0.0, 0.006, 0.28, 0.003, 0.22)
-    return _pack(b, 0.40)
+    return _pack(b, 0.52)
 
 
 def _sfx_riser():
@@ -841,7 +841,7 @@ def _sfx_riser():
         t = i / (n - 1.0)
         z += 0.35 * (_ARNG.uniform(-1.0, 1.0) - z)
         b[i] += 0.16 * z * (t ** 2.0)
-    return _pack(b, 0.36, fi=0.004, fo=0.020)
+    return _pack(b, 0.47, fi=0.004, fo=0.020)
 
 
 WIN_TIERS = [
@@ -884,7 +884,7 @@ def _sfx_lose():
     _add_bell(b, lead + 0.00, NOTE["F4"], 0.70, 0.18, 0.5)
     _add_bell(b, lead + 0.11, NOTE["C4"], 0.70, 0.24, 0.5)
     _reverb(b, 0.10, 0.26)
-    return _pack(b, 0.34)
+    return _pack(b, 0.44)
 
 
 def _sfx_click():
@@ -892,7 +892,7 @@ def _sfx_click():
     b = _buf(0.035)
     _add_noise(b, 0.0, 0.0025, 0.50, 0.0012, 0.75)
     _add_partials(b, 0.0, 940.0, [(1.00, 0.50, 0.006), (2.60, 0.20, 0.003)])
-    return _pack(b, 0.40)
+    return _pack(b, 0.52)
 
 
 def _sfx_error():
@@ -904,7 +904,7 @@ def _sfx_error():
         env = min(1.0, i / (SR * 0.006)) * math.exp(-i / (SR * 0.16))
         b[i] = (math.sin(w * i) + 0.34 * math.sin(3 * w * i) +
                 0.16 * math.sin(5 * w * i)) * trem * env
-    return _pack(b, 0.34)
+    return _pack(b, 0.44)
 
 
 def _sfx_coin():
@@ -912,7 +912,7 @@ def _sfx_coin():
     b = _buf(0.035)
     _add_partials(b, 0.0, 2280.0, [(1.00, 1.00, 0.007), (2.02, 0.40, 0.004)])
     _add_noise(b, 0.0, 0.002, 0.18, 0.001, 0.90)
-    return _pack(b, 0.36)
+    return _pack(b, 0.47)
 
 
 def _sfx_ready():
@@ -921,7 +921,7 @@ def _sfx_ready():
     _add_partials(b, 0.000, 255.0, [(1.00, 1.00, 0.022), (2.30, 0.30, 0.010)])
     _add_noise(b, 0.000, 0.050, 0.14, 0.030, 0.25)
     _add_partials(b, 0.075, 300.0, [(1.00, 0.50, 0.016)])
-    return _pack(b, 0.38)
+    return _pack(b, 0.49)
 
 
 def _sfx_cash():
@@ -933,7 +933,7 @@ def _sfx_cash():
                       [(1.00, 0.80, 0.010), (2.03, 0.30, 0.005)])
         _add_noise(b, t, 0.002, 0.12, 0.001, 0.90)
     _reverb(b, 0.14, 0.25)
-    return _pack(b, 0.45)
+    return _pack(b, 0.59)
 
 
 def iter_bank():
