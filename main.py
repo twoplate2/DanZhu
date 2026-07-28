@@ -1346,6 +1346,7 @@ class Sfx:
                 f.write(tag + "\n" + "\n".join(lines))
         except Exception:
             pass
+        time.sleep(0.5)   # 等 SoundPool 异步解码完第一批音效, 否则首次运行必然全静音
 
     def _load_cached(self, d, stamp, tag):
         """缓存有效(指纹一致 + 每个 WAV 大小对得上)则全部加载并返回 True。"""
@@ -1811,7 +1812,7 @@ def _vibrate(ms):
         try:
             VibrationEffect = autoclass("android.os.VibrationEffect")
             vib.vibrate(VibrationEffect.createOneShot(
-                ms, VibrationEffect.DEFAULT_AMPLITUDE))
+                ms, 255))     # 最大振幅; DEFAULT_AMPLITUDE(-1) 约 50%, 太弱
         except Exception:
             vib.vibrate(ms)                  # API < 26: 没有 VibrationEffect
     except Exception:
@@ -2113,9 +2114,12 @@ class RootWidget(BoxLayout):
 
     def _fit_width(self):
         """内容最大宽度 = 让 520:660 场景恰好填满可用高度。
-        窄屏(手机竖屏)直接铺满宽度; 宽屏(16:10 桌面)内容列居中、两侧留深色边。"""
+        窄屏(手机竖屏)直接铺满宽度; 宽屏(16:10 桌面)内容列居中、两侧留深色边。
+        横屏容错: 宽高比>1.2 时以宽度为限, 防止内容列缩成细条。"""
         avail_h = max(100.0, Window.height - dp(FIXED_H))
         want = avail_h * (CW / CH) + dp(8)
+        if Window.width > Window.height * 1.2:            # 横屏容错
+            want = min(want, Window.width * 0.55)
         self.width = min(Window.width, want)
 
     # ------------------------------ UI ------------------------------
@@ -2541,7 +2545,14 @@ class RootWidget(BoxLayout):
 class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
-        if platform != "android":
+        if platform == "android":
+            try:                                            # 运行时锁定竖屏: 部分设备系统级自动旋转
+                from jnius import autoclass                 # 会覆盖 manifest 的 portrait 声明, 强制锁定
+                activity = autoclass("org.kivy.android.PythonActivity").mActivity
+                activity.setRequestedOrientation(1)         # SCREEN_ORIENTATION_PORTRAIT
+            except Exception:
+                pass
+        else:
             Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
