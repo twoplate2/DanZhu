@@ -506,6 +506,10 @@ SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数)
 SFX_MASTER = 0.85            # 总音量 (0~1)
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
 SFX_RESULT_LEAD = 0.13       # 结果音(中奖/未中)前置静音: 让入袋声先落地
+SFX_LAUNCH_GAIN = 0.60       # 发射音音量: 固定用"哑火那一声"的档位, 不跟蓄力放大。
+                             # 原来 0.75~1.0 被评价为"像大炮发射, 太夸张"; launch 本身是
+                             # 全库最响的非中奖音(rms .146), 满蓄力时还会盖掉飞行音。
+                             # 哑火走的是同一个样本, 玩家点名要那个听感 —— 别再往上调。
 SOUND_ENABLED = True         # --nosound / demo 可关
 
 # 音效专用随机流: 与游戏随机流完全隔离(否则合成会扰乱盘面/落点的随机序列)
@@ -2350,8 +2354,7 @@ class RootWidget(BoxLayout):
         self._crossed = False
         self._risen = False
         self._topped = False
-        # 音量刻意压到哑火那一档: 原来 0.75~1.0 像大炮, 且会盖掉紧随其后的滚动飞行音
-        self.sfx.play("launch", 0.45 + 0.20 * self.power)
+        self.sfx.play("launch", SFX_LAUNCH_GAIN)
         self.sfx.play("flight", 0.9)          # 一条连续飞行音铺满上升段
         self._set_controls_enabled(False)
         self.status_lbl.text = "发射!"
