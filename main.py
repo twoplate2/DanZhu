@@ -2170,7 +2170,7 @@ class RootWidget(BoxLayout):
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
                         padding=[dp(6), dp(4)], spacing=dp(10))
-        rtp.add_widget(self._mk_label("返还率:", "14sp", COL_TEXT, "left", False,
+        rtp.add_widget(self._mk_label("期望返还比例:", "14sp", COL_TEXT, "left", False,
                                       size_hint_x=None, width=dp(120)))
         self.rtp_btns = {}
         for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
