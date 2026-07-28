@@ -1,40 +1,54 @@
 # 跳跳的弹珠机 — Android (Kivy) 版
 
 PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
-玩法/物理/34 个程序化合成音效与 PC 版一致: 蓄力/哑火/RTP 三档/近10次积分/
-落袋浮字/中奖大字/槽位白闪/滚分动画/渐变球贴图, 桌面端另支持空格键蓄力。
+玩法/物理/34 个程序化合成音效与 PC 版一致。
 
-布局: 6 行全宽上下结构(上设定/下信息, 无右侧面板, 手机场景面积 +32%):
-顶栏(标题+状态+静音开关) → 返还率行(三档+重置) → 投入行 → 全宽游戏区
-→ 近6次单行历史 → 信息行(珠子/投中/投入) → 底行(力度+蓄力发射)。
-宽屏(16:10 桌面)内容列居中并拉满高度。
+## 玩法
 
-附加: 切后台自动静音(on_pause SoundPool.autoPause)、x10+ 大奖滚分/停留 1.2s、
-x5/x10/x20 中奖震动(60/100/150ms, 需 VIBRATE 权限)、顶栏静音开关。
+按住「蓄力发射」或空格蓄力(力度条过红线才有效, 否则哑火不扣珠),
+松手把球从右侧竖井弹上天, 穿钉阵落入 9 个倍率槽之一, 按倍率赔付。
+落点由发射前随机数预定(RTP 精确 90%/100%/110% 三档), 物理表演与操作手感完全真实。
 
-字体层级体系(对齐 PC 版比例, 基准正文 14sp): Hero 48sp(中奖金额)/ Key 18sp(金色主数字+标题)/
-Act 16sp(按钮)/ Body 14sp(正文)/ Aux 13sp(辅助)/ Minor 12sp(历史行);
-场景内文字(槽位倍率/落袋浮字)用逻辑 20px 跟盘面缩放。原则: UI 文字用 sp 保证手机物理可读,
-英雄字按屏宽占比设计不跟场景缩。
+## 界面 (5 行全宽上下结构, 上设定/下信息)
+
+```
+[顶栏]   音效开关(左) + 标题居中 + 状态(右)
+[返还]   返还率: [90%] [100%] [110%]   (左对齐)
+[投入]   投入珠子单位: [1] [10] [50] [100]  (左对齐)
+[游戏区] 全宽钉阵 + 竖井 + 倍率槽(场景面积比右面板版 +32%)
+[信息]   珠子 + 每次投x珠,累计x投x中(x%)
+[底行]   [重置] —长距离— [力度] [蓄力发射]
+```
+
+特效: 中奖 48sp 金色大字、落袋浮字、槽位白闪、余额滚分、渐变球(1.4×)、
+余额不足中央飘字"珠子数量不足/请降低投入或点击重置按钮"。
+
+设备能力: 切后台自动静音(SoundPool autoPause)、x10+ 大奖滚分/停留 1.2s、
+x5/x10/x20 中奖震动(60/100/150ms)、顶栏音效开关(蓝底=开/近黑=关)。
+
+字体层级: Hero 48sp(中奖金额)/ Key 18sp(金数+标题)/ Act 16sp(按钮)/
+Body 14sp(正文)/ Aux 13sp(辅助); 场景内文字用逻辑 20px 跟盘面缩放。
 
 ## 构建 APK (GitHub Actions 云构建, 无需本地装 Android SDK)
 
-1. push 到 `main` 分支(或 Actions 页手动 `workflow_dispatch`)
-2. 等 Actions 跑完(首次 15-20 分钟, 命中缓存后 5-8 分钟)
+1. push 到 `main` 分支(或 Actions 页手动 workflow_dispatch)
+2. 等 Actions 跑完(首次 15-20 分钟, 缓存命中后 ~3 分钟)
 3. run 详情页底部 **Artifacts** → `plinko-apk.zip` → 解压得 `.apk` → 传手机安装
+
+**完整流程 + 踩坑记录(版本锁定/中文字体/移植弯路)见 `BUILD_APK.md`, 改代码前必读。**
 
 ## 桌面运行 / 测试
 
 ```
-python main.py              # 开窗口玩(模拟手机竖屏 420x780)
+python main.py              # 开窗口玩(540×960, 16:9; 宽屏最大化内容居中)
 python main.py --selftest   # 无界面自测(RTP/命中/卡死/哑火/音效体检)
-python main.py --smoke      # 自动冒烟: 蓄力发射 + 哑火, 截图到 %TEMP%/plinko_smoke
+python main.py --smoke      # 自动冒烟: 蓄力发射/必中盘/哑火/余额不足飘字 + 截图
 python main.py --nosound    # 静音启动
 ```
 
 ## main.py 是生成物, 不要直接编辑
 
-`main.py` 由 `../tools/build_android_main.py` 自动拼接生成:
+由 `../tools/build_android_main.py` 自动拼接生成:
 
 | 要改什么 | 改哪里 |
 |------|------|
@@ -49,17 +63,16 @@ python main.py --nosound    # 静音启动
 
 ```
 main.py                  # Kivy 应用(生成物)
-buildozer.spec           # 打包配置(锁 p4a v2024.01.21, 见 ../BUILD_APK 参考文档)
+buildozer.spec           # 打包配置(p4a v2024.01.21 锁定, VIBRATE 权限)
+BUILD_APK.md             # 云构建流程 + 移植弯路集(下次做 APK 必读)
 icon.png                 # 1024x1024 启动器图标
-presplash.png            # 1080x1920 启动屏(边缘 #0b1220, 与 presplash_color 一致)
+presplash.png            # 1080x1920 启动屏(边缘 #0b1220 = presplash_color)
 fonts/NotoSansSC-Medium.otf   # 中文字体(不打进 APK 汉字全豆腐块)
 .github/workflows/build-apk.yml   # 云构建流水线
 ```
 
-## 音效在 Android 上的实现
+## 音效实现
 
 合成代码与 PC 版完全相同(34 个 PCM, 后台线程烘焙 ~330ms), 烘焙后写成 WAV 缓存文件,
-用 `pyjnius` 调 Android `SoundPool` 加载播放(游戏音效专用 API, 多路并发由硬件 mixer 处理)。
-桌面则走 winmm(Windows)或 Kivy SoundLoader 后备。
-
-参考: `E:\AI_Tools\other\shalou_claude\android\BUILD_APK.md`(云构建全流程踩坑记录)
+用 `pyjnius` 调 Android `SoundPool` 加载播放(多路并发, 硬件 mixer)。
+桌面则走 winmm(Windows)或 Kivy SoundLoader 后备, 无声卡自动静音不崩。
