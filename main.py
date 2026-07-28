@@ -1512,8 +1512,16 @@ def sfx_check(verbose=True):
 
 # -*- coding: utf-8 -*-
 # ======================= Kivy UI 层 =======================
+# 字体层级体系(6 级, 对齐 PC 版比例关系; 手机端基准正文 14sp):
+#   Hero 48sp  中奖金额大字(未中 36sp) — 按屏宽占比设计, 不跟场景缩
+#   Key  18sp  珠子/投入 金色主数字 + 顶栏标题
+#   Act  16sp  全部按钮(发射/投入/重置/RTP)
+#   Body 14sp  正文标签/投中统计/返还率标题/力度/历史标题
+#   Aux  13sp  状态栏/"投入珠子单位"
+#   Minor 12sp 历史行
+# 场景内文字(槽位倍率/落袋浮字)不用 sp, 用逻辑 px 跟盘面一起缩放: 逻辑 20px(手机上≈11sp)。
 PANEL_W = 104                # 右侧面板宽(dp): 近10次积分 + 返还率
-BAR_H = (44, 32, 50, 58)     # 顶栏/信息栏/投入行/发射行 高(dp)
+BAR_H = (44, 34, 54, 60)     # 顶栏/信息栏/投入行/发射行 高(dp, 触控行高>=54)
 
 
 def slot_color(m):
@@ -1663,8 +1671,8 @@ class GameArea(FloatLayout):
                 RoundedRectangle(radius=[max(1.0, 6 * s)],
                                  **self._rect(FIELD_L + i * SLOT_W + 2, SLOT_TOP + 3,
                                               FIELD_L + (i + 1) * SLOT_W - 2, FLOOR - 3))
-            # 槽倍率文字(CoreLabel 烘成纹理)
-            fs = max(9, int(12 * s))
+            # 槽倍率文字(CoreLabel 烘成纹理; 逻辑 20px 跟盘面缩放, 手机上≈11sp)
+            fs = max(12, int(20 * s))
             for i in range(NUM_SLOTS):
                 m = g.multipliers[i]
                 if m <= 0:
@@ -1712,10 +1720,10 @@ class GameArea(FloatLayout):
 
     # ------------------------------ 特效 ------------------------------
     def float_text(self, lx, text, hexcolor):
-        """槽位上方小字上升淡出(对应 tkinter _float_text)。"""
+        """槽位上方小字上升淡出(对应 tkinter _float_text; 逻辑 20px 跟盘面缩放)。"""
         if self._ball_e is None:
             return
-        lbl = Label(text=text, font_size=max(10, int(16 * self._s)) if self._s > 0.7 else "16sp",
+        lbl = Label(text=text, font_size=max(12, int(20 * self._s)),
                     bold=True, color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         self.add_widget(lbl)
         self._effects.append({"kind": "float", "ws": [lbl], "born": time.time(),
@@ -1724,17 +1732,18 @@ class GameArea(FloatLayout):
                               "y0": self._py(SLOT_TOP - 10) - self.y})
 
     def big_result_text(self, m, payout):
-        """画布中央中奖大字: 缩放+淡出+上浮(对应 tkinter _big_result_text)。"""
+        """画布中央中奖大字: 缩放+淡出+上浮(对应 tkinter _big_result_text)。
+        Hero 层级按屏宽占比设计(48sp), 不跟场景缩 — 手机上画布=整块屏, 跟场景缩就太小了。"""
         if self._ball_e is None:
             return
         if m > 0:
             text = "+%d" % payout
             hexcolor = COL_GREEN if m < 20 else COL_METER
-            size = 40
+            size = 48
         else:
             text = "未中"
             hexcolor = COL_FIRE
-            size = 32
+            size = 36
         main = Label(text=text, font_size=size, bold=True,
                      color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         shadow = Label(text=text, font_size=size, bold=True,
@@ -1879,7 +1888,7 @@ class RootWidget(BoxLayout):
     def _mk_button(self, text, cb, bg=COL_BTN_OFF):
         b = Button(text=text, background_normal="", background_down="",
                    background_color=hex_rgb(bg) + (1,), color=(1, 1, 1, 1),
-                   font_size="15sp", bold=True)
+                   font_size="16sp", bold=True)
         if cb is not None:
             b.bind(on_release=cb)
         return b
@@ -1895,25 +1904,25 @@ class RootWidget(BoxLayout):
         # 顶栏: 标题 + 状态
         top = BoxLayout(size_hint_y=None, height=dp(BAR_H[0]), padding=[dp(10), 0])
         self._row_bg(top, COL_PANEL)
-        top.add_widget(self._mk_label("跳跳的弹珠机", "16sp", COL_TEXT,
+        top.add_widget(self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
                                       "left", True, size_hint_x=0.42))
-        self.status_lbl = self._mk_label("按住「发射」或空格蓄力, 松开弹射", "12sp", COL_SUB,
+        self.status_lbl = self._mk_label("按住「发射」或空格蓄力, 松开弹射", "13sp", COL_SUB,
                                          "right", False, size_hint_x=0.58)
         top.add_widget(self.status_lbl)
         self.add_widget(top)
         # 信息栏: 珠子 / 投中统计 / 投入
         info = BoxLayout(size_hint_y=None, height=dp(BAR_H[1]))
-        info.add_widget(self._mk_label("珠子", "14sp", COL_TEXT, "right", True,
+        info.add_widget(self._mk_label("珠子", "15sp", COL_TEXT, "right", True,
                                        size_hint_x=0.13))
-        self.balance_lbl = self._mk_label(str(self.balance), "14sp", COL_BALL,
+        self.balance_lbl = self._mk_label(str(self.balance), "18sp", COL_BALL,
                                           "left", True, size_hint_x=0.17)
         info.add_widget(self.balance_lbl)
-        self.stats_lbl = self._mk_label("0投0中", "13sp", COL_TEXT, "center", True,
+        self.stats_lbl = self._mk_label("0投0中", "14sp", COL_TEXT, "center", True,
                                         size_hint_x=0.34)
         info.add_widget(self.stats_lbl)
-        info.add_widget(self._mk_label("投入", "14sp", COL_TEXT, "right", True,
+        info.add_widget(self._mk_label("投入", "15sp", COL_TEXT, "right", True,
                                        size_hint_x=0.15))
-        self.bet_lbl = self._mk_label(str(self.bet), "14sp", COL_BALL, "left", True,
+        self.bet_lbl = self._mk_label(str(self.bet), "18sp", COL_BALL, "left", True,
                                       size_hint_x=0.21)
         info.add_widget(self.bet_lbl)
         self.add_widget(info)
@@ -1924,23 +1933,23 @@ class RootWidget(BoxLayout):
         panel = BoxLayout(orientation="vertical", size_hint_x=None, width=dp(PANEL_W),
                           padding=[dp(6), dp(6)], spacing=dp(2))
         self._row_bg(panel, COL_PANEL)
-        panel.add_widget(self._mk_label("近10次积分", "12sp", COL_TEXT, "center", True,
-                                        size_hint_y=None, height=dp(24)))
+        panel.add_widget(self._mk_label("近10次积分", "14sp", COL_TEXT, "center", True,
+                                        size_hint_y=None, height=dp(26)))
         self.hist_labels = []
         for _ in range(10):
-            lbl = self._mk_label("—", "11sp", COL_SUB, "center", False,
-                                 size_hint_y=None, height=dp(20))
+            lbl = self._mk_label("—", "12sp", COL_SUB, "center", False,
+                                 size_hint_y=None, height=dp(21))
             self.hist_labels.append(lbl)
             panel.add_widget(lbl)
         div = Widget(size_hint_y=None, height=dp(8))
         panel.add_widget(div)
-        panel.add_widget(self._mk_label("返还率", "13sp", COL_TEXT, "center", True,
-                                        size_hint_y=None, height=dp(26)))
+        panel.add_widget(self._mk_label("返还率", "14sp", COL_TEXT, "center", True,
+                                        size_hint_y=None, height=dp(28)))
         self.rtp_btns = {}
         for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
             b.size_hint_y = None
-            b.height = dp(46)
+            b.height = dp(48)
             self.rtp_btns[val] = b
             panel.add_widget(b)
         panel.add_widget(Widget())   # 弹簧: 把内容顶到上方
@@ -1949,8 +1958,8 @@ class RootWidget(BoxLayout):
         # 投入行
         bets = BoxLayout(size_hint_y=None, height=dp(BAR_H[2]),
                          padding=[dp(6), dp(4)], spacing=dp(6))
-        bets.add_widget(self._mk_label("投入珠子单位:", "12sp", COL_SUB, "center", False,
-                                       size_hint_x=None, width=dp(96)))
+        bets.add_widget(self._mk_label("投入珠子单位:", "13sp", COL_SUB, "center", False,
+                                       size_hint_x=None, width=dp(104)))
         self.bet_btns = {}
         for v in PRESETS:
             b = self._mk_button(str(v), lambda _b, x=v: self.set_bet(x))
@@ -1962,8 +1971,8 @@ class RootWidget(BoxLayout):
         # 发射行
         fire = BoxLayout(size_hint_y=None, height=dp(BAR_H[3]),
                          padding=[dp(6), dp(4), dp(6), dp(8)], spacing=dp(8))
-        self.power_lbl = self._mk_label("", "13sp", COL_METER, "center", True,
-                                        size_hint_x=None, width=dp(118))
+        self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
+                                        size_hint_x=None, width=dp(126))
         fire.add_widget(self.power_lbl)
         self.fire_btn = self._mk_button("按住蓄力发射", None, bg=COL_FIRE)
         self.fire_btn.bind(on_press=lambda _b: self.start_charge(),
@@ -2285,7 +2294,7 @@ class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
         if platform != "android":
-            Window.size = (540, 880)       # 桌面预览; 16:10 屏可最大化, 内容自适应居中
+            Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
         anchor = AnchorLayout(anchor_x="center", anchor_y="center")
         self.rootw = RootWidget(size_hint_x=None)

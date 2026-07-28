@@ -6,6 +6,11 @@ PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
 
 布局自适应: 窄屏(手机竖屏)铺满宽度, 宽屏(16:10 桌面)内容列居中并拉满高度。
 
+字体层级体系(对齐 PC 版比例, 基准正文 14sp): Hero 48sp(中奖金额)/ Key 18sp(金色主数字+标题)/
+Act 16sp(按钮)/ Body 14sp(正文)/ Aux 13sp(辅助)/ Minor 12sp(历史行);
+场景内文字(槽位倍率/落袋浮字)用逻辑 20px 跟盘面缩放。原则: UI 文字用 sp 保证手机物理可读,
+英雄字按屏宽占比设计不跟场景缩。
+
 ## 构建 APK (GitHub Actions 云构建, 无需本地装 Android SDK)
 
 1. push 到 `main` 分支(或 Actions 页手动 `workflow_dispatch`)
