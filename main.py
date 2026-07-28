@@ -1725,11 +1725,11 @@ def sfx_check(verbose=True):
 #   Aux  13sp  状态栏/"投入珠子单位"/"返还率"
 # 场景内文字(槽位倍率/落袋浮字)不用 sp, 用逻辑 px 跟盘面一起缩放: 逻辑 20px(手机上≈11sp)。
 H_TOP = 44                   # 顶栏(标题+喇叭+状态)
-H_RTP = 52                   # 返还率行(左对齐)
-H_BETS = 52                  # 投入珠子单位行(左对齐)
+H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区间隙)
+H_BETS = 44                  # 投入珠子单位行(左对齐, 降低以增大游戏区间隙)
 H_INFO = 34                  # 珠子 + 统计
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
-FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM            # 246
+FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM + 5 * 10  # 230 + 行间距
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
 
@@ -2072,7 +2072,7 @@ class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
 
     def __init__(self, sfx=None, **kw):
-        super().__init__(orientation="vertical", **kw)
+        super().__init__(orientation="vertical", spacing=dp(10), **kw)
         self.sfx = sfx if sfx is not None else Sfx(SOUND_ENABLED)
         self.geo = build_geo()
         self.multipliers = roll_multipliers()
@@ -2165,8 +2165,8 @@ class RootWidget(BoxLayout):
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
-                        padding=[dp(6), dp(4)], spacing=dp(6))
-        rtp.add_widget(self._mk_label("返还率:", "13sp", COL_SUB, "center", False,
+                        padding=[dp(6), dp(4)], spacing=dp(10))
+        rtp.add_widget(self._mk_label("返还率:", "14sp", COL_TEXT, "center", False,
                                       size_hint_x=None, width=dp(104)))
         self.rtp_btns = {}
         for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
@@ -2180,7 +2180,7 @@ class RootWidget(BoxLayout):
         # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
                          padding=[dp(6), dp(4)], spacing=dp(6))
-        bets.add_widget(self._mk_label("投入珠子单位:", "13sp", COL_SUB, "center", False,
+        bets.add_widget(self._mk_label("投入珠子单位:", "14sp", COL_TEXT, "center", False,
                                        size_hint_x=None, width=dp(104)))
         self.bet_btns = {}
         for v in PRESETS:
@@ -2199,10 +2199,10 @@ class RootWidget(BoxLayout):
         info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
         info.add_widget(self._mk_label("珠子", "15sp", COL_TEXT, "right", True,
                                        size_hint_x=0.13))
-        self.balance_lbl = self._mk_label(str(self.balance), "18sp", COL_BALL,
+        self.balance_lbl = self._mk_label(str(self.balance), "19sp", COL_BALL,
                                           "left", True, size_hint_x=0.17)
         info.add_widget(self.balance_lbl)
-        self.stats_lbl = self._mk_label("", "14sp", COL_TEXT, "center", True,
+        self.stats_lbl = self._mk_label("", "15sp", COL_TEXT, "center", True,
                                         size_hint_x=0.70)
         info.add_widget(self.stats_lbl)
         self.add_widget(info)
@@ -2283,9 +2283,9 @@ class RootWidget(BoxLayout):
         if on:
             self.sfx.play("click")            # 恢复后也确认一声
         self.mute_btn.text = "音效已开" if on else "音效已关"
-        # 开=蓝底白字 / 关=近黑底灰字, 状态对比一眼可辨
-        self.mute_btn.background_color = hex_rgb(COL_BTN if on else "#1a1a22") + (1,)
-        self.mute_btn.color = (1, 1, 1, 1) if on else hex_rgb(COL_SUB) + (1,)
+        # 开=蓝底白字 / 关=深色底亮灰字, 与面板背景有明显反差, 看得出是个按钮
+        self.mute_btn.background_color = hex_rgb(COL_BTN if on else "#3d3828") + (1,)
+        self.mute_btn.color = (1, 1, 1, 1) if on else hex_rgb("#c0c8e4") + (1,)
 
     def _refresh_stats(self):
         rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
