@@ -1979,7 +1979,7 @@ class GameArea(FloatLayout):
         self.add_widget(shadow)
         self.add_widget(main)
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
-                              "life": 2.0, "size": size, "rgb": hex_rgb(hexcolor),
+                              "life": 2.4, "size": size, "rgb": hex_rgb(hexcolor),
                               "cx": self._px(CW / 2.0) - self.x,
                               "cy": self._py(CH / 2.0 - 80) - self.y})
 
