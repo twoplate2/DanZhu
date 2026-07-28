@@ -2501,7 +2501,6 @@ class RootWidget(BoxLayout):
         self.reset_btn.width   = dp(96)  * us
         self.fire_btn.width    = dp(110) * us
         self.power_lbl.width   = dp(100) * us
-        self.status_lbl.width  = None  # flex, 不设固定宽
         self._rtp_title_lbl.width  = dp(115) * us
         self._bet_title_lbl.width  = dp(115) * us
         for b in self.rtp_btns.values():
