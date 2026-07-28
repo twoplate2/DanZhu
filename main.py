@@ -22,7 +22,7 @@ from kivy.core.text import LabelBase, Label as CoreLabel
 from kivy.core.window import Window
 from kivy.graphics import Color, Rectangle, Line, Ellipse, RoundedRectangle
 from kivy.graphics.texture import Texture
-from kivy.metrics import dp
+from kivy.metrics import dp, sp
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -516,6 +516,13 @@ SFX_MIN_SP = {EV_PEG: 45.0, EV_CEIL: 60.0, EV_WALL: 70.0, EV_DIV: 45.0}
 # 撞击音满音量参考速率(法向速率 px/s)
 SFX_REF_SP = {EV_PEG: 900.0, EV_CEIL: 1300.0, EV_WALL: 700.0, EV_DIV: 700.0}
 
+# 顶部碰撞音: 球冲到最高点"转向"时发声, 不等真撞墙 —— 实测只有满蓄力(apex y=22)才真撞到
+# 顶墙, 且撞点就在 apex 上速率仅 77px/s, 按速率定音量必然听不见。转向(vy 由负转正)每发都有,
+# 恒在 0.95~1.00s(竖直运动与 vx 无关, 150 发零方差), 正好落在 FLIGHT_ENV 的顶部谷里。
+SFX_APEX_Y_LO = 58.0         # 最弱有效蓄力的转向高度(球心 y), 实测
+SFX_APEX_Y_HI = 22.0         # 满蓄力的转向高度(球顶几乎贴上顶墙), 实测
+SFX_TOP_Y = 30.0             # 低于此高度的撞墙事件不发闷咚: 同帧的 top 音已代表这一下
+
 NOTE = {"C4": 261.63, "D4": 293.66, "E4": 329.63, "F4": 349.23, "G4": 392.00,
         "A4": 440.00, "C5": 523.25, "D5": 587.33, "E5": 659.25, "F5": 698.46,
         "G5": 783.99, "A5": 880.00, "C6": 1046.50, "D6": 1174.66, "E6": 1318.51,
@@ -717,38 +724,73 @@ def _sfx_launch():
 FLIGHT_ENV = [1.00, 0.90, 0.80, 0.70, 0.59, 0.50, 0.47, 0.48,
               0.53, 0.58, 0.59, 0.22, 0.24, 0.33, 0.42, 0.44]
 FLIGHT_DUR = 1.50
+FLIGHT_GRAIN_END = 0.72      # 颗粒(滚动感)淡出时刻: 球此时已离开竖井钢轨, 之后是空中气流
 
 
 def _sfx_flight():
-    """一条连续飞行音: 从发射贯穿到首次撞钉, 亮度/音量跟着球的实际速度呼吸。
-    替代原来"发射内置风声 + 越顶 swoosh"两段断裂的设计(见 histroy.md)。"""
+    """一条连续飞行音: 球压着竖井钢轨滚上去 -> 越顶离轨后化为气流, 一直铺到首次撞钉。
+    "滚"的听觉线索有两条, 缺一不可:
+      1. 窄带共振噪声(二阶谐振器) = 硬球压硬轨的沙沙, 共振频率跟球速走(越快越亮);
+      2. 低频颗粒调制 = 轨道纹理的碾过感, 颗粒密度跟球速走(越快越密), 0.72s 后淡出(球已离轨)。
+    包络仍是 FLIGHT_ENV(实测中位速度), 所以 1.5s 的音画锚点一个都没动。
+    每样本恰好取 1 个随机数(与上一版风声相同), 后面音效的 _ARNG 序列不受影响。"""
     n = int(SR * FLIGHT_DUR)
     b = [0.0] * n
     seg = (len(FLIGHT_ENV) - 1) / FLIGHT_DUR
-    z = 0.0
+    blk = 128                                        # 参数按块更新: 省掉 33k 次 cos/插值, 听不出
+    r = 0.93                                         # 谐振器极点半径(带宽≈420Hz, 有管腔感又不啸叫)
+    rr = r * r
+    z1 = z2 = 0.0
+    ph = 0.0
+    dph = 0.0
+    cosw = 1.0
+    e = FLIGHT_ENV[0]
+    grain = 0.0
     for i in range(n):
-        t = i / SR
-        u = t * seg                                  # 包络控制点插值
-        k = int(u)
-        if k >= len(FLIGHT_ENV) - 1:
-            e = FLIGHT_ENV[-1]
-        else:
-            f = u - k
-            e = FLIGHT_ENV[k] * (1.0 - f) + FLIGHT_ENV[k + 1] * f
-        lp = 0.05 + 0.40 * e                         # 越快越亮
-        z += lp * (_ARNG.uniform(-1.0, 1.0) - z)
-        b[i] = z * (e ** 1.3) / math.sqrt(lp)
+        if i % blk == 0:
+            t = i / SR
+            u = t * seg                              # 包络控制点插值
+            k = int(u)
+            if k >= len(FLIGHT_ENV) - 1:
+                e = FLIGHT_ENV[-1]
+            else:
+                f = u - k
+                e = FLIGHT_ENV[k] * (1.0 - f) + FLIGHT_ENV[k + 1] * f
+            cosw = math.cos(math.tau * (330.0 + 560.0 * e) / SR)
+            dph = math.tau * (46.0 + 88.0 * e) / SR
+            grain = 0.34 * max(0.0, 1.0 - t / FLIGHT_GRAIN_END)
+        ph += dph
+        y = _ARNG.uniform(-1.0, 1.0) + 2.0 * r * cosw * z1 - rr * z2
+        z2 = z1
+        z1 = y
+        b[i] = y * (1.0 - r) * (e ** 1.2) * (1.0 - grain + grain * math.sin(ph))
     _add_chirp(b, 0.00, 150.0, 96.0, 0.34, 0.10, 0.26, 1.0)  # 竖井内的低频管腔感
-    return _pack(b, 0.38, fi=0.004, fo=0.110)
+    return _pack(b, 0.44, fi=0.004, fo=0.110)
+
+
+def _sfx_top(hard):
+    """球冲到顶点转向: 顶部一声碰撞。中频金属"铛", 比撞墙的闷咚亮得多(手机小喇叭也听得清)。
+    hard=1 是接近满蓄力那档(真撞上顶墙): 更亮、余韵更长。"""
+    b = _buf(0.17 if hard else 0.13)
+    f0 = 610.0 if hard else 520.0
+    _add_partials(b, 0.0, f0, [(1.00, 1.00, 0.048 if hard else 0.036),
+                               (2.13, 0.55, 0.026),
+                               (3.79, 0.26, 0.013),
+                               (6.11, 0.11, 0.007)])
+    _add_noise(b, 0.0, 0.007, 0.36, 0.0028, 0.72)
+    _reverb(b, 0.10, 0.22)
+    return _pack(b, 0.60 if hard else 0.52)
 
 
 def _sfx_ratchet(lev):
-    """蓄力棘轮: lev 0..5, 越高越亮越响(配合间隔变密 = 越蓄越急)。"""
+    """蓄力棘轮: lev 0..5, 越高越亮越响(配合间隔变密 = 越蓄越急)。
+    峰值/亮度都比初版高一截: 初版低档 340Hz、峰值 0.22、有效时长仅 20ms, 手机喇叭低频响应
+    差 + 短音听觉积分不足, 蓄力前半段直接掉到可闻阈下(实测反馈"蓄满了才听见")。"""
     b = _buf(0.05)
-    _add_noise(b, 0.0, 0.003, 0.45, 0.0012, 0.55)
-    _add_partials(b, 0.0, 340.0 + lev * 95.0, [(1.00, 1.00, 0.010),
-                                               (2.70, 0.30, 0.005)])
-    return _pack(b, 0.26 + lev * 0.028)
+    _add_noise(b, 0.0, 0.003, 0.45, 0.0012, 0.70)
+    _add_partials(b, 0.0, 380.0 + lev * 98.0, [(1.00, 1.00, 0.010),
+                                               (2.70, 0.52, 0.005)])
+    return _pack(b, 0.46 + lev * 0.032)
 
 
 def _sfx_charge_full():
@@ -795,7 +837,7 @@ def _sfx_riser():
         t = i / (n - 1.0)
         z += 0.35 * (_ARNG.uniform(-1.0, 1.0) - z)
         b[i] += 0.16 * z * (t ** 2.0)
-    return _pack(b, 0.30, fi=0.004, fo=0.020)
+    return _pack(b, 0.36, fi=0.004, fo=0.020)
 
 
 WIN_TIERS = [
@@ -838,7 +880,7 @@ def _sfx_lose():
     _add_bell(b, lead + 0.00, NOTE["F4"], 0.70, 0.18, 0.5)
     _add_bell(b, lead + 0.11, NOTE["C4"], 0.70, 0.24, 0.5)
     _reverb(b, 0.10, 0.26)
-    return _pack(b, 0.22)
+    return _pack(b, 0.34)
 
 
 def _sfx_click():
@@ -846,7 +888,7 @@ def _sfx_click():
     b = _buf(0.035)
     _add_noise(b, 0.0, 0.0025, 0.50, 0.0012, 0.75)
     _add_partials(b, 0.0, 940.0, [(1.00, 0.50, 0.006), (2.60, 0.20, 0.003)])
-    return _pack(b, 0.24)
+    return _pack(b, 0.40)
 
 
 def _sfx_error():
@@ -866,7 +908,7 @@ def _sfx_coin():
     b = _buf(0.035)
     _add_partials(b, 0.0, 2280.0, [(1.00, 1.00, 0.007), (2.02, 0.40, 0.004)])
     _add_noise(b, 0.0, 0.002, 0.18, 0.001, 0.90)
-    return _pack(b, 0.20)
+    return _pack(b, 0.36)
 
 
 def _sfx_ready():
@@ -875,7 +917,7 @@ def _sfx_ready():
     _add_partials(b, 0.000, 255.0, [(1.00, 1.00, 0.022), (2.30, 0.30, 0.010)])
     _add_noise(b, 0.000, 0.050, 0.14, 0.030, 0.25)
     _add_partials(b, 0.075, 300.0, [(1.00, 0.50, 0.016)])
-    return _pack(b, 0.26)
+    return _pack(b, 0.38)
 
 
 def _sfx_cash():
@@ -890,34 +932,41 @@ def _sfx_cash():
     return _pack(b, 0.45)
 
 
-def bake_bank():
-    """合成全部音效 -> {名字: PCM字节}。约 7s 素材, 耗时 ~200ms(后台线程跑)。"""
+def iter_bank():
+    """按固定顺序逐个合成 (名字, PCM)。**顺序即音色**: 所有配方共用 _ARNG 一条随机流,
+    换了顺序噪声实例就变, 所以安卓端"边烘边加载"必须走这同一个顺序。
+    新增音效一律追加在末尾, 免得扰动既有音色。"""
     _ARNG.seed(SFX_SEED)                    # 每次烘焙音色完全一致
-    bank = {}
     for i, f0 in enumerate((1040.0, 1180.0, 1330.0, 1500.0, 1680.0, 1880.0)):
-        bank["peg%d" % i] = _sfx_tink(f0)
+        yield "peg%d" % i, _sfx_tink(f0)
     for i, f0 in enumerate((185.0, 225.0)):
-        bank["wall%d" % i] = _sfx_wall(f0)
+        yield "wall%d" % i, _sfx_wall(f0)
     for i, f0 in enumerate((430.0, 505.0)):
-        bank["div%d" % i] = _sfx_div(f0)
+        yield "div%d" % i, _sfx_div(f0)
     for lev in range(6):
-        bank["ratchet%d" % lev] = _sfx_ratchet(lev)
-    bank["charge_full"] = _sfx_charge_full()
-    bank["rail"] = _sfx_rail()
-    bank["launch"] = _sfx_launch()
-    bank["flight"] = _sfx_flight()
-    bank["riser"] = _sfx_riser()
-    bank["pocket"] = _sfx_pocket()
-    bank["bounce"] = _sfx_bounce()
+        yield "ratchet%d" % lev, _sfx_ratchet(lev)
+    yield "charge_full", _sfx_charge_full()
+    yield "rail", _sfx_rail()
+    yield "launch", _sfx_launch()
+    yield "flight", _sfx_flight()
+    yield "riser", _sfx_riser()
+    yield "pocket", _sfx_pocket()
+    yield "bounce", _sfx_bounce()
     for tier in range(len(WIN_TIERS)):
-        bank["win%d" % tier] = _sfx_win(tier)
-    bank["lose"] = _sfx_lose()
-    bank["click"] = _sfx_click()
-    bank["error"] = _sfx_error()
-    bank["coin"] = _sfx_coin()
-    bank["ready"] = _sfx_ready()
-    bank["cash"] = _sfx_cash()
-    return bank
+        yield "win%d" % tier, _sfx_win(tier)
+    yield "lose", _sfx_lose()
+    yield "click", _sfx_click()
+    yield "error", _sfx_error()
+    yield "coin", _sfx_coin()
+    yield "ready", _sfx_ready()
+    yield "cash", _sfx_cash()
+    for hard in (0, 1):
+        yield "top%d" % hard, _sfx_top(hard)
+
+
+def bake_bank():
+    """合成全部音效 -> {名字: PCM字节}。约 11.5s 素材, 耗时 ~350ms(后台线程跑)。"""
+    return dict(iter_bank())
 
 try:                                        # winmm: 唯一能做多声道叠加的 stdlib 路径
     import ctypes
@@ -1051,15 +1100,20 @@ def _scale_pcm(pcm, g):
 # Android:  pyjnius 调 SoundPool(多路并发, 低延迟, 游戏音效专用 API)
 # Windows:  winmm _WaveOut(从 plinko.py 原样抽取, 8 声道)
 # 其它桌面: Kivy SoundLoader(SDL2, 能响就行)
+#
+# 两种接口模式:
+#   "pcm"   —— winmm: Sfx 把缩放后的 PCM 直接送声卡
+#   "named" —— SoundPool/SoundLoader: 音效先落盘成 WAV, 按名字播, gain 就是音量
 def _sfx_cache_dir():
-    """音效 WAV 落盘目录(SoundPool/SoundLoader 都要文件路径; winmm 直接播 PCM 不用)。"""
+    """音效 WAV 落盘目录(named 后端要文件路径; winmm 直接播 PCM 用不到)。"""
     if platform == "android":
         try:
-            d = App.get_running_app().user_data_dir
+            base = App.get_running_app().user_data_dir
         except Exception:
-            d = tempfile.gettempdir()
+            base = tempfile.gettempdir()
     else:
-        d = os.path.join(tempfile.gettempdir(), "plinko_sfx")
+        base = tempfile.gettempdir()
+    d = os.path.join(base, "plinko_sfx")
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
@@ -1067,18 +1121,48 @@ def _sfx_cache_dir():
     return d
 
 
+def _sfx_code_tag():
+    """缓存指纹: 本文件的 mtime+size(装了新 APK 就变) + 合成种子 + 采样率。
+    音效配方改了 -> main.py 变了 -> 指纹变 -> 旧 WAV 整目录作废, 不会拿旧配方冒充新的。
+    比手工维护版本号可靠 —— 那种早晚会忘记 bump。"""
+    try:
+        st = os.stat(os.path.abspath(__file__))
+        return "%d.%d.%d.%d" % (SFX_SEED, SR, int(st.st_mtime), st.st_size)
+    except Exception:
+        return "%d.%d.nofile" % (SFX_SEED, SR)
+
+
+def _wav_write(path, pcm):
+    """原子写: 先写 .tmp 再 replace。半截文件绝不能留在缓存里被下次启动当成有效音效。"""
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as f:
+        f.write(pcm_to_wav(pcm))
+    os.replace(tmp, path)
+
+
+def _wav_wipe(d):
+    for fn in os.listdir(d):
+        if fn.endswith(".wav") or fn.endswith(".tmp") or fn == "stamp":
+            try:
+                os.remove(os.path.join(d, fn))
+            except Exception:
+                pass
+
+
 class _SoundPoolOut:
-    """Android SoundPool: 34 个短音效全部解压进内存, 并发由硬件 mixer 处理。
-    mode="named": Sfx 按名字播放, 音量用 play() 自带的 leftVol/rightVol(免 PCM 缩放)。"""
+    """Android SoundPool: 短音效全部解压进内存, 并发交给硬件 mixer。
+    不再用 OnLoadCompleteListener 做"加载完才准播"的门禁: 那个 PythonJavaClass 代理是
+    从 SoundPool 自己的线程回调过来的, 一旦失灵(或被 GC)就是全库永久静音, 而 play() 对
+    尚未加载完的 sample 本来就只是返回 0 什么都不做 —— 用不着这个单点故障。"""
     mode = "named"
     name = "SoundPool"
 
     def __init__(self, voices=SFX_VOICES):
-        from jnius import autoclass, PythonJavaClass, java_method
+        from jnius import autoclass
         SoundPool = autoclass("android.media.SoundPool")
         AudioAttributes = autoclass("android.media.AudioAttributes")
         attrs = (AudioAttributes.Builder()
-                 .setUsage(AudioAttributes.USAGE_MEDIA)
+                 .setUsage(AudioAttributes.USAGE_GAME)
                  .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                  .build())
         self._sp = (SoundPool.Builder()
@@ -1086,34 +1170,17 @@ class _SoundPoolOut:
                     .setAudioAttributes(attrs)
                     .build())
         self._ids = {}
-        self._loaded = set()
-        loaded = self._loaded
 
-        class _Listener(PythonJavaClass):
-            __javainterfaces__ = ["android/media/SoundPool$OnLoadCompleteListener"]
-            __javacontext__ = "app"
-
-            @java_method("(Landroid/media/SoundPool;II)V")
-            def onLoadComplete(self, soundpool, sample_id, status):
-                if status == 0:
-                    loaded.add(sample_id)
-
-        # 必须存实例属性: PythonJavaClass 被 GC 后 Java 回调会崩
-        self._listener = _Listener()
-        self._sp.setOnLoadCompleteListener(self._listener)
-        self._dir = _sfx_cache_dir()
-
-    def prime(self, name, pcm):
-        path = os.path.join(self._dir, name + ".wav")
-        if not os.path.exists(path):
-            with open(path, "wb") as f:
-                f.write(pcm_to_wav(pcm))
-        self._ids[name] = self._sp.load(path, 1)
+    def prime(self, name, path):
+        sid = self._sp.load(path, 1)
+        if not sid:                          # 0 = 加载失败(文件坏了/格式不对)
+            raise RuntimeError("SoundPool.load failed: " + path)
+        self._ids[name] = sid
 
     def play_named(self, name, gain01):
         sid = self._ids.get(name)
-        if sid is None or sid not in self._loaded:
-            return False                    # 未加载完: 静默丢弃(同桌面版"未烘焙完跳过")
+        if sid is None:
+            return False
         self._sp.play(sid, gain01, gain01, 1, 0, 1.0)
         return True
 
@@ -1145,16 +1212,12 @@ class _KivySoundOut:
         from kivy.core.audio import SoundLoader
         self._loader = SoundLoader
         self._sounds = {}
-        self._dir = _sfx_cache_dir()
 
-    def prime(self, name, pcm):
-        path = os.path.join(self._dir, name + ".wav")
-        if not os.path.exists(path):
-            with open(path, "wb") as f:
-                f.write(pcm_to_wav(pcm))
+    def prime(self, name, path):
         snd = self._loader.load(path)
-        if snd is not None:
-            self._sounds[name] = snd
+        if snd is None:
+            raise RuntimeError("SoundLoader.load failed: " + path)
+        self._sounds[name] = snd
 
     def play_named(self, name, gain01):
         snd = self._sounds.get(name)
@@ -1179,16 +1242,22 @@ class _KivySoundOut:
 
 
 def open_output():
-    """按优先级选后端: Android SoundPool > winmm > Kivy SoundLoader > 静音。"""
-    if platform == "android":
+    """按优先级选后端: Android SoundPool > winmm > Kivy SoundLoader > 静音。
+    环境变量 PLINKO_SFX_BACKEND=kivy|winmm|none 可在桌面强制指定 —— 安卓走的是 named
+    这条路径(缓存/落盘/按名播), 桌面默认走 winmm 的 pcm 路径, 不强制就没法在开发机上验它。"""
+    want = os.environ.get("PLINKO_SFX_BACKEND", "").lower()
+    if want == "none":
+        return None
+    if platform == "android" and want not in ("kivy", "winmm"):
         try:
             return _SoundPoolOut()
         except Exception:
             pass
-    try:
-        return _WaveOut()
-    except Exception:
-        pass
+    if want != "kivy":
+        try:
+            return _WaveOut()
+        except Exception:
+            pass
     try:
         return _KivySoundOut()
     except Exception:
@@ -1200,13 +1269,15 @@ def open_output():
 class Sfx:
     """合成一次(后台线程), 之后每次发声只做取样+送声卡。
     pcm 后端(winmm): gain 量化 10 档缓存缩放后的 PCM。
-    named 后端(SoundPool/SoundLoader): 直接按名字 + 浮点音量播。"""
+    named 后端(SoundPool/SoundLoader): WAV 落盘 + 按名字播, gain 直接给后端当音量。"""
 
     def __init__(self, enabled=True, sync=False):
         self.enabled = bool(enabled)
         self.out = None
         self.bank = {}
+        self.named = set()          # named 后端里已经可播的音效名
         self.bake_ms = 0.0
+        self.cached = False         # 本次启动是否命中磁盘缓存(没现场合成)
         self._scaled = {}
         self._last = {}
         self._thread = None
@@ -1224,23 +1295,84 @@ class Sfx:
 
     def _bake(self):
         t0 = time.perf_counter()
-        bank = bake_bank()                  # 整体赋值(引用切换), 读侧只会看到空或全量
-        self.bank = bank
+        try:
+            if getattr(self.out, "mode", "pcm") == "pcm":
+                self._bake_pcm()
+            else:
+                self._bake_named()
+        except Exception:
+            pass
         self.bake_ms = (time.perf_counter() - t0) * 1000.0
-        if getattr(self.out, "mode", "pcm") == "pcm":
-            for name in ("win0", "win1", "win2", "win3", "win4", "lose",
-                         "launch", "flight", "riser"):
-                for g in (1.0, 0.9, 0.85):  # 预热长音效的音量缓存
-                    self.play_prepare(name, g)
-            warm = getattr(self.out, "warm", None)
-            if warm is not None:
-                warm()                      # 预开所有声道(每个 8.8ms, 放后台)
-        else:
-            for nm, pcm in bank.items():    # 写 WAV + 加载进 SoundPool/SoundLoader
-                try:
-                    self.out.prime(nm, pcm)
-                except Exception:
-                    pass
+
+    def _bake_pcm(self):
+        self.bank = bake_bank()             # 整体赋值(引用切换), 读侧只会看到空或全量
+        for name in ("win0", "win1", "win2", "win3", "win4", "lose",
+                     "launch", "flight", "riser", "top0", "top1"):
+            for g in (1.0, 0.9, 0.85):     # 预热长音效的音量缓存
+                self.play_prepare(name, g)
+        warm = getattr(self.out, "warm", None)
+        if warm is not None:
+            warm()                          # 预开所有声道(每个 8.8ms, 放后台)
+
+    def _bake_named(self):
+        """命中缓存就直接加载 WAV; 否则边合成边落盘边加载 —— 每烘好一个立刻能播。
+        手机上整库合成要好几秒(纯 Python 浮点循环), 若等整库烘完才 prime, 开局第一次
+        蓄力必然一声不响; 而 iter_bank 的顺序里 ratchet 排在前 15%, 边烘边用就赶得上。
+        stamp 记的是 "指纹 / 名字:字节数", 逐个核对大小 —— 只查存在性的话, 一个被截断的
+        WAV 会被当成有效缓存永久加载失败(实测踩到), 而这正是最难发现的一类静默故障。"""
+        d = _sfx_cache_dir()
+        tag = _sfx_code_tag()
+        stamp = os.path.join(d, "stamp")
+        if self._load_cached(d, stamp, tag):
+            self.cached = True
+            return
+        _wav_wipe(d)
+        lines = []
+        for name, pcm in iter_bank():
+            path = os.path.join(d, name + ".wav")
+            try:
+                _wav_write(path, pcm)
+                self.out.prime(name, path)
+            except Exception:
+                continue
+            self.named.add(name)
+            lines.append("%s:%d" % (name, os.path.getsize(path)))
+        try:
+            with open(stamp, "w") as f:
+                f.write(tag + "\n" + "\n".join(lines))
+        except Exception:
+            pass
+
+    def _load_cached(self, d, stamp, tag):
+        """缓存有效(指纹一致 + 每个 WAV 大小对得上)则全部加载并返回 True。"""
+        try:
+            with open(stamp, "r") as f:
+                head, _, body = f.read().partition("\n")
+        except Exception:
+            return False
+        if head != tag:
+            return False
+        want = []
+        for line in body.split("\n"):
+            name, _, size = line.partition(":")
+            if not name or not size.isdigit():
+                return False
+            path = os.path.join(d, name + ".wav")
+            try:
+                if os.path.getsize(path) != int(size):
+                    return False
+            except OSError:
+                return False
+            want.append((name, path))
+        if not want:
+            return False
+        for name, path in want:
+            try:
+                self.out.prime(name, path)
+            except Exception:
+                continue
+            self.named.add(name)
+        return True
 
     def play_prepare(self, name, gain):
         pcm = self.bank.get(name)
@@ -1254,7 +1386,7 @@ class Sfx:
     def wait_ready(self, timeout=10.0):
         if self._thread is not None:
             self._thread.join(timeout)
-        return bool(self.bank)
+        return bool(self.bank or self.named)
 
     @property
     def backend(self):
@@ -1263,8 +1395,12 @@ class Sfx:
     def play(self, name, gain=1.0, throttle=0.0):
         if not self.enabled:
             return False
-        pcm = self.bank.get(name)
-        if pcm is None:                      # 还没烘焙好(启动后 ~200ms 内)
+        pcm_mode = getattr(self.out, "mode", "pcm") == "pcm"
+        if pcm_mode:
+            pcm = self.bank.get(name)
+            if pcm is None:                  # 还没烘焙好(启动后 ~350ms 内)
+                return False
+        elif name not in self.named:          # 还没落盘/加载好
             return False
         lvl = int(round(clamp(SFX_MASTER * gain, 0.0, 1.0) * 10.0))
         if lvl <= 0:
@@ -1274,7 +1410,7 @@ class Sfx:
             if now - self._last.get(name, 0.0) < throttle:
                 return False
             self._last[name] = now
-        if getattr(self.out, "mode", "pcm") == "pcm":
+        if pcm_mode:
             key = (name, lvl)
             data = self._scaled.get(key)
             if data is None:
@@ -1299,6 +1435,12 @@ class Sfx:
         if bit == EV_DIV:
             return self.play("div%d" % (1 if t > 0.5 else 0), 0.35 + 0.65 * t, 0.055)
         return False
+
+    def top(self, y):
+        """顶部碰撞: 球冲到最高点转向时发声(y = 转向高度, 越小=蓄力越足=撞得越实)。
+        不走 impact 是因为 apex 处法向速率≈0, 按速率定音量就等于不发声。"""
+        t = clamp((SFX_APEX_Y_LO - y) / (SFX_APEX_Y_LO - SFX_APEX_Y_HI), 0.0, 1.0)
+        return self.play("top%d" % (1 if t > 0.5 else 0), 0.62 + 0.38 * t)
 
     def close(self):
         if self.out is not None:
@@ -1444,18 +1586,28 @@ def selftest(n=40000):
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
     print("== 蓄力观感区分度(竖直时序必须不变) ==")
     apexx_med = {}
+    turny_med = {}
     fp_bad = []
+    turn_bad = []
     for power in (MISFIRE_POWER, 0.5, 1.0):
         axs, npegs, fps = [], [], []
+        turns, turn_ys = [], []
         for k in range(100):
             tx = FIELD_L + (k % NUM_SLOTS + 0.5) * SLOT_W
             b = launch_ball(power)
             best_y, best_x = b["y"], b["x"]
             npeg, fp = 0, -1
+            crossed = False
+            turn = -1
             for f in range(4000):
                 landed = advance_flight(b, geo, tx)
                 if b["y"] < best_y:
                     best_y, best_x = b["y"], b["x"]
+                if not crossed and b["x"] < FIELD_R and b["y"] < LANE_WALL_TOP:
+                    crossed = True
+                if turn < 0 and crossed and b["vy"] >= 0.0:
+                    turn = f                   # 顶部碰撞音的触发帧(GUI 用同一判据)
+                    turn_ys.append(b["y"])
                 if b["events"] & EV_PEG:
                     npeg += 1
                     if fp < 0:
@@ -1468,21 +1620,35 @@ def selftest(n=40000):
             npegs.append(npeg)
             if fp >= 0:
                 fps.append(fp)
-        axs.sort(); npegs.sort(); fps.sort()
+            if turn >= 0:
+                turns.append(turn)
+        axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort()
         apexx_med[power] = axs[len(axs) // 2]
         fp_med = fps[len(fps) // 2] if fps else -1
         if not (80 <= fp_med <= 95):
             fp_bad.append((power, fp_med))
-        print("  力度 %3.0f%% (u=%.2f): 冲顶 x 中位 %3.0f   撞钉 %d 次   首钉 %d 帧"
+        turn_med = turns[len(turns) // 2] if turns else -1
+        turn_y_med = turn_ys[len(turn_ys) // 2] if turn_ys else -1
+        turn_covered = len(turns) == 100        # 顶部碰撞音必须每发都触发
+        if not (50 <= turn_med <= 70) or not turn_covered:
+            turn_bad.append((power, turn_med, len(turns)))
+        turny_med[power] = turn_y_med
+        print("  力度 %3.0f%% (u=%.2f): 冲顶 x 中位 %3.0f   撞钉 %d 次   首钉 %d 帧   "
+              "转向 %d 帧 @y%.0f"
               % (power * 100, power_u(power), apexx_med[power],
-                 npegs[len(npegs) // 2], fp_med))
+                 npegs[len(npegs) // 2], fp_med, turn_med, turn_y_med))
     spread = apexx_med[MISFIRE_POWER] - apexx_med[1.0]
     spread_ok = spread >= 50.0
-    ok = ok and spread_ok and not fp_bad
+    tspread = turny_med[MISFIRE_POWER] - turny_med[1.0]
+    tspread_ok = tspread >= 25.0
+    ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok
     print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=50 玩家才看得出来)"
           % (spread, "OK" if spread_ok else "区分度不足!"))
     print("  首钉时刻: %s (须恒在 80~95 帧, 否则飞行音与画面脱节)"
           % ("OK" if not fp_bad else "漂了! %s" % fp_bad))
+    print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~70 帧)  转向高度跨度 %.0f px %s"
+          % ("OK" if not turn_bad else "异常! %s" % turn_bad,
+             tspread, "OK" if tspread_ok else "(<25 顶部音分不出蓄力档!)"))
 
     # (3) 碰撞事件覆盖率: 该响的地方有没有事件位(历史 bug: 撞钉位从未置位 -> 全程静音)
     print("== 碰撞事件覆盖率(音效触发源) ==")
@@ -1625,16 +1791,25 @@ def ball_texture():
 
 
 def _vibrate(ms):
-    """中奖震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。"""
+    """中奖震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。
+    取服务必须用 Context.VIBRATOR_SERVICE 字符串 —— 传 autoclass("android.os.Vibrator")
+    那个 Class 对象在 pyjnius 下匹配不到 getSystemService(Class<T>) 重载, 会静默失败
+    (整段被 try/except 吞掉, 表现为"权限也给了、代码也跑了, 就是不震")。"""
     if platform != "android":
         return
     try:
         from jnius import autoclass
         activity = autoclass("org.kivy.android.PythonActivity").mActivity
-        vib = activity.getSystemService(autoclass("android.os.Vibrator"))
-        VibrationEffect = autoclass("android.os.VibrationEffect")
-        vib.vibrate(VibrationEffect.createOneShot(
-            ms, VibrationEffect.DEFAULT_AMPLITUDE))
+        Context = autoclass("android.content.Context")
+        vib = activity.getSystemService(Context.VIBRATOR_SERVICE)
+        if vib is None:
+            return
+        try:
+            VibrationEffect = autoclass("android.os.VibrationEffect")
+            vib.vibrate(VibrationEffect.createOneShot(
+                ms, VibrationEffect.DEFAULT_AMPLITUDE))
+        except Exception:
+            vib.vibrate(ms)                  # API < 26: 没有 VibrationEffect
     except Exception:
         pass
 
@@ -1774,31 +1949,22 @@ class GameArea(FloatLayout):
         self.tick_draw()
 
     # ------------------------------ 特效 ------------------------------
-    def float_text(self, lx, text, hexcolor):
-        """槽位上方小字上升淡出(对应 tkinter _float_text; 逻辑 20px 跟盘面缩放)。"""
-        if self._ball_e is None:
-            return
-        lbl = Label(text=text, font_size=max(12, int(20 * self._s)),
-                    bold=True, color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
-        self.add_widget(lbl)
-        self._effects.append({"kind": "float", "ws": [lbl], "born": time.time(),
-                              "life": 0.9,
-                              "cx": self._px(lx) - self.x,
-                              "y0": self._py(SLOT_TOP - 10) - self.y})
-
     def big_result_text(self, m, payout):
         """画布中央中奖大字: 缩放+淡出+上浮(对应 tkinter _big_result_text)。
-        Hero 层级按屏宽占比设计(48sp), 不跟场景缩 — 手机上画布=整块屏, 跟场景缩就太小了。"""
+        Hero 层级按屏宽占比设计(48sp), 不跟场景缩 — 手机上画布=整块屏, 跟场景缩就太小了。
+        字号**必须过 sp()**: Label(font_size=48) 是裸物理像素, 桌面 density=1 时正好 48sp
+        看着对, 手机 density 2.5~3 时只剩 16~19sp, 比旁边 18sp 的余额数字还小(实测反馈
+        "远远没有 PC 上大")。UI 其余文字都是 "18sp" 这种带单位字符串, 只有这里漏了。"""
         if self._ball_e is None:
             return
         if m > 0:
             text = "+%d" % payout
             hexcolor = COL_GREEN if m < 20 else COL_METER
-            size = 48
+            size = sp(48)
         else:
             text = "未中"
             hexcolor = COL_FIRE
-            size = 36
+            size = sp(36)
         main = Label(text=text, font_size=size, bold=True,
                      color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         shadow = Label(text=text, font_size=size, bold=True,
@@ -1815,10 +1981,10 @@ class GameArea(FloatLayout):
             self._pulse = (i, time.time() + 0.30)
 
     def center_toast(self, text, hexcolor=COL_FIRE, size=22, life=1.5):
-        """画布中央两行警示飘字(如余额不足): 上浮+淡出。"""
+        """画布中央两行警示飘字(如余额不足): 上浮+淡出。size 单位是 sp(见 big_result_text)。"""
         if self._ball_e is None:
             return
-        lbl = Label(text=text, font_size=size, bold=True, halign="center",
+        lbl = Label(text=text, font_size=sp(size), bold=True, halign="center",
                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         self.add_widget(lbl)
         self._effects.append({"kind": "toast", "ws": [lbl], "born": time.time(),
@@ -1876,11 +2042,7 @@ class GameArea(FloatLayout):
                     self.remove_widget(w)
                 self._effects.remove(e)
                 continue
-            if e["kind"] == "float":
-                w = e["ws"][0]
-                w.center_x = e["cx"]
-                w.y = e["y0"] + 46 * (now - e["born"])
-            elif e["kind"] == "toast":
+            if e["kind"] == "toast":
                 alpha = max(0.0, 1.0 - max(0.0, p - 0.6) / 0.4)   # 前 60% 实色, 后 40% 淡出
                 w = e["ws"][0]
                 w.color = e["rgb"] + (alpha,)
@@ -1924,6 +2086,7 @@ class RootWidget(BoxLayout):
         self._charge_topped = False
         self._crossed = False
         self._risen = False
+        self._topped = False          # 本次飞行是否已播顶部碰撞音
         self._misfire_frames = 0
         self._space_held = False
         self._release_power = None
@@ -2186,7 +2349,9 @@ class RootWidget(BoxLayout):
         self.plays += 1
         self._crossed = False
         self._risen = False
-        self.sfx.play("launch", 0.75 + 0.25 * self.power)
+        self._topped = False
+        # 音量刻意压到哑火那一档: 原来 0.75~1.0 像大炮, 且会盖掉紧随其后的滚动飞行音
+        self.sfx.play("launch", 0.45 + 0.20 * self.power)
         self.sfx.play("flight", 0.9)          # 一条连续飞行音铺满上升段
         self._set_controls_enabled(False)
         self.status_lbl.text = "发射!"
@@ -2198,20 +2363,16 @@ class RootWidget(BoxLayout):
         self.balance += payout
         if m > 0:
             self.hits += 1
-        cx = FIELD_L + (i + 0.5) * SLOT_W
         self._refresh_stats()
-        if payout > 0:
-            self.status_lbl.text = "中奖!  +%d (x%d)" % (payout, m)
-            self.game_area.float_text(cx, "+%d" % payout, COL_GREEN if m < 20 else COL_METER)
-        else:
-            self.status_lbl.text = "未中"
-            self.game_area.float_text(cx, "0", COL_GRAY)
+        # 结果只在画布中央报一次(Hero 大字)。槽位上方那行小飘字撤了: 手机屏上两处同时飘
+        # "+50"/"0" 是重复信息, 而且下面那行按场景缩放只有 15sp, 小得只剩干扰。
+        self.status_lbl.text = ("中奖!  +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
         self.game_area.set_lamp(i, COL_GREEN if m > 0 else COL_FIRE)
         self.game_area.pulse_slot(i)
         self._play_result_sound(m)
         self.game_area.big_result_text(m, payout)
-        if m >= 5:                            # 中奖震动: x5/x10/x20 分档
-            _vibrate(150 if m >= 20 else (100 if m >= 10 else 60))
+        if m > 0:                             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
+            _vibrate(150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))
         # 数字滚动动画 + 大奖节奏分档(x10 以上滚更久, 看得清中大奖)
         big = m >= 10
         self._land_hold = 1.2 if big else LAND_HOLD
@@ -2245,6 +2406,8 @@ class RootWidget(BoxLayout):
         amp = b.get("amp") or {}
         for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
             if ev & bit:
+                if bit == EV_WALL and b["y"] < SFX_TOP_Y:
+                    continue          # 顶墙撞击与 apex 转向同帧发生, 交给 top 音, 不再叠闷咚
                 self.sfx.impact(bit, amp.get(bit, 0.0))
         b["events"] = 0
         amp.clear()
@@ -2290,6 +2453,9 @@ class RootWidget(BoxLayout):
             elif self._crossed and not self._risen and b["y"] > RISER_Y:
                 self._risen = True
                 self.sfx.play("riser", 0.9)
+            if self._crossed and not self._topped and b["vy"] >= 0.0:
+                self._topped = True           # 冲到顶点转向(恒在 0.95~1.00s): 顶部碰撞声
+                self.sfx.top(b["y"])
             if b["y"] > SLOT_TOP - 40:
                 self.status_lbl.text = "即将入袋…"
             elif b["y"] > PEG_TOP:
