@@ -1738,14 +1738,14 @@ def slot_color(m):
     if m <= 0:
         return "#2a3550"
     if m <= 2:
-        return "#39d98a"
+        return "#1e8a5a"
     if m <= 3:
         return "#3d8bfd"
     if m <= 5:
         return "#e0533b"
     if m <= 10:
         return "#a335ee"
-    return "#f0b000"
+    return "#c88800"
 
 
 _BALL_TEX = None
