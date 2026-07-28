@@ -1729,7 +1729,7 @@ H_TOP = 44                   # 顶栏(标题+喇叭+状态)
 H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区间隙)
 H_BETS = 44                  # 投入珠子单位行(左对齐, 降低以增大游戏区间隙)
 H_INFO = 34                  # 珠子 + 统计
-H_BOTTOM = 88                # 重置 + 力度 + 蓄力发射(加高, 下面留空)
+H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
 FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM + 5 * 10  # 230 + 行间距
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
@@ -2251,6 +2251,7 @@ class RootWidget(BoxLayout):
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
         self.add_widget(fire)
+        self.add_widget(Widget(size_hint_y=None, height=dp(28)))  # 底部留白
         self._refresh_stats()
 
     # ------------------------------ 控件状态 ------------------------------
@@ -2485,7 +2486,7 @@ class RootWidget(BoxLayout):
         self._row_top.padding    = [dp(10), dp(4) * uv, dp(10), dp(4) * uv]
         self._row_rtp.padding    = [dp(6),  dp(4) * uv]
         self._row_bets.padding   = [dp(6),  dp(4) * uv]
-        self._row_bottom.padding = [dp(6), dp(6) * uv, dp(10), dp(4) * uv]
+        self._row_bottom.padding = [dp(6), dp(10) * uv, dp(10), dp(10) * uv]
 
         self.title_lbl.font_size       = sp(18) * fs
         self.status_lbl.font_size      = sp(13) * fs
