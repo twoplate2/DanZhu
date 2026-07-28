@@ -1739,10 +1739,12 @@ def slot_color(m):
         return "#2a3550"
     if m <= 2:
         return "#2fae74"
+    if m <= 3:
+        return "#3d8bfd"
     if m <= 5:
-        return "#f0a63a"
+        return "#e0533b"
     if m <= 10:
-        return "#f0563a"
+        return "#a335ee"
     return "#ffd451"
 
 
