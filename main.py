@@ -2241,7 +2241,7 @@ class RootWidget(BoxLayout):
         self.reset_btn.width = dp(96)
         fire.add_widget(Widget(size_hint_x=None, width=dp(1)))     # 重置按钮微调
         fire.add_widget(self.reset_btn)
-        fire.add_widget(Widget(size_hint_x=None, width=dp(2)))     # 蓄力按钮左移
+        fire.add_widget(Widget(size_hint_x=None, width=dp(7)))     # 蓄力按钮左移
         fire.add_widget(Widget(size_hint_x=1))                    # 长距离弹簧
         self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
                                         size_hint_x=None, width=dp(100))
