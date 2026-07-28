@@ -1991,7 +1991,6 @@ class RootWidget(BoxLayout):
         top.add_widget(self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
                                       "center", True, size_hint_x=None, width=dp(112)))
         right_box = BoxLayout()
-        right_box.add_widget(Widget())
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
         right_box.add_widget(self.status_lbl)
         top.add_widget(right_box)
@@ -2159,7 +2158,7 @@ class RootWidget(BoxLayout):
         if self.balance < self.bet:
             self.status_lbl.text = "珠子不足"
             self.sfx.play("error", throttle=0.4)
-            self.game_area.center_toast("你没有珠子了\n请点击重置按钮")
+            self.game_area.center_toast("珠子数量不足\n请降低投入或点击重置按钮")
             return
         self.state = "charging"
         self.power = 0.0
@@ -2462,19 +2461,25 @@ def _smoke():
 
     def s8(dt):
         r = app.rootw
+        print("SMOKE s8: state=%s" % r.state)
         if r.state == "ready":
             r.start_charge()
             r.power = 0.05                 # 哑火
             r.launch()
+            print("SMOKE s8 after launch: state=%s" % r.state)
 
     def s9(dt):
         shot("07_misfire_done.png")
         r = app.rootw
+        print("SMOKE s9: state=%s balance=%s bet=%s" % (r.state, r.balance, r.bet))
         if r.state == "ready":
             r.balance = 5                    # 余额 < 投注 -> 触发飘字
             r.start_charge()
+            print("SMOKE s9 after start_charge: state=%s" % r.state)
 
     def s9b(dt):
+        r = app.rootw
+        print("SMOKE s9b: state=%s balance=%s" % (r.state, r.balance))
         shot("08_no_beads.png")
         print("SMOKE DONE ->", outdir)
         App.get_running_app().stop()
