@@ -1814,6 +1814,18 @@ class GameArea(FloatLayout):
         if 0 <= i < len(self._slot_cols):
             self._pulse = (i, time.time() + 0.30)
 
+    def center_toast(self, text, hexcolor=COL_FIRE, size=22, life=1.5):
+        """画布中央两行警示飘字(如余额不足): 上浮+淡出。"""
+        if self._ball_e is None:
+            return
+        lbl = Label(text=text, font_size=size, bold=True, halign="center",
+                    color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+        self.add_widget(lbl)
+        self._effects.append({"kind": "toast", "ws": [lbl], "born": time.time(),
+                              "life": life, "rgb": hex_rgb(hexcolor),
+                              "cx": self._px(CW / 2.0) - self.x,
+                              "cy": self._py(CH / 2.0 - 40) - self.y})
+
     def set_lamp(self, i, hex_color):
         if 0 <= i < len(self._lamp_cols):
             self._lamp_cols[i].rgb = hex_rgb(hex_color)
@@ -1868,6 +1880,11 @@ class GameArea(FloatLayout):
                 w = e["ws"][0]
                 w.center_x = e["cx"]
                 w.y = e["y0"] + 46 * (now - e["born"])
+            elif e["kind"] == "toast":
+                alpha = max(0.0, 1.0 - max(0.0, p - 0.6) / 0.4)   # 前 60% 实色, 后 40% 淡出
+                w = e["ws"][0]
+                w.color = e["rgb"] + (alpha,)
+                w.center = (e["cx"], e["cy"] + 20 * (now - e["born"]))
             else:
                 if p < 0.3:
                     sc = 1.0 + (p / 0.3) * 0.2       # 1.0 -> 1.2
@@ -1957,20 +1974,27 @@ class RootWidget(BoxLayout):
                  size=lambda w, *_: setattr(w._bg_rect, "size", w.size))
 
     def _build_ui(self):
-        # 顶栏: 标题 + 喇叭静音钮(与标题留足空白) + 状态
+        # 顶栏: [左容器: 音效钮] [标题 固定宽·全栏正中] [右容器: 状态右对齐]
+        # 左右容器同 flex => 标题严格位于全栏水平中心, 与两侧内容长短无关
         top = BoxLayout(size_hint_y=None, height=dp(H_TOP),
                         padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
         self._row_bg(top, COL_PANEL)
-        top.add_widget(self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
-                                      "left", True, size_hint_x=None, width=dp(112)))
+        left_box = BoxLayout()
         self.mute_btn = self._mk_button("音效已开", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
         self.mute_btn.width = dp(64)
         self.mute_btn.font_size = "13sp"
-        top.add_widget(self.mute_btn)
-        self.status_lbl = self._mk_label("按住蓄力发射, 松开弹射", "13sp", COL_SUB,
-                                         "right", False)
-        top.add_widget(self.status_lbl)
+        self.mute_btn.background_color = hex_rgb(COL_BTN) + (1,)   # 开=蓝底白字
+        left_box.add_widget(self.mute_btn)
+        left_box.add_widget(Widget())
+        top.add_widget(left_box)
+        top.add_widget(self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
+                                      "center", True, size_hint_x=None, width=dp(112)))
+        right_box = BoxLayout()
+        right_box.add_widget(Widget())
+        self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
+        right_box.add_widget(self.status_lbl)
+        top.add_widget(right_box)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
@@ -2093,7 +2117,8 @@ class RootWidget(BoxLayout):
         if on:
             self.sfx.play("click")            # 恢复后也确认一声
         self.mute_btn.text = "音效已开" if on else "音效已关"
-        self.mute_btn.background_color = hex_rgb(COL_BTN_OFF if on else "#1a1a22") + (1,)
+        # 开=蓝底白字 / 关=近黑底灰字, 状态对比一眼可辨
+        self.mute_btn.background_color = hex_rgb(COL_BTN if on else "#1a1a22") + (1,)
         self.mute_btn.color = (1, 1, 1, 1) if on else hex_rgb(COL_SUB) + (1,)
 
     def _refresh_stats(self):
@@ -2132,14 +2157,15 @@ class RootWidget(BoxLayout):
         if self.state != "ready":
             return
         if self.balance < self.bet:
-            self.status_lbl.text = "珠子不足, 请调低投入或点「重置」"
+            self.status_lbl.text = "珠子不足"
             self.sfx.play("error", throttle=0.4)
+            self.game_area.center_toast("你没有珠子了\n请点击重置按钮")
             return
         self.state = "charging"
         self.power = 0.0
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
-        self.status_lbl.text = "蓄力中... 松开发射"
+        self.status_lbl.text = "蓄力中…松开发射"
 
     def launch(self):
         if self.state != "charging":
@@ -2151,7 +2177,7 @@ class RootWidget(BoxLayout):
             self._misfire_frames = 0
             self.sfx.play("launch", 0.45 + 0.30 * (self.power / MISFIRE_POWER))
             self._set_controls_enabled(False)
-            self.status_lbl.text = "力度不足, 未扣珠子"
+            self.status_lbl.text = "力度不足未扣珠"
             return
         self.balance -= self.bet
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
@@ -2176,7 +2202,7 @@ class RootWidget(BoxLayout):
         cx = FIELD_L + (i + 0.5) * SLOT_W
         self._refresh_stats()
         if payout > 0:
-            self.status_lbl.text = "中奖!  +%d 珠 (x%d)" % (payout, m)
+            self.status_lbl.text = "中奖!  +%d (x%d)" % (payout, m)
             self.game_area.float_text(cx, "+%d" % payout, COL_GREEN if m < 20 else COL_METER)
         else:
             self.status_lbl.text = "未中"
@@ -2430,8 +2456,9 @@ def _smoke():
 
     def s7b(dt):
         shot("06b_fx_bigtext.png")
-        app.rootw.toggle_mute()              # 静音开关: 关 -> 开, 不应崩
-        app.rootw.toggle_mute()
+        app.rootw.toggle_mute()              # 静音: 截一张"音效已关"看对比
+        shot("06c_mute_off.png")
+        app.rootw.toggle_mute()              # 恢复
 
     def s8(dt):
         r = app.rootw
@@ -2442,6 +2469,13 @@ def _smoke():
 
     def s9(dt):
         shot("07_misfire_done.png")
+        r = app.rootw
+        if r.state == "ready":
+            r.balance = 5                    # 余额 < 投注 -> 触发飘字
+            r.start_charge()
+
+    def s9b(dt):
+        shot("08_no_beads.png")
         print("SMOKE DONE ->", outdir)
         App.get_running_app().stop()
 
@@ -2455,6 +2489,7 @@ def _smoke():
     Clock.schedule_once(s7b, 15.4)
     Clock.schedule_once(s8, 17.0)
     Clock.schedule_once(s9, 20.0)
+    Clock.schedule_once(s9b, 20.5)
     app.run()
 
 
