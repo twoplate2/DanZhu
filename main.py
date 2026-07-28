@@ -1979,7 +1979,7 @@ class GameArea(FloatLayout):
         self.add_widget(shadow)
         self.add_widget(main)
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
-                              "life": 0.85, "size": size, "rgb": hex_rgb(hexcolor),
+                              "life": 2.0, "size": size, "rgb": hex_rgb(hexcolor),
                               "cx": self._px(CW / 2.0) - self.x,
                               "cy": self._py(CH / 2.0 - 80) - self.y})
 
@@ -2163,7 +2163,7 @@ class RootWidget(BoxLayout):
                                         "center", True, size_hint_x=1)
         top.add_widget(self.title_lbl)
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False,
-                                         size_hint_x=None, width=dp(100))
+                                         size_hint_x=None, width=dp(120))
         top.add_widget(self.status_lbl)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
@@ -2327,7 +2327,6 @@ class RootWidget(BoxLayout):
         if self.state != "ready":
             return
         if self.balance < self.bet:
-            self.status_lbl.text = "珠子不足"
             self.sfx.play("error", throttle=0.4)
             self.game_area.center_toast("珠子数量不足\n请降低投入或点击重置按钮")
             return
