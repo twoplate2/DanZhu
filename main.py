@@ -2163,7 +2163,6 @@ class RootWidget(BoxLayout):
         top.add_widget(self.mute_btn)
         self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
                                         "center", True, size_hint_x=1)
-        self.title_lbl.shorten = True                     # 横屏窄时不换行, 截断加省略号
         top.add_widget(self.title_lbl)
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False,
                                          size_hint_x=None, width=dp(120))
@@ -2450,8 +2449,10 @@ class RootWidget(BoxLayout):
     # ------------------------------ 帧循环 ------------------------------
     def _apply_sizes(self):
         """将 _ui_scale / _font_scale 写到所有固定 UI 元素的尺寸和字号上。
-        横屏时缩小所有固定行高/按钮宽/字号/边距, 把垂直空间还给游戏区。"""
+        横屏时缩小所有固定行高/按钮宽/字号/边距, 把垂直空间还给游戏区。
+        纵向边距用平方衰减(us²), 横屏时更激进地挤掉空白。"""
         us = self._ui_scale
+        uv = us * us                                    # 纵向: 平方衰减, 激进挤空白
         fs = self._font_scale * us
 
         self._row_top.height    = dp(H_TOP)    * us
@@ -2459,13 +2460,12 @@ class RootWidget(BoxLayout):
         self._row_bets.height   = dp(H_BETS)   * us
         self._row_info.height   = dp(H_INFO)   * us
         self._row_bottom.height = dp(H_BOTTOM) * us
-        self.spacing = dp(10) * us
+        self.spacing = dp(10) * uv                      # 行间距: 激进衰减
 
-        # 行内边距: 横向不变(防贴边), 纵向等比缩小
-        self._row_top.padding    = [dp(10), dp(4) * us, dp(10), dp(4) * us]
-        self._row_rtp.padding    = [dp(6),  dp(4) * us]
-        self._row_bets.padding   = [dp(6),  dp(4) * us]
-        self._row_bottom.padding = [dp(6), dp(10) * us, dp(10), dp(10) * us]
+        self._row_top.padding    = [dp(10), dp(4) * uv, dp(10), dp(4) * uv]
+        self._row_rtp.padding    = [dp(6),  dp(4) * uv]
+        self._row_bets.padding   = [dp(6),  dp(4) * uv]
+        self._row_bottom.padding = [dp(6), dp(10) * uv, dp(10), dp(10) * uv]
 
         self.title_lbl.font_size       = sp(18) * fs
         self.status_lbl.font_size      = sp(13) * fs
