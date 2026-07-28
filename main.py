@@ -2241,7 +2241,7 @@ class RootWidget(BoxLayout):
         self.reset_btn.width = dp(96)
         fire.add_widget(Widget(size_hint_x=None, width=dp(1)))     # 重置按钮微调
         fire.add_widget(self.reset_btn)
-        fire.add_widget(Widget(size_hint_x=0.88))                 # 弹簧(让出部分给右侧)
+        fire.add_widget(Widget(size_hint_x=0.95))                 # 弹簧(让出少量给右侧)
         self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
                                         size_hint_x=None, width=dp(100))
         fire.add_widget(self.power_lbl)
@@ -2251,7 +2251,7 @@ class RootWidget(BoxLayout):
         self.fire_btn.bind(on_press=lambda _b: self.start_charge(),
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
-        fire.add_widget(Widget(size_hint_x=0.12))                 # 右侧弹簧(蓄力左移)
+        fire.add_widget(Widget(size_hint_x=0.05))                 # 右侧弹簧(蓄力左移≈2dp)
         self.add_widget(fire)
         self.padding = [0, 0, 0, dp(12)]  # 底部留白
         self._refresh_stats()
