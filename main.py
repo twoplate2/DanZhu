@@ -2071,8 +2071,9 @@ class GameArea(FloatLayout):
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
 
-    def __init__(self, **kw):
+    def __init__(self, sfx=None, **kw):
         super().__init__(orientation="vertical", **kw)
+        self.sfx = sfx if sfx is not None else Sfx(SOUND_ENABLED)
         self.geo = build_geo()
         self.multipliers = roll_multipliers()
         self.balance = START_BEADS
@@ -2103,7 +2104,6 @@ class RootWidget(BoxLayout):
         self.target_x = PLUNGER_X
         self.ball = None
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
-        self.sfx = Sfx(SOUND_ENABLED)
         self._build_ui()
         self.set_bet(self.bet)
         self.set_rtp(self.rtp_target)
@@ -2341,7 +2341,7 @@ class RootWidget(BoxLayout):
             self.ball = launch_misfire(self.power)
             self.state = "misfire"
             self._misfire_frames = 0
-            self.sfx.play("launch", 0.45 + 0.30 * (self.power / MISFIRE_POWER))
+            self.sfx.play("launch", 0.35 + 0.15 * (self.power / MISFIRE_POWER))
             self._set_controls_enabled(False)
             self.status_lbl.text = "力度不足未扣珠"
             return
@@ -2354,8 +2354,7 @@ class RootWidget(BoxLayout):
         self._crossed = False
         self._risen = False
         self._topped = False
-        self.sfx.play("launch", SFX_LAUNCH_GAIN)
-        self.sfx.play("flight", 0.9)          # 一条连续飞行音铺满上升段
+        self.sfx.play("launch", 0.60 + 0.40 * power_u(self.power))
         self._set_controls_enabled(False)
         self.status_lbl.text = "发射!"
 
@@ -2545,8 +2544,9 @@ class PlinkoApp(App):
         if platform != "android":
             Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
+        sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
         anchor = AnchorLayout(anchor_x="center", anchor_y="center")
-        self.rootw = RootWidget(size_hint_x=None)
+        self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
         anchor.add_widget(self.rootw)
         self.rootw._fit_width()
         return anchor
