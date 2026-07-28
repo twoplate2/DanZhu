@@ -2163,6 +2163,7 @@ class RootWidget(BoxLayout):
         top.add_widget(self.mute_btn)
         self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
                                         "center", True, size_hint_x=1)
+        self.title_lbl.shorten = True                     # 横屏窄时不换行, 截断加省略号
         top.add_widget(self.title_lbl)
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False,
                                          size_hint_x=None, width=dp(120))
@@ -2208,8 +2209,9 @@ class RootWidget(BoxLayout):
         # 信息行: 珠子 + 每次投x珠,累计x投x中(x%)
         info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
         self._row_info = info
-        info.add_widget(self._mk_label("珠子：", "15sp", COL_TEXT, "right", True,
-                                       size_hint_x=0.13))
+        self._bead_lbl = self._mk_label("珠子：", "15sp", COL_TEXT, "right", True,
+                                       size_hint_x=0.13)
+        info.add_widget(self._bead_lbl)
         self.balance_lbl = self._mk_label(str(self.balance), "19sp", COL_BALL,
                                           "left", True, size_hint_x=0.17)
         info.add_widget(self.balance_lbl)
@@ -2448,7 +2450,7 @@ class RootWidget(BoxLayout):
     # ------------------------------ 帧循环 ------------------------------
     def _apply_sizes(self):
         """将 _ui_scale / _font_scale 写到所有固定 UI 元素的尺寸和字号上。
-        横屏时缩小所有固定行高/按钮宽/字号, 把垂直空间还给游戏区。"""
+        横屏时缩小所有固定行高/按钮宽/字号/边距, 把垂直空间还给游戏区。"""
         us = self._ui_scale
         fs = self._font_scale * us
 
@@ -2459,10 +2461,17 @@ class RootWidget(BoxLayout):
         self._row_bottom.height = dp(H_BOTTOM) * us
         self.spacing = dp(10) * us
 
+        # 行内边距: 横向不变(防贴边), 纵向等比缩小
+        self._row_top.padding    = [dp(10), dp(4) * us, dp(10), dp(4) * us]
+        self._row_rtp.padding    = [dp(6),  dp(4) * us]
+        self._row_bets.padding   = [dp(6),  dp(4) * us]
+        self._row_bottom.padding = [dp(6), dp(10) * us, dp(10), dp(10) * us]
+
         self.title_lbl.font_size       = sp(18) * fs
         self.status_lbl.font_size      = sp(13) * fs
         self._rtp_title_lbl.font_size  = sp(14) * fs
         self._bet_title_lbl.font_size  = sp(14) * fs
+        self._bead_lbl.font_size       = sp(15) * fs
         self.balance_lbl.font_size     = sp(19) * fs
         self.stats_lbl.font_size       = sp(15) * fs
         self.power_lbl.font_size       = sp(14) * fs
