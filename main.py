@@ -2169,9 +2169,9 @@ class RootWidget(BoxLayout):
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
-                        padding=[dp(12), dp(4)], spacing=dp(10))
-        rtp.add_widget(self._mk_label("返还率:", "14sp", COL_TEXT, "left", False,
-                                      size_hint_x=None, width=dp(104)))
+                        padding=[dp(6), dp(4)], spacing=dp(10))
+        rtp.add_widget(self._mk_label("返还率:", "14sp", COL_TEXT, "right", False,
+                                      size_hint_x=0.15))
         self.rtp_btns = {}
         for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
@@ -2184,8 +2184,8 @@ class RootWidget(BoxLayout):
         # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
                          padding=[dp(12), dp(4)], spacing=dp(6))
-        bets.add_widget(self._mk_label("投入珠子单位:", "14sp", COL_TEXT, "left", False,
-                                       size_hint_x=None, width=dp(104)))
+        bets.add_widget(self._mk_label("投入珠子单位:", "14sp", COL_TEXT, "right", False,
+                                       size_hint_x=0.15))
         self.bet_btns = {}
         for v in PRESETS:
             b = self._mk_button(str(v), lambda _b, x=v: self.set_bet(x))
