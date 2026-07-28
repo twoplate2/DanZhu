@@ -52,10 +52,15 @@ python -m py_compile main.py
    - `RootWidget(BoxLayout)`: 6 行上下结构(顶栏/返还/投入/游戏区/信息/底行),
      行间距 10dp。状态机 ready→charging→flying/misfire→landing→landed, 每帧 `_frame(FIXED_DT)`。
      发射不再播飞行音(已移除); launch 音量按哑火/成功分级(0.35→0.50 / 0.60→1.00)。
+     标签统一右对齐(130dp), 顶栏标题弹性宽度+字体缩放防横屏重叠。
    - `PlinkoApp`: AnchorLayout 居中 + **每帧轮询窗口尺寸**调 `_fit_width`
      (`Window.bind(size)` 对启动期程序化 resize 不触发, 这是实测坑)。
      `build()` 中 Android 运行时调 `setRequestedOrientation(PORTRAIT)` 强制竖屏,
      配合 `_fit_width()` 横屏容错(宽高比>1.2 时以宽度为限)。
+     **`_font_scale = min(1.0, width/360dp)` 让字体随宽度自适应**, 窄屏/横屏时
+     顶栏标题+状态+按钮自动缩小, 防止换行重叠。
+   - 返还率/投入行标签用比例宽度(`size_hint_x=0.15`) + 右对齐, 与信息行"珠子："对齐同一竖线。
+     中奖/未中大字加 `text_size` 绑定确保居中。
 
 ## 移植期踩过的坑(详解在 BUILD_APK.md 第三节)
 

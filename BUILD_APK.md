@@ -196,12 +196,20 @@ p4a 的 pillow recipe 能不用就不用。PC 版的 PIL 渐变小球, 在 Kivy 
 - 缓存用 stamp 文件记指纹(mtime+size+seed+SR)+逐文件字节数校验, 防截断 WAV
 - 36 个音效总时长 ~11.7s
 - 冷启动 `PlinkoApp.build()` 中 `Sfx(sync=True)` 同步烘焙, 完成后才建 UI
+- **Cold-bake 后必须 `time.sleep(0.5)`**: SoundPool.load() 是异步的, 36 个 WAV
+  一口气加载完但后台解码器来不及处理。不加这 0.5s 延迟, 首次安装打开 App 必然全静音(
+  第二次打开走缓存路径, 速度快, SoundPool 有时间缓冲, 所以能响)。
+  这个 bug 极难排查: 杀进程重开就正常, 开发者永远以为是"偶发"。
 - 切后台: `SoundPool.autoPause()/autoResume()` 挂到 `App.on_pause/on_resume`
 
-### 3.10 震动要权限
+### 3.10 震动: 权限 + 最大振幅
 
 `buildozer.spec` 加 `android.permissions = VIBRATE`, 否则 pyjnius 调
 `Vibrator.vibrate()` 静默失败(没权限不抛异常, 直接不振, 最难排查的一类)。
+
+**振幅用 255 而不是 DEFAULT_AMPLITUDE(-1)**:
+`VibrationEffect.createOneShot(ms, 255)` — DEFAULT_AMPLITUDE 通常只输出 ~50% 功率,
+手机上震感微弱。255 是 API 允许的最大值。
 
 ### 3.11 单 Label 多色文字用 BBCode
 
@@ -213,7 +221,34 @@ p4a 的 pillow recipe 能不用就不用。PC 版的 PIL 渐变小球, 在 Kivy 
 Kivy canvas 没有 draw_text。`CoreLabel(text=..., font_size=...)` → `refresh()`
 → `Rectangle(texture=cl.texture, ...)`, 要变色就在前面放 `Color`。
 
----
+### 3.13 竖屏锁定不能只靠 manifest
+
+`buildozer.spec` 的 `orientation = portrait` 只生成 manifest 声明。部分设备/ROM 的
+系统级自动旋转(重力感应)会覆盖 manifest, 导致横屏时 `_fit_width()` 把内容列算成细条。
+
+**解法: Android 运行时强制锁定**:
+```python
+if platform == "android":
+    from jnius import autoclass
+    activity = autoclass("org.kivy.android.PythonActivity").mActivity
+    activity.setRequestedOrientation(1)  # SCREEN_ORIENTATION_PORTRAIT
+```
+运行时 API 优先级高于 manifest, 能覆盖系统级自动旋转。
+
+**再加一道布局容错**: `_fit_width()` 检测 `Window.width > Window.height * 1.2` 时
+改用宽度作为限制维度, 防止万一锁定失效时布局崩成细条。
+
+### 3.14 字体固定尺寸在窄屏/横屏下会换行重叠
+
+所有 UI 文字用 sp 单位(密度自适应), 但 sp 不随窗口宽度缩放。横屏时 RootWidget
+宽度变窄, 19sp 的数字在 34dp 行高里必然换行。
+
+**解法: `_font_scale` 宽度缩放因子**:
+```python
+self._font_scale = min(1.0, self.width / dp(360))  # 360dp ≈ 竖屏基准宽度
+```
+`_frame()` 检测到窗口尺寸变化时, 对顶栏标题/状态/静音按钮等关键文字应用 `sp(N) * _font_scale`。
+
 
 ## 四、运维小贴士
 
