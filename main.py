@@ -1972,8 +1972,10 @@ class GameArea(FloatLayout):
             size = sp(36)
         main = Label(text=text, font_size=size, bold=True,
                      color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+        main.bind(size=lambda w, _: setattr(w, "text_size", w.size))
         shadow = Label(text=text, font_size=size, bold=True,
                        color=(0, 0, 0, 0.6), size_hint=(None, None))
+        shadow.bind(size=lambda w, _: setattr(w, "text_size", w.size))
         self.add_widget(shadow)
         self.add_widget(main)
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
@@ -2121,6 +2123,7 @@ class RootWidget(BoxLayout):
         if Window.width > Window.height * 1.2:            # 横屏容错
             want = min(want, Window.width * 0.55)
         self.width = min(Window.width, want)
+        self._font_scale = min(1.0, self.width / dp(360)) # 宽度缩放因子: 窄屏时字体等比缩小
 
     # ------------------------------ UI ------------------------------
     def _mk_label(self, text, font_size, hexcolor, halign="left", bold=False, **kw):
@@ -2145,32 +2148,29 @@ class RootWidget(BoxLayout):
                  size=lambda w, *_: setattr(w._bg_rect, "size", w.size))
 
     def _build_ui(self):
-        # 顶栏: [左容器: 音效钮] [标题 固定宽·全栏正中] [右容器: 状态右对齐]
-        # 左右容器同 flex => 标题严格位于全栏水平中心, 与两侧内容长短无关
+        # 顶栏: [音效钮 固定宽] [标题 弹性·文字居中] [状态 右对齐]
+        # 标题 size_hint_x=1 自适应宽度, 窄屏/横屏不重叠
         top = BoxLayout(size_hint_y=None, height=dp(H_TOP),
                         padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
         self._row_bg(top, COL_PANEL)
-        left_box = BoxLayout()
         self.mute_btn = self._mk_button("音效已开", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
         self.mute_btn.width = dp(64)
         self.mute_btn.font_size = "13sp"
         self.mute_btn.background_color = hex_rgb(COL_BTN) + (1,)   # 开=蓝底白字
-        left_box.add_widget(self.mute_btn)
-        left_box.add_widget(Widget())
-        top.add_widget(left_box)
-        top.add_widget(self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
-                                      "center", True, size_hint_x=None, width=dp(112)))
-        right_box = BoxLayout()
-        self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
-        right_box.add_widget(self.status_lbl)
-        top.add_widget(right_box)
+        top.add_widget(self.mute_btn)
+        self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
+                                        "center", True, size_hint_x=1)
+        top.add_widget(self.title_lbl)
+        self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False,
+                                         size_hint_x=None, width=dp(100))
+        top.add_widget(self.status_lbl)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
                         padding=[dp(6), dp(4)], spacing=dp(10))
-        rtp.add_widget(self._mk_label("返还率:", "14sp", COL_TEXT, "center", False,
+        rtp.add_widget(self._mk_label("返还率:", "14sp", COL_TEXT, "left", False,
                                       size_hint_x=None, width=dp(104)))
         self.rtp_btns = {}
         for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
@@ -2184,7 +2184,7 @@ class RootWidget(BoxLayout):
         # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
                          padding=[dp(6), dp(4)], spacing=dp(6))
-        bets.add_widget(self._mk_label("投入珠子单位:", "14sp", COL_TEXT, "center", False,
+        bets.add_widget(self._mk_label("投入珠子单位:", "14sp", COL_TEXT, "left", False,
                                        size_hint_x=None, width=dp(104)))
         self.bet_btns = {}
         for v in PRESETS:
@@ -2441,9 +2441,13 @@ class RootWidget(BoxLayout):
     # ------------------------------ 帧循环 ------------------------------
     def _frame(self, dt):
         ws = (Window.width, Window.height)
-        if ws != self._last_win_size:          # 启动期/拖动/最大化: 每帧轮询, 变了才重算
+        if ws != self._last_win_size:
             self._last_win_size = ws
             self._fit_width()
+            s = self._font_scale
+            self.title_lbl.font_size = sp(18) * s
+            self.status_lbl.font_size = sp(13) * s
+            self.mute_btn.font_size = sp(13) * s
         if self.state == "charging":
             self.power = min(1.0, self.power + CHARGE_RATE * FIXED_DT)
             self._play_charge_sound(self.power)
