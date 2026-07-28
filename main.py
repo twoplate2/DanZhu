@@ -2388,7 +2388,7 @@ class RootWidget(BoxLayout):
             _vibrate(150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))
         # 数字滚动动画 + 大奖节奏分档(x10 以上滚更久, 看得清中大奖)
         big = m >= 10
-        self._land_hold = 1.2 if big else LAND_HOLD
+        self._land_hold = 0.7 if big else max(0.3, LAND_HOLD - 0.5)  # 提前0.5s可发射
         self._anim_dur = 1.2 if big else 0.5
         self._anim_start_balance = self.display_balance
         self._anim_target_balance = float(self.balance)
