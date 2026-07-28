@@ -2239,7 +2239,7 @@ class RootWidget(BoxLayout):
         self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
-        fire.add_widget(Widget(size_hint_x=None, width=dp(2)))     # 微调右移
+        fire.add_widget(Widget(size_hint_x=None, width=dp(6)))     # 与右侧边距对称
         fire.add_widget(self.reset_btn)
         fire.add_widget(Widget(size_hint_x=1))                    # 长距离弹簧
         self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
