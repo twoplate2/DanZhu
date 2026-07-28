@@ -1117,6 +1117,18 @@ class _SoundPoolOut:
         self._sp.play(sid, gain01, gain01, 1, 0, 1.0)
         return True
 
+    def pause(self):
+        try:
+            self._sp.autoPause()            # 切后台/静音: 暂停所有流
+        except Exception:
+            pass
+
+    def resume(self):
+        try:
+            self._sp.autoResume()
+        except Exception:
+            pass
+
     def close(self):
         try:
             self._sp.release()
@@ -1293,6 +1305,25 @@ class Sfx:
             self.out.close()
             self.out = None
         self.enabled = False
+
+    def pause_out(self):
+        """切后台: 暂停输出(winmm 无暂停概念, 跳过)。"""
+        m = getattr(self.out, "pause", None)
+        if m is not None:
+            m()
+
+    def resume_out(self):
+        m = getattr(self.out, "resume", None)
+        if m is not None:
+            m()
+
+    def set_enabled(self, on):
+        """静音开关: 关时立即暂停输出, 开时恢复。"""
+        self.enabled = bool(on)
+        if not on:
+            self.pause_out()
+        else:
+            self.resume_out()
 
 def selftest(n=40000):
     """验证: (1) 各档 RTP 精确=档位; (2) 引导飞行落点=预定槽、不卡死;
@@ -1512,16 +1543,23 @@ def sfx_check(verbose=True):
 
 # -*- coding: utf-8 -*-
 # ======================= Kivy UI 层 =======================
+# 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
+#   [顶栏] 标题+喇叭图标+状态  [返还] RTP三档左对齐  [投入] 珠子单位左对齐
+#   [游戏区 全宽]
+#   [信息] 珠子 + 每次投x珠,累计x投x中(x%)  [底行] 重置 —长距离— 力度+蓄力发射
 # 字体层级体系(6 级, 对齐 PC 版比例关系; 手机端基准正文 14sp):
 #   Hero 48sp  中奖金额大字(未中 36sp) — 按屏宽占比设计, 不跟场景缩
-#   Key  18sp  珠子/投入 金色主数字 + 顶栏标题
+#   Key  18sp  珠子金色主数字 + 顶栏标题
 #   Act  16sp  全部按钮(发射/投入/重置/RTP)
-#   Body 14sp  正文标签/投中统计/返还率标题/力度/历史标题
-#   Aux  13sp  状态栏/"投入珠子单位"
-#   Minor 12sp 历史行
+#   Body 14sp  正文标签/统计/力度
+#   Aux  13sp  状态栏/"投入珠子单位"/"返还率"
 # 场景内文字(槽位倍率/落袋浮字)不用 sp, 用逻辑 px 跟盘面一起缩放: 逻辑 20px(手机上≈11sp)。
-PANEL_W = 104                # 右侧面板宽(dp): 近10次积分 + 返还率
-BAR_H = (44, 34, 52, 64)     # 顶栏/信息栏/投入行/底行 高(dp)
+H_TOP = 44                   # 顶栏(标题+喇叭+状态)
+H_RTP = 52                   # 返还率行(左对齐)
+H_BETS = 52                  # 投入珠子单位行(左对齐)
+H_INFO = 34                  # 珠子 + 统计
+H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
+FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM            # 246
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
 
@@ -1584,6 +1622,21 @@ def ball_texture():
     tex.min_filter = "linear"
     _BALL_TEX = tex
     return tex
+
+
+def _vibrate(ms):
+    """中奖震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。"""
+    if platform != "android":
+        return
+    try:
+        from jnius import autoclass
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        vib = activity.getSystemService(autoclass("android.os.Vibrator"))
+        VibrationEffect = autoclass("android.os.VibrationEffect")
+        vib.vibrate(VibrationEffect.createOneShot(
+            ms, VibrationEffect.DEFAULT_AMPLITUDE))
+    except Exception:
+        pass
 
 
 class GameArea(FloatLayout):
@@ -1844,7 +1897,9 @@ class RootWidget(BoxLayout):
         self._anim_target_balance = float(START_BEADS)
         self._anim_start_balance = float(START_BEADS)
         self._anim_start_time = 0.0
+        self._anim_dur = 0.5
         self._coin_until = 0.0
+        self._land_hold = LAND_HOLD
         self.bet = DEFAULT_BET
         self.state = "ready"          # ready | charging | flying | misfire | landing | landed
         self.power = 0.0
@@ -1863,7 +1918,6 @@ class RootWidget(BoxLayout):
         self.target_slot = 0
         self.target_x = PLUNGER_X
         self.ball = None
-        self.win_history = []         # 近10次 [{idx, pts}]
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
         self.sfx = Sfx(SOUND_ENABLED)
         self._build_ui()
@@ -1874,11 +1928,10 @@ class RootWidget(BoxLayout):
         Clock.schedule_interval(self._frame, FIXED_DT)
 
     def _fit_width(self):
-        """内容最大宽度 = 让 520:660 场景恰好填满可用高度 + 右侧面板。
+        """内容最大宽度 = 让 520:660 场景恰好填满可用高度。
         窄屏(手机竖屏)直接铺满宽度; 宽屏(16:10 桌面)内容列居中、两侧留深色边。"""
-        bars = dp(BAR_H[0]) + dp(BAR_H[1]) + dp(BAR_H[2]) + dp(BAR_H[3])
-        avail_h = max(100.0, Window.height - bars)
-        want = avail_h * (CW / CH) + dp(PANEL_W) + dp(8)
+        avail_h = max(100.0, Window.height - dp(FIXED_H))
+        want = avail_h * (CW / CH) + dp(8)
         self.width = min(Window.width, want)
 
     # ------------------------------ UI ------------------------------
@@ -1904,86 +1957,84 @@ class RootWidget(BoxLayout):
                  size=lambda w, *_: setattr(w._bg_rect, "size", w.size))
 
     def _build_ui(self):
-        # 顶栏: 标题 + 状态
-        top = BoxLayout(size_hint_y=None, height=dp(BAR_H[0]), padding=[dp(10), 0])
+        # 顶栏: 标题 + 喇叭静音钮(与标题留足空白) + 状态
+        top = BoxLayout(size_hint_y=None, height=dp(H_TOP),
+                        padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
         self._row_bg(top, COL_PANEL)
         top.add_widget(self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
-                                      "left", True, size_hint_x=0.42))
-        self.status_lbl = self._mk_label("按住「发射」或空格蓄力, 松开弹射", "13sp", COL_SUB,
-                                         "right", False, size_hint_x=0.58)
+                                      "left", True, size_hint_x=None, width=dp(112)))
+        self.mute_btn = self._mk_button("音效已开", lambda _b: self.toggle_mute())
+        self.mute_btn.size_hint_x = None
+        self.mute_btn.width = dp(64)
+        self.mute_btn.font_size = "13sp"
+        top.add_widget(self.mute_btn)
+        self.status_lbl = self._mk_label("按住蓄力发射, 松开弹射", "13sp", COL_SUB,
+                                         "right", False)
         top.add_widget(self.status_lbl)
         self.add_widget(top)
-        # 信息栏: 珠子 / 投中统计 / 投入
-        info = BoxLayout(size_hint_y=None, height=dp(BAR_H[1]))
-        info.add_widget(self._mk_label("珠子", "15sp", COL_TEXT, "right", True,
-                                       size_hint_x=0.13))
-        self.balance_lbl = self._mk_label(str(self.balance), "18sp", COL_BALL,
-                                          "left", True, size_hint_x=0.17)
-        info.add_widget(self.balance_lbl)
-        self.stats_lbl = self._mk_label("0投0中", "14sp", COL_TEXT, "center", True,
-                                        size_hint_x=0.34)
-        info.add_widget(self.stats_lbl)
-        info.add_widget(self._mk_label("投入", "15sp", COL_TEXT, "right", True,
-                                       size_hint_x=0.15))
-        self.bet_lbl = self._mk_label(str(self.bet), "18sp", COL_BALL, "left", True,
-                                      size_hint_x=0.21)
-        info.add_widget(self.bet_lbl)
-        self.add_widget(info)
-        # 投入行(界面上方): 投入珠子单位 + 1/10/50/100
-        bets = BoxLayout(size_hint_y=None, height=dp(BAR_H[2]),
+        # ---- 设定区(左对齐, 不撑满) ----
+        # 返还率行: 返还率 + 三档(固定宽)
+        rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
+                        padding=[dp(6), dp(4)], spacing=dp(6))
+        rtp.add_widget(self._mk_label("返还率:", "13sp", COL_SUB, "center", False,
+                                      size_hint_x=None, width=dp(104)))
+        self.rtp_btns = {}
+        for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
+            b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
+            b.size_hint_x = None
+            b.width = dp(68)
+            self.rtp_btns[val] = b
+            rtp.add_widget(b)
+        rtp.add_widget(Widget())   # 右侧留空
+        self.add_widget(rtp)
+        # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
+        bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
                          padding=[dp(6), dp(4)], spacing=dp(6))
         bets.add_widget(self._mk_label("投入珠子单位:", "13sp", COL_SUB, "center", False,
                                        size_hint_x=None, width=dp(104)))
         self.bet_btns = {}
         for v in PRESETS:
             b = self._mk_button(str(v), lambda _b, x=v: self.set_bet(x))
+            b.size_hint_x = None
+            b.width = dp(52) if v < 100 else dp(56)
             self.bet_btns[v] = b
             bets.add_widget(b)
+        bets.add_widget(Widget())   # 右侧留空
         self.add_widget(bets)
-        # 游戏区 + 右侧面板(近10次积分 + 返还率)
-        mid = BoxLayout()
+        # 游戏区(全宽)
         self.game_area = GameArea(self)
-        mid.add_widget(self.game_area)
-        panel = BoxLayout(orientation="vertical", size_hint_x=None, width=dp(PANEL_W),
-                          padding=[dp(6), dp(6)], spacing=dp(2))
-        self._row_bg(panel, COL_PANEL)
-        panel.add_widget(self._mk_label("近10次积分", "14sp", COL_TEXT, "center", True,
-                                        size_hint_y=None, height=dp(26)))
-        self.hist_labels = []
-        for _ in range(10):
-            lbl = self._mk_label("—", "12sp", COL_SUB, "center", False,
-                                 size_hint_y=None, height=dp(21))
-            self.hist_labels.append(lbl)
-            panel.add_widget(lbl)
-        div = Widget(size_hint_y=None, height=dp(8))
-        panel.add_widget(div)
-        panel.add_widget(self._mk_label("返还率", "14sp", COL_TEXT, "center", True,
-                                        size_hint_y=None, height=dp(28)))
-        self.rtp_btns = {}
-        for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
-            b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
-            b.size_hint_y = None
-            b.height = dp(48)
-            self.rtp_btns[val] = b
-            panel.add_widget(b)
-        panel.add_widget(Widget())   # 弹簧: 把内容顶到上方
-        mid.add_widget(panel)
-        self.add_widget(mid)
-        # 底行: [重置 左侧] [力度] [蓄力发射 右侧] — 同一高度
-        fire = BoxLayout(size_hint_y=None, height=dp(BAR_H[3]),
-                         padding=[dp(6), dp(6), dp(6), dp(10)], spacing=dp(10))
+        self.add_widget(self.game_area)
+        # ---- 信息区 ----
+        # 信息行: 珠子 + 每次投x珠,累计x投x中(x%)
+        info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
+        info.add_widget(self._mk_label("珠子", "15sp", COL_TEXT, "right", True,
+                                       size_hint_x=0.13))
+        self.balance_lbl = self._mk_label(str(self.balance), "18sp", COL_BALL,
+                                          "left", True, size_hint_x=0.17)
+        info.add_widget(self.balance_lbl)
+        self.stats_lbl = self._mk_label("", "14sp", COL_TEXT, "center", True,
+                                        size_hint_x=0.70)
+        info.add_widget(self.stats_lbl)
+        self.add_widget(info)
+        # 底行: [重置 96] —长距离— [力度 100] [蓄力发射 弹性]
+        fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
+                         padding=[dp(6), dp(10), dp(10), dp(10)], spacing=dp(16))
         self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
         fire.add_widget(self.reset_btn)
+        fire.add_widget(Widget(size_hint_x=1))                    # 长距离弹簧
         self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
-                                        size_hint_x=None, width=dp(110))
+                                        size_hint_x=None, width=dp(100))
         fire.add_widget(self.power_lbl)
-        self.fire_btn = self._mk_button("按住蓄力发射", None, bg=COL_FIRE)
+        self.fire_btn = self._mk_button("蓄力发射", None, bg=COL_FIRE)
+        self.fire_btn.size_hint_x = None
+        self.fire_btn.width = dp(110)
         self.fire_btn.bind(on_press=lambda _b: self.start_charge(),
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
         self.add_widget(fire)
+        self._refresh_stats()
 
     # ------------------------------ 控件状态 ------------------------------
     def _restyle_selects(self):
@@ -2034,10 +2085,26 @@ class RootWidget(BoxLayout):
             self._release_power = None
         self.launch()
 
+    def toggle_mute(self):
+        on = not self.sfx.enabled
+        if not on:
+            self.sfx.play("click")            # 静音前给个确认音
+        self.sfx.set_enabled(on)
+        if on:
+            self.sfx.play("click")            # 恢复后也确认一声
+        self.mute_btn.text = "音效已开" if on else "音效已关"
+        self.mute_btn.background_color = hex_rgb(COL_BTN_OFF if on else "#1a1a22") + (1,)
+        self.mute_btn.color = (1, 1, 1, 1) if on else hex_rgb(COL_SUB) + (1,)
+
+    def _refresh_stats(self):
+        rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
+        self.stats_lbl.text = "每次投%d珠, 累计%d投%d中(%.0f%%)" % (
+            self.bet, self.plays, self.hits, rate)
+
     def set_bet(self, v):
         self.bet = v
         self._restyle_selects()
-        self.bet_lbl.text = str(self.bet)
+        self._refresh_stats()
         self.sfx.play("click")
 
     def set_rtp(self, t):
@@ -2057,9 +2124,7 @@ class RootWidget(BoxLayout):
         self._anim_start_balance = float(START_BEADS)
         self.plays = 0
         self.hits = 0
-        self.win_history.clear()
-        self._refresh_history()
-        self.stats_lbl.text = "0投0中"
+        self._refresh_stats()
         self.status_lbl.text = "已重置"
         self.sfx.play("cash")
 
@@ -2086,7 +2151,7 @@ class RootWidget(BoxLayout):
             self._misfire_frames = 0
             self.sfx.play("launch", 0.45 + 0.30 * (self.power / MISFIRE_POWER))
             self._set_controls_enabled(False)
-            self.status_lbl.text = "力度不足未扣珠 — 过 %d%% 再松手" % int(MISFIRE_POWER * 100)
+            self.status_lbl.text = "力度不足, 未扣珠子"
             return
         self.balance -= self.bet
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
@@ -2109,8 +2174,7 @@ class RootWidget(BoxLayout):
         if m > 0:
             self.hits += 1
         cx = FIELD_L + (i + 0.5) * SLOT_W
-        rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
-        self.stats_lbl.text = "%d投%d中 %.0f%%" % (self.plays, self.hits, rate)
+        self._refresh_stats()
         if payout > 0:
             self.status_lbl.text = "中奖!  +%d 珠 (x%d)" % (payout, m)
             self.game_area.float_text(cx, "+%d" % payout, COL_GREEN if m < 20 else COL_METER)
@@ -2121,30 +2185,16 @@ class RootWidget(BoxLayout):
         self.game_area.pulse_slot(i)
         self._play_result_sound(m)
         self.game_area.big_result_text(m, payout)
-        # 历史记录
-        self.win_history.insert(0, {"idx": self.plays, "pts": payout})
-        if len(self.win_history) > 10:
-            self.win_history.pop()
-        self._refresh_history()
-        # 数字滚动动画(中奖时伴随 coin 音)
+        if m >= 5:                            # 中奖震动: x5/x10/x20 分档
+            _vibrate(150 if m >= 20 else (100 if m >= 10 else 60))
+        # 数字滚动动画 + 大奖节奏分档(x10 以上滚更久, 看得清中大奖)
+        big = m >= 10
+        self._land_hold = 1.2 if big else LAND_HOLD
+        self._anim_dur = 1.2 if big else 0.5
         self._anim_start_balance = self.display_balance
         self._anim_target_balance = float(self.balance)
         self._anim_start_time = time.time()
-        self._coin_until = (time.time() + 0.5) if payout > 0 else 0.0
-
-    def _refresh_history(self):
-        for k, lbl in enumerate(self.hist_labels):
-            if k < len(self.win_history):
-                w = self.win_history[k]
-                if w["pts"] > 0:
-                    lbl.text = "#%-4d +%d" % (w["idx"], w["pts"])
-                    lbl.color = hex_rgb(COL_GREEN) + (1,)
-                else:
-                    lbl.text = "#%-4d 0" % w["idx"]
-                    lbl.color = hex_rgb(COL_SUB) + (1,)
-            else:
-                lbl.text = "—"
-                lbl.color = hex_rgb(COL_SUB) + (1,)
+        self._coin_until = (time.time() + (1.2 if big else 0.5)) if payout > 0 else 0.0
 
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
@@ -2270,17 +2320,17 @@ class RootWidget(BoxLayout):
                 self.state = "landed"
                 self.landed_at = time.time()
         elif self.state == "landed":
-            if time.time() - self.landed_at >= LAND_HOLD:
+            if time.time() - self.landed_at >= self._land_hold:
                 self.park_ball()
         if self.state != "charging" and self.power <= 0.01 and self.power_lbl.text:
             self.power_lbl.text = ""
-        # 余额数字滚动(老虎机式翻滚再落定), 中奖滚分时连播 coin
+        # 余额数字滚动(老虎机式翻滚再落定), 中奖滚分时连播 coin; 大奖(x>=10)滚 1.2s
         now = time.time()
         if now < self._coin_until:
             self.sfx.play("coin", 0.8, 0.055)
         elapsed = now - self._anim_start_time
-        if elapsed < 0.5:
-            t = elapsed / 0.5
+        if elapsed < self._anim_dur:
+            t = elapsed / self._anim_dur
             ease = 1.0 - (1.0 - t) ** 3
             noise = (1.0 - t) * random.uniform(-0.15, 0.15) if t < 0.6 else 0
             f = max(0.0, min(1.0, ease + noise))
@@ -2309,9 +2359,17 @@ class PlinkoApp(App):
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
+        try:
+            self.rootw.sfx.pause_out()       # 切后台静音(SoundPool.autoPause)
+        except Exception:
+            pass
         return True
 
     def on_resume(self):
+        try:
+            self.rootw.sfx.resume_out()
+        except Exception:
+            pass
         return True
 
     def on_stop(self):
@@ -2372,6 +2430,8 @@ def _smoke():
 
     def s7b(dt):
         shot("06b_fx_bigtext.png")
+        app.rootw.toggle_mute()              # 静音开关: 关 -> 开, 不应崩
+        app.rootw.toggle_mute()
 
     def s8(dt):
         r = app.rootw
