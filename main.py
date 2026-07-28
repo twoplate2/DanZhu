@@ -1980,7 +1980,7 @@ class GameArea(FloatLayout):
         self.add_widget(main)
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
                               "life": 2.4, "size": size, "rgb": hex_rgb(hexcolor),
-                              "cx": self._px(CW / 2.0) - self.x,
+                              "cx": self._px((FIELD_L + FIELD_R) / 2.0) - self.x,
                               "cy": self._py(CH / 2.0 - 80) - self.y})
 
     def pulse_slot(self, i):
@@ -1996,7 +1996,7 @@ class GameArea(FloatLayout):
         self.add_widget(lbl)
         self._effects.append({"kind": "toast", "ws": [lbl], "born": time.time(),
                               "life": life, "rgb": hex_rgb(hexcolor),
-                              "cx": self._px(CW / 2.0) - self.x,
+                              "cx": self._px((FIELD_L + FIELD_R) / 2.0) - self.x,
                               "cy": self._py(CH / 2.0 - 40) - self.y})
 
     def set_lamp(self, i, hex_color):
