@@ -2251,7 +2251,7 @@ class RootWidget(BoxLayout):
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
         self.add_widget(fire)
-        self.add_widget(Widget(size_hint_y=None, height=dp(10)))  # 底部留白
+        self.padding = [0, 0, 0, dp(10)]  # 底部留白
         self._refresh_stats()
 
     # ------------------------------ 控件状态 ------------------------------
