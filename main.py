@@ -1728,7 +1728,7 @@ def sfx_check(verbose=True):
 H_TOP = 44                   # 顶栏(标题+喇叭+状态)
 H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区间隙)
 H_BETS = 44                  # 投入珠子单位行(左对齐, 降低以增大游戏区间隙)
-H_INFO = 34                  # 珠子 + 统计
+H_INFO = 26                  # 珠子 + 统计(缩高, 腾空间给底部留白)
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
 FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM + 5 * 10  # 230 + 行间距
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
@@ -2128,7 +2128,7 @@ class RootWidget(BoxLayout):
         us = self._ui_scale
         # 缩放后的固定高度(行高+间距), 与 _apply_sizes() 一致
         scaled_fixed = (dp(H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM) * us
-                        + dp(10) * 5 * us * us + dp(10) * us)  # +底部留白
+                        + dp(10) * 5 * us * us + dp(12) * us)  # +底部留白
         avail_h = max(100.0, Window.height - scaled_fixed)
         want = avail_h * (CW / CH) + dp(8)
         if Window.width > Window.height * 1.2:            # 横屏容错
@@ -2234,7 +2234,7 @@ class RootWidget(BoxLayout):
         self.add_widget(info)
         # 底行: [重置 96] —长距离— [力度 100] [蓄力发射 弹性]
         fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
-                         padding=[dp(6), dp(6), dp(10), dp(4)], spacing=dp(16))
+                         padding=[dp(6), dp(4), dp(12), dp(4)], spacing=dp(16))
         self._row_bottom = fire
         self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
         self.reset_btn.size_hint_x = None
@@ -2251,7 +2251,7 @@ class RootWidget(BoxLayout):
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
         self.add_widget(fire)
-        self.padding = [0, 0, 0, dp(10)]  # 底部留白
+        self.padding = [0, 0, 0, dp(12)]  # 底部留白
         self._refresh_stats()
 
     # ------------------------------ 控件状态 ------------------------------
@@ -2486,7 +2486,8 @@ class RootWidget(BoxLayout):
         self._row_top.padding    = [dp(10), dp(4) * uv, dp(10), dp(4) * uv]
         self._row_rtp.padding    = [dp(6),  dp(4) * uv]
         self._row_bets.padding   = [dp(6),  dp(4) * uv]
-        self._row_bottom.padding = [dp(6), dp(10) * uv, dp(10), dp(10) * uv]
+        self._row_bottom.padding = [dp(6), dp(4) * uv, dp(12), dp(4) * uv]
+        self.padding = [0, 0, 0, dp(12)]  # 底部留白
 
         self.title_lbl.font_size       = sp(18) * fs
         self.status_lbl.font_size      = sp(13) * fs
