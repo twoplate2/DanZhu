@@ -1521,7 +1521,8 @@ def sfx_check(verbose=True):
 #   Minor 12sp 历史行
 # 场景内文字(槽位倍率/落袋浮字)不用 sp, 用逻辑 px 跟盘面一起缩放: 逻辑 20px(手机上≈11sp)。
 PANEL_W = 104                # 右侧面板宽(dp): 近10次积分 + 返还率
-BAR_H = (44, 34, 54, 60)     # 顶栏/信息栏/投入行/发射行 高(dp, 触控行高>=54)
+BAR_H = (44, 34, 52, 64)     # 顶栏/信息栏/投入行/底行 高(dp)
+BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
 
 def slot_color(m):
@@ -1712,10 +1713,11 @@ class GameArea(FloatLayout):
             Color(*hex_rgb("#7f8cb0"))
             self._plunger = Rectangle(**self._rect(LANE_L + 6, FLOOR - 6,
                                                    RIGHT_INNER - 6, FLOOR - 2))
-            # 球(动态, 程序化渐变贴图)
+            # 球(动态, 程序化渐变贴图; 视觉 BALL_VIEW 倍放大, 碰撞半径不变)
             Color(1, 1, 1)
             self._ball_e = Rectangle(texture=ball_texture(), pos=(0, 0),
-                                     size=(2 * BALL_R * s, 2 * BALL_R * s))
+                                     size=(2 * BALL_R * BALL_VIEW * s,
+                                           2 * BALL_R * BALL_VIEW * s))
         self.tick_draw()
 
     # ------------------------------ 特效 ------------------------------
@@ -1776,8 +1778,9 @@ class GameArea(FloatLayout):
         now = time.time()
         b = g.ball
         if b is not None:
-            self._ball_e.pos = (self._ox + (b["x"] - BALL_R) * self._s,
-                                self._oyt - (b["y"] + BALL_R) * self._s)
+            br = BALL_R * BALL_VIEW
+            self._ball_e.pos = (self._ox + (b["x"] - br) * self._s,
+                                self._oyt - (b["y"] + br) * self._s)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
@@ -1926,6 +1929,17 @@ class RootWidget(BoxLayout):
                                       size_hint_x=0.21)
         info.add_widget(self.bet_lbl)
         self.add_widget(info)
+        # 投入行(界面上方): 投入珠子单位 + 1/10/50/100
+        bets = BoxLayout(size_hint_y=None, height=dp(BAR_H[2]),
+                         padding=[dp(6), dp(4)], spacing=dp(6))
+        bets.add_widget(self._mk_label("投入珠子单位:", "13sp", COL_SUB, "center", False,
+                                       size_hint_x=None, width=dp(104)))
+        self.bet_btns = {}
+        for v in PRESETS:
+            b = self._mk_button(str(v), lambda _b, x=v: self.set_bet(x))
+            self.bet_btns[v] = b
+            bets.add_widget(b)
+        self.add_widget(bets)
         # 游戏区 + 右侧面板(近10次积分 + 返还率)
         mid = BoxLayout()
         self.game_area = GameArea(self)
@@ -1955,24 +1969,15 @@ class RootWidget(BoxLayout):
         panel.add_widget(Widget())   # 弹簧: 把内容顶到上方
         mid.add_widget(panel)
         self.add_widget(mid)
-        # 投入行
-        bets = BoxLayout(size_hint_y=None, height=dp(BAR_H[2]),
-                         padding=[dp(6), dp(4)], spacing=dp(6))
-        bets.add_widget(self._mk_label("投入珠子单位:", "13sp", COL_SUB, "center", False,
-                                       size_hint_x=None, width=dp(104)))
-        self.bet_btns = {}
-        for v in PRESETS:
-            b = self._mk_button(str(v), lambda _b, x=v: self.set_bet(x))
-            self.bet_btns[v] = b
-            bets.add_widget(b)
-        self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
-        bets.add_widget(self.reset_btn)
-        self.add_widget(bets)
-        # 发射行
+        # 底行: [重置 左侧] [力度] [蓄力发射 右侧] — 同一高度
         fire = BoxLayout(size_hint_y=None, height=dp(BAR_H[3]),
-                         padding=[dp(6), dp(4), dp(6), dp(8)], spacing=dp(8))
+                         padding=[dp(6), dp(6), dp(6), dp(10)], spacing=dp(10))
+        self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
+        self.reset_btn.size_hint_x = None
+        self.reset_btn.width = dp(96)
+        fire.add_widget(self.reset_btn)
         self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
-                                        size_hint_x=None, width=dp(126))
+                                        size_hint_x=None, width=dp(110))
         fire.add_widget(self.power_lbl)
         self.fire_btn = self._mk_button("按住蓄力发射", None, bg=COL_FIRE)
         self.fire_btn.bind(on_press=lambda _b: self.start_charge(),
@@ -2199,8 +2204,8 @@ class RootWidget(BoxLayout):
             self.power = min(1.0, self.power + CHARGE_RATE * FIXED_DT)
             self._play_charge_sound(self.power)
             weak = self.power < MISFIRE_POWER
-            self.power_lbl.text = "力度 %d%%%s" % (int(round(self.power * 100)),
-                                                   " 不足" if weak else "")
+            self.power_lbl.text = "力度%d%%%s" % (int(round(self.power * 100)),
+                                                  "不足" if weak else "")
             self.power_lbl.color = hex_rgb(COL_FIRE if weak else COL_METER) + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
