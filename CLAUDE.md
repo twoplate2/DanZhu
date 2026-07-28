@@ -38,14 +38,19 @@ python -m py_compile main.py
 2. **纯物理层**: `physics_step`(纯函数) + `steer_ball`(引导只改 vx 不改位置);
    `choose_target` 发射前预定落点 → RTP 精确(90/100/110 三档), 物理只是表演;
    哑火(power<0.15)走 `advance_misfire` 一维积分, 不扣珠不换盘面
-3. **音效合成**: `bake_bank()` 程序化合成 34 个 16bit PCM(后台 daemon 线程)
+3. **音效合成**: `bake_bank()` 程序化合成 36 个 16bit PCM(~11.7s 素材)。
+   `PlinkoApp.build()` 中 `Sfx(sync=True)` **同步烘焙**, 全部音效就绪后才建 UI,
+   冷启动不空窗。热启动命中磁盘 WAV 缓存(~20ms)。
 4. **输出后端三级降级**: `_SoundPoolOut`(Android, pyjnius) > `_WaveOut`(winmm) > `_KivySoundOut` > 静音。
    两种接口模式: `"pcm"`(winmm 播缩放后的 PCM) / `"named"`(SoundPool 按名播, gain 即音量)。
-   `Sfx` 总线: gain 量化 10 档缓存、按名节流、`impact(bit, sp)` 按撞击速率选音色变体+音量
+   `Sfx` 总线: gain 量化 10 档缓存、按名节流、`impact(bit, sp)` 按撞击速率选音色变体+音量。
+   **不再用 OnLoadCompleteListener** — 那个跨线程 JNI 代理失灵就是全库永久静音,
+   而 `play()` 对未加载完的 sample 本来就返回 0。缓存用 stamp 文件记指纹+逐文件字节数校验。
 5. **Kivy UI**:
    - `GameArea(FloatLayout)`: 逻辑坐标→物理像素等比缩放居中。静态元素(墙/钉/槽/弧)仅尺寸变或换盘面时重绘; 球/力度条/柱塞每帧只改 pos; 特效(落袋浮字/中奖大字/余额不足 toast)是 FloatLayout 子 Label, 每帧 `tick_draw` 驱动
-   - `RootWidget(BoxLayout)`: 5 行上下结构(顶栏/返还/投入/游戏区/信息/底行),
-     状态机 ready→charging→flying/misfire→landing→landed, 每帧 `_frame(FIXED_DT)`
+   - `RootWidget(BoxLayout)`: 6 行上下结构(顶栏/返还/投入/游戏区/信息/底行),
+     行间距 10dp。状态机 ready→charging→flying/misfire→landing→landed, 每帧 `_frame(FIXED_DT)`。
+     发射不再播飞行音(已移除); launch 音量按哑火/成功分级(0.35→0.50 / 0.60→1.00)。
    - `PlinkoApp`: AnchorLayout 居中 + **每帧轮询窗口尺寸**调 `_fit_width`
      (`Window.bind(size)` 对启动期程序化 resize 不触发, 这是实测坑)
 

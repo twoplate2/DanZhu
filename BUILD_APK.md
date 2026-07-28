@@ -190,10 +190,12 @@ p4a 的 pillow recipe 能不用就不用。PC 版的 PIL 渐变小球, 在 Kivy 
 ### 3.9 SoundPool 是短音效唯一正道
 
 - `SoundLoader` 在 Android 底层走 MediaPlayer, 循环有 50-100ms gap, 且并发差
-- `SoundPool`: 烘焙出的 PCM 写成 WAV 缓存文件 → `pool.load(path)`(异步,
-  等 OnLoadCompleteListener 回调 status=0 才能播, 否则静默失败)
-- `PythonJavaClass` 监听器**必须存实例属性**, 否则被 GC 后 Java 回调崩溃
-- 34 个音效总时长 ~11.5s, 远没到单样本/内存上限
+- `SoundPool`: 烘焙出的 PCM 写成 WAV 缓存文件 → `pool.load(path)`(异步)
+- **不再用 OnLoadCompleteListener**: 那个跨线程 JNI 代理失灵就全库永久静音,
+  而 `play()` 对未加载完的 sample 本来就返回 0 什么都不做
+- 缓存用 stamp 文件记指纹(mtime+size+seed+SR)+逐文件字节数校验, 防截断 WAV
+- 36 个音效总时长 ~11.7s
+- 冷启动 `PlinkoApp.build()` 中 `Sfx(sync=True)` 同步烘焙, 完成后才建 UI
 - 切后台: `SoundPool.autoPause()/autoResume()` 挂到 `App.on_pause/on_resume`
 
 ### 3.10 震动要权限
