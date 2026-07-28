@@ -1,7 +1,7 @@
 # 跳跳的弹珠机 — Android (Kivy) 版
 
 PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
-玩法/物理/34 个程序化合成音效与 PC 版一致。
+玩法/物理/36 个程序化合成音效与 PC 版一致。
 
 ## 玩法
 
@@ -24,7 +24,7 @@ PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
 余额不足中央飘字"珠子数量不足/请降低投入或点击重置按钮"。
 
 设备能力: 切后台自动静音(SoundPool autoPause)、x10+ 大奖滚分/停留 1.2s、
-x5/x10/x20 中奖震动(60/100/150ms)、顶栏音效开关(蓝底=开/近黑=关)。
+x2 起中奖震动(45/75/110/150ms)、顶栏音效开关(蓝底=开/暖褐=关)。
 
 字体层级: Hero 48sp(中奖金额)/ Key 18sp(金数+标题)/ Act 16sp(按钮)/
 Body 14sp(正文)/ Aux 13sp(辅助); 场景内文字用逻辑 20px 跟盘面缩放。
@@ -73,6 +73,7 @@ fonts/NotoSansSC-Medium.otf   # 中文字体(不打进 APK 汉字全豆腐块)
 
 ## 音效实现
 
-合成代码与 PC 版完全相同(34 个 PCM, 后台线程烘焙 ~330ms), 烘焙后写成 WAV 缓存文件,
+合成代码与 PC 版完全相同(36 个 PCM), 启动时同步烘焙(冷启动 ~3s, 热启动缓存 ~20ms),
+完成后才显示界面。烘焙后写成 WAV 缓存文件,
 用 `pyjnius` 调 Android `SoundPool` 加载播放(多路并发, 硬件 mixer)。
 桌面则走 winmm(Windows)或 Kivy SoundLoader 后备, 无声卡自动静音不崩。
