@@ -2200,8 +2200,9 @@ class RootWidget(BoxLayout):
         self.add_widget(self.game_area)
         # ---- 信息区 ----
         # 信息行: 珠子 + 每次投x珠,累计x投x中(x%)
-        info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
-        info.add_widget(self._mk_label("珠子：", "15sp", COL_TEXT, "right", True,
+        info = BoxLayout(size_hint_y=None, height=dp(H_INFO),
+                         padding=[dp(6), 0])
+        info.add_widget(self._mk_label("珠子：", "15sp", COL_TEXT, "left", True,
                                        size_hint_x=0.13))
         self.balance_lbl = self._mk_label(str(self.balance), "19sp", COL_BALL,
                                           "left", True, size_hint_x=0.17)
