@@ -2124,6 +2124,7 @@ class RootWidget(BoxLayout):
             want = min(want, Window.width * 0.55)
         self.width = min(Window.width, want)
         self._font_scale = min(1.0, self.width / dp(360)) # 宽度缩放因子: 窄屏时字体等比缩小
+        self._ui_scale = min(1.0, Window.height / dp(680)) # 高度缩放因子: 横屏时 UI 等比缩小
 
     # ------------------------------ UI ------------------------------
     def _mk_label(self, text, font_size, hexcolor, halign="left", bold=False, **kw):
@@ -2152,6 +2153,7 @@ class RootWidget(BoxLayout):
         # 标题 size_hint_x=1 自适应宽度, 窄屏/横屏不重叠
         top = BoxLayout(size_hint_y=None, height=dp(H_TOP),
                         padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
+        self._row_top = top
         self._row_bg(top, COL_PANEL)
         self.mute_btn = self._mk_button("音效已开", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
@@ -2170,8 +2172,10 @@ class RootWidget(BoxLayout):
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
                         padding=[dp(6), dp(4)], spacing=dp(14))
-        rtp.add_widget(self._mk_label("期望返还比例:  ", "14sp", COL_TEXT, "right", False,
-                                      size_hint_x=None, width=dp(115)))
+        self._row_rtp = rtp
+        self._rtp_title_lbl = self._mk_label("期望返还比例:  ", "14sp", COL_TEXT, "right", False,
+                                      size_hint_x=None, width=dp(115))
+        rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
         for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
@@ -2184,8 +2188,10 @@ class RootWidget(BoxLayout):
         # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
                          padding=[dp(6), dp(4)], spacing=dp(10))
-        bets.add_widget(self._mk_label("每次投入珠子:  ", "14sp", COL_TEXT, "right", False,
-                                       size_hint_x=None, width=dp(115)))
+        self._row_bets = bets
+        self._bet_title_lbl = self._mk_label("每次投入珠子:  ", "14sp", COL_TEXT, "right", False,
+                                       size_hint_x=None, width=dp(115))
+        bets.add_widget(self._bet_title_lbl)
         self.bet_btns = {}
         for v in PRESETS:
             b = self._mk_button(str(v) + "个", lambda _b, x=v: self.set_bet(x))
@@ -2201,6 +2207,7 @@ class RootWidget(BoxLayout):
         # ---- 信息区 ----
         # 信息行: 珠子 + 每次投x珠,累计x投x中(x%)
         info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
+        self._row_info = info
         info.add_widget(self._mk_label("珠子：", "15sp", COL_TEXT, "right", True,
                                        size_hint_x=0.13))
         self.balance_lbl = self._mk_label(str(self.balance), "19sp", COL_BALL,
@@ -2213,6 +2220,7 @@ class RootWidget(BoxLayout):
         # 底行: [重置 96] —长距离— [力度 100] [蓄力发射 弹性]
         fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
                          padding=[dp(6), dp(10), dp(10), dp(10)], spacing=dp(16))
+        self._row_bottom = fire
         self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
@@ -2438,15 +2446,53 @@ class RootWidget(BoxLayout):
         self.sfx.play("win%d" % tier)
 
     # ------------------------------ 帧循环 ------------------------------
+    def _apply_sizes(self):
+        """将 _ui_scale / _font_scale 写到所有固定 UI 元素的尺寸和字号上。
+        横屏时缩小所有固定行高/按钮宽/字号, 把垂直空间还给游戏区。"""
+        us = self._ui_scale
+        fs = self._font_scale * us
+
+        self._row_top.height    = dp(H_TOP)    * us
+        self._row_rtp.height    = dp(H_RTP)    * us
+        self._row_bets.height   = dp(H_BETS)   * us
+        self._row_info.height   = dp(H_INFO)   * us
+        self._row_bottom.height = dp(H_BOTTOM) * us
+        self.spacing = dp(10) * us
+
+        self.title_lbl.font_size       = sp(18) * fs
+        self.status_lbl.font_size      = sp(13) * fs
+        self._rtp_title_lbl.font_size  = sp(14) * fs
+        self._bet_title_lbl.font_size  = sp(14) * fs
+        self.balance_lbl.font_size     = sp(19) * fs
+        self.stats_lbl.font_size       = sp(15) * fs
+        self.power_lbl.font_size       = sp(14) * fs
+
+        self.mute_btn.font_size = sp(13) * fs
+        for b in self.rtp_btns.values():
+            b.font_size = sp(16) * fs
+        for b in self.bet_btns.values():
+            b.font_size = sp(16) * fs
+        self.reset_btn.font_size = sp(16) * fs
+        self.fire_btn.font_size  = sp(16) * fs
+
+        self.mute_btn.width    = dp(64)  * us
+        self.reset_btn.width   = dp(96)  * us
+        self.fire_btn.width    = dp(110) * us
+        self.power_lbl.width   = dp(100) * us
+        self.status_lbl.width  = dp(120) * us
+        self._rtp_title_lbl.width  = dp(115) * us
+        self._bet_title_lbl.width  = dp(115) * us
+        for b in self.rtp_btns.values():
+            b.width = dp(68) * us
+        for b in self.bet_btns.values():
+            b.width = dp(56) * us
+
     def _frame(self, dt):
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
             self._last_win_size = ws
             self._fit_width()
-            s = self._font_scale
-            self.title_lbl.font_size = sp(18) * s
-            self.status_lbl.font_size = sp(13) * s
-            self.mute_btn.font_size = sp(13) * s
+            self._apply_sizes()
         if self.state == "charging":
             self.power = min(1.0, self.power + CHARGE_RATE * FIXED_DT)
             self._play_charge_sound(self.power)
@@ -2563,6 +2609,7 @@ class PlinkoApp(App):
         self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
         anchor.add_widget(self.rootw)
         self.rootw._fit_width()
+        self.rootw._apply_sizes()
         return anchor
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
