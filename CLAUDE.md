@@ -40,7 +40,8 @@ python -m py_compile main.py
    哑火(power<0.15)走 `advance_misfire` 一维积分, 不扣珠不换盘面
 3. **音效合成**: `bake_bank()` 程序化合成 36 个 16bit PCM(~11.7s 素材)。
    `PlinkoApp.build()` 中 `Sfx(sync=True)` **同步烘焙**, 全部音效就绪后才建 UI,
-   冷启动不空窗。热启动命中磁盘 WAV 缓存(~20ms)。
+   冷启动不空窗。Cold-bake 后等 0.5s 让 SoundPool 异步解码完(否则首次安装必静音)。
+   热启动命中磁盘 WAV 缓存(~20ms)。
 4. **输出后端三级降级**: `_SoundPoolOut`(Android, pyjnius) > `_WaveOut`(winmm) > `_KivySoundOut` > 静音。
    两种接口模式: `"pcm"`(winmm 播缩放后的 PCM) / `"named"`(SoundPool 按名播, gain 即音量)。
    `Sfx` 总线: gain 量化 10 档缓存、按名节流、`impact(bit, sp)` 按撞击速率选音色变体+音量。
@@ -52,7 +53,9 @@ python -m py_compile main.py
      行间距 10dp。状态机 ready→charging→flying/misfire→landing→landed, 每帧 `_frame(FIXED_DT)`。
      发射不再播飞行音(已移除); launch 音量按哑火/成功分级(0.35→0.50 / 0.60→1.00)。
    - `PlinkoApp`: AnchorLayout 居中 + **每帧轮询窗口尺寸**调 `_fit_width`
-     (`Window.bind(size)` 对启动期程序化 resize 不触发, 这是实测坑)
+     (`Window.bind(size)` 对启动期程序化 resize 不触发, 这是实测坑)。
+     `build()` 中 Android 运行时调 `setRequestedOrientation(PORTRAIT)` 强制竖屏,
+     配合 `_fit_width()` 横屏容错(宽高比>1.2 时以宽度为限)。
 
 ## 移植期踩过的坑(详解在 BUILD_APK.md 第三节)
 
@@ -62,7 +65,8 @@ python -m py_compile main.py
 - BoxLayout 两个 flex 子控件 50/50 平分宽度(顶栏状态文字折行的元凶)
 - Kivy Label **不裁剪**超宽文本(会画到邻居地盘); 顶栏严格居中 = 左右两个等 flex 容器夹固定宽标题
 - 字体层级: UI 文字用 sp; 场景内文字(槽位倍率)用逻辑 px 跟盘面缩放; 中奖 Hero 字按屏宽占比(48sp)不跟场景缩
-- 震动必须 spec 里声明 `android.permissions = VIBRATE`, 否则 pyjnius 静默失败不抛异常
+- 震动必须 spec 里声明 `android.permissions = VIBRATE`, 否则 pyjnius 静默失败不抛异常。
+  振幅用 `255`(最大值)而非 `DEFAULT_AMPLITUDE`(-1 / ~50%), 否则手机震感太弱。
 - 中文字体 `fonts/NotoSansSC-Medium.otf` 必须列进 `source.include_patterns`, 否则汉字全豆腐块
 
 ## 验证标准(selftest 门禁, 与 PC 版同一套)
