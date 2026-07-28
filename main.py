@@ -153,7 +153,7 @@ COL_BTN_OFF = "#26324f"
 COL_FIRE = "#e0533b"
 COL_GREEN = "#39d98a"
 COL_GRAY = "#5a6a8c"
-COL_METER = "#ffb347"
+COL_METER = "#f0b000"
 COL_BUMPER = "#4a6aa8"       # 底部挡板(比隔板亮, 醒目)
 COL_LAMP_OFF = "#243250"     # 指示灯熄灭色
 HILITE = "#ffffff"
@@ -1729,7 +1729,7 @@ H_TOP = 44                   # 顶栏(标题+喇叭+状态)
 H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区间隙)
 H_BETS = 44                  # 投入珠子单位行(左对齐, 降低以增大游戏区间隙)
 H_INFO = 34                  # 珠子 + 统计
-H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
+H_BOTTOM = 68                # 重置 + 力度 + 蓄力发射(略高, 留空)
 FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM + 5 * 10  # 230 + 行间距
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
@@ -1738,14 +1738,14 @@ def slot_color(m):
     if m <= 0:
         return "#2a3550"
     if m <= 2:
-        return "#2fae74"
+        return "#39d98a"
     if m <= 3:
         return "#3d8bfd"
     if m <= 5:
         return "#e0533b"
     if m <= 10:
         return "#a335ee"
-    return "#ffd451"
+    return "#f0b000"
 
 
 _BALL_TEX = None
