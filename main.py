@@ -2118,13 +2118,17 @@ class RootWidget(BoxLayout):
         """内容最大宽度 = 让 520:660 场景恰好填满可用高度。
         窄屏(手机竖屏)直接铺满宽度; 宽屏(16:10 桌面)内容列居中、两侧留深色边。
         横屏容错: 宽高比>1.2 时以宽度为限, 防止内容列缩成细条。"""
-        avail_h = max(100.0, Window.height - dp(FIXED_H))
+        self._ui_scale = min(1.0, Window.height / dp(680))
+        us = self._ui_scale
+        # 缩放后的固定高度(行高+间距), 与 _apply_sizes() 一致
+        scaled_fixed = (dp(H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM) * us
+                        + dp(10) * 5 * us * us)
+        avail_h = max(100.0, Window.height - scaled_fixed)
         want = avail_h * (CW / CH) + dp(8)
         if Window.width > Window.height * 1.2:            # 横屏容错
             want = min(want, Window.width * 0.55)
         self.width = min(Window.width, want)
         self._font_scale = min(1.0, self.width / dp(360)) # 宽度缩放因子: 窄屏时字体等比缩小
-        self._ui_scale = min(1.0, Window.height / dp(680)) # 高度缩放因子: 横屏时 UI 等比缩小
 
     # ------------------------------ UI ------------------------------
     def _mk_label(self, text, font_size, hexcolor, halign="left", bold=False, **kw):
