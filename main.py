@@ -2293,7 +2293,7 @@ class RootWidget(BoxLayout):
 
     def _refresh_stats(self):
         rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
-        self.stats_lbl.text = "每次投%d珠, 累计%d投%d中(%.0f%%)" % (
+        self.stats_lbl.text = "每次投%d珠，累计%d投%d中(%.0f%%)" % (
             self.bet, self.plays, self.hits, rate)
 
     def set_bet(self, v):
