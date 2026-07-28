@@ -2183,7 +2183,7 @@ class RootWidget(BoxLayout):
         self.add_widget(rtp)
         # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
-                         padding=[dp(12), dp(4)], spacing=dp(6))
+                         padding=[dp(6), dp(4)], spacing=dp(6))
         bets.add_widget(self._mk_label("每次投入珠子:", "14sp", COL_TEXT, "left", False,
                                        size_hint_x=None, width=dp(120)))
         self.bet_btns = {}
