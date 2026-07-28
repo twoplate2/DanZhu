@@ -2188,9 +2188,9 @@ class RootWidget(BoxLayout):
                                        size_hint_x=None, width=dp(120)))
         self.bet_btns = {}
         for v in PRESETS:
-            b = self._mk_button(str(v), lambda _b, x=v: self.set_bet(x))
+            b = self._mk_button(str(v) + "个", lambda _b, x=v: self.set_bet(x))
             b.size_hint_x = None
-            b.width = dp(52)
+            b.width = dp(56)
             self.bet_btns[v] = b
             bets.add_widget(b)
         bets.add_widget(Widget())   # 右侧留空
