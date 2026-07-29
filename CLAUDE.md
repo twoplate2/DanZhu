@@ -36,7 +36,7 @@ python -m py_compile main.py
 
 1. **常量+几何**: 520×660 逻辑坐标系(y 向下), 全部绘制由它换算
 2. **纯物理层**: `physics_step`(纯函数) + `steer_ball`(引导只改 vx 不改位置);
-   `choose_target` 发射前预定落点 → RTP 精确(90/100/110 三档), 物理只是表演;
+   `choose_target` 发射前预定落点 → RTP 精确(80/100/110 三档), 物理只是表演;
    哑火(power<0.15)走 `advance_misfire` 一维积分, 不扣珠不换盘面
 3. **音效合成**: `bake_bank()` 程序化合成 36 个 16bit PCM(~11.7s 素材)。
    `PlinkoApp.build()` 中 `Sfx(sync=True)` **同步烘焙**, 全部音效就绪后才建 UI,

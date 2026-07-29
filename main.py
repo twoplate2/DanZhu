@@ -477,16 +477,16 @@ def _reward_value():
     return 20
 
 
-def roll_multipliers(rtp=0.90):
+def roll_multipliers(rtp=0.80):
     """每格独立: 大概率为 0; 有奖励则最小 x2, 越大越稀有(偶有 10/20)。
-    保底非零格数随档位提升(90%->3 / 100%->4 / 110%->5)让盘面有回本希望;
+    保底非零格数随档位提升(80%->2 / 100%->4 / 110%->5)让盘面有回本希望;
     并留至少 2 个零格(choose_target 需零格才能精确控 RTP)。真实 RTP 由 choose_target 决定, 与本函数(仅展示盘面)无关。"""
     q = rtp / REWARD_EV
     mult = [0] * NUM_SLOTS
     for i in range(NUM_SLOTS):
         if random.random() < q:
             mult[i] = _reward_value()
-    min_reward = max(1, min(NUM_SLOTS - 2, int(round(rtp * 10)) - 6))  # 90->3/100->4/110->5
+    min_reward = max(1, min(NUM_SLOTS - 2, int(round(rtp * 10)) - 6))  # 80->2/100->4/110->5
     max_reward = NUM_SLOTS - 2                        # 至少留 2 个零格(choose_target 需零格才能精确控 RTP)
     rewards = [i for i in range(NUM_SLOTS) if mult[i] > 0]
     zeros = [i for i in range(NUM_SLOTS) if mult[i] == 0]
@@ -1153,6 +1153,33 @@ def _wav_wipe(d):
                 pass
 
 
+def _voice_dir():
+    """预录语音目录(与 main.py 同级; 目录不存在时静默为空 —— 语音是安卓版附加功能)。"""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice")
+
+
+def _voice_files():
+    """{语音名: wav 路径}。语音是 edge-tts 预录文件(tools/generate_voice.py 生成),
+    不是 bake_bank 的合成品, 不参与 iter_bank 的"顺序即音色"体系。"""
+    out = {}
+    try:
+        for fn in os.listdir(_voice_dir()):
+            if fn.endswith(".wav"):
+                out[fn[:-4]] = os.path.join(_voice_dir(), fn)
+    except Exception:
+        pass
+    return out
+
+
+def _read_wav_pcm(path):
+    """读 22050Hz 16bit mono wav -> 裸 PCM 字节(winmm pcm 模式用; 格式不符直接拒)。"""
+    import wave
+    with wave.open(path, "rb") as wf:
+        if (wf.getnchannels(), wf.getsampwidth(), wf.getframerate()) != (1, 2, SR):
+            raise ValueError("voice wav 不是 %dHz 16bit mono: %s" % (SR, path))
+        return wf.readframes(wf.getnframes())
+
+
 class _SoundPoolOut:
     """Android SoundPool: 短音效全部解压进内存, 并发交给硬件 mixer。
     不再用 OnLoadCompleteListener 做"加载完才准播"的门禁: 那个 PythonJavaClass 代理是
@@ -1310,6 +1337,11 @@ class Sfx:
 
     def _bake_pcm(self):
         self.bank = bake_bank()             # 整体赋值(引用切换), 读侧只会看到空或全量
+        for name, path in _voice_files().items():   # 预录语音并入 bank, winmm 同路径可播
+            try:
+                self.bank[name] = _read_wav_pcm(path)
+            except Exception:
+                continue
         for name in ("win0", "win1", "win2", "win3", "win4", "lose",
                      "launch", "flight", "riser", "top0", "top1"):
             for g in (1.0, 0.9, 0.85):     # 预热长音效的音量缓存
@@ -1329,6 +1361,7 @@ class Sfx:
         stamp = os.path.join(d, "stamp")
         if self._load_cached(d, stamp, tag):
             self.cached = True
+            self._prime_voice()
             return
         _wav_wipe(d)
         lines = []
@@ -1341,12 +1374,23 @@ class Sfx:
                 continue
             self.named.add(name)
             lines.append("%s:%d" % (name, os.path.getsize(path)))
+        self._prime_voice()
         try:
             with open(stamp, "w") as f:
                 f.write(tag + "\n" + "\n".join(lines))
         except Exception:
             pass
         time.sleep(0.5)   # 等 SoundPool 异步解码完第一批音效, 否则首次运行必然全静音
+
+    def _prime_voice(self):
+        """预录语音直接 prime APK 内原文件(voice/*.wav), 不落缓存不进 stamp 指纹:
+        每次启动都重新加载, 语音文件更新即生效; play() 对未加载完的 sample 本来就返回 0。"""
+        for name, path in _voice_files().items():
+            try:
+                self.out.prime(name, path)
+            except Exception:
+                continue
+            self.named.add(name)
 
     def _load_cached(self, d, stamp, tag):
         """缓存有效(指纹一致 + 每个 WAV 大小对得上)则全部加载并返回 True。"""
@@ -1484,7 +1528,7 @@ def selftest(n=40000):
 
     # (1) 落点预定的 RTP 精确性(不依赖物理, 快)
     print("== 返还率精确性(预定落点) ==")
-    for rtp in (0.90, 1.00, 1.10):
+    for rtp in (0.80, 1.00, 1.10):
         tot = 0.0
         for _ in range(n):
             board = roll_multipliers(rtp)
@@ -2106,7 +2150,8 @@ class RootWidget(BoxLayout):
         self._release_power = None
         self.plays = 0
         self.hits = 0
-        self.rtp_target = 0.90
+        self.rtp_target = 0.80
+        self.sound_mode = "voice"     # voice(语音已开,默认) | sfx(音效已开) | off(音效已关)
         self.landed_at = 0.0
         self.land_target_x = PLUNGER_X
         self.target_slot = 0
@@ -2166,11 +2211,11 @@ class RootWidget(BoxLayout):
         self._row_top = top
         self._row_bg(top, COL_PANEL)
         left_box = BoxLayout()
-        self.mute_btn = self._mk_button("音效已开", lambda _b: self.toggle_mute())
+        self.mute_btn = self._mk_button("", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
         self.mute_btn.width = dp(64)
         self.mute_btn.font_size = "13sp"
-        self.mute_btn.background_color = hex_rgb(COL_BTN) + (1,)
+        self._refresh_mute_btn()
         left_box.add_widget(self.mute_btn)
         left_box.add_widget(Widget())
         top.add_widget(left_box)
@@ -2191,7 +2236,7 @@ class RootWidget(BoxLayout):
                                       size_hint_x=None, width=dp(115))
         rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
-        for label, val in (("90%", 0.90), ("100%", 1.00), ("110%", 1.10)):
+        for label, val in (("80%", 0.80), ("100%", 1.00), ("110%", 1.10)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
             b.size_hint_x = None
             b.width = dp(68)
@@ -2305,17 +2350,33 @@ class RootWidget(BoxLayout):
             self._release_power = None
         self.launch()
 
+    SOUND_MODES = ("voice", "sfx", "off")   # 顶栏音效钮三态循环顺序
+
     def toggle_mute(self):
-        on = not self.sfx.enabled
+        i = self.SOUND_MODES.index(self.sound_mode)
+        self.sound_mode = self.SOUND_MODES[(i + 1) % len(self.SOUND_MODES)]
+        on = self.sound_mode != "off"
         if not on:
-            self.sfx.play("click")            # 静音前给个确认音
+            self.sfx.play("click")            # 关闭前给个确认音
         self.sfx.set_enabled(on)
         if on:
-            self.sfx.play("click")            # 恢复后也确认一声
-        self.mute_btn.text = "音效已开" if on else "音效已关"
-        # 开=蓝底白字 / 关=深色底亮灰字, 与面板背景有明显反差, 看得出是个按钮
-        self.mute_btn.background_color = hex_rgb(COL_BTN if on else "#3d3828") + (1,)
-        self.mute_btn.color = (1, 1, 1, 1) if on else hex_rgb("#c0c8e4") + (1,)
+            self.sfx.play("click")            # 开启/切换后也确认一声
+        self._refresh_mute_btn()
+
+    def _refresh_mute_btn(self):
+        # 语音=绿底深字 / 音效=蓝底白字 / 关=深底亮灰字, 三态一眼可辨
+        if self.sound_mode == "voice":
+            self.mute_btn.text = "语音已开"
+            self.mute_btn.background_color = hex_rgb(COL_GREEN) + (1,)
+            self.mute_btn.color = hex_rgb("#0e1524") + (1,)
+        elif self.sound_mode == "sfx":
+            self.mute_btn.text = "音效已开"
+            self.mute_btn.background_color = hex_rgb(COL_BTN) + (1,)
+            self.mute_btn.color = (1, 1, 1, 1)
+        else:
+            self.mute_btn.text = "音效已关"
+            self.mute_btn.background_color = hex_rgb("#3d3828") + (1,)
+            self.mute_btn.color = hex_rgb("#c0c8e4") + (1,)
 
     def _refresh_stats(self):
         rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
@@ -2353,7 +2414,11 @@ class RootWidget(BoxLayout):
         if self.state != "ready":
             return
         if self.balance < self.bet:
-            self.sfx.play("error", throttle=0.4)
+            if self.sound_mode == "voice":
+                # 语音档: 播报替换 error 嗡声; 语音全长 2.9s, 节流到播完才许重播
+                self.sfx.play("voice_nomoney", throttle=3.0)
+            else:
+                self.sfx.play("error", throttle=0.4)
             self.game_area.center_toast("珠子数量不足\n请降低投入或点击重置按钮")
             return
         self.state = "charging"
@@ -2406,7 +2471,7 @@ class RootWidget(BoxLayout):
         else:         lamp = COL_METER
         self.game_area.set_lamp(i, lamp)
         self.game_area.pulse_slot(i)
-        self._play_result_sound(m)
+        self._play_result_sound(m, payout)
         self.game_area.big_result_text(m, payout)
         if m > 0:                             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))
@@ -2461,10 +2526,14 @@ class RootWidget(BoxLayout):
         self._last_charge_sound = now
         self.sfx.play("ratchet%d" % int(clamp(power, 0.0, 1.0) * 5.99))
 
-    def _play_result_sound(self, m):
+    def _play_result_sound(self, m, payout):
         self.sfx.play("pocket")
         if m <= 0:
-            self.sfx.play("lose", 0.9)
+            self.sfx.play("lose", 0.9)    # "好遗憾"语音已制作(voice_lose), 暂不接入
+            return
+        if self.sound_mode == "voice":
+            # 语音档: "珠子加xx"替换 win 琶音(语音与琶音同播会互相盖, 见 BUILD 讨论)
+            self.sfx.play("voice_win%d" % payout)
             return
         tier = 0 if m <= 2 else (1 if m <= 3 else (2 if m <= 5 else (3 if m < 20 else 4)))
         self.sfx.play("win%d" % tier)
