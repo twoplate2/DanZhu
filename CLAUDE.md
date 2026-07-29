@@ -122,6 +122,11 @@ XiaoxiaoNeural +10% 语速, 重采样 22050Hz, peak 0.65 归一。生成后直�
   振幅用 `255`(最大值)而非 `DEFAULT_AMPLITUDE`(-1 / ~50%), 否则手机震感太弱。
 - 中文字体 `fonts/NotoSansSC-Medium.otf` 必须列进 `source.include_patterns`, 否则汉字全豆腐块
 - ScrollView 内 Label 用 `width→text_size` 绑定而非 `size→text_size`, 否则死循环
+- **尺寸对齐**: `_apply_sizes` 和 `_build_ui` 中的 width/font_size 必须同步, 改一处漏一处会被覆盖
+- **spacing 参与偏移**: BoxLayout 的 spacing 也计入子控件位置, 行间对齐时不能漏算
+- **halign="right" 错觉**: 右对齐文本的视觉重心偏右, 与左对齐混排时人眼感知不一致, 统一用左对齐+spacer
+- **Popup 溢出**: 弹窗内固定宽度累加(标签+按钮+间距)不能超过手机宽度×size_hint, 用 size_hint_x=1 自适应
+- **valign="middle" 裁剪**: Kivy 在有 text_size 高度约束时会在中间\n劈开文本压缩后半段, 多行时丢末尾行
 
 ## 验证标准(selftest 门禁, 与 PC 版同一套)
 

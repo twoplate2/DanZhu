@@ -1779,20 +1779,20 @@ def sfx_check(verbose=True):
 # -*- coding: utf-8 -*-
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
-#   [顶栏] 标题+喇叭图标+状态  [返还] RTP三档左对齐  [投入] 珠子单位左对齐
+#   [顶栏] 标题+喇叭图标+状态  [返还] RTP三档左对齐  [投入] 弹珠单位左对齐
 #   [游戏区 全宽]
-#   [信息] 珠子 + 每次投x珠,累计x投x中(x%)  [底行] 重置 —长距离— 力度+蓄力发射
+#   [信息] 弹珠 + 每次投x珠,累计x投x中(x%)  [底行] 重置 —长距离— 力度+蓄力发射
 # 字体层级体系(6 级, 对齐 PC 版比例关系; 手机端基准正文 14sp):
 #   Hero 48sp  中奖金额大字(未中 36sp) — 按屏宽占比设计, 不跟场景缩
-#   Key  18sp  珠子金色主数字 + 顶栏标题
+#   Key  18sp  弹珠金色主数字 + 顶栏标题
 #   Act  16sp  全部按钮(发射/投入/重置/RTP)
 #   Body 14sp  正文标签/统计/力度
-#   Aux  13sp  状态栏/"投入珠子单位"/"返还率"
+#   Aux  13sp  状态栏/"投入弹珠单位"/"返还率"
 # 场景内文字(槽位倍率/落袋浮字)不用 sp, 用逻辑 px 跟盘面一起缩放: 逻辑 20px(手机上≈11sp)。
 H_TOP = 44                   # 顶栏(标题+喇叭+状态)
 H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区间隙)
-H_BETS = 44                  # 投入珠子单位行(左对齐, 降低以增大游戏区间隙)
-H_INFO = 26                  # 珠子 + 统计(缩高, 腾空间给底部留白)
+H_BETS = 44                  # 投入弹珠单位行(左对齐, 降低以增大游戏区间隙)
+H_INFO = 26                  # 弹珠 + 统计(缩高, 腾空间给底部留白)
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
 FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM + 5 * 10  # 230 + 行间距
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
@@ -2382,11 +2382,11 @@ class RootWidget(BoxLayout):
             rtp.add_widget(b)
         rtp.add_widget(Widget())   # 右侧留空
         self.add_widget(rtp)
-        # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
+        # 投入行: 投入弹珠单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
                          padding=[dp(24), dp(4)], spacing=dp(5))
         self._row_bets = bets
-        self._bet_title_lbl = self._mk_label("每次投入珠子：", "14sp", COL_TEXT, "left", False,
+        self._bet_title_lbl = self._mk_label("每次投入弹珠：", "14sp", COL_TEXT, "left", False,
                                        size_hint_x=None, width=dp(115))
         bets.add_widget(self._bet_title_lbl)
         self.bet_btns = {}
@@ -2402,11 +2402,11 @@ class RootWidget(BoxLayout):
         self.game_area = GameArea(self)
         self.add_widget(self.game_area)
         # ---- 信息区 ----
-        # 信息行: 珠子(对齐重置按钮左沿 6dp+12dp=18dp) + 累计x投x中(x%)
+        # 信息行: 弹珠(对齐重置按钮左沿 6dp+12dp=18dp) + 累计x投x中(x%)
         info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
         self._row_info = info
         info.add_widget(Widget(size_hint_x=None, width=dp(24)))  # 对齐重置按钮(6+12+6=24)
-        self._bead_lbl = self._mk_label("珠子：", "15sp", COL_TEXT, "left", True,
+        self._bead_lbl = self._mk_label("弹珠：", "15sp", COL_TEXT, "left", True,
                                        size_hint_x=None, width=dp(48))
         info.add_widget(self._bead_lbl)
         self.balance_lbl = self._mk_label(str(self.balance), "19sp", COL_BALL,
@@ -2570,7 +2570,7 @@ class RootWidget(BoxLayout):
             # 清理旧 toast, 延迟一帧再弹避免被 _redraw 清除
             self.game_area._effects = [e for e in self.game_area._effects if e["kind"] != "toast"]
             Clock.schedule_once(lambda dt: self.game_area.center_toast(
-                "珠子数量已调整到1000个", hexcolor=COL_GREEN, size=28, life=1.5), 0.05)
+                "弹珠数量已调整到1000个", hexcolor=COL_GREEN, size=28, life=1.5), 0.05)
             self.sfx.play("voice_reset_progress", throttle=1.5)
         # 恢复按钮颜色
         self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
@@ -2584,7 +2584,7 @@ class RootWidget(BoxLayout):
                 self.sfx.play("voice_nomoney", throttle=3.0)
             else:
                 self.sfx.play("error", throttle=0.4)
-            self.game_area.center_toast("珠子数量不足\n请降低投入或点击重置按钮")
+            self.game_area.center_toast("弹珠数量不足\n请降低投入或点击重置按钮")
             return
         if self.round_plays >= self.max_plays:
             self._show_round_end()
@@ -2599,7 +2599,7 @@ class RootWidget(BoxLayout):
         if self.state != "charging":
             return
         if self.power < MISFIRE_POWER:
-            # 哑火: 球照样弹出去, 只是升不过隔墙顶 -> 掉回柱塞。不扣珠子、不计一局、不换盘面
+            # 哑火: 球照样弹出去, 只是升不过隔墙顶 -> 掉回柱塞。不扣弹珠、不计一局、不换盘面
             self.ball = launch_misfire(self.power)
             self.state = "misfire"
             self.power = 0.0                  # 哑火后清除蓄力显示
@@ -2762,7 +2762,7 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(lambda dt: on_done(), total)
 
     def _play_round_end_voice(self, on_done=None):
-        """组装并播放轮次结束语音: 模板 + 当前珠子数 + 后缀。"""
+        """组装并播放轮次结束语音: 模板 + 当前弹珠数 + 后缀。"""
         prefix_key = "voice_round_end_%d" % self.max_plays
         voices = [prefix_key]
         voices.extend(number_voice_names(self.balance))
@@ -2784,7 +2784,7 @@ class RootWidget(BoxLayout):
             self.round_history.pop(0)
         self._save_history()
         content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
-        msg = "本轮游戏 %d 次已结束\n剩余 %d 个珠子\n珠子数量已调整到1000个\n欢迎你再次挑战" % (
+        msg = "本轮游戏 %d 次已结束\n剩余 %d 个弹珠\n弹珠数量已调整到1000个\n欢迎你再次挑战" % (
             self.round_plays, self.balance)
         lbl = Label(text=msg, font_size="18sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,))
@@ -2842,7 +2842,7 @@ class RootWidget(BoxLayout):
         if self.round_history:
             lines = []
             for i, r in enumerate(reversed(self.round_history[-100:])):
-                lines.append("最近第%d轮  每轮%d次  剩 %d 个珠子" %
+                lines.append("最近第%d轮  每轮%d次  剩 %d 个弹珠" %
                             (i + 1, r["plays"], r["balance"]))
             text = "\n".join(lines)
         else:
@@ -2871,7 +2871,7 @@ class RootWidget(BoxLayout):
         popup.open()
 
     def _set_max_plays(self, val, sel_btns=None):
-        """切换每轮次数上限: 更换即重置(珠子/游玩次数/轮次全部清零, 从头开始)。"""
+        """切换每轮次数上限: 更换即重置(弹珠/游玩次数/轮次全部清零, 从头开始)。"""
         if self.max_plays == val:
             return
         self.max_plays = val
@@ -2929,7 +2929,7 @@ class RootWidget(BoxLayout):
             self.sfx.play("lose", 0.9)    # "好遗憾"语音已制作(voice_lose), 暂不接入
             return
         if self.sound_mode == "voice":
-            # 语音档: "珠子加xx"替换 win 琶音(语音与琶音同播会互相盖, 见 BUILD 讨论)
+            # 语音档: "弹珠加xx"替换 win 琶音(语音与琶音同播会互相盖, 见 BUILD 讨论)
             self.sfx.play("voice_win%d" % payout)
             return
         tier = 0 if m <= 2 else (1 if m <= 3 else (2 if m <= 5 else (3 if m < 20 else 4)))
