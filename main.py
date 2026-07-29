@@ -2278,6 +2278,7 @@ class RootWidget(BoxLayout):
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
         self._load_history()           # 从磁盘恢复(跨启动持久化)
+        self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
@@ -2505,6 +2506,7 @@ class RootWidget(BoxLayout):
             self.sfx.set_enabled(True)
             self.sfx.play("voice_mode_" + self.sound_mode)
         self._refresh_mute_btn()
+        self._save_config()
 
     def _apply_sound_off(self, dt):
         if self.sound_mode == "off":      # 延迟窗口内玩家又切回 voice/sfx 则取消关闭
@@ -2535,6 +2537,7 @@ class RootWidget(BoxLayout):
         self._restyle_selects()
         self._refresh_stats()
         self.sfx.play("click")
+        self._save_config()
 
     def set_rtp(self, t):
         self.rtp_target = t
@@ -2543,6 +2546,7 @@ class RootWidget(BoxLayout):
         if self.state == "ready":
             self.multipliers = roll_multipliers(self.rtp_target)
             self.game_area._redraw()
+        self._save_config()
 
     def reset_balance(self, notify=True):
         # 强制中断当前操作(充电/飞行/哑火/着陆), 回到 ready
@@ -2700,6 +2704,47 @@ class RootWidget(BoxLayout):
         except Exception:
             pass
 
+    @staticmethod
+    def _config_path():
+        """游戏设定 JSON 文件路径(与轮次历史同目录)。"""
+        if platform == "android":
+            try:
+                base = App.get_running_app().user_data_dir
+            except Exception:
+                base = tempfile.gettempdir()
+        else:
+            base = tempfile.gettempdir()
+        return os.path.join(base, "plinko_config.json")
+
+    def _load_config(self):
+        try:
+            with open(self._config_path(), "r") as f:
+                cfg = json.load(f)
+            if isinstance(cfg, dict):
+                if cfg.get("sound_mode") in ("voice", "sfx", "off"):
+                    self.sound_mode = cfg["sound_mode"]
+                if isinstance(cfg.get("max_plays"), int) and cfg["max_plays"] in (20, 50, 100):
+                    self.max_plays = cfg["max_plays"]
+                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.00, 1.20):
+                    self.rtp_target = float(cfg["rtp_target"])
+                if isinstance(cfg.get("bet"), int) and cfg["bet"] in PRESETS:
+                    self.bet = cfg["bet"]
+        except Exception:
+            pass
+
+    def _save_config(self):
+        try:
+            cfg = {
+                "sound_mode": self.sound_mode,
+                "max_plays": self.max_plays,
+                "rtp_target": self.rtp_target,
+                "bet": self.bet,
+            }
+            with open(self._config_path(), "w") as f:
+                json.dump(cfg, f)
+        except Exception:
+            pass
+
     def _voice_duration(self, name):
         """查语音片段时长(秒), 用于队列播放的调度间隔。"""
         return self.sfx.voice_duration(name)
@@ -2850,6 +2895,7 @@ class RootWidget(BoxLayout):
         # toast + 语音提示
         self.game_area.center_toast("每轮已设定为%d次" % val, hexcolor=COL_GREEN, size=20, life=1.5)
         self.sfx.play("voice_round_set_%d" % val)
+        self._save_config()
 
     # ------------------------------ 音效 ------------------------------
     def _play_events(self, b):
