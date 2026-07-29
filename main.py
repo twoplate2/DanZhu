@@ -2068,10 +2068,12 @@ class GameArea(FloatLayout):
             # 力度填充(动态)
             self._meter_col = Color(*hex_rgb(COL_METER))
             self._meter_fill = Rectangle(pos=(0, 0), size=(0, 0))
-            # 弹簧: N 条横线(间距=松弛, 压缩=贴紧, 1条=满蓄力)
+            # 弹簧凹槽(地板下方暗色区域, 竖井位置掏空)
+            Color(*hex_rgb("#060e18"))
+            Rectangle(**self._rect(LANE_L, FLOOR, RIGHT_INNER, CH))
+            # 弹簧: N 条横线(在凹槽内, 间距=松弛, 贴紧=压缩)
             self._spring_base_col = Color(*hex_rgb("#7f8cb0"))
-            self._spring_base = Rectangle(**self._rect(LANE_L + 6, FLOOR - 5,
-                                                        RIGHT_INNER - 6, FLOOR))
+            self._spring_base = Rectangle(pos=(0, 0), size=(0, 0))
             self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
             self._spring_bars = []
             for _ in range(4):
@@ -2174,20 +2176,20 @@ class GameArea(FloatLayout):
             self._meter_col.rgb = hex_rgb(COL_FIRE if weak else COL_METER)
         else:
             self._meter_fill.size = (0, 0)
-        py = FLOOR - 5 + g.power * 10
-        kw = self._rect(LANE_L + 6, py, RIGHT_INNER - 6, py + 5)
+        # 弹簧在凹槽内(地板下方): 底座可压缩, 横条等距排列
+        base_top = FLOOR + 8 + g.power * 6               # 底座顶(充电下移)
+        base_bot = FLOOR + 12 + g.power * 6              # 底座底
+        kw = self._rect(LANE_L + 6, base_top, RIGHT_INNER - 6, base_bot)
         self._spring_base.pos = kw["pos"]
         self._spring_base.size = kw["size"]
-        # 弹簧横条: N 条等距排列, 蓄力越足间距越小(满蓄力贴成一条)
-        rest_top = PLUNGER_Y + BALL_R * BALL_VIEW
-        total_h = max(1.0, rest_top - py)
+        recess_top = FLOOR + 2                           # 凹槽上沿
         n = len(self._spring_bars)
         lx = self._px(LANE_L + 10)
         rx = self._px(RIGHT_INNER - 10)
-        y0 = self._py(rest_top)
-        y1 = self._py(py)
+        y0 = self._py(recess_top)
+        y1 = self._py(base_top)
         for i, bar in enumerate(self._spring_bars):
-            t = i / max(1, n - 1)                    # 0=顶条, 1=底条
+            t = i / max(1, n - 1)
             y = y0 + (y1 - y0) * t
             bar.points = [lx, y, rx, y]
         # 颜色: 哑火→红, 正常→灰蓝, 满蓄力→亮金
