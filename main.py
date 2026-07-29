@@ -2387,6 +2387,10 @@ class RootWidget(BoxLayout):
         self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
+        self.reset_btn.bind(on_press=lambda _b: setattr(self.reset_btn, "background_color",
+            hex_rgb("#4a5a6a") + (1,)))
+        self.reset_btn.bind(on_release=lambda _b: Clock.schedule_once(
+            lambda dt: setattr(self.reset_btn, "background_color", hex_rgb("#2a2a35") + (1,)), 0.1))
         fire.add_widget(Widget(size_hint_x=None, width=dp(12)))     # 重置按钮右移
         fire.add_widget(self.reset_btn)
         fire.add_widget(Widget(size_hint_x=0.95))                 # 弹簧(让出少量给右侧)
@@ -2507,7 +2511,7 @@ class RootWidget(BoxLayout):
             self.multipliers = roll_multipliers(self.rtp_target)
             self.game_area._redraw()
 
-    def reset_balance(self):
+    def reset_balance(self, notify=True):
         if self.state in ("flying", "misfire", "landing"):
             return
         self.balance = START_BEADS
@@ -2522,6 +2526,9 @@ class RootWidget(BoxLayout):
         self._round_end_shown = False
         self.sfx.play("cash")
         self._set_controls_enabled(True)
+        if notify:
+            self.game_area.center_toast("游戏进度已重置", hexcolor=COL_GREEN, size=20, life=1.5)
+            self.sfx.play("voice_reset_progress", throttle=1.5)
 
     def start_charge(self):
         if self.state != "ready":
@@ -2708,7 +2715,7 @@ class RootWidget(BoxLayout):
             if _done[0]:
                 return
             _done[0] = True
-            self.reset_balance()
+            self.reset_balance(notify=False)
             popup.dismiss()
         self._play_round_end_voice(on_done=_auto_reset)
         # 兜底定时器: 语音回调若因任何原因没触发, 8 秒后强制重置
