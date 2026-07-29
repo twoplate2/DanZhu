@@ -1959,9 +1959,9 @@ class GameArea(FloatLayout):
         self._meter_fill = None
         self._meter_col = None
         self._spring_base = None
-        self._spring_coil = None
+        self._spring_bars = []
         self._spring_base_col = None
-        self._spring_coil_col = None
+        self._spring_bar_col = None
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
         self.bind(size=self._redraw, pos=self._redraw)
@@ -2068,13 +2068,16 @@ class GameArea(FloatLayout):
             # 力度填充(动态)
             self._meter_col = Color(*hex_rgb(COL_METER))
             self._meter_fill = Rectangle(pos=(0, 0), size=(0, 0))
-            # 弹簧底座 + 锯齿线圈(动态, 颜色/形态随蓄力变化)
+            # 弹簧: N 条横线(间距=松弛, 压缩=贴紧, 1条=满蓄力)
             self._spring_base_col = Color(*hex_rgb("#7f8cb0"))
             self._spring_base = Rectangle(**self._rect(LANE_L + 6, FLOOR - 5,
                                                         RIGHT_INNER - 6, FLOOR))
-            self._spring_coil_col = Color(*hex_rgb("#8fa0c4"))
-            self._spring_coil = Line(points=[0, 0], width=max(1.0, 2 * s),
-                                     cap="round", joint="round")
+            self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
+            self._spring_bars = []
+            for _ in range(4):
+                self._spring_bars.append(
+                    Line(points=[0, 0, 0, 0], width=max(1.0, 2 * s),
+                         cap="round"))
             # 球(动态, 程序化渐变贴图; 视觉 BALL_VIEW 倍放大, 碰撞半径不变)
             Color(1, 1, 1)
             self._ball_e = Rectangle(texture=ball_texture(), pos=(0, 0),
@@ -2175,31 +2178,32 @@ class GameArea(FloatLayout):
         kw = self._rect(LANE_L + 6, py, RIGHT_INNER - 6, py + 5)
         self._spring_base.pos = kw["pos"]
         self._spring_base.size = kw["size"]
-        # 弹簧 Z 字形: 底座→球静止位, 锚定不动(不跟飞行球拖尾)
+        # 弹簧横条: N 条等距排列, 蓄力越足间距越小(满蓄力贴成一条)
         rest_top = PLUNGER_Y + BALL_R * BALL_VIEW
-        h = max(1.0, rest_top - py)
-        left_x = self._px(LANE_L + 10)
-        right_x = self._px(RIGHT_INNER - 10)
-        top_y = self._py(rest_top)
-        mid_y = self._py(py + h * 0.5)
-        bot_y = self._py(py)
-        pts = [left_x, top_y, right_x, mid_y, left_x, bot_y]
-        self._spring_coil.points = pts
-        # 颜色: 哑火→红, 正常→灰蓝渐变为金, 满蓄力→亮金
+        total_h = max(1.0, rest_top - py)
+        n = len(self._spring_bars)
+        lx = self._px(LANE_L + 10)
+        rx = self._px(RIGHT_INNER - 10)
+        y0 = self._py(rest_top)
+        y1 = self._py(py)
+        for i, bar in enumerate(self._spring_bars):
+            t = i / max(1, n - 1)                    # 0=顶条, 1=底条
+            y = y0 + (y1 - y0) * t
+            bar.points = [lx, y, rx, y]
+        # 颜色: 哑火→红, 正常→灰蓝, 满蓄力→亮金
         weak = g.power < MISFIRE_POWER
         if g.power < 0.01:
             self._spring_base_col.rgb = hex_rgb("#7f8cb0")
-            self._spring_coil_col.rgb = hex_rgb("#8fa0c4")
+            self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
         elif weak:
             self._spring_base_col.rgb = hex_rgb("#e0533b")
-            self._spring_coil_col.rgb = hex_rgb("#c45a4a")
+            self._spring_bar_col.rgb = hex_rgb("#c45a4a")
         elif g.power >= 1.0:
             self._spring_base_col.rgb = hex_rgb("#f0b000")
-            self._spring_coil_col.rgb = hex_rgb("#ffd700")
+            self._spring_bar_col.rgb = hex_rgb("#ffd700")
         else:
-            u = power_u(g.power)
-            self._spring_base_col.rgb = hex_rgb("#7f8cb0") if u < 0.5 else hex_rgb("#f0b000")
-            self._spring_coil_col.rgb = hex_rgb("#8fa0c4") if u < 0.5 else hex_rgb("#ffd700")
+            self._spring_base_col.rgb = hex_rgb("#7f8cb0")
+            self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
         # 槽位白闪
         if self._pulse is not None:
             i, end = self._pulse
