@@ -1958,9 +1958,7 @@ class GameArea(FloatLayout):
         self._ball_e = None
         self._meter_fill = None
         self._meter_col = None
-        self._spring_base = None
         self._spring_bars = []
-        self._spring_base_col = None
         self._spring_bar_col = None
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
@@ -2071,9 +2069,7 @@ class GameArea(FloatLayout):
             # 弹簧凹槽(地板下方暗色区域, 竖井位置掏空)
             Color(*hex_rgb("#060e18"))
             Rectangle(**self._rect(LANE_L, FLOOR, RIGHT_INNER, CH))
-            # 弹簧: N 条横线(在凹槽内, 间距=松弛, 贴紧=压缩)
-            self._spring_base_col = Color(*hex_rgb("#7f8cb0"))
-            self._spring_base = Rectangle(pos=(0, 0), size=(0, 0))
+            # 弹簧: 2 条横线(在凹槽内, 间距=松弛, 贴紧=压缩)
             self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
             self._spring_bars = []
             for _ in range(2):
@@ -2176,35 +2172,25 @@ class GameArea(FloatLayout):
             self._meter_col.rgb = hex_rgb(COL_FIRE if weak else COL_METER)
         else:
             self._meter_fill.size = (0, 0)
-        # 弹簧在凹槽内(地板下方): 底座可压缩, 横条等距排列
-        base_top = FLOOR + 9 + g.power * 4               # 底座顶(充电下移)
-        base_bot = FLOOR + 12 + g.power * 4              # 底座底
-        kw = self._rect(LANE_L + 6, base_top, RIGHT_INNER - 6, base_bot)
-        self._spring_base.pos = kw["pos"]
-        self._spring_base.size = kw["size"]
-        recess_top = FLOOR                                # 凹槽上沿(地板表面线)
-        n = len(self._spring_bars)
+        # 弹簧 2 横条: 凹槽上沿到底部, 间距随蓄力缩小
+        bar_top = FLOOR                               # 上条位置(固定)
+        bar_bot = FLOOR + 9 + g.power * 4             # 下条位置(充电下移)
         lx = self._px(LANE_L + 10)
         rx = self._px(RIGHT_INNER - 10)
-        y0 = self._py(recess_top)
-        y1 = self._py(base_top)
+        y0 = self._py(bar_top)
+        y1 = self._py(bar_bot)
         for i, bar in enumerate(self._spring_bars):
-            t = i / max(1, n - 1)
-            y = y0 + (y1 - y0) * t
+            y = y0 if i == 0 else y1
             bar.points = [lx, y, rx, y]
         # 颜色: 哑火→红, 正常→灰蓝, 满蓄力→亮金
         weak = g.power < MISFIRE_POWER
         if g.power < 0.01:
-            self._spring_base_col.rgb = hex_rgb("#7f8cb0")
             self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
         elif weak:
-            self._spring_base_col.rgb = hex_rgb("#e0533b")
             self._spring_bar_col.rgb = hex_rgb("#c45a4a")
         elif g.power >= 1.0:
-            self._spring_base_col.rgb = hex_rgb("#f0b000")
             self._spring_bar_col.rgb = hex_rgb("#ffd700")
         else:
-            self._spring_base_col.rgb = hex_rgb("#7f8cb0")
             self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
         # 槽位白闪
         if self._pulse is not None:
