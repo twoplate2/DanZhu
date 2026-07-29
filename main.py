@@ -29,6 +29,8 @@ from kivy.uix.button import Button
 from kivy.uix.floatlayout import FloatLayout
 from kivy.uix.label import Label
 from kivy.uix.widget import Widget
+from kivy.uix.popup import Popup
+from kivy.uix.scrollview import ScrollView
 from kivy.utils import platform
 
 # 中文字体: 用 name="Roboto" 覆盖 Kivy 默认字体, 所有控件全局生效(否则 Android 上汉字全豆腐块)
@@ -481,14 +483,14 @@ def _reward_value():
 
 def roll_multipliers(rtp=0.80):
     """每格独立: 大概率为 0; 有奖励则最小 x2, 越大越稀有(偶有 10/20)。
-    保底非零格数随档位提升(80%->2 / 100%->4 / 110%->5)让盘面有回本希望;
+    保底非零格数随档位提升(80%->2 / 100%->4 / 120%->6)让盘面有回本希望;
     并留至少 2 个零格(choose_target 需零格才能精确控 RTP)。真实 RTP 由 choose_target 决定, 与本函数(仅展示盘面)无关。"""
     q = rtp / REWARD_EV
     mult = [0] * NUM_SLOTS
     for i in range(NUM_SLOTS):
         if random.random() < q:
             mult[i] = _reward_value()
-    min_reward = max(1, min(NUM_SLOTS - 2, int(round(rtp * 10)) - 6))  # 80->2/100->4/110->5
+    min_reward = max(1, min(NUM_SLOTS - 2, int(round(rtp * 10)) - 6))  # 80->2/100->4/120->6
     max_reward = NUM_SLOTS - 2                        # 至少留 2 个零格(choose_target 需零格才能精确控 RTP)
     rewards = [i for i in range(NUM_SLOTS) if mult[i] > 0]
     zeros = [i for i in range(NUM_SLOTS) if mult[i] == 0]
@@ -1493,6 +1495,21 @@ class Sfx:
         t = clamp((SFX_APEX_Y_LO - y) / (SFX_APEX_Y_LO - SFX_APEX_Y_HI), 0.0, 1.0)
         return self.play("top%d" % (1 if t > 0.5 else 0), 0.62 + 0.38 * t)
 
+    def voice_duration(self, name):
+        """语音片段时长(秒), 用于队列播放的调度间隔。
+        pcm 后端: bank 中有 PCM → 按字节数算; named 后端: 从 voice 目录的 WAV 文件大小推算。"""
+        pcm = self.bank.get(name)
+        if pcm:
+            return len(pcm) / (SR * 2.0)
+        # named 后端: bank 里没有 PCM, 查 voice 目录文件大小
+        path = _voice_files().get(name)
+        if path:
+            try:
+                return (os.path.getsize(path) - 44) / (SR * 2.0)
+            except OSError:
+                pass
+        return 0.15  # 回落值(典型单字约 200ms)
+
     def close(self):
         if self.out is not None:
             self.out.close()
@@ -1530,7 +1547,7 @@ def selftest(n=40000):
 
     # (1) 落点预定的 RTP 精确性(不依赖物理, 快)
     print("== 返还率精确性(预定落点) ==")
-    for rtp in (0.80, 1.00, 1.10):
+    for rtp in (0.80, 1.00, 1.20):
         tot = 0.0
         for _ in range(n):
             board = roll_multipliers(rtp)
@@ -1867,6 +1884,63 @@ def _vibrate(ms):
         pass
 
 
+def number_voice_names(n):
+    """整数 → 中文朗读的语音名列表(队列拼接用, 对标 Clac 项目方案)。
+    1250 → ['voice_d_1','voice_u_1000','voice_d_2','voice_u_100','voice_d_5','voice_u_10']
+    20   → ['voice_d_2','voice_u_10']
+    2000 → ['voice_liang','voice_u_1000']"""
+    if n == 0:
+        return ["voice_d_0"]
+    names = []
+    wan = n // 10000
+    rest = n % 10000
+    if wan > 0:
+        names.extend(_read_4digits(wan, is_highest=(wan == n // 10000)))
+        names.append("voice_u_10000")
+    names.extend(_read_4digits(rest, is_highest=(wan == 0)))
+    return names or ["voice_d_0"]
+
+
+def _read_4digits(n, is_highest=True):
+    """朗读 0~9999, 返回语音名列表。二/两规则: 千位的 2 读"两"。"""
+    if n == 0:
+        return []
+    qian, rem = divmod(n, 1000)
+    bai, rem = divmod(rem, 100)
+    shi, ge = divmod(rem, 10)
+    parts = []
+    need_zero = False
+    if qian > 0:
+        parts.append("voice_liang" if qian == 2 else "voice_d_%d" % qian)
+        parts.append("voice_u_1000")
+    else:
+        need_zero = is_highest is False
+    if bai > 0:
+        if need_zero and not parts:
+            pass
+        elif need_zero and parts:
+            parts.append("voice_d_0")
+        parts.append("voice_d_%d" % bai)
+        parts.append("voice_u_100")
+    elif qian > 0:
+        need_zero = True
+    if shi > 0:
+        if need_zero and parts:
+            parts.append("voice_d_0")
+        if shi == 1 and not parts:
+            parts.append("voice_u_10")          # 10~19: "十" 不读 "一十"
+        else:
+            parts.append("voice_d_%d" % shi)
+            parts.append("voice_u_10")
+    elif bai > 0 and ge > 0:
+        parts.append("voice_d_0")
+    if ge > 0:
+        if shi == 0 and (qian > 0 or bai > 0) and parts:
+            parts.append("voice_d_0")
+        parts.append("voice_d_%d" % ge)
+    return parts
+
+
 class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
     静态元素(墙/钉/槽/弧)重绘只在尺寸变化或换盘面时; 球/力度条/柱塞每帧只改 pos;
@@ -2164,6 +2238,10 @@ class RootWidget(BoxLayout):
         self.hits = 0
         self.rtp_target = 0.80
         self.sound_mode = "voice"     # voice(语音已开,默认) | sfx(音效已开) | off(音效已关)
+        self.max_plays = 50            # 每轮次数上限
+        self.round_plays = 0           # 本轮已玩次数
+        self.round_history = []        # 最近完成的轮次记录
+        self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
@@ -2224,13 +2302,20 @@ class RootWidget(BoxLayout):
                         padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
         self._row_top = top
         self._row_bg(top, COL_PANEL)
-        left_box = BoxLayout()
+        left_box = BoxLayout(spacing=dp(6))
         self.mute_btn = self._mk_button("", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
         self.mute_btn.width = dp(64)
         self.mute_btn.font_size = "13sp"
         self._refresh_mute_btn()
         left_box.add_widget(self.mute_btn)
+        self.round_btn = self._mk_button("每轮%d次" % self.max_plays,
+            lambda _b: self._show_round_settings(), bg=COL_GREEN)
+        self.round_btn.size_hint_x = None
+        self.round_btn.width = dp(88)
+        self.round_btn.font_size = "13sp"
+        self.round_btn.color = (0, 0, 0, 1)          # 黑字配绿底
+        left_box.add_widget(self.round_btn)
         left_box.add_widget(Widget())
         top.add_widget(left_box)
         self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
@@ -2250,7 +2335,7 @@ class RootWidget(BoxLayout):
                                       size_hint_x=None, width=dp(115))
         rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
-        for label, val in (("80%", 0.80), ("100%", 1.00), ("110%", 1.10)):
+        for label, val in (("80%", 0.80), ("100%", 1.00), ("120%", 1.20)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
             b.size_hint_x = None
             b.width = dp(68)
@@ -2328,6 +2413,8 @@ class RootWidget(BoxLayout):
         self.reset_btn.disabled = not enabled
         for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
             btn.disabled = not enabled
+        self.round_btn.disabled = not enabled
+        self.mute_btn.disabled = not enabled
         if enabled:
             self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
             self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
@@ -2399,8 +2486,8 @@ class RootWidget(BoxLayout):
 
     def _refresh_stats(self):
         rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
-        self.stats_lbl.text = "每次投%d珠，累计%d投%d中(%.0f%%)" % (
-            self.bet, self.plays, self.hits, rate)
+        self.stats_lbl.text = "累计%d投%d中(%.0f%%)" % (
+            self.plays, self.hits, rate)
 
     def set_bet(self, v):
         self.bet = v
@@ -2427,7 +2514,10 @@ class RootWidget(BoxLayout):
         self.hits = 0
         self._refresh_stats()
         self.status_lbl.text = "已重置"
+        self.round_plays = 0
+        self._round_end_shown = False
         self.sfx.play("cash")
+        self._set_controls_enabled(True)
 
     def start_charge(self):
         if self.state != "ready":
@@ -2439,6 +2529,9 @@ class RootWidget(BoxLayout):
             else:
                 self.sfx.play("error", throttle=0.4)
             self.game_area.center_toast("珠子数量不足\n请降低投入或点击重置按钮")
+            return
+        if self.round_plays >= self.max_plays:
+            self._show_round_end()
             return
         self.state = "charging"
         self.power = 0.0
@@ -2464,6 +2557,7 @@ class RootWidget(BoxLayout):
         self.ball = launch_ball(self.power)
         self.state = "flying"
         self.plays += 1
+        self.round_plays += 1
         self._crossed = False
         self._risen = False
         self._topped = False
@@ -2518,8 +2612,162 @@ class RootWidget(BoxLayout):
         self.state = "ready"
         self.power = 0.0
         self._set_controls_enabled(True)
+        if self.round_plays >= self.max_plays and not self._round_end_shown:
+            self._show_round_end()
         if not silent:
             self.sfx.play("ready", 0.8)
+
+    # ------------------------------ 轮次结束 ------------------------------
+    def _voice_duration(self, name):
+        """查语音片段时长(秒), 用于队列播放的调度间隔。"""
+        return self.sfx.voice_duration(name)
+
+    def _play_voice_sequence(self, names, gap=0.005, on_done=None):
+        """依次播放语音片段列表。on_done 在整个序列播完后回调(用于解锁弹窗按钮等)。"""
+        delay = 0.0
+        total = 0.0
+        for name in names:
+            dur = self._voice_duration(name)
+            Clock.schedule_once(lambda dt, n=name: self.sfx.play(n), delay)
+            delay += dur + gap
+            total = delay
+        if on_done:
+            Clock.schedule_once(lambda dt: on_done(), total)
+
+    def _play_round_end_voice(self, on_done=None):
+        """组装并播放轮次结束语音: 模板 + 当前珠子数 + 后缀。"""
+        prefix_key = "voice_round_end_%d" % self.max_plays
+        voices = [prefix_key]
+        voices.extend(number_voice_names(self.balance))
+        voices.append("voice_round_suffix")
+        self._play_voice_sequence(voices, on_done=on_done)
+
+    def _show_round_end(self):
+        """本轮游戏结束弹窗: 恭喜文案 + 统计 + 语音播报(播完自动重置并关闭)。"""
+        if self._round_end_shown:
+            return
+        self._round_end_shown = True
+        self._set_controls_enabled(False)
+        self.round_history.append({
+            "plays": self.round_plays,
+            "balance": self.balance,
+            "time": time.time(),
+        })
+        if len(self.round_history) > 100:
+            self.round_history.pop(0)
+        content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
+        msg = "本轮游戏 %d 次已结束\n剩余 %d 个珠子\n数据已重置" % (
+            self.round_plays, self.balance)
+        lbl = Label(text=msg, font_size="18sp", halign="center", valign="middle",
+                    color=hex_rgb(COL_TEXT) + (1,))
+        lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        content.add_widget(lbl)
+        popup = Popup(title="本轮游戏结束", content=content,
+                      size_hint=(0.82, None), height=dp(230),
+                      auto_dismiss=False,
+                      title_color=hex_rgb(COL_TEXT) + (1,),
+                      title_size="17sp",
+                      separator_color=hex_rgb(COL_DIV) + (1,))
+        popup.open()
+        # 语音播完后自动重置并关闭弹窗
+        _done = [False]                            # 防重复调用
+        def _auto_reset():
+            if _done[0]:
+                return
+            _done[0] = True
+            self.reset_balance()
+            popup.dismiss()
+        self._play_round_end_voice(on_done=_auto_reset)
+        # 兜底定时器: 语音回调若因任何原因没触发, 8 秒后强制重置
+        Clock.schedule_once(lambda dt: _auto_reset(), 8.0)
+
+    def _show_round_settings(self):
+        """轮次设定弹窗: 选择 20/50/100 + 最近完成的轮次历史。"""
+        content = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
+
+        # 每轮次数选择
+        sel_box = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
+        lbl = Label(text="每轮游戏次数：", font_size="16sp", halign="right", valign="middle",
+                    color=hex_rgb(COL_SUB) + (1,), size_hint_x=None, width=dp(120))
+        lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        sel_box.add_widget(lbl)
+        sel_btns = {}
+        for val in (20, 50, 100):
+            b = Button(text="%d次" % val, font_size="16sp", bold=True,
+                       background_normal="", background_down="",
+                       color=(1, 1, 1, 1), size_hint_x=None, width=dp(72))
+            b.bind(on_release=lambda _b, v=val: self._set_max_plays(v, sel_btns))
+            sel_btns[val] = b
+            sel_box.add_widget(b)
+        sel_box.add_widget(Widget())
+        content.add_widget(sel_box)
+
+        def _refresh_sel():
+            for v, b in sel_btns.items():
+                b.background_color = hex_rgb(COL_BTN if self.max_plays == v else COL_BTN_OFF) + (1,)
+        _refresh_sel()
+
+        # 历史记录(ScrollView 可滚动, 最多显示最近 100 条)
+        hist_lbl = Label(text="最近完成的轮次：", font_size="15sp", halign="left", valign="middle",
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
+        hist_lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        content.add_widget(hist_lbl)
+        if self.round_history:
+            lines = []
+            for i, r in enumerate(reversed(self.round_history[-100:])):
+                lines.append("最近第%d轮  每轮%d次  剩 %d 个珠子" %
+                            (i + 1, r["plays"], r["balance"]))
+            text = "\n".join(lines)
+        else:
+            text = "暂无完成的轮次记录"
+        hist_text = Label(text=text, font_size="15sp", halign="left", valign="top",
+                          color=hex_rgb(COL_TEXT) + (0.7,),
+                          size_hint_y=None)
+        hist_text.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)),
+                       texture_size=lambda w, *_: setattr(w, "height", w.texture_size[1] + dp(8)))
+        scroll = ScrollView(size_hint=(1, 1), bar_width=dp(6))
+        scroll.add_widget(hist_text)
+        content.add_widget(scroll)
+
+        ok_btn = Button(text="确定", font_size="16sp", bold=True,
+                        background_normal="", background_down="",
+                        background_color=hex_rgb(COL_BTN) + (1,),
+                        color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
+        popup = Popup(title="每轮游戏次数设定", content=content,
+                      size_hint=(0.84, None), height=dp(480),
+                      auto_dismiss=True,
+                      title_color=hex_rgb(COL_TEXT) + (1,),
+                      title_size="17sp",
+                      separator_color=hex_rgb(COL_DIV) + (1,))
+        ok_btn.bind(on_release=popup.dismiss)
+        content.add_widget(ok_btn)
+        popup.open()
+
+    def _set_max_plays(self, val, sel_btns=None):
+        """切换每轮次数上限: 更换即重置(珠子/游玩次数/轮次全部清零, 从头开始)。"""
+        if self.max_plays == val:
+            return
+        self.max_plays = val
+        self.round_btn.text = "每轮%d次" % val
+        self.balance = START_BEADS
+        self.display_balance = float(START_BEADS)
+        self._anim_target_balance = float(START_BEADS)
+        self._anim_start_balance = float(START_BEADS)
+        self.plays = 0
+        self.hits = 0
+        self.round_plays = 0
+        self._round_end_shown = False
+        self._refresh_stats()
+        if self.state == "ready":
+            self.multipliers = roll_multipliers(self.rtp_target)
+            self.game_area._redraw()
+        # 刷新弹窗内选中高亮
+        if sel_btns:
+            for v, b in sel_btns.items():
+                b.background_color = hex_rgb(COL_BTN if self.max_plays == v else COL_BTN_OFF) + (1,)
+        # toast + 语音提示
+        self.game_area.center_toast("每轮已设定为%d次" % val, hexcolor=COL_GREEN, size=20, life=1.5)
+        self.sfx.play("voice_round_set_%d" % val)
 
     # ------------------------------ 音效 ------------------------------
     def _play_events(self, b):
@@ -2591,6 +2839,7 @@ class RootWidget(BoxLayout):
         self.power_lbl.font_size       = sp(14) * fs
 
         self.mute_btn.font_size = sp(13) * fs
+        self.round_btn.font_size = sp(13) * fs
         for b in self.rtp_btns.values():
             b.font_size = sp(16) * fs
         for b in self.bet_btns.values():
@@ -2599,6 +2848,7 @@ class RootWidget(BoxLayout):
         self.fire_btn.font_size  = sp(16) * fs
 
         self.mute_btn.width    = dp(64)  * us
+        self.round_btn.width   = dp(88)  * us
         self.title_lbl.width    = dp(112) * us
         self.reset_btn.width   = dp(96)  * us
         self.fire_btn.width    = dp(110) * us
