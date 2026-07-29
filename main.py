@@ -2176,14 +2176,16 @@ class GameArea(FloatLayout):
         self._spring_base.pos = kw["pos"]
         self._spring_base.size = kw["size"]
         # 弹簧锯齿线圈: 从底座顶到球底, 4圈, 随蓄力压缩
+        # 弹簧 Z 字形: 底座顶→左→右→球底, 蓄力越足越压扁
         ball_bottom = (b["y"] + BALL_R * BALL_VIEW) if b is not None else PLUNGER_Y + BALL_R
-        coil_h = max(2.0, (ball_bottom - py) / 4.0)
-        cx = PLUNGER_X
-        amp = 8.0
-        pts = []
-        for i in range(5):
-            y = py + i * coil_h
-            pts.extend([self._px(cx + (amp if i % 2 == 0 else -amp)), self._py(y)])
+        h = max(1.0, ball_bottom - py)
+        cx = self._px(PLUNGER_X)
+        left_x = self._px(LANE_L + 10)
+        right_x = self._px(RIGHT_INNER - 10)
+        top_y = self._py(ball_bottom)
+        mid_y = self._py(py + h * 0.5)
+        bot_y = self._py(py)
+        pts = [left_x, top_y, right_x, mid_y, left_x, bot_y]
         self._spring_coil.points = pts
         # 颜色: 哑火→红, 正常→灰蓝渐变为金, 满蓄力→亮金
         weak = g.power < MISFIRE_POWER
@@ -2588,6 +2590,7 @@ class RootWidget(BoxLayout):
             # 哑火: 球照样弹出去, 只是升不过隔墙顶 -> 掉回柱塞。不扣珠子、不计一局、不换盘面
             self.ball = launch_misfire(self.power)
             self.state = "misfire"
+            self.power = 0.0                  # 哑火后清除蓄力显示
             self._misfire_frames = 0
             self.sfx.play("launch", 0.35 + 0.15 * (self.power / MISFIRE_POWER))
             self._set_controls_enabled(False)
@@ -2598,6 +2601,7 @@ class RootWidget(BoxLayout):
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
         self.ball = launch_ball(self.power)
         self.state = "flying"
+        self.power = 0.0                      # 发射后清除蓄力显示
         self.plays += 1
         self.round_plays += 1
         self._crossed = False
