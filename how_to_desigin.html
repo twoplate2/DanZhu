@@ -8,144 +8,129 @@
   :root {
     --bg: #0b1220; --panel: #15223c; --card: #111d33; --text: #e8eefc; --sub: #8fa0c4; --muted: #5a6d8a;
     --green: #39d98a; --blue: #3d8bfd; --red: #e0533b; --purple: #a335ee; --gold: #f0b000;
-    --spring-lo: #8fa0c4; --spring-hi: #f0b000; --brown: #8B6914; --misfire-red: #c45a4a;
-    --radius: 12px; --radius-sm: 8px;
+    --spring-lo: #8fa0c4;
+    --radius: 12px;
   }
   *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
   html { scroll-behavior: smooth; font-size: 16px; }
   body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif; line-height: 1.7; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
-  .wrap { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
 
   /* ═══════════ Hero ═══════════ */
-  .hero { text-align: center; padding: 88px 0 64px; position: relative; overflow: hidden; }
-  .hero::before { content: ""; position: absolute; top: -140px; left: 50%; transform: translateX(-50%); width: 700px; height: 700px; background: radial-gradient(circle, rgba(61,139,253,0.06) 0%, transparent 65%); pointer-events: none; }
-  .hero::after { content: ""; position: absolute; bottom: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--spring-lo), var(--green), var(--blue), var(--purple), var(--gold), var(--red), var(--spring-hi), transparent); opacity: 0.5; }
-  .hero-badge { display: inline-block; padding: 6px 18px; border-radius: 20px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em; color: var(--gold); background: rgba(240,176,0,0.08); border: 1px solid rgba(240,176,0,0.18); margin-bottom: 28px; }
-  .hero h1 { font-size: clamp(1.7rem, 4.5vw, 2.8rem); font-weight: 900; margin-bottom: 14px; letter-spacing: 0.02em; position: relative; z-index: 1; }
+  .hero { text-align: center; padding: 72px 0 40px; position: relative; }
+  .hero::before { content: ""; position: absolute; top: -120px; left: 50%; transform: translateX(-50%); width: 600px; height: 600px; background: radial-gradient(circle, rgba(240,176,0,0.05) 0%, transparent 60%); pointer-events: none; }
+  .hero::after { content: ""; position: absolute; bottom: 0; left: 10%; right: 10%; height: 1px; background: linear-gradient(90deg, transparent, var(--gold), var(--red), var(--purple), transparent); opacity: 0.4; }
+  .hero-badge { display: inline-block; padding: 5px 16px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; color: var(--gold); background: rgba(240,176,0,0.07); border: 1px solid rgba(240,176,0,0.15); margin-bottom: 24px; }
+  .hero h1 { font-size: clamp(1.6rem, 5vw, 3rem); font-weight: 900; margin-bottom: 12px; letter-spacing: 0.02em; line-height: 1.25; position: relative; z-index: 1; }
   .hero h1 span { background: linear-gradient(135deg, var(--gold) 0%, var(--red) 50%, var(--purple) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; background-clip: text; }
-  .hero .subtitle { font-size: clamp(0.9rem, 1.8vw, 1.15rem); color: var(--sub); max-width: 680px; margin: 0 auto 36px; position: relative; z-index: 1; line-height: 1.8; }
-  .hero .subtitle strong { color: var(--gold); font-weight: 700; }
-  .hero-numbers { display: flex; justify-content: center; gap: clamp(20px, 4vw, 48px); flex-wrap: wrap; position: relative; z-index: 1; }
-  .hero-num { text-align: center; }
-  .hero-num .num { font-size: clamp(1.6rem, 4vw, 2.4rem); font-weight: 900; background: linear-gradient(135deg, var(--gold), var(--red)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; background-clip: text; line-height: 1.2; }
-  .hero-num .label { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+  .hero .subtitle { font-size: clamp(0.9rem, 1.6vw, 1.05rem); color: var(--sub); max-width: 560px; margin: 0 auto 32px; position: relative; z-index: 1; line-height: 1.8; }
+  .hero .subtitle em { font-style: normal; color: var(--gold); font-weight: 600; }
 
-  /* ═══════════ Spring Spotlight ═══════════ */
-  .spring-spotlight { position: relative; margin: 48px auto 0; max-width: 780px; background: var(--card); border-radius: var(--radius); padding: 36px 32px; border: 1px solid rgba(240,176,0,0.1); z-index: 1; text-align: left; }
-  .spring-spotlight .new-badge { display: inline-block; padding: 3px 12px; border-radius: 10px; font-size: 0.68rem; font-weight: 700; color: #fff; background: var(--red); margin-bottom: 14px; letter-spacing: 0.04em; }
-  .spring-spotlight h3 { font-size: 1.15rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
-  .spring-spotlight .desc { font-size: 0.88rem; color: var(--sub); line-height: 1.75; margin-bottom: 20px; }
-  .spring-stage { position: relative; width: 100%; height: 180px; background: #060e18; border-radius: 8px; overflow: hidden; border: 1px solid rgba(255,255,255,0.06); }
+  /* ═══════════ Hero Numbers ═══════════ */
+  .hero-numbers { display: flex; justify-content: center; gap: clamp(16px, 3vw, 36px); flex-wrap: wrap; position: relative; z-index: 1; margin-bottom: 36px; }
+  .hero-num { text-align: center; min-width: 80px; }
+  .hero-num .num { font-size: clamp(1.5rem, 3.5vw, 2.2rem); font-weight: 900; background: linear-gradient(135deg, var(--gold), var(--red)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; background-clip: text; line-height: 1.15; }
+  .hero-num .label { font-size: 0.75rem; color: var(--muted); margin-top: 4px; line-height: 1.45; max-width: 110px; margin-left: auto; margin-right: auto; }
+
+  /* ═══════════ Spring Canvas ═══════════ */
+  .spring-stage { position: relative; width: 100%; height: 220px; background: #060e18; border-radius: 10px; overflow: hidden; border: 1px solid rgba(240,176,0,0.08); z-index: 1; max-width: 780px; margin: 0 auto 24px; }
   .spring-stage canvas { display: block; width: 100%; height: 100%; }
-  .spring-legend { display: flex; justify-content: center; gap: 20px; margin-top: 14px; flex-wrap: wrap; }
-  .spring-legend-item { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--sub); }
-  .spring-legend-item .swatch { width: 13px; height: 13px; border-radius: 3px; flex-shrink: 0; }
+  .spring-legend { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; position: relative; z-index: 1; }
+  .spring-legend-item { display: flex; align-items: center; gap: 7px; font-size: 0.82rem; color: var(--sub); }
+  .spring-legend-item .swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
 
-  /* ═══════════ Section ═══════════ */
+  .scroll-hint { text-align: center; margin-top: 8px; position: relative; z-index: 1; }
+  .scroll-hint span { display: inline-block; color: var(--muted); font-size: 0.78rem; animation: bounce 2s ease infinite; }
+  @keyframes bounce { 0%, 100% { transform: translateY(0); opacity: 0.4; } 50% { transform: translateY(6px); opacity: 0.8; } }
+
+  /* ═══════════ Sections ═══════════ */
   .section { padding: 56px 0; }
-  .section-header { text-align: center; margin-bottom: 40px; }
-  .section-header .emoji { font-size: 2.2rem; display: block; margin-bottom: 10px; }
-  .section-header h2 { font-size: clamp(1.3rem, 2.5vw, 1.75rem); font-weight: 700; color: #fff; margin-bottom: 8px; }
-  .section-header .desc { font-size: 0.88rem; color: var(--muted); max-width: 540px; margin: 0 auto; }
+  .section-alt { background: rgba(255,255,255,0.013); }
+  .section-header { text-align: center; margin-bottom: 32px; }
+  .section-header h2 { font-size: clamp(1.2rem, 2.5vw, 1.6rem); font-weight: 700; color: #fff; margin-bottom: 8px; }
+  .section-header .desc { font-size: 0.88rem; color: var(--muted); max-width: 480px; margin: 0 auto; }
+  .sect-spring .section-header h2 { color: var(--gold); }
+  .sect-voice  .section-header h2 { color: var(--blue); }
+  .sect-fair   .section-header h2 { color: var(--green); }
+  .sect-heart  .section-header h2 { color: var(--purple); }
 
-  /* ═══════ Grid & Card ═══════ */
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  /* ═══════════ Grid & Card ═══════════ */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
   .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
-  .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
 
-  .card { background: var(--card); border-radius: var(--radius); padding: 26px 24px; border: 1px solid rgba(255,255,255,0.04); transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s; position: relative; overflow: hidden; }
-  .card:hover { transform: translateY(-3px); border-color: rgba(255,255,255,0.1); box-shadow: 0 12px 36px rgba(0,0,0,0.3); }
-  .card::before { content: ""; position: absolute; top: 0; left: 0; width: 3px; height: 100%; border-radius: 3px 0 0 3px; }
-  .card.accent-green::before { background: var(--green); }
-  .card.accent-blue::before { background: var(--blue); }
-  .card.accent-red::before { background: var(--red); }
-  .card.accent-purple::before { background: var(--purple); }
-  .card.accent-gold::before { background: var(--gold); }
-  .card-num { font-size: 2rem; font-weight: 900; opacity: 0.1; line-height: 1; margin-bottom: 10px; }
-  .card h3 { font-size: 1.02rem; font-weight: 700; margin-bottom: 8px; color: #fff; line-height: 1.4; }
-  .card p { font-size: 0.86rem; color: var(--sub); line-height: 1.72; }
-  .card .highlight { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.78rem; font-weight: 600; margin: 0 1px; }
-  .hl-green  { background: rgba(57,217,138,0.12); color: var(--green); }
-  .hl-blue   { background: rgba(61,139,253,0.12); color: var(--blue); }
-  .hl-red    { background: rgba(224,83,59,0.12); color: var(--red); }
-  .hl-purple { background: rgba(163,53,238,0.12); color: var(--purple); }
-  .hl-gold   { background: rgba(240,176,0,0.12); color: var(--gold); }
-  .hl-spring { background: rgba(143,160,196,0.12); color: var(--spring-lo); }
+  .card { background: var(--card); border-radius: var(--radius); padding: 26px 24px; border: 1px solid rgba(255,255,255,0.04); transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s; position: relative; }
+  .card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.08); box-shadow: 0 8px 28px rgba(0,0,0,0.25); }
+  .card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 8px; color: #fff; line-height: 1.4; }
+  .card p { font-size: 0.88rem; color: var(--sub); line-height: 1.72; }
+  .card .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.76rem; font-weight: 600; margin: 0 2px; }
 
-  /* Glance cards (普通人阅读区) */
-  .glance-card { text-align: center; padding: 26px 14px; border-radius: var(--radius); background: var(--card); border: 1px solid rgba(255,255,255,0.03); transition: transform 0.25s; }
-  .glance-card:hover { transform: translateY(-4px); }
-  .glance-card .g-icon { font-size: 2rem; display: block; margin-bottom: 10px; }
-  .glance-card .g-title { font-size: 0.9rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
-  .glance-card .g-desc { font-size: 0.76rem; color: var(--muted); line-height: 1.6; }
+  .tag-gold   { background: rgba(240,176,0,0.12); color: var(--gold); }
+  .tag-blue   { background: rgba(61,139,253,0.12); color: var(--blue); }
+  .tag-green  { background: rgba(57,217,138,0.12); color: var(--green); }
+  .tag-purple { background: rgba(163,53,238,0.12); color: var(--purple); }
 
-  /* Feature highlight card */
-  .feature-card { background: rgba(240,176,0,0.03); border: 1px solid rgba(240,176,0,0.08); border-radius: var(--radius); padding: 28px; display: flex; gap: 24px; align-items: flex-start; }
-  .feature-card .f-icon { font-size: 2.6rem; line-height: 1; flex-shrink: 0; }
-  .feature-card .f-body h3 { font-size: 1.1rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
-  .feature-card .f-body p { font-size: 0.88rem; color: var(--sub); line-height: 1.78; }
+  /* ═══════════ Big Number Hero (RTP spotlight) ═══════════ */
+  .big-number-spot { text-align: center; padding: 20px 0; }
+  .big-number-spot .giant { font-size: clamp(3rem, 8vw, 5rem); font-weight: 900; background: linear-gradient(135deg, var(--green), var(--gold)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; background-clip: text; line-height: 1.1; }
+  .big-number-spot .giant-label { font-size: 1rem; color: var(--sub); margin-top: 4px; }
 
   /* ═══════════ Quote ═══════════ */
-  .quote { background: var(--panel); border-left: 4px solid var(--gold); border-radius: 0 var(--radius) var(--radius) 0; padding: 22px 28px; margin: 28px 0; font-style: italic; color: var(--sub); font-size: 0.93rem; line-height: 1.8; }
-  .quote .author { display: block; margin-top: 10px; font-style: normal; font-weight: 600; color: var(--gold); font-size: 0.8rem; }
+  .quote-block { background: var(--panel); border-left: 3px solid var(--gold); border-radius: 0 var(--radius) var(--radius) 0; padding: 20px 24px; margin: 32px 0; font-style: italic; color: var(--sub); font-size: 0.9rem; line-height: 1.8; }
+  .quote-block .author { display: block; margin-top: 8px; font-style: normal; font-weight: 600; color: var(--gold); font-size: 0.78rem; }
 
-  /* ═══════════ Summary ═══════════ */
-  .summary-section { padding: 64px 0 80px; background: linear-gradient(180deg, var(--bg) 0%, #0d1a30 100%); border-top: 1px solid rgba(255,255,255,0.04); }
-  .pillars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-top: 36px; }
-  .pillar { text-align: center; padding: 28px 18px; border-radius: var(--radius); background: var(--card); border: 1px solid rgba(255,255,255,0.04); transition: transform 0.25s; }
-  .pillar:hover { transform: translateY(-4px); }
-  .pillar .p-icon { font-size: 2.2rem; display: block; margin-bottom: 10px; }
-  .pillar .p-title { font-size: 0.95rem; font-weight: 700; color: #fff; margin-bottom: 6px; }
-  .pillar .p-desc { font-size: 0.8rem; color: var(--muted); line-height: 1.6; }
+  /* ═══════════ Insight card ═══════════ */
+  .insight { background: rgba(240,176,0,0.025); border: 1px solid rgba(240,176,0,0.08); border-radius: var(--radius); padding: 24px; margin-top: 20px; }
+  .insight h3 { font-size: 1rem; font-weight: 700; color: var(--gold); margin-bottom: 8px; }
+  .insight p { font-size: 0.88rem; color: var(--sub); line-height: 1.8; }
+
+  /* ═══════════ Closing ═══════════ */
+  .closing { text-align: center; padding: 64px 0 48px; border-top: 1px solid rgba(255,255,255,0.04); }
+  .closing .big-quote { font-size: clamp(1.1rem, 2.5vw, 1.45rem); color: #fff; font-weight: 700; line-height: 1.8; max-width: 620px; margin: 0 auto 8px; }
+  .closing .big-quote em { font-style: normal; color: var(--gold); }
+  .closing .kick { font-size: clamp(1.3rem, 3vw, 1.8rem); font-weight: 900; color: var(--gold); margin-top: 20px; }
+  .pillars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 36px; }
+  .pillar { text-align: center; padding: 24px 14px; border-radius: var(--radius); background: var(--card); border: 1px solid rgba(255,255,255,0.03); transition: transform 0.25s; }
+  .pillar:hover { transform: translateY(-3px); }
+  .pillar .p-icon { font-size: 1.8rem; display: block; margin-bottom: 8px; }
+  .pillar .p-title { font-size: 0.9rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+  .pillar .p-desc { font-size: 0.78rem; color: var(--muted); line-height: 1.55; }
 
   /* ═══════════ Footer ═══════════ */
-  .footer { text-align: center; padding: 36px 20px; border-top: 1px solid rgba(255,255,255,0.05); background: var(--bg); }
-  .footer .ftitle { font-size: 0.95rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-  .footer .fsub { font-size: 0.76rem; color: var(--muted); margin-bottom: 12px; }
-  .footer a { color: var(--blue); text-decoration: none; font-weight: 500; transition: color 0.2s; }
+  .footer { text-align: center; padding: 32px 20px 36px; border-top: 1px solid rgba(255,255,255,0.04); }
+  .footer .ftitle { font-size: 0.92rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
+  .footer .fsub { font-size: 0.76rem; color: var(--muted); margin-bottom: 10px; }
+  .footer a { color: var(--blue); text-decoration: none; font-weight: 500; transition: color 0.2s; font-size: 0.85rem; }
   .footer a:hover { color: var(--gold); }
-  .footer .separator { display: inline-block; width: 4px; height: 4px; border-radius: 50%; background: var(--muted); margin: 0 10px; vertical-align: middle; }
-  .footer .color-bar { display: flex; justify-content: center; gap: 4px; margin-bottom: 14px; }
-  .footer .color-bar span { width: 36px; height: 4px; border-radius: 2px; }
+  .footer .separator { display: inline-block; width: 3px; height: 3px; border-radius: 50%; background: var(--muted); margin: 0 8px; vertical-align: middle; }
+  .footer .color-bar { display: flex; justify-content: center; gap: 4px; margin-bottom: 12px; }
+  .footer .color-bar span { width: 32px; height: 4px; border-radius: 2px; }
 
   /* ═══════════ Reveal Animation ═══════════ */
-  @keyframes fadeUp { from { opacity: 0; transform: translateY(22px); } to { opacity: 1; transform: translateY(0); } }
-  .reveal { opacity: 0; animation: fadeUp 0.55s ease forwards; }
-  .reveal-d1 { animation-delay: 0.04s; }
-  .reveal-d2 { animation-delay: 0.08s; }
-  .reveal-d3 { animation-delay: 0.12s; }
-  .reveal-d4 { animation-delay: 0.16s; }
-  .reveal-d5 { animation-delay: 0.20s; }
-
-  /* ═══════════ Section accent colors ═══════════ */
-  .sect-art .section-header h2 { color: var(--gold); }
-  .sect-code .section-header h2 { color: var(--purple); }
-  .sect-design .section-header h2 { color: var(--red); }
-  .sect-ux .section-header h2 { color: var(--green); }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+  .reveal { opacity: 0; animation: fadeUp 0.5s ease forwards; }
+  .reveal-d1 { animation-delay: 0.03s; }
+  .reveal-d2 { animation-delay: 0.07s; }
+  .reveal-d3 { animation-delay: 0.11s; }
 
   /* ═══════════ Responsive ═══════════ */
-  @media (max-width: 1024px) {
-    .grid-5 { grid-template-columns: repeat(3, 1fr); }
-    .pillars { grid-template-columns: 1fr 1fr; }
-    .hero { padding: 64px 0 48px; }
-  }
   @media (max-width: 768px) {
     .grid-2, .grid-3 { grid-template-columns: 1fr; }
-    .grid-5 { grid-template-columns: 1fr 1fr; }
     .pillars { grid-template-columns: 1fr 1fr; }
-    .hero { padding: 48px 0 36px; }
+    .hero { padding: 48px 0 28px; }
+    .hero h1 { font-size: 1.45rem; }
     .section { padding: 36px 0; }
-    .hero h1 { font-size: 1.4rem; }
-    .hero-numbers { gap: 16px; }
-    .feature-card { flex-direction: column; }
-    .spring-spotlight { padding: 24px 18px; }
-    .spring-stage { height: 140px; }
+    .spring-stage { height: 180px; }
+    .closing { padding: 44px 0 36px; }
   }
   @media (max-width: 480px) {
-    .grid-5 { grid-template-columns: 1fr; }
-    .pillars { grid-template-columns: 1fr; }
-    .hero-num .num { font-size: 1.3rem; }
+    .pillars { grid-template-columns: 1fr 1fr; }
+    .hero-num .num { font-size: 1.25rem; }
+    .hero-num .label { font-size: 0.7rem; }
     .card { padding: 20px 16px; }
+    .spring-stage { height: 150px; }
+    .spring-legend { gap: 10px; }
+    .spring-legend-item { font-size: 0.73rem; }
+    .hero-numbers { gap: 10px; }
   }
 </style>
 </head>
@@ -154,542 +139,358 @@
 
 <!-- ═══════════════ HERO ═══════════════ -->
 <header class="hero">
-  <div class="hero-badge">Design Deep Dive / 2026.07</div>
-  <h1>跳跳的弹珠机 &mdash; <span>一个小游戏的大设计</span></h1>
+  <div class="hero-badge">跳跳的弹珠机 &middot; 设计深潜 &middot; 2026.07</div>
+  <h1><span>一个小游戏的大设计</span></h1>
   <p class="subtitle">
-    弹簧看得见的蓄力、<strong>43 个</strong> Xiaoxiao 语音播报、<strong>120%</strong> 精确返奖率、<strong>20/50/100 次</strong>防沉迷轮次——四个维度，每一层都做到了极致
+    一根<em>看得见力量</em>的弹簧，一个<em>会说话报数</em>的游戏——<br>当四个维度同时做到极致，弹珠机就不再只是弹珠机
   </p>
+
   <div class="hero-numbers">
-    <div class="hero-num"><div class="num">120%</div><div class="label">RTP 三档可切 / &plusmn;0.05</div></div>
-    <div class="hero-num"><div class="num">43</div><div class="label">Xiaoxiao 语音场景</div></div>
-    <div class="hero-num"><div class="num">36</div><div class="label">程序化合成音效</div></div>
-    <div class="hero-num"><div class="num">0</div><div class="label">外部音频文件依赖</div></div>
+    <div class="hero-num"><div class="num">120%</div><div class="label">返奖率<br>三档可切</div></div>
+    <div class="hero-num"><div class="num">43</div><div class="label">条真人语音<br>中奖报数</div></div>
+    <div class="hero-num"><div class="num">36</div><div class="label">种音效<br>代码生成</div></div>
+    <div class="hero-num"><div class="num">0</div><div class="label">个音频文件<br>零外部依赖</div></div>
   </div>
 
-  <!-- Spring Spotlight -->
-  <div class="spring-spotlight">
-    <div class="new-badge">NEW</div>
-    <h3>&#x1f50c; 弹簧可视化：看得见的蓄力</h3>
-    <p class="desc">
-      地板下方暗色凹槽内，一条 <strong>Z 字形弹簧</strong>（上横 &rarr; 斜线 &rarr; 下横）随手指蓄力而压缩、变色。
-      这是弹珠机第一次让你"看见"弹射力度——不是读数字，不是猜状态，是用眼睛感知力量。
-    </p>
-    <div class="spring-stage">
-      <canvas id="springCanvas"></canvas>
-    </div>
-    <div class="spring-legend">
-      <div class="spring-legend-item"><div class="swatch" style="background:#8fa0c4;"></div>松弛态 &middot; 灰蓝 #8fa0c4</div>
-      <div class="spring-legend-item"><div class="swatch" style="background:linear-gradient(90deg,#8fa0c4,#f0b000);"></div>蓄力渐变 &rarr; 金黄 #f0b000</div>
-      <div class="spring-legend-item"><div class="swatch" style="background:#c45a4a;"></div>哑火态 &middot; 橙红 #c45a4a</div>
-      <div class="spring-legend-item" style="font-size:0.73rem;color:var(--muted);margin-left:12px;">Kivy Line 原语 &middot; 线宽 1.5px &middot; 跨度 32px &middot; 0.5s 回弹 &middot; 零图片</div>
-    </div>
+  <div class="spring-stage">
+    <canvas id="springCanvas"></canvas>
   </div>
+  <div class="spring-legend">
+    <div class="spring-legend-item"><div class="swatch" style="background:#8fa0c4;"></div>松弛态</div>
+    <div class="spring-legend-item"><div class="swatch" style="background:linear-gradient(90deg,#8fa0c4,#f0b000);"></div>蓄力渐变 &rarr; 金黄</div>
+    <div class="spring-legend-item"><div class="swatch" style="background:#c45a4a;"></div>力度不足 &middot; 橙红警告</div>
+  </div>
+
+  <div class="scroll-hint"><span>往下看，了解为什么这根弹簧值得认真对待 &darr;</span></div>
 </header>
 
-<!-- ═══════════════ 一图读懂 ═══════════════ -->
-<section class="section">
+<!-- ═══════════════ SECTION 1: 弹簧说了什么 ═══════════════ -->
+<section class="section sect-spring">
   <div class="section-header">
-    <span class="emoji">&#x1f4a1;</span>
-    <h2>一图读懂：这游戏厉害在哪？</h2>
-    <p class="desc">抛开术语，5 个你不需要是程序员也能理解的亮点</p>
-  </div>
-  <div class="grid-5">
-    <div class="glance-card reveal reveal-d1">
-      <span class="g-icon">&#x1f50c;</span>
-      <div class="g-title">弹簧看得见</div>
-      <div class="g-desc">地板下 Z 字形弹簧随手指压缩变色，蓄力大小一目了然——不再盲猜"按多深"</div>
-    </div>
-    <div class="glance-card reveal reveal-d1">
-      <span class="g-icon">&#x1f5e3;</span>
-      <div class="g-title">会说话</div>
-      <div class="g-desc">43 个真人语音，中奖念"珠子加五十"，余额不足会提醒——静音也能玩明白</div>
-    </div>
-    <div class="glance-card reveal reveal-d2">
-      <span class="g-icon">&#x1f3af;</span>
-      <div class="g-title">不坑人</div>
-      <div class="g-desc">返奖率精确 80/100/120 三档，落点发射前就定好——物理表演真实但数值可控</div>
-    </div>
-    <div class="glance-card reveal reveal-d2">
-      <span class="g-icon">&#x1f6d1;</span>
-      <div class="g-title">不沉迷</div>
-      <div class="g-desc">每轮 20/50/100 次自动停止，弹窗 + 语音播报后重置——把限制变成"完成挑战"</div>
-    </div>
-    <div class="glance-card reveal reveal-d3">
-      <span class="g-icon">&#x2728;</span>
-      <div class="g-title">细节控</div>
-      <div class="g-desc">四行文字精确 24dp 对齐、按钮颜色五档渐变、哑火不扣珠——每个像素都有理由</div>
-    </div>
-  </div>
-</section>
-
-<!-- ═══════════════ SPRING DEEP DIVE ═══════════════ -->
-<section class="section" style="background:rgba(240,176,0,0.015);">
-  <div class="section-header">
-    <span class="emoji">&#x1f50c;</span>
-    <h2 style="color:var(--gold);">弹簧可视化：从"盲猜"到"看见"</h2>
-    <p class="desc">纯 Kivy Line 原语实现，零图片依赖，4 个状态 + 3 种颜色</p>
+    <h2>一根弹簧的自我表达</h2>
+    <p class="desc">弹珠机史上第一次，你能"看见"自己用了多大力</p>
   </div>
 
   <div class="grid-2">
-    <div class="card accent-gold reveal reveal-d1">
-      <div class="card-num">01</div>
-      <h3>&#x1f4cf; Z 字形结构：上横 &rarr; 斜线 &rarr; 下横</h3>
+    <div class="card reveal reveal-d1">
+      <h3>眼睛代替数字</h3>
       <p>
-        三条 <span class="highlight hl-gold">Line</span> 原语构成完整的 Z 字形弹簧。线宽 <b>1.5px</b>，端点 round 圆头，水平跨度 <b>32px</b>（边距 5）。蓄力时两条横线间距从 <b>9px</b>（松弛）压缩至 <b>23px</b>（满蓄力），对角线同步收窄——视觉上的弹簧压缩感完全由数学驱动，每帧重新计算 6 个端点坐标。
+        弹珠机最让人抓狂的就是"我该用多大力？"。这根弹簧在你手指下压缩、变色——力量越大越金黄。不需要看任何数字，<span class="tag tag-gold">看颜色就知道力度</span>。就像捏一个真正的弹簧，你的手指和眼睛同时感知到力量。
       </p>
     </div>
-    <div class="card accent-gold reveal reveal-d1">
-      <div class="card-num">02</div>
-      <h3>&#x1f3a8; 颜色叙事：灰蓝 &rarr; 金黄 &rarr; 橙红</h3>
+    <div class="card reveal reveal-d1">
+      <h3>三种颜色，三个故事</h3>
       <p>
-        <b>松弛</b>（力度 0）：<span class="highlight hl-spring">#8fa0c4</span> 蓝灰，安静的待命状态。<br>
-        <b>蓄力中</b>（0.15~1.0）：RGB 三通道线性插值，从灰蓝平滑过渡到 <span class="highlight hl-gold">#f0b000</span> 金黄——越来越"烫"，紧迫感递增。<br>
-        <b>哑火</b>（&lt; 0.15）：<span class="highlight hl-red">#c45a4a</span> 橙红，警告"这一发弹不上去"。
-      </p>
-    </div>
-    <div class="card accent-gold reveal reveal-d2">
-      <div class="card-num">03</div>
-      <h3>&#x23f1; 释放回弹：0.5 秒平滑衰减</h3>
-      <p>
-        松手后弹簧不是瞬间跳回——<code>_spring_power</code> 以每帧 FIXED_DT/0.5 速率线性衰减，0.5 秒内从压缩态平滑伸展回原位。蓄力时弹簧即刻跟随（无延迟）、释放时减速回弹（有惯性），一快一慢的节奏完全符合物理直觉。用最简单的一次函数，做出了最自然的"弹簧感"。
-      </p>
-    </div>
-    <div class="card accent-gold reveal reveal-d2">
-      <div class="card-num">04</div>
-      <h3>&#x1f3ad; 暗色凹槽：弹簧的专属舞台</h3>
-      <p>
-        弹簧嵌在 <span class="highlight hl-spring">#060e18</span> 深色凹槽里，精确开在竖井正下方（x: 466~508），宽度与发射通道完全对齐。深底色把弹簧的亮色衬得更醒目。凹槽本身暗示"这里有东西在动"——即使玩家不知道这叫 Z 字形弹簧，也能在看一眼后理解"它在变，它在告诉我力量"。
+        <span class="tag tag-gold">灰蓝色</span> = 还没用力，安静待命。<br>
+        <span class="tag tag-gold">金黄色</span> = 正在蓄力，越来越"烫"。<br>
+        <span class="tag tag-gold">橙红色</span> = 力度不够，弹不上去，再来一次。<br>
+        三种颜色扫一眼就懂，不需要识字、不需要说明书。
       </p>
     </div>
   </div>
 
-  <div class="feature-card reveal reveal-d3" style="margin-top:20px;">
-    <div class="f-icon">&#x1f4a1;</div>
-    <div class="f-body">
-      <h3>为什么弹簧可视化是一个"大设计"？</h3>
-      <p>
-        弹珠机类游戏的蓄力机制一直有一个体验断层：玩家按住按钮，但只能靠力度条的数字来估算力度。力度条是"仪表盘思维"——你读取数据，然后行动。弹簧是"物理世界思维"——你看见弹簧被压缩，本能就知道"这就是弹射的力量"。后者不需要学习、不需要识字、不需要注意力切换——它是前文字时代就刻在人类大脑里的力学直觉。<br><br>
-        而且弹簧做在<b>地板下面</b>不是随意的：它是发射通道的垂直延伸——球从竖井弹上去，弹簧在竖井正下方压缩——上下呼应，形成一条完整的"力量轴线"。这是 UI 设计里难得的"装饰即功能"案例：它既是装饰，又是信息，又是空间锚点。
-      </p>
-    </div>
+  <div class="insight reveal reveal-d2">
+    <h3>为什么这件事值得认真对待？</h3>
+    <p>
+      力度条是"仪表盘思维"——你读取数字，然后行动。弹簧是"身体思维"——你看见它被压缩，本能就知道力量有多大。后者不需要学习、不需要注意力切换——它是人类几百万年进化刻在大脑里的力学直觉。而且这根弹簧全用代码画出——<span class="tag tag-gold">零张图片</span>，每个像素都是算出来的。
+    </p>
   </div>
 </section>
 
-<!-- ═══════════════ 1. 美术审美 ═══════════════ -->
-<section class="section sect-art">
+<!-- ═══════════════ SECTION 2: 当游戏开始说话 ═══════════════ -->
+<section class="section section-alt sect-voice">
   <div class="section-header">
-    <span class="emoji">&#x1f3a8;</span>
-    <h2>美术审美</h2>
-    <p class="desc">"金色小球在深蓝底色上的最强明度对比，视线自动追踪"</p>
+    <h2>当游戏开始说话</h2>
+    <p class="desc">手机静音时代里，一个"会出声"的游戏如何设计自己的声音</p>
   </div>
-  <div class="grid-2">
-    <div class="card accent-gold reveal reveal-d1">
-      <div class="card-num">01</div>
-      <h3>&#x1f308; 配色体系：信号灯到奢侈品的渐变</h3>
+
+  <div class="grid-3">
+    <div class="card reveal reveal-d1">
+      <h3>43条真人语音</h3>
       <p>
-        深色基底 <span class="highlight hl-gold">#0b1220</span> 在 OLED 上几乎不发光，天然省电且对比度极高。五档中奖色遵循
-        <span class="highlight hl-green">绿(安全)</span> &rarr;
-        <span class="highlight hl-blue">蓝(提示)</span> &rarr;
-        <span class="highlight hl-red">红(警戒)</span> &rarr;
-        <span class="highlight hl-purple">紫(稀有)</span> &rarr;
-        <span class="highlight hl-gold">金(巅峰)</span>
-        的渐变逻辑。槽位底色备有两套：x20 金字用深色底替代白色，一行代码解决金色在白底上的对比度问题。
+        中奖时念"珠子加五十"，余额不足时提醒"珠子数量不足请重置"，每一轮结束告诉你输赢——<span class="tag tag-blue">43个场景</span>全由温柔女声预录。即使是静音模式下的玩家，也能通过声音开关随时唤醒。
       </p>
     </div>
-    <div class="card accent-gold reveal reveal-d1">
-      <div class="card-num">02</div>
-      <h3>&#x1f4d0; 排版精度：24dp 左沿 + 5dp 行间距</h3>
+    <div class="card reveal reveal-d1">
+      <h3>36种音效，0个文件</h3>
       <p>
-        返还/投入/信息/底行四行文字首字符统一左沿 <b>24dp</b>，行内 spacing <b>5dp</b>。每行按钮宽度固定，标签右对齐 115dp——这不是"差不多对齐就行"，而是精确到像素的网格系统。双因子缩放（<span class="highlight hl-gold">_font_scale</span> + <span class="highlight hl-gold">_ui_scale</span>）在横屏时激进挤掉空白，纵向边距用 u<sup>2</sup> 平方衰减，把垂直空间全还给游戏区。
+        弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。没有mp3文件、没有下载等待、没有版本管理。全部音效合成只需不到半秒，比加载一张图片还快。
       </p>
     </div>
-    <div class="card accent-gold reveal reveal-d2">
-      <div class="card-num">03</div>
-      <h3>&#x1f3ac; 三段式动画节奏</h3>
+    <div class="card reveal reveal-d2">
+      <h3>三层保险，绝不哑火</h3>
       <p>
-        中奖特效三段编排：<b>槽位白闪 0.3s</b> 先行定位 &rarr;
-        <b>Hero 大字 2.4s</b> 缩放弹性 (1.0&rarr;1.2&rarr;1.0) + 上浮 38px/s + 透明度淡出 &rarr;
-        <b>落袋浮字</b> 补充确认。阴影层独立于主体，形成"浮出屏幕"的视差感。toast 余额不足前 60% 实色后 40% 淡出，阅读时间足够又不滞留。
-      </p>
-    </div>
-    <div class="card accent-gold reveal reveal-d2">
-      <div class="card-num">04</div>
-      <h3>&#x1f539; 发射按钮的颜色叙事</h3>
-      <p>
-        按钮不只是功能入口——它的颜色在讲故事：<b>充电态</b>：深棕 <span class="highlight hl-gold">#8B6914</span>，暗示"正在蓄积力量"；
-        <b>哑火区间</b>（P &lt; 0.15）：红色警告，提醒"力度还不够"；
-        <b>力度条</b>：金黄从下往上填充，与弹簧的金黄渐变上下呼应。三种颜色一套叙事：棕（准备）&rarr; 金（蓄力）&rarr; 红（危险）。
+        播放系统有三层后备方案——从手机原生硬件，到系统底层接口，再到纯软件兜底。<span class="tag tag-blue">任意一层坏了自动切下一层</span>。玩家永远听得到声音，每一层切换对玩家完全透明。
       </p>
     </div>
   </div>
 </section>
 
-<!-- ═══════════════ 2. 程序架构 ═══════════════ -->
-<section class="section sect-code" style="background: rgba(255,255,255,0.006);">
-  <div class="section-header">
-    <span class="emoji">&#x1f9e9;</span>
-    <h2>程序架构</h2>
-    <p class="desc">"结果预定、过程真实，两者互不污染"</p>
-  </div>
-  <div class="grid-2">
-    <div class="card accent-purple reveal reveal-d1">
-      <div class="card-num">01</div>
-      <h3>&#x1f3af; 作弊预定 + 物理表演双层架构</h3>
-      <p>
-        <span class="highlight hl-purple">choose_target()</span> 发射前按概率选定目标槽位，RTP 精确到 &plusmn;0.05。
-        <span class="highlight hl-purple">steer_ball()</span> 引导球体时<b>只注入 vx 不改位置</b>，物理引擎依旧是纯函数
-        <span class="highlight hl-purple">physics_step()</span>。80/100/120 三档一键切换，比传统"调倍率赌大数定律"收敛速度快一个数量级。
-      </p>
-    </div>
-    <div class="card accent-purple reveal reveal-d1">
-      <div class="card-num">02</div>
-      <h3>&#x1f3b5; 程序化音效：370ms 合成 36 个音效</h3>
-      <p>
-        正弦分音 + 噪声瞬态 + 梳状混响，36 个 16bit PCM 音效在 <span class="highlight hl-purple">bake_bank()</span> 中实时合成，总耗时仅 <b>~370ms</b>。<span class="highlight hl-purple">_ARNG</span> 独立随机流与游戏主随机流<b>物理隔离</b>——改音效配方不会扰动盘面和落点序列。0 音频文件、0 版本管理负担、0 加载延迟。
-      </p>
-    </div>
-    <div class="card accent-purple reveal reveal-d2">
-      <div class="card-num">03</div>
-      <h3>&#x1f50a; 跨平台音频三级降级</h3>
-      <p>
-        <b>SoundPool</b>（Android 硬件 mixer, pyjnius）&rarr; <b>_WaveOut</b>（Windows winmm, 8 声道叠加）&rarr;
-        <b>_KivySoundOut</b>（兜底）&rarr; <b>静音</b>。每层接口统一（gain/节流/impact 同构），任意层缺失自动跌落。语音文件两种播放路径（named 直读 / pcm 剥头并入音效库）完全同构，业务代码只写一次。
-      </p>
-    </div>
-    <div class="card accent-purple reveal reveal-d2">
-      <div class="card-num">04</div>
-      <h3>&#x1f6e0; 卡死兜底：看位移不看速度</h3>
-      <p>
-        <span class="highlight hl-purple">steer_ball()</span> 每帧注入 vx，碰撞事件在死锁位置仍在产生——速度和事件位都在"说谎"。只有<b>帧间位移 &le; 1px</b> 不撒谎：球的位置被钉阵物理锁定。判据从"发射后 8 秒"改为"连续 4 秒位移 &le; 1px"，杜绝晃动未落袋时提前结算（音效/飘字/震动全早于真实落袋）。
-      </p>
-    </div>
-    <div class="card accent-purple reveal reveal-d3" style="grid-column: 1 / -1;">
-      <div class="card-num">05</div>
-      <h3>&#x1f527; 构建管线与数字朗读系统</h3>
-      <div class="grid-2" style="margin-top:10px;">
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f4e6; 生成物架构</p>
-          <p><span class="highlight hl-purple">main.py</span> 由父项目 build_android_main.py 自动生成——物理/音效从 tkinter 源原样抽取，Kivy UI 手写段拼接。单一事实源，杜绝两版漂移。</p>
-        </div>
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f522; 数字朗读：22 片段 &middot; 5ms 队列</p>
-          <p>0~9 / 十百千万 / 两，共 <b>22 个</b>独立语音片段。中文数字按"二/两"规则（千位/万位自动选"两"）映射为 clip key 序列，按 duration+5ms 间隔排队播放——对标 Clac 项目方案，不拼接 PCM，保持 Xiaoxiao 原声音质。</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="quote">
-  "这本质上是老虎机的数学内核套了一层弹珠机的皮，两者各自做到极致。
-  物理表演骗过了直觉，数值控制骗过了概率。"
-  <span class="author">&mdash; 设计专家评审</span>
-</div>
-
-<!-- ═══════════════ 3. 游戏设计 ═══════════════ -->
-<section class="section sect-design">
-  <div class="section-header">
-    <span class="emoji">&#x1f3ae;</span>
-    <h2>游戏设计</h2>
-    <p class="desc">"糖多盐少的配方：小甜头频繁，大高潮稀有但真实存在"</p>
-  </div>
-  <div class="grid-2">
-    <div class="card accent-red reveal reveal-d1">
-      <div class="card-num">01</div>
-      <h3>&#x1f4b0; RTP 120%：三档可切的精确返奖</h3>
-      <p>
-        80% / 100% / <span class="highlight hl-red">120%</span> 三档一键切换，精度 &plusmn;0.05。
-        不是"调倍率赌大数定律慢慢收敛"——发射前 <span class="highlight hl-red">choose_target()</span>
-        就按概率表选定了目标槽，物理引擎只负责生成可信的视觉轨迹。
-        玩家看到的每颗球都是"真的在弹"，但落点在发射瞬间就已确定。
-      </p>
-    </div>
-    <div class="card accent-red reveal reveal-d1">
-      <div class="card-num">02</div>
-      <h3>&#x1f6a7; 防沉迷轮次：限制包装成成就感</h3>
-      <p>
-        每轮 <b>20 / 50 / 100</b> 次可选（默认 50），达上限弹出总结窗口，语音播报完整句子后自动重置。
-        JSON 持久化保存最近 <b>100 条</b>历史记录。这不是冷冰冰的"你被踢了"——而是包装成
-        <b>"完成一轮挑战"</b>的闭环。轮次设定弹窗纵向自适应 + ScrollView 可滚动——不溢出、不截断。
-      </p>
-    </div>
-    <div class="card accent-red reveal reveal-d2">
-      <div class="card-num">03</div>
-      <h3>&#x1f4aa; 蓄力机制：67px 操作感 + 零成本容错</h3>
-      <p>
-        弱蓄力冲顶 x=336，满蓄力 x=269，<b>67px 的跨度</b>保证玩家能感知到"用力"的差异（&ge;50px 阈值）。
-        哑火（P &lt; 0.15）球弹起落回柱塞，<b>不扣珠、不计局、不换盘面</b>——三条防线各管各的：
-        防误触扣珠的挫败感、防免费刷盘面的漏洞、防新手练习的心理负担。
-      </p>
-    </div>
-    <div class="card accent-red reveal reveal-d2">
-      <div class="card-num">04</div>
-      <h3>&#x1f4ca; 倍率分布：E=3.35 的甜区设计</h3>
-      <p>
-        <span class="highlight hl-green">x2 占 55%</span> 保证"几乎每把都有东西回去"的正反馈密度；
-        <span class="highlight hl-gold">x20 仅 1.5%</span> 制造稀缺感和社交传播素材。玩家不会因连续空转而弃游，也不会因大奖泛滥而麻木。
-        这是行为经济学里"可变比率强化"的经典配方——最高成瘾性的奖励频率。
-      </p>
-    </div>
-    <div class="card accent-red reveal reveal-d3" style="grid-column: 1 / -1;">
-      <div class="card-num">05</div>
-      <h3>&#x1f389; 更多设计亮点</h3>
-      <div class="grid-3" style="margin-top:10px;">
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f509; 三态声音开关</p>
-          <p>语音已开(绿底) &rarr; 音效已开(蓝底) &rarr; 音效已关(深底)，三种色相完全不同，余光一扫即知当前模式。每次切换都有专属提示音确认。</p>
-        </div>
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f4f3; 震动时长分档</p>
-          <p>45/75/110/150ms 逐级递增——闭眼也能感知中奖大小。振幅 255（满幅）而非系统默认 ~50%，触觉反馈层次化。</p>
-        </div>
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f6ab; 飞行状态锁定</p>
-          <p>球在飞行中时，语音按钮和轮次按钮同步灰化——防止中途切换设置导致状态混乱，同时提供清晰的不可操作视觉暗示。</p>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<div class="quote">
-  "三通道从未同时缺席——任何时候玩家至少有两个感官参与。
-  音效是时间叙事线，视觉是空间信息层，触觉是情感放大器。"
+<!-- ═══════════════ quote ═══════════════ -->
+<div class="quote-block">
+  "棘轮声越来越急、弹簧变金黄、发射咔哒一声、球撞钉子叮叮当当、入袋咚、语音报结果——视觉、听觉、触觉从未同时缺席。每一步操作都有确认，每一个状态都有声音。"
   <span class="author">&mdash; UX 专家评审</span>
 </div>
 
-<!-- ═══════════════ 4. 用户体验 ═══════════════ -->
-<section class="section sect-ux" style="background: rgba(255,255,255,0.006);">
+<!-- ═══════════════ SECTION 3: 不坑人的数学 ═══════════════ -->
+<section class="section sect-fair">
   <div class="section-header">
-    <span class="emoji">&#x1f9e0;</span>
-    <h2>用户体验</h2>
-    <p class="desc">"每一步操作都有确认，每个状态都有声音，每一处沉默都是设计"</p>
+    <h2>数学站在你这边</h2>
+    <p class="desc">120% 返奖率意味着什么？意味着你投入10颗珠子，预期能拿回12颗</p>
   </div>
-  <div class="grid-2">
-    <div class="card accent-green reveal reveal-d1">
-      <div class="card-num">01</div>
-      <h3>&#x1f5e3; 43 个语音场景：手机静音时代的"听觉 UI"</h3>
+
+  <div class="big-number-spot reveal reveal-d1">
+    <div class="giant">120%</div>
+    <div class="giant-label">三档可切（80 / 100 / 120）&middot; 精确到小数点后两位</div>
+  </div>
+
+  <div class="grid-2" style="margin-top:24px;">
+    <div class="card reveal reveal-d2">
+      <h3>结果提前算好，物理只管表演</h3>
       <p>
-        15 种中奖金额全覆盖（"珠子加五十"）、余额不足全句播报（2.9s 节流防连点叠弹）、
-        轮次结束队列拼接（结束提示 + 数字朗读 + 后缀，5ms 间隔）、
-        切换轮次 / 手动重置 / 声音切换各有专用语音。
-        全部 XiaoxiaoNeural +10% 语速预录，人声在手机中频段清晰可辨——即使琶音被外放吃掉，语音依然通透。
+        每颗球的落点<span class="tag tag-green">在发射前就按概率选好</span>，物理引擎只负责生成可信的弹跳轨迹。你看的每颗球都是"真的在弹"——但数值始终精确可控。不是"调倍率赌运气慢慢收敛"，是每一发都在计划之内。
       </p>
     </div>
-    <div class="card accent-green reveal reveal-d1">
-      <div class="card-num">02</div>
-      <h3>&#x1f6e1; 容错三件套：哑火 &middot; 余额不足 &middot; 卡死</h3>
+    <div class="card reveal reveal-d2">
+      <h3>不让你上头：限制包装成成就感</h3>
       <p>
-        <b>哑火</b>：力度不足 0.15 阈值，球弹起落回柱塞——完整的"差点就出去了"戏剧感，但零损失。
-        <b>余额不足</b>：中央 toast + 语音播报全句，2.9s 节流防连点叠弹。三档提醒同时触发（toast + 语音 + 按钮状态不变）。
-        <b>卡死兜底</b>：看位移不看时间，避免球晃动未落袋时提前结算。
+        每轮<span class="tag tag-green">20、50或100次</span>，打完自动停止，弹窗说"恭喜完成一轮挑战"。不是冷冰冰踢你出去，而是像完成一局棋一样有仪式感。历史记录保存最近100条，随时回顾自己的战绩。
       </p>
-    </div>
-    <div class="card accent-green reveal reveal-d2">
-      <div class="card-num">03</div>
-      <h3>&#x1f504; 重置按钮：强制中断任何状态的"逃生舱"</h3>
-      <p>
-        on_press 瞬间闪亮反馈，<b>强制中断任何状态</b>（ready / charging / flying / landing / landed），
-        28sp toast "珠子数量已重置" + 语音播报 <span class="highlight hl-green">voice_reset_progress</span>。
-        无论在蓄力、飞行还是等结果，按下就重置——不是"等这轮结束后再重置"，而是"现在就重置"。
-        这是给玩家的终极控制权。
-      </p>
-    </div>
-    <div class="card accent-green reveal reveal-d2">
-      <div class="card-num">04</div>
-      <h3>&#x1f3a7; 三通道反馈：一条完整的时间叙事线</h3>
-      <p>
-        棘轮声递增（间隔 250ms &rarr; 70ms）建立期待 &rarr; 满蓄力"咔哒"闭合 &rarr;
-        发射弹簧声 &rarr; 顶部碰撞"铛"（空中锚点）&rarr; 撞钉网格质感 &rarr;
-        入袋上滑音效 &rarr; 落袋声收束 &rarr; 中奖琶音 / 语音播报闭环。
-        每一步都有听觉锚点。<b>视觉 + 听觉 + 触觉</b>三通道从未同时缺席——任何时候玩家至少有两个感官参与。
-      </p>
-    </div>
-    <div class="card accent-green reveal reveal-d3" style="grid-column: 1 / -1;">
-      <div class="card-num">05</div>
-      <h3>&#x1f499; 最打动人心的 UX 细节</h3>
-      <div class="grid-3" style="margin-top:10px;">
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f6cb; 切静音可反悔</p>
-          <p>"关闭声音"语音播完才真静音，延迟 1s；窗口内切回则取消关闭——没有"按下去就掉进黑洞"的焦虑。</p>
-        </div>
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x23f1; 130ms 呼吸空白</p>
-          <p>结果音头部烘 130ms 前置静音，等落袋声落地。让"咚"和"珠子加五十"之间有呼吸，不叠在一起抢耳。</p>
-        </div>
-        <div>
-          <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f44d; 单手操作优先</p>
-          <p>全竖屏布局，蓄力按钮位于底部拇指热区。双因子自适应：窄屏缩字、矮屏缩 UI 还游戏区垂直空间。宽屏不追求填满，而是填满注意力。</p>
-        </div>
-      </div>
     </div>
   </div>
 </section>
 
-<!-- ═══════════════ SUMMARY ═══════════════ -->
-<section class="summary-section">
+<!-- ═══════════════ SECTION 4: 温度在细节里 ═══════════════ -->
+<section class="section section-alt sect-heart">
   <div class="section-header">
-    <span class="emoji">&#x1f31f;</span>
-    <h2 style="color:#fff;">一个小游戏的大设计</h2>
-    <p class="desc">当美术、程序、设计、UX 同时做到极致，一个小游戏就有了大作品的质感</p>
+    <h2>温度在细节里</h2>
+    <p class="desc">那些你可能永远不会注意到、但少了就会觉得"差点意思"的东西</p>
   </div>
+
+  <div class="grid-2">
+    <div class="card reveal reveal-d1">
+      <h3>按太轻？零成本试错</h3>
+      <p>
+        手指滑了、没按到位？力度不足时球弹出去又落回来——<span class="tag tag-purple">不扣珠子、不计次数、不换盘面</span>。想练多少次就练多少次，零损失。这是给新手的温柔：你不需要一次就学会。
+      </p>
+    </div>
+    <div class="card reveal reveal-d1">
+      <h3>单手持握，拇指操控</h3>
+      <p>
+        全竖屏设计，发射按钮就在<span class="tag tag-purple">拇指自然落点</span>。手机横过来也能自动适配——字体缩小、边距收紧，把空间还给游戏区。从4寸小屏到平板，不追求填满屏幕，而是填满注意力。
+      </p>
+    </div>
+    <div class="card reveal reveal-d2">
+      <h3>关声音可以反悔</h3>
+      <p>
+        点"关闭声音"后，系统<span class="tag tag-purple">先播完提示语音才真关</span>——延迟1秒。在这1秒内切回来，关闭自动取消。没有"按下去就掉进黑洞"的焦虑。这是对玩家控制权的终极尊重。
+      </p>
+    </div>
+    <div class="card reveal reveal-d2">
+      <h3>130毫秒的呼吸</h3>
+      <p>
+        入袋"咚"一声之后，<span class="tag tag-purple">刻意留了0.13秒的安静</span>，然后再播报中奖金额。"咚"和"珠子加五十"之间没有叠在一起抢耳朵——这段沉默本身就是设计。好的声音不是塞满每一毫秒，而是给耳朵留出消化的空隙。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ CLOSING ═══════════════ -->
+<section class="closing">
+  <div class="big-quote">
+    36个音效没有一个是mp3文件。<br>
+    43条语音没有一句是机器合成。<br>
+    一根弹簧没有一张图片。<br><br>
+    <em>这不是炫技，这是对玩家的尊重。</em>
+  </div>
+
+  <div class="kick reveal">比够用，多走一步。</div>
 
   <div class="pillars">
-    <div class="pillar">
+    <div class="pillar reveal reveal-d1">
       <span class="p-icon">&#x1f50c;</span>
-      <div class="p-title">弹簧可视化</div>
-      <div class="p-desc">Z 字形 &middot; 暗色凹槽 &middot; 灰蓝&rarr;金黄渐变 &middot; 0.5s 回弹 &middot; 零图片依赖</div>
+      <div class="p-title">弹簧看得见</div>
+      <div class="p-desc">颜色即力度 &middot; 零图片 &middot; 身体直觉</div>
     </div>
-    <div class="pillar">
+    <div class="pillar reveal reveal-d1">
       <span class="p-icon">&#x1f5e3;</span>
-      <div class="p-title">语音播报</div>
-      <div class="p-desc">43 个场景 &middot; 22 片段数字朗读 &middot; 5ms 队列拼接 &middot; 三态声音开关</div>
+      <div class="p-title">游戏会说话</div>
+      <div class="p-desc">43条真人语音 &middot; 36种代码音效 &middot; 0个文件</div>
     </div>
-    <div class="pillar">
+    <div class="pillar reveal reveal-d2">
       <span class="p-icon">&#x1f3af;</span>
-      <div class="p-title">精确 RTP</div>
-      <div class="p-desc">三档 80/100/120 &middot; &plusmn;0.05 &middot; 双层架构 &middot; 防沉迷轮次机制</div>
+      <div class="p-title">数学不坑人</div>
+      <div class="p-desc">120%返奖率 &middot; 落点可控 &middot; 不让你上头</div>
     </div>
-    <div class="pillar">
-      <span class="p-icon">&#x2728;</span>
-      <div class="p-title">细节打磨</div>
-      <div class="p-desc">24dp 对齐 &middot; 5dp 行距 &middot; 双因子缩放 &middot; 哑火零损失 &middot; 130ms 呼吸</div>
+    <div class="pillar reveal reveal-d2">
+      <span class="p-icon">&#x1f49c;</span>
+      <div class="p-title">细节有温度</div>
+      <div class="p-desc">哑火不扣珠 &middot; 关声音可反悔 &middot; 130ms呼吸</div>
     </div>
-  </div>
-
-  <div class="quote" style="margin-top: 36px;">
-    跳跳的弹珠机的每一处设计都在回答同一个问题：<b>如何让一个"简单"的东西不简陋？</b>
-    答案是——在每一个玩家看得见、听得到、触碰到的细节上，都比"够用"多走一步。
-    36 个音效没有一个是 mp3 文件，43 条语音没有一句是 TTS 实时合成，一根弹簧没有一张图片——
-    这不是炫技，这是对玩家的尊重。
-    <span class="author">&mdash; 综合评审</span>
   </div>
 </section>
 
 <!-- ═══════════════ FOOTER ═══════════════ -->
 <footer class="footer">
   <div class="color-bar">
-    <span style="background:var(--green)"></span><span style="background:var(--blue)"></span>
-    <span style="background:var(--red)"></span><span style="background:var(--purple)"></span>
-    <span style="background:var(--gold)"></span>
+    <span style="background:var(--gold)"></span><span style="background:var(--blue)"></span>
+    <span style="background:var(--green)"></span><span style="background:var(--purple)"></span>
+    <span style="background:var(--red)"></span>
   </div>
   <div class="ftitle">跳跳的弹珠机 &mdash; DanZhu Plinko</div>
   <div class="fsub">
-    一个用 Python + Kivy 构建的 Android 弹珠机游戏
-    <span class="separator"></span> 设计评审报告 v2.0 &middot; 2026.07
+    Python + Kivy &middot; Android 版
+    <span class="separator"></span> 设计评审报告 &middot; 2026.07
   </div>
   <a href="https://github.com/twoplate2/DanZhu" target="_blank" rel="noopener">github.com/twoplate2/DanZhu</a>
 </footer>
 
 </div>
 
-<!-- ═══════════════ 弹簧可视化 Canvas 动画 ═══════════════ -->
+<!-- ═══════════════ Spring Canvas Animation ═══════════════ -->
 <script>
 (function() {
   var canvas = document.getElementById('springCanvas');
   if (!canvas) return;
-  var dpr = window.devicePixelRatio || 1;
-  var rect = canvas.parentNode.getBoundingClientRect();
-  var w = rect.width * dpr;
-  var h = 180 * dpr;
-  canvas.width = w;
-  canvas.height = h;
-  canvas.style.width = rect.width + 'px';
-  canvas.style.height = '180px';
+
+  function setup() {
+    var dpr = window.devicePixelRatio || 1;
+    var rect = canvas.parentNode.getBoundingClientRect();
+    var w = rect.width * dpr;
+    var h = rect.height * dpr;
+    canvas.width = w;
+    canvas.height = h;
+    canvas._w = rect.width;
+    canvas._h = rect.height;
+  }
+  setup();
+
   var ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  var cw = rect.width;
-  var ch = 180;
-
-  // Geometry
-  var laneL = cw * 0.58, laneR = cw * 0.66, floor = ch * 0.52;
-  var barTop = floor;
-  var sx = (laneL + laneR) / 2;
-  var span = (laneR - laneL) * 0.85;
-
-  var power = 0.0, state = 'idle', timer = 0;
-  var idleWait = 0;
-
-  function lerp(a, b, t) { return a + (b - a) * t; }
-  function lerpC(c1, c2, t) {
-    return [
-      Math.round(lerp(c1[0], c2[0], t)),
-      Math.round(lerp(c1[1], c2[1], t)),
-      Math.round(lerp(c1[2], c2[2], t))
-    ];
-  }
-
-  function draw(p) {
-    ctx.clearRect(0, 0, cw, ch);
-
-    // groove bg
-    ctx.fillStyle = '#060e18';
-    ctx.fillRect(laneL, floor, laneR - laneL, ch - floor);
-
-    var barBot = barTop + 9 + p * 20;
-    var lx = sx - span / 2, rx = sx + span / 2;
-
-    // color
-    var col;
-    if (p < 0.01) col = [0x8f, 0xa0, 0xc4];
-    else if (p < 0.15) col = [0xc4, 0x5a, 0x4a];
-    else col = lerpC([0x8f, 0xa0, 0xc4], [0xf0, 0xb0, 0x00], (p - 0.15) / 0.85);
-
-    var rgb = 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')';
-    ctx.strokeStyle = rgb;
-    ctx.lineWidth = 2.8;
-    ctx.lineCap = 'round';
-
-    // top bar
-    ctx.beginPath(); ctx.moveTo(lx, barTop); ctx.lineTo(rx, barTop); ctx.stroke();
-    // diagonal
-    ctx.beginPath(); ctx.moveTo(rx, barTop); ctx.lineTo(lx, barBot); ctx.stroke();
-    // bottom bar
-    ctx.beginPath(); ctx.moveTo(lx, barBot); ctx.lineTo(rx, barBot); ctx.stroke();
-
-    // lane walls
-    ctx.strokeStyle = 'rgba(43,67,110,0.25)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(laneL, floor); ctx.lineTo(laneL, ch); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(laneR, floor); ctx.lineTo(laneR, ch); ctx.stroke();
-
-    // floor line
-    ctx.strokeStyle = 'rgba(43,67,110,0.45)';
-    ctx.lineWidth = 1.8;
-    ctx.beginPath(); ctx.moveTo(10, floor); ctx.lineTo(cw - 10, floor); ctx.stroke();
-
-    // labels
-    ctx.fillStyle = 'rgba(143,160,196,0.55)';
-    ctx.font = 'bold 13px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    var label = p < 0.01 ? '松弛' : p >= 0.99 ? '满蓄力' : Math.round(p * 100) + '%';
-    ctx.fillText(label, sx, barBot + 28);
-    ctx.font = '11px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = 'rgba(143,160,196,0.3)';
-    ctx.fillText(p < 0.01 ? '2条横线间距 9px' : p >= 0.99 ? '间距 23px' : '', sx, barBot + 44);
-  }
 
   function tick(dt) {
+    if (!canvas._w) setup();
+    var dpr = window.devicePixelRatio || 1;
+    var w = canvas._w, h = canvas._h;
+
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    var laneL = w * 0.55, laneR = w * 0.65, floor = h * 0.48;
+    var barTop = floor;
+    var sx = (laneL + laneR) / 2;
+    var span = (laneR - laneL) * 0.82;
+
+    // Animation state machine
+    if (!canvas._state) canvas._state = 'idle';
+    if (!canvas._power) canvas._power = 0;
+    if (!canvas._timer) canvas._timer = 0;
+    if (!canvas._idleWait) canvas._idleWait = 0;
+
+    var state = canvas._state;
+    var power = canvas._power;
+    var timer = canvas._timer;
+    var idleWait = canvas._idleWait;
+
     if (state === 'idle') {
       idleWait += dt;
       if (idleWait > 1400) { state = 'charging'; timer = 0; }
-      draw(0);
+      power = 0;
     } else if (state === 'charging') {
       timer += dt;
       power = Math.min(1.0, timer / 2200);
-      draw(power);
       if (power >= 1.0) { state = 'release'; timer = 0; }
     } else if (state === 'release') {
       timer += dt;
       power = Math.max(0.0, 1.0 - timer / 500);
-      draw(power);
       if (power <= 0.0) { state = 'idle'; power = 0; timer = 0; idleWait = 0; }
     }
+
+    canvas._state = state;
+    canvas._power = power;
+    canvas._timer = timer;
+    canvas._idleWait = idleWait;
+
+    // Draw
+    var barBot = barTop + 10 + power * 22;
+    var lx = sx - span / 2, rx = sx + span / 2;
+
+    // Groove background
+    ctx.fillStyle = '#060e18';
+    ctx.fillRect(laneL, floor, laneR - laneL, h - floor);
+
+    // Spring color
+    var col;
+    if (power < 0.01) col = [0x8f, 0xa0, 0xc4];
+    else if (power < 0.15) col = [0xc4, 0x5a, 0x4a];
+    else {
+      var t = (power - 0.15) / 0.85;
+      col = [
+        Math.round(0x8f + (0xf0 - 0x8f) * t),
+        Math.round(0xa0 + (0xb0 - 0xa0) * t),
+        Math.round(0xc4 + (0x00 - 0xc4) * t)
+      ];
+    }
+
+    // Glow effect when charging
+    if (power > 0.15) {
+      var glowAlpha = (power - 0.15) * 0.15;
+      ctx.shadowColor = 'rgba(240,176,0,' + glowAlpha + ')';
+      ctx.shadowBlur = 12;
+    }
+
+    ctx.strokeStyle = 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')';
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+
+    // Top bar
+    ctx.beginPath(); ctx.moveTo(lx, barTop); ctx.lineTo(rx, barTop); ctx.stroke();
+    // Diagonal
+    ctx.beginPath(); ctx.moveTo(rx, barTop); ctx.lineTo(lx, barBot); ctx.stroke();
+    // Bottom bar
+    ctx.beginPath(); ctx.moveTo(lx, barBot); ctx.lineTo(rx, barBot); ctx.stroke();
+
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+
+    // Lane walls
+    ctx.strokeStyle = 'rgba(43,67,110,0.2)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(laneL, floor); ctx.lineTo(laneL, h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(laneR, floor); ctx.lineTo(laneR, h); ctx.stroke();
+
+    // Floor line
+    ctx.strokeStyle = 'rgba(43,67,110,0.4)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(12, floor); ctx.lineTo(w - 12, floor); ctx.stroke();
+
+    // Labels
+    var labelY = barBot + 34;
+    var subY = barBot + 52;
+    ctx.fillStyle = 'rgba(200,210,230,0.6)';
+    ctx.font = 'bold 15px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    var label = power < 0.01 ? '松弛（力度 0）' : power >= 0.99 ? '满蓄力（力度 100%）' : Math.round(power * 100) + '%';
+    if (power > 0 && power < 0.15) label = '哑火区间（力度不足）';
+    ctx.fillText(label, sx, labelY);
+    ctx.font = '12px "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = 'rgba(143,160,196,0.35)';
+    var subLabel = power < 0.01 ? '弹簧完全伸展，安静等待' : power >= 0.99 ? '弹簧压缩到极限，即将弹射' : '';
+    if (power > 0 && power < 0.15) subLabel = ' 力度不足，松手后球会落回';
+    ctx.fillText(subLabel, sx, subY);
+
+    ctx.restore();
     requestAnimationFrame(function() { tick(16); });
   }
 
-  draw(0);
   requestAnimationFrame(function() { tick(16); });
+
+  // Resize handler
+  var resizeTimeout;
+  window.addEventListener('resize', function() {
+    clearTimeout(resizeTimeout);
+    resizeTimeout = setTimeout(function() { setup(); }, 150);
+  });
 })();
 
 // ═══════════════ Scroll Reveal ═══════════════
@@ -701,7 +502,7 @@
         observer.unobserve(e.target);
       }
     });
-  }, { threshold: 0.12 });
+  }, { threshold: 0.1 });
   document.querySelectorAll('.reveal').forEach(function(el) {
     el.style.animationPlayState = 'paused';
     observer.observe(el);
