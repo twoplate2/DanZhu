@@ -2547,12 +2547,13 @@ class RootWidget(BoxLayout):
             self.game_area._redraw()
 
     def reset_balance(self, notify=True):
-        if self.state in ("flying", "misfire", "landing"):
+        if self.state in ("flying", "misfire", "landing", "charging"):
             return
         self.balance = START_BEADS
         self.display_balance = float(START_BEADS)
         self._anim_target_balance = float(START_BEADS)
         self._anim_start_balance = float(START_BEADS)
+        self._anim_start_time = time.time()
         self.plays = 0
         self.hits = 0
         self._refresh_stats()
@@ -2562,6 +2563,8 @@ class RootWidget(BoxLayout):
         self.sfx.play("cash")
         self._set_controls_enabled(True)
         if notify:
+            # 清理旧 toast 确保重置提示不被门禁拦截
+            self.game_area._effects = [e for e in self.game_area._effects if e["kind"] != "toast"]
             self.game_area.center_toast("珠子数量已重置", hexcolor=COL_GREEN, size=20, life=1.5)
             self.sfx.play("voice_reset_progress", throttle=1.5)
 
@@ -2949,6 +2952,7 @@ class RootWidget(BoxLayout):
             self.power_lbl.text = "力度%d%%%s" % (int(round(self.power * 100)),
                                                   "不足" if weak else "")
             self.power_lbl.color = hex_rgb(COL_FIRE if weak else COL_METER) + (1,)
+            self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else COL_METER) + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
             landed = advance_flight(b, self.geo, self.target_x)
