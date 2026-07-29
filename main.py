@@ -124,7 +124,9 @@ MISFIRE_MAX_FRAMES = 180     # 兜底(实测最长 121 帧)
 START_BEADS = 1000
 PRESETS = [1, 10, 50, 100]
 DEFAULT_BET = 10
-MAX_FALL_SEC = 8.0           # 兜底超时(高速下飞行更短, 降时避免半空超时)
+MAX_FALL_SEC = 4.0           # 卡死兜底: 连续静止(无碰撞且 |v|<=40px/s)超过此值才强制结算。
+                             # 旧语义"发射后 8s 强制结算"会在球晃动久未落袋时提前 settle ——
+                             # 球还在屏幕上动, pocket/win/飘字/震动先出来了, 反馈与画面脱节。
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
 SLOT_BRAKE_VY = 0.65         # 槽区可见减速(竖直)
 SLOT_BRAKE_VX = 0.5          # 槽区可见减速(水平)
@@ -2152,6 +2154,8 @@ class RootWidget(BoxLayout):
         self.hits = 0
         self.rtp_target = 0.80
         self.sound_mode = "voice"     # voice(语音已开,默认) | sfx(音效已开) | off(音效已关)
+        self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
+        self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
         self.land_target_x = PLUNGER_X
         self.target_slot = 0
@@ -2355,13 +2359,18 @@ class RootWidget(BoxLayout):
     def toggle_mute(self):
         i = self.SOUND_MODES.index(self.sound_mode)
         self.sound_mode = self.SOUND_MODES[(i + 1) % len(self.SOUND_MODES)]
-        on = self.sound_mode != "off"
-        if not on:
-            self.sfx.play("click")            # 关闭前给个确认音
-        self.sfx.set_enabled(on)
-        if on:
-            self.sfx.play("click")            # 开启/切换后也确认一声
+        if self.sound_mode == "off":
+            # "关闭声音"(0.84s)必须在静音前播; 延迟真正关闭, 让播报收尾后再停输出
+            self.sfx.play("voice_mode_off")
+            Clock.schedule_once(self._apply_sound_off, 1.0)
+        else:
+            self.sfx.set_enabled(True)
+            self.sfx.play("voice_mode_" + self.sound_mode)
         self._refresh_mute_btn()
+
+    def _apply_sound_off(self, dt):
+        if self.sound_mode == "off":      # 延迟窗口内玩家又切回 voice/sfx 则取消关闭
+            self.sfx.set_enabled(False)
 
     def _refresh_mute_btn(self):
         # 语音=绿底深字 / 音效=蓝底白字 / 关=深底亮灰字, 三态一眼可辨
@@ -2448,6 +2457,8 @@ class RootWidget(BoxLayout):
         self._crossed = False
         self._risen = False
         self._topped = False
+        self._last_motion = time.time()   # 卡死兜底的运动锚点(之后由帧内位移检测刷新)
+        self._last_ball_xy = (self.ball["x"], self.ball["y"])
         self.sfx.play("launch", 0.60 + 0.40 * power_u(self.power))
         self._set_controls_enabled(False)
         self.status_lbl.text = "发射!"
@@ -2619,8 +2630,15 @@ class RootWidget(BoxLayout):
                 self.status_lbl.text = "弹跳中…"
             else:
                 self.status_lbl.text = "入场中…"
-            if landed is None and time.time() - b["born"] > MAX_FALL_SEC:
-                landed = self.target_slot
+            if landed is None:
+                lx, ly = self._last_ball_xy
+                if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
+                    self._last_motion = time.time()     # 位移>1px/帧: 还在动, 不是卡死
+                elif time.time() - self._last_motion > MAX_FALL_SEC:
+                    landed = self.target_slot           # 位置不动 MAX_FALL_SEC: 真卡死才兜底
+                self._last_ball_xy = (b["x"], b["y"])
+                # 判据必须用位移而非速度/碰撞事件: steer_ball 每帧给球注入 vx, 卡死球的
+                # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
                 i = self.target_slot
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
