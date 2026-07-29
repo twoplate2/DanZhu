@@ -15,6 +15,7 @@ import struct
 import threading
 import tempfile
 import time
+import json
 
 from kivy.app import App
 from kivy.clock import Clock
@@ -2241,6 +2242,7 @@ class RootWidget(BoxLayout):
         self.max_plays = 50            # 每轮次数上限
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
+        self._load_history()           # 从磁盘恢复(跨启动持久化)
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
@@ -2618,6 +2620,34 @@ class RootWidget(BoxLayout):
             self.sfx.play("ready", 0.8)
 
     # ------------------------------ 轮次结束 ------------------------------
+    @staticmethod
+    def _history_path():
+        """轮次历史 JSON 文件路径(持久化到 user_data_dir, Android 上为应用私有目录)。"""
+        if platform == "android":
+            try:
+                base = App.get_running_app().user_data_dir
+            except Exception:
+                base = tempfile.gettempdir()
+        else:
+            base = tempfile.gettempdir()
+        return os.path.join(base, "plinko_round_history.json")
+
+    def _load_history(self):
+        try:
+            with open(self._history_path(), "r") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self.round_history = data[-100:]
+        except Exception:
+            pass
+
+    def _save_history(self):
+        try:
+            with open(self._history_path(), "w") as f:
+                json.dump(self.round_history[-100:], f)
+        except Exception:
+            pass
+
     def _voice_duration(self, name):
         """查语音片段时长(秒), 用于队列播放的调度间隔。"""
         return self.sfx.voice_duration(name)
@@ -2655,6 +2685,7 @@ class RootWidget(BoxLayout):
         })
         if len(self.round_history) > 100:
             self.round_history.pop(0)
+        self._save_history()
         content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
         msg = "本轮游戏 %d 次已结束\n剩余 %d 个珠子\n数据已重置" % (
             self.round_plays, self.balance)
