@@ -257,6 +257,52 @@ self._ui_scale    = min(1.0, Window.height / dp(680)) # 高度缩放(横屏激�
 不能用未缩放的 `dp(FIXED_H)`。否则手机上 density=2.75 时会差 325px,
 桌面 density=1 时差很小 —— 这就是"桌面拉伸完美, 手机横屏崩溃"的根因。
 
+### 3.15 BoxLayout spacing 参与子控件位置计算，对齐时不能漏
+
+用固定 spacer Widget 对齐两行控件时，**目标行的 `spacing` 参数也要算进偏移量**。
+本例：重置按钮左沿 = `padding_left(6) + spacer(12) + spacing(6) = 24dp`，
+信息行 spacers 只给了 18dp，漏了底行的 `spacing=dp(6)`，差 6dp 对不齐。
+**解法：对齐计算时逐项列出 `padding + spacer + spacing`，不要凭直觉。**
+
+### 3.16 `_apply_sizes` 中覆盖的 width/font_size 必须和 `_build_ui` 一致
+
+`_apply_sizes()` 在每次窗口尺寸变化时重新设置所有控件的 width 和 font_size。
+如果这里写的值和 `_build_ui` 中不一致（如 round_btn 在 build 中 72dp 但 sizes 中残留 88dp），
+每次 resize 就会覆盖成旧值，**实测按钮永远是 88px 而不是代码写的 72px**。
+**解法：改控件尺寸时，同时改 `_build_ui` 和 `_apply_sizes` 两处。**
+
+### 3.17 halign="right" + 固定宽标签 = 视觉重心右移的错觉
+
+返还率/投入行标签用 `halign="right"` + `width=115dp`，文字右对齐于 121dp 处，
+文本块视觉"重心"约在 69dp。而"珠子："用 `halign="left"` + 24dp spacer，
+重心约在 47dp。数学上"珠子："首字符更靠右（24dp vs ~16dp），
+但人眼感知的是文字块重心——宽块给人"更靠右"的印象。
+**解法：统一用左对齐 + spacer，不要混用左右对齐。**
+
+### 3.18 固定宽度控件在 Popup 中会溢出手机屏幕
+
+轮次设定弹窗最初用固定宽度：标签 120dp + 3 个按钮 72dp×3 + 间距 10dp×3 = 366dp，
+加上 content padding 28dp = **394dp**。手机 360dp 宽，popup `size_hint=0.84` → 实际 302dp，必然溢出。
+**解法：弹窗内容用 `size_hint_x=1` 自适应，不要写死 width。改纵向排列也能缓解。**
+
+### 3.19 ScrollView 内 Label 用 `width→text_size` 绑定，不能用 `size→text_size`
+
+```python
+# 错误：死循环
+lbl.bind(size=lambda w,*_: setattr(w,"text_size",w.size))
+# 正确
+lbl.bind(width=lambda w,*_: setattr(w,"text_size",(w.width,None)))
+```
+`size` 绑定会触发 `text_size` 变更 → 重排版 → `texture_size` 变更 → `height` 变更 →
+`size` 变更 → 无限循环。用 `width` 绑定只响应宽度变化，避免循环。
+
+### 3.20 Kivy Label `valign="middle"` 在有高度约束时裁剪后半段文本
+
+当 `text_size` 的高度不为 None 且 `valign="middle"` 时，Kivy 会在文本中间 `\n`
+处拆成两半，**后半段强制压缩在 `uh/2` 高度内**。本例：4 行文字，中间 `\n` 在索引 12，
+后半段 3 行被压进约 76dp 的空间（需要 ~81dp），第 4 行在纹理生成阶段就被裁掉。
+**解法：`text_size = (width, None)`，高度设 None 跳过 split 逻辑。**
+
 
 ## 四、运维小贴士
 
