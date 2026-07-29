@@ -2743,7 +2743,7 @@ class RootWidget(BoxLayout):
             self.round_plays, self.balance)
         lbl = Label(text=msg, font_size="18sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,))
-        lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        lbl.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
         content.add_widget(lbl)
         popup = Popup(title="本轮游戏结束", content=content,
                       size_hint=(0.82, None), height=dp(260),
