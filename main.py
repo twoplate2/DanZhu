@@ -2314,7 +2314,7 @@ class RootWidget(BoxLayout):
         self.round_btn = self._mk_button("每轮%d次" % self.max_plays,
             lambda _b: self._show_round_settings(), bg=COL_GREEN)
         self.round_btn.size_hint_x = None
-        self.round_btn.width = dp(80)
+        self.round_btn.width = dp(75)
         self.round_btn.font_size = "13sp"
         self.round_btn.color = (0, 0, 0, 1)          # 黑字配绿底
         left_box.add_widget(self.round_btn)
@@ -2366,14 +2366,15 @@ class RootWidget(BoxLayout):
         self.game_area = GameArea(self)
         self.add_widget(self.game_area)
         # ---- 信息区 ----
-        # 信息行: 珠子 + 每次投x珠,累计x投x中(x%)
+        # 信息行: 珠子(对齐重置按钮左沿 6dp+12dp=18dp) + 累计x投x中(x%)
         info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
         self._row_info = info
-        self._bead_lbl = self._mk_label("珠子：", "15sp", COL_TEXT, "right", True,
-                                       size_hint_x=0.13)
+        info.add_widget(Widget(size_hint_x=None, width=dp(18)))  # 对齐重置按钮
+        self._bead_lbl = self._mk_label("珠子：", "15sp", COL_TEXT, "left", True,
+                                       size_hint_x=None, width=dp(48))
         info.add_widget(self._bead_lbl)
         self.balance_lbl = self._mk_label(str(self.balance), "19sp", COL_BALL,
-                                          "left", True, size_hint_x=0.17)
+                                          "left", True, size_hint_x=None, width=dp(80))
         info.add_widget(self.balance_lbl)
         self.stats_lbl = self._mk_label("", "15sp", COL_TEXT, "center", True,
                                         size_hint_x=0.70)
