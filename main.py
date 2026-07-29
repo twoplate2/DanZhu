@@ -2072,7 +2072,7 @@ class GameArea(FloatLayout):
             # 弹簧: 2 条横线(在凹槽内, 间距=松弛, 贴紧=压缩)
             self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
             self._spring_bars = []
-            for _ in range(2):
+            for _ in range(3):
                 self._spring_bars.append(
                     Line(points=[0, 0, 0, 0], width=max(0.8, 1.3 * s),
                          cap="round"))
@@ -2172,16 +2172,17 @@ class GameArea(FloatLayout):
             self._meter_col.rgb = hex_rgb(COL_FIRE if weak else COL_METER)
         else:
             self._meter_fill.size = (0, 0)
-        # 弹簧 2 横条: 凹槽上沿到底部, 间距随蓄力缩小
-        bar_top = FLOOR                               # 上条位置(固定)
-        bar_bot = FLOOR + 9 + g.power * 4             # 下条位置(充电下移)
+        # 弹簧 Z 字形: 上横线→斜线→下横线
+        bar_top = FLOOR
+        bar_bot = FLOOR + 9 + g.power * 4
         lx = self._px(LANE_L + 10)
         rx = self._px(RIGHT_INNER - 10)
         y0 = self._py(bar_top)
         y1 = self._py(bar_bot)
-        for i, bar in enumerate(self._spring_bars):
-            y = y0 if i == 0 else y1
-            bar.points = [lx, y, rx, y]
+        bars = self._spring_bars
+        bars[0].points = [lx, y0, rx, y0]              # 上横线
+        bars[1].points = [rx, y0, lx, y1]              # 斜线(右上→左下)
+        bars[2].points = [lx, y1, rx, y1]              # 下横线
         # 颜色: 哑火→红, 正常→灰蓝, 满蓄力→亮金
         weak = g.power < MISFIRE_POWER
         if g.power < 0.01:
