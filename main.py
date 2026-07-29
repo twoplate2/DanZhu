@@ -2739,14 +2739,14 @@ class RootWidget(BoxLayout):
             self.round_history.pop(0)
         self._save_history()
         content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
-        msg = "本轮游戏 %d 次已结束\n剩余 %d 个珠子\n珠子数量已调整到1000个" % (
+        msg = "本轮游戏 %d 次已结束\n剩余 %d 个珠子\n珠子数量已调整到1000个\n欢迎你重新挑战" % (
             self.round_plays, self.balance)
         lbl = Label(text=msg, font_size="18sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,))
         lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
         content.add_widget(lbl)
         popup = Popup(title="本轮游戏结束", content=content,
-                      size_hint=(0.82, None), height=dp(230),
+                      size_hint=(0.82, None), height=dp(260),
                       auto_dismiss=False,
                       title_color=hex_rgb(COL_TEXT) + (1,),
                       title_size="17sp",
