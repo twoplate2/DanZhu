@@ -2076,9 +2076,9 @@ class GameArea(FloatLayout):
             self._spring_base = Rectangle(pos=(0, 0), size=(0, 0))
             self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
             self._spring_bars = []
-            for _ in range(4):
+            for _ in range(2):
                 self._spring_bars.append(
-                    Line(points=[0, 0, 0, 0], width=max(1.0, 2 * s),
+                    Line(points=[0, 0, 0, 0], width=max(0.8, 1.3 * s),
                          cap="round"))
             # 球(动态, 程序化渐变贴图; 视觉 BALL_VIEW 倍放大, 碰撞半径不变)
             Color(1, 1, 1)
@@ -2177,12 +2177,12 @@ class GameArea(FloatLayout):
         else:
             self._meter_fill.size = (0, 0)
         # 弹簧在凹槽内(地板下方): 底座可压缩, 横条等距排列
-        base_top = FLOOR + 8 + g.power * 6               # 底座顶(充电下移)
-        base_bot = FLOOR + 12 + g.power * 6              # 底座底
+        base_top = FLOOR + 9 + g.power * 4               # 底座顶(充电下移)
+        base_bot = FLOOR + 12 + g.power * 4              # 底座底
         kw = self._rect(LANE_L + 6, base_top, RIGHT_INNER - 6, base_bot)
         self._spring_base.pos = kw["pos"]
         self._spring_base.size = kw["size"]
-        recess_top = FLOOR + 2                           # 凹槽上沿
+        recess_top = FLOOR                                # 凹槽上沿(地板表面线)
         n = len(self._spring_bars)
         lx = self._px(LANE_L + 10)
         rx = self._px(RIGHT_INNER - 10)
