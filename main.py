@@ -2314,7 +2314,7 @@ class RootWidget(BoxLayout):
         self.round_btn = self._mk_button("每轮%d次" % self.max_plays,
             lambda _b: self._show_round_settings(), bg=COL_GREEN)
         self.round_btn.size_hint_x = None
-        self.round_btn.width = dp(75)
+        self.round_btn.width = dp(72)
         self.round_btn.font_size = "13sp"
         self.round_btn.color = (0, 0, 0, 1)          # 黑字配绿底
         left_box.add_widget(self.round_btn)
@@ -2369,7 +2369,7 @@ class RootWidget(BoxLayout):
         # 信息行: 珠子(对齐重置按钮左沿 6dp+12dp=18dp) + 累计x投x中(x%)
         info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
         self._row_info = info
-        info.add_widget(Widget(size_hint_x=None, width=dp(18)))  # 对齐重置按钮
+        info.add_widget(Widget(size_hint_x=None, width=dp(24)))  # 对齐重置按钮(6+12+6=24)
         self._bead_lbl = self._mk_label("珠子：", "15sp", COL_TEXT, "left", True,
                                        size_hint_x=None, width=dp(48))
         info.add_widget(self._bead_lbl)
