@@ -2716,21 +2716,20 @@ class RootWidget(BoxLayout):
         """轮次设定弹窗: 选择 20/50/100 + 最近完成的轮次历史。"""
         content = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
 
-        # 每轮次数选择
-        sel_box = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
-        lbl = Label(text="每轮游戏次数：", font_size="16sp", halign="right", valign="middle",
-                    color=hex_rgb(COL_SUB) + (1,), size_hint_x=None, width=dp(120))
+        # 每轮次数选择(纵向: 标签一行, 按钮一行, 全自适应防溢出)
+        lbl = Label(text="每轮游戏次数：", font_size="16sp", halign="left", valign="middle",
+                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
         lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
-        sel_box.add_widget(lbl)
+        content.add_widget(lbl)
+        sel_box = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
         sel_btns = {}
         for val in (20, 50, 100):
             b = Button(text="%d次" % val, font_size="16sp", bold=True,
                        background_normal="", background_down="",
-                       color=(1, 1, 1, 1), size_hint_x=None, width=dp(72))
+                       color=(1, 1, 1, 1))
             b.bind(on_release=lambda _b, v=val: self._set_max_plays(v, sel_btns))
             sel_btns[val] = b
             sel_box.add_widget(b)
-        sel_box.add_widget(Widget())
         content.add_widget(sel_box)
 
         def _refresh_sel():
@@ -2765,7 +2764,7 @@ class RootWidget(BoxLayout):
                         background_color=hex_rgb(COL_BTN) + (1,),
                         color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
         popup = Popup(title="每轮游戏次数设定", content=content,
-                      size_hint=(0.84, None), height=dp(480),
+                      size_hint=(0.84, None), height=dp(500),
                       auto_dismiss=True,
                       title_color=hex_rgb(COL_TEXT) + (1,),
                       title_size="17sp",
