@@ -2177,7 +2177,7 @@ class GameArea(FloatLayout):
         if g.power > self._spring_power:
             self._spring_power = g.power
         else:
-            self._spring_power = max(0.0, self._spring_power - FIXED_DT / 0.3)
+            self._spring_power = max(0.0, self._spring_power - FIXED_DT / 0.5)
         sp = self._spring_power
         # 弹簧 Z 字形: 上横线→斜线→下横线
         bar_top = FLOOR
