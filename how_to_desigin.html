@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>跳跳的弹珠机 — 一个小游戏的精妙设计</title>
+<style>
+  :root {
+    --bg-deep: #0b1220;
+    --bg-panel: #15223c;
+    --bg-panel-lift: #1c2d4a;
+    --bg-card: #111d33;
+    --text-primary: #e8eefc;
+    --text-secondary: #8fa0bc;
+    --text-muted: #5a6d8a;
+    --wall-blue: #2b436e;
+    --channel: #0e1830;
+    --ball-gold: #ffd451;
+    --c-green: #39d98a;
+    --c-green-deep: #1e8a5a;
+    --c-blue: #3d8bfd;
+    --c-red: #e0533b;
+    --c-purple: #a335ee;
+    --c-gold: #f0b000;
+    --c-gold-deep: #c88800;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --gap: 24px;
+    --max-w: 1200px;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html {
+    scroll-behavior: smooth;
+    font-size: 16px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    position: relative;
+    padding: 80px 24px 64px;
+    text-align: center;
+    background: linear-gradient(180deg, #0d1a30 0%, var(--bg-deep) 100%);
+    overflow: hidden;
+  }
+
+  .hero::before {
+    content: "";
+    position: absolute;
+    top: -120px; left: 50%; transform: translateX(-50%);
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(61,139,253,0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .hero::after {
+    content: "";
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--c-gold), var(--c-red), var(--c-purple), var(--c-blue), var(--c-green), transparent);
+    opacity: 0.5;
+  }
+
+  .hero-badge {
+    display: inline-block;
+    padding: 6px 18px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--ball-gold);
+    background: rgba(255,212,81,0.08);
+    border: 1px solid rgba(255,212,81,0.18);
+    margin-bottom: 28px;
+  }
+
+  .hero h1 {
+    font-size: clamp(1.6rem, 4vw, 2.6rem);
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    color: #fff;
+    margin-bottom: 16px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero h1 span {
+    background: linear-gradient(135deg, var(--c-gold), var(--c-red));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    background-clip: text;
+  }
+
+  .hero .subtitle {
+    font-size: clamp(0.9rem, 1.8vw, 1.1rem);
+    color: var(--text-secondary);
+    max-width: 620px;
+    margin: 0 auto 32px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero-meta {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    flex-wrap: wrap;
+    position: relative;
+    z-index: 1;
+  }
+
+  .hero-meta-item {
+    text-align: center;
+  }
+
+  .hero-meta-item .num {
+    font-size: 1.8rem;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--c-gold), var(--c-red));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+    background-clip: text;
+  }
+
+  .hero-meta-item .label {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-top: 2px;
+  }
+
+  /* ── Stats Bar ── */
+  .stats-bar {
+    display: flex;
+    justify-content: center;
+    gap: 40px;
+    padding: 28px 24px;
+    background: var(--bg-panel);
+    border-bottom: 1px solid rgba(255,255,255,0.04);
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    text-align: center;
+  }
+
+  .stat-icon { font-size: 1.5rem; margin-bottom: 4px; }
+  .stat-value { font-size: 1.3rem; font-weight: 700; color: #fff; }
+  .stat-label { font-size: 0.75rem; color: var(--text-muted); }
+
+  /* ── Container ── */
+  .container {
+    max-width: var(--max-w);
+    margin: 0 auto;
+    padding: 0 24px;
+  }
+
+  /* ── Section Title ── */
+  .section {
+    padding: 64px 0;
+  }
+
+  .section-header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+
+  .section-header .emoji {
+    font-size: 2.2rem;
+    margin-bottom: 12px;
+    display: block;
+  }
+
+  .section-header h2 {
+    font-size: clamp(1.3rem, 2.5vw, 1.7rem);
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 8px;
+  }
+
+  .section-header .desc {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+  }
+
+  /* ── Grid ── */
+  .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap); }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); }
+
+  /* ── Card ── */
+  .card {
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 28px;
+    border: 1px solid rgba(255,255,255,0.05);
+    transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card:hover {
+    transform: translateY(-3px);
+    border-color: rgba(255,255,255,0.1);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.3);
+  }
+
+  .card::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0;
+    width: 3px; height: 100%;
+    border-radius: 3px 0 0 3px;
+  }
+
+  .card.accent-green::before  { background: var(--c-green); }
+  .card.accent-blue::before   { background: var(--c-blue); }
+  .card.accent-red::before    { background: var(--c-red); }
+  .card.accent-purple::before { background: var(--c-purple); }
+  .card.accent-gold::before   { background: var(--c-gold); }
+
+  .card-num {
+    font-size: 2rem;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 12px;
+    opacity: 0.14;
+  }
+
+  .card h3 {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: #fff;
+    margin-bottom: 10px;
+    line-height: 1.4;
+  }
+
+  .card p {
+    font-size: 0.88rem;
+    color: var(--text-secondary);
+    line-height: 1.75;
+  }
+
+  .card .highlight {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    margin: 0 2px;
+  }
+
+  .hl-green  { background: rgba(57,217,138,0.12); color: var(--c-green); }
+  .hl-blue   { background: rgba(61,139,253,0.12); color: var(--c-blue); }
+  .hl-red    { background: rgba(224,83,59,0.12);  color: var(--c-red); }
+  .hl-purple { background: rgba(163,53,238,0.12); color: var(--c-purple); }
+  .hl-gold   { background: rgba(240,176,0,0.12);  color: var(--c-gold); }
+
+  /* ── Quote Block ── */
+  .quote-block {
+    background: var(--bg-panel);
+    border-left: 4px solid var(--c-gold);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 24px 28px;
+    margin: 32px 0;
+    font-style: italic;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+    line-height: 1.8;
+  }
+
+  .quote-block .author {
+    display: block;
+    margin-top: 12px;
+    font-style: normal;
+    font-weight: 600;
+    color: var(--c-gold);
+    font-size: 0.82rem;
+  }
+
+  /* ── Summary ── */
+  .summary-section {
+    padding: 64px 0 80px;
+    background: linear-gradient(180deg, var(--bg-deep) 0%, #0d1a30 100%);
+    border-top: 1px solid rgba(255,255,255,0.04);
+  }
+
+  .pillars {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--gap);
+    margin-top: 40px;
+  }
+
+  .pillar {
+    text-align: center;
+    padding: 32px 20px;
+    border-radius: var(--radius);
+    background: var(--bg-card);
+    border: 1px solid rgba(255,255,255,0.05);
+    transition: transform 0.25s ease;
+  }
+
+  .pillar:hover { transform: translateY(-4px); }
+
+  .pillar .p-icon { font-size: 2.4rem; margin-bottom: 12px; display: block; }
+  .pillar .p-title { font-size: 1rem; font-weight: 700; color: #fff; margin-bottom: 8px; }
+  .pillar .p-desc { font-size: 0.82rem; color: var(--text-muted); line-height: 1.6; }
+
+  /* ── Footer ── */
+  .footer {
+    padding: 40px 24px;
+    text-align: center;
+    border-top: 1px solid rgba(255,255,255,0.05);
+    background: var(--bg-deep);
+  }
+
+  .footer .ftitle {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-bottom: 6px;
+  }
+
+  .footer .fsub {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+  }
+
+  .footer a {
+    color: var(--c-blue);
+    text-decoration: none;
+    font-weight: 500;
+    transition: color 0.2s;
+  }
+
+  .footer a:hover { color: var(--c-gold); }
+
+  .footer .divider {
+    display: inline-block;
+    width: 4px; height: 4px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    margin: 0 10px;
+    vertical-align: middle;
+  }
+
+  /* ── Fade-in Animation ── */
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(24px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .reveal {
+    opacity: 0;
+    animation: fadeUp 0.6s ease forwards;
+  }
+
+  .reveal-d1 { animation-delay: 0.05s; }
+  .reveal-d2 { animation-delay: 0.10s; }
+  .reveal-d3 { animation-delay: 0.15s; }
+  .reveal-d4 { animation-delay: 0.20s; }
+  .reveal-d5 { animation-delay: 0.25s; }
+
+  /* ── Responsive ── */
+  @media (max-width: 1024px) {
+    .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    .pillars { grid-template-columns: repeat(2, 1fr); }
+    .hero { padding: 60px 20px 48px; }
+  }
+
+  @media (max-width: 768px) {
+    .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    .pillars { grid-template-columns: 1fr 1fr; }
+    .hero-meta { gap: 20px; }
+    .card { padding: 22px 20px; }
+    .hero { padding: 48px 16px 40px; }
+    .section { padding: 40px 0; }
+    .section-header { margin-bottom: 32px; }
+    .stats-bar { gap: 24px; }
+    .hero h1 { font-size: 1.4rem; }
+  }
+
+  @media (max-width: 480px) {
+    .pillars { grid-template-columns: 1fr; }
+    .hero-meta { gap: 14px; }
+    .hero-meta-item .num { font-size: 1.4rem; }
+    .stat-value { font-size: 1.1rem; }
+  }
+
+  /* ── Section accent colors ── */
+  .sect-art .section-header h2 { color: var(--c-gold); }
+  .sect-code .section-header h2 { color: var(--c-purple); }
+  .sect-design .section-header h2 { color: var(--c-red); }
+  .sect-ux .section-header h2 { color: var(--c-green); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════════ HERO ═══════════════ -->
+<header class="hero">
+  <div class="hero-badge">Design Deep Dive</div>
+  <h1>跳跳的弹珠机 &mdash; <span>一个小游戏的精妙设计</span></h1>
+  <p class="subtitle">
+    从美术、程序、设计、用户体验四个维度，拆解一个弹珠机游戏的 100 个设计细节
+  </p>
+  <div class="hero-meta">
+    <div class="hero-meta-item">
+      <div class="num">4</div>
+      <div class="label">评审维度</div>
+    </div>
+    <div class="hero-meta-item">
+      <div class="num">20</div>
+      <div class="label">核心观点</div>
+    </div>
+    <div class="hero-meta-item">
+      <div class="num">36</div>
+      <div class="label">程序化音效</div>
+    </div>
+    <div class="hero-meta-item">
+      <div class="num">0</div>
+      <div class="label">外部音频文件</div>
+    </div>
+  </div>
+</header>
+
+<!-- ═══════════════ STATS BAR ═══════════════ -->
+<div class="stats-bar">
+  <div class="stat">
+    <div class="stat-icon">&#x1f3a8;</div>
+    <div class="stat-value">#0b1220</div>
+    <div class="stat-label">OLED 深色基底</div>
+  </div>
+  <div class="stat">
+    <div class="stat-icon">&#x1f9ee;</div>
+    <div class="stat-value">6 级</div>
+    <div class="stat-label">字体层级体系</div>
+  </div>
+  <div class="stat">
+    <div class="stat-icon">&#x1f50a;</div>
+    <div class="stat-value">3 级</div>
+    <div class="stat-label">音频后端降级</div>
+  </div>
+  <div class="stat">
+    <div class="stat-icon">&#x1f4a5;</div>
+    <div class="stat-value">RTP &plusmn;0.05</div>
+    <div class="stat-label">精确返奖率</div>
+  </div>
+  <div class="stat">
+    <div class="stat-icon">&#x1f4f1;</div>
+    <div class="stat-value">双因子</div>
+    <div class="stat-label">屏幕自适应</div>
+  </div>
+</div>
+
+<!-- ═══════════════ 1. 美术审美 ═══════════════ -->
+<section class="section sect-art">
+  <div class="container">
+    <div class="section-header">
+      <span class="emoji">&#x1f3a8;</span>
+      <h2>美术审美</h2>
+      <p class="desc">"金色小球在深蓝底色上的最强明度对比，视线自动追踪"</p>
+    </div>
+    <div class="grid-2">
+      <!-- Card 1 -->
+      <div class="card accent-gold reveal reveal-d1">
+        <div class="card-num">01</div>
+        <h3>&#x1f308; 配色体系：信号灯到奢侈品的渐变</h3>
+        <p>
+          深色基底 <span class="highlight hl-gold">#0b1220</span> 在 OLED 屏上几乎不发光，天然省电且对比度极高。
+          墙面 <span class="highlight hl-blue">#2b436e</span> 与通道 <span class="highlight hl-blue">#0e1830</span> 形成冷暖微差，
+          不靠描边就划分出功能区。五档中奖色遵循
+          <span class="highlight hl-green">绿(安全)</span> &rarr;
+          <span class="highlight hl-blue">蓝(提示)</span> &rarr;
+          <span class="highlight hl-red">红(警戒)</span> &rarr;
+          <span class="highlight hl-purple">紫(稀有)</span> &rarr;
+          <span class="highlight hl-gold">金(巅峰)</span>
+          的渐变逻辑，玩家无需读数字，凭颜色即知档次。
+        </p>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="card accent-gold reveal reveal-d1">
+        <div class="card-num">02</div>
+        <h3>&#x1f4d0; 6 级字体体系，Hero 独立于缩放</h3>
+        <p>
+          <b>Hero 48sp</b> 按屏宽占比设计，桌面 density=1 正常，手机 density=2.5~3 也只有它不被缩成蚂蚁字；
+          <b>Key 19sp</b> 余额数字醒目；<b>Act 16sp</b> 操作按钮；<b>Body 14-15sp</b> 标签统计；
+          <b>Aux 13sp</b> 状态指示；<b>Scene 20 逻辑 px</b> 槽位倍率跟画布等比缩放。
+          UI 用 sp、场景用 px，两套体系各司其职不混淆。
+        </p>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="card accent-gold reveal reveal-d2">
+        <div class="card-num">03</div>
+        <h3>&#x2728; 三段式动画节奏</h3>
+        <p>
+          中奖特效是精心编排的三段式：<b>槽位白闪 0.3s</b> 先行定位 &rarr;
+          <b>Hero 大字 2.4s</b> 缩放弹性 (1.0&rarr;1.2&rarr;1.0) + 上浮 38px/s + 透明度淡出 &rarr;
+          <b>落袋浮字</b> 补充确认。阴影层独立于主体，形成"浮出屏幕"的视差感。
+          toast 余额不足用前 60% 实色后 40% 淡出，阅读时间足够又不滞留。
+        </p>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="card accent-gold reveal reveal-d2">
+        <div class="card-num">04</div>
+        <h3>&#x1f4f1; 双因子缩放：纵横独立自适应</h3>
+        <p>
+          <span class="highlight hl-gold">_ui_scale = min(1.0, height/680dp)</span> 纵轴主导，行高/按钮宽/间距等比缩；
+          <span class="highlight hl-gold">_font_scale = min(1.0, width/360dp)</span> 横轴辅助，窄屏时字体不溢出。
+          纵向边距用 u<sup>2</sup> 平方衰减，横屏时激进挤掉空白，把垂直空间全还给游戏区。
+          宽屏内容居中、两侧深色边——不追求填满屏幕，而是填满注意力。
+        </p>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="card accent-gold reveal reveal-d3" style="grid-column: 1 / -1;">
+        <div class="card-num">05</div>
+        <h3>&#x1f4ab; 三个最精妙的设计细节</h3>
+        <div class="grid-3" style="margin-top:12px;">
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f534; 程序化径向渐变小球</p>
+            <p>7 段色阶 (亮黄芯 &rarr; 深褐边) + 97% 处边缘抗锯齿，64&times;64 RGBA 纯 Python 零依赖。
+            Kivy Texture linear 过滤让放大后依然圆润。不受分辨率限制且包体零增量。</p>
+          </div>
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f3b2; 槽位底色深浅两套</p>
+            <p>x20 金字用深色底 <span class="highlight hl-gold">#0b1220</span> 替代白色，金色在白底上对比度不足，
+            一个特判就解决了可读性问题，代码量才一行。</p>
+          </div>
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f509; 三态声音按钮的色彩语义</p>
+            <p>绿底深字 (语音) / 蓝底白字 (纯音效) / 深底灰字 (静音)，三种色相完全不同，余光一扫即知当前模式。
+            用颜色做状态指示器的手法贯穿全界面。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ 2. 程序架构 ═══════════════ -->
+<section class="section sect-code" style="background: rgba(255,255,255,0.008);">
+  <div class="container">
+    <div class="section-header">
+      <span class="emoji">&#x1f9e9;</span>
+      <h2>程序架构</h2>
+      <p class="desc">"结果确定、过程真实，两者互不污染"</p>
+    </div>
+    <div class="grid-2">
+      <!-- Card 1 -->
+      <div class="card accent-purple reveal reveal-d1">
+        <div class="card-num">01</div>
+        <h3>&#x1f3af; 作弊预定 + 物理表演双层架构</h3>
+        <p>
+          核心是"结果预定 + 表演分离"。<span class="highlight hl-purple">choose_target()</span> 发射前按概率选定目标槽位，
+          确保 RTP 精确可控；<span class="highlight hl-purple">steer_ball()</span> 引导球体时<b>只注入 vx 不改位置</b>，
+          物理引擎依旧是纯函数 <span class="highlight hl-purple">physics_step()</span> 无副作用。
+          这比传统"调倍率 &rarr; 赌大数定律"方案收敛速度快一个数量级。
+        </p>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="card accent-purple reveal reveal-d1">
+        <div class="card-num">02</div>
+        <h3>&#x1f3b5; 程序化音效合成：零文件、零延迟</h3>
+        <p>
+          36 个音效由正弦分音 + 噪声瞬态 + 梳状混响实时合成，总耗时仅 <b>~370ms</b>。
+          <span class="highlight hl-purple">_ARNG</span> 独立随机流与游戏主随机流<b>物理隔离</b>——改音效配方不会扰动盘面和落点序列。
+          可复现、无版本管理负担、无加载延迟。
+        </p>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="card accent-purple reveal reveal-d2">
+        <div class="card-num">03</div>
+        <h3>&#x1f50a; 跨平台音频后端三级降级</h3>
+        <p>
+          <b>SoundPool</b> (Android, pyjnius) &rarr; <b>_WaveOut</b> (Windows, winmm, 8 声道可叠加) &rarr;
+          <b>_KivySoundOut</b> (兜底) &rarr; <b>静音</b>。每层接口统一 (gain / 节流 / impact 同构)，
+          任意层缺失时自动跌落，保证游戏在任何平台都有声或有体面静音，业务代码只写一次。
+        </p>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="card accent-purple reveal reveal-d2">
+        <div class="card-num">04</div>
+        <h3>&#x1f6e0; 卡死兜底：看位移不看速度</h3>
+        <p>
+          <span class="highlight hl-purple">steer_ball()</span> 每帧注入 vx，碰撞事件在死锁位置仍在产生——
+          速度和事件位都在"说谎"。只有<b>帧间位移 &le; 1px</b> 不撒谎：球的位置被钉阵物理锁定不动。
+          判据从"发射后 8 秒"改为"连续 4 秒位移 &le; 1px"，杜绝提前结算。
+        </p>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="card accent-purple reveal reveal-d3" style="grid-column: 1 / -1;">
+        <div class="card-num">05</div>
+        <h3>&#x1f527; 构建管线分离 + 更多工程亮点</h3>
+        <div class="grid-2" style="margin-top:12px;">
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f4e6; 生成物架构</p>
+            <p><span class="highlight hl-purple">main.py</span> 由父项目 build_android_main.py 自动生成——物理/音效从 tkinter 源文件原样抽取，
+            Kivy UI 手写段拼接。单一事实源，杜绝两版漂移。</p>
+          </div>
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f5e3; 语音数字朗读</p>
+            <p>42 个 edge-tts 预录词条，中文数字按"二/两"规则 (千位/万位自动选词) 映射为语音名列表，
+            队列 5ms 间隔播放，与合成音效走同一 Sfx 总线。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ Quote ═══════════════ -->
+<div class="container">
+  <div class="quote-block">
+    "这本质上是老虎机的数学内核套了一层弹珠机的皮，两者各自做到极致。
+    物理表演骗过了直觉，数值控制骗过了概率。"
+    <span class="author">&mdash; 设计专家评审</span>
+  </div>
+</div>
+
+<!-- ═══════════════ 3. 游戏设计 ═══════════════ -->
+<section class="section sect-design">
+  <div class="container">
+    <div class="section-header">
+      <span class="emoji">&#x1f3ae;</span>
+      <h2>游戏设计</h2>
+      <p class="desc">"糖多盐少的配方：小甜头频繁，大高潮稀有但真实存在"</p>
+    </div>
+    <div class="grid-2">
+      <!-- Card 1 -->
+      <div class="card accent-red reveal reveal-d1">
+        <div class="card-num">01</div>
+        <h3>&#x1f3b2; 老虎机内核 + 弹珠机外皮</h3>
+        <p>
+          传统弹珠机的 RTP 依赖物理模拟收敛，误差大且不可控。本作发射前就选定了
+          <span class="highlight hl-red">target_slot</span>，物理引擎只负责生成可信的视觉轨迹。
+          玩家看到的每颗球都是"真的在弹"——<b>物理表演骗过了直觉，数值控制骗过了概率</b>。
+          RTP 精确到 &plusmn;0.05，两者各自做到极致。
+        </p>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="card accent-red reveal reveal-d1">
+        <div class="card-num">02</div>
+        <h3>&#x1f4aa; 蓄力机制：67px 的操作感与零成本容错</h3>
+        <p>
+          从弱蓄力到满蓄力，球的冲顶横坐标从 336 跨到 269，<b>67px 的跨度</b>保证玩家能感知到自己"用力"的差异
+          (&gt;50px 阈值)。哑火 (P&lt;0.15) 球弹不上去掉回柱塞，<b>不扣珠、不计局、不换盘面</b>——
+          避免误触扣珠的挫败感、免费刷盘面的漏洞、和新手练习的心理负担。
+        </p>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="card accent-red reveal reveal-d2">
+        <div class="card-num">03</div>
+        <h3>&#x1f4ca; 倍率分布：高频小奖养节奏，低频大奖拉期待</h3>
+        <p>
+          E=3.35 的期望值设计极聪明：<span class="highlight hl-green">x2 占 55%</span> 保证"几乎每把都有东西回去"的正反馈密度；
+          <span class="highlight hl-gold">x20 仅 1.5%</span> 制造稀缺感和社交传播素材。
+          玩家不会因连续空转而弃游，也不会因大奖泛滥而麻木。
+        </p>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="card accent-red reveal reveal-d2">
+        <div class="card-num">04</div>
+        <h3>&#x1f4c8; 防沉迷的心理账户包装</h3>
+        <p>
+          "每轮 20/50/100 次"不是冷冰冰的限制，而是包装成<b>"完成一轮挑战"</b>的闭环。
+          切换轮数自动重置计数——玩家不会觉得自己被系统踢出去，而是"这轮打完了，换一轮"。
+          这是行为经济学里<b>"心理账户"</b>的经典应用：把限制变成目标，把终点变成成就感。
+        </p>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="card accent-red reveal reveal-d3" style="grid-column: 1 / -1;">
+        <div class="card-num">05</div>
+        <h3>&#x1f389; 更多设计亮点</h3>
+        <div class="grid-3" style="margin-top:12px;">
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f509; 声音三态循环</p>
+            <p>语音 &rarr; 音效 &rarr; 静音，不是简单的开/关。每一步切换都有专门的提示音确认，操作反馈闭环完整。
+            默认语音已开，降低静音启动后的"空窗感"。</p>
+          </div>
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f4f3; 震动时长分档</p>
+            <p>45/75/110/150ms 逐级递增——玩家闭眼也能感知中奖大小。振幅 255 (满幅) 而非系统默认的 ~50%，
+            触觉反馈的层次化设计。</p>
+          </div>
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f6e1; 哑火双保险</p>
+            <p>不扣珠 + 不换盘面，双保险防止两种独立漏洞——"误触惩罚"和"免费刷盘"，
+            深刻理解老虎机类游戏最致命的两个用户体验死穴。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ Quote 2 ═══════════════ -->
+<div class="container">
+  <div class="quote-block">
+    "三通道从未同时缺席——任何时候玩家至少有两个感官参与。
+    音效是时间叙事线，视觉是空间信息层，触觉是情感放大器。"
+    <span class="author">&mdash; UX 专家评审</span>
+  </div>
+</div>
+
+<!-- ═══════════════ 4. 用户体验 ═══════════════ -->
+<section class="section sect-ux" style="background: rgba(255,255,255,0.008);">
+  <div class="container">
+    <div class="section-header">
+      <span class="emoji">&#x1f9e0;</span>
+      <h2>用户体验</h2>
+      <p class="desc">"哑火球保留完整的'差点就出去了'戏剧感，但零损失"</p>
+    </div>
+    <div class="grid-2">
+      <!-- Card 1 -->
+      <div class="card accent-green reveal reveal-d1">
+        <div class="card-num">01</div>
+        <h3>&#x1f3a7; 三通道反馈体系：一条完整的时间叙事线</h3>
+        <p>
+          棘轮声随蓄力递增 (间隔 250ms &rarr; 70ms) 建立期待 &rarr; 满蓄力"咔哒"闭合 &rarr;
+          发射弹簧声 &rarr; 顶部碰撞"铛" (空中锚点) &rarr; 撞钉网格质感 &rarr;
+          入袋上滑音效 &rarr; 落袋声收束 &rarr; 中奖琶音或语音播报闭环。
+          <b>视觉 + 听觉 + 触觉</b>三通道从未同时缺席。
+        </p>
+      </div>
+
+      <!-- Card 2 -->
+      <div class="card accent-green reveal reveal-d1">
+        <div class="card-num">02</div>
+        <h3>&#x1f6e1; 容错设计：最克制的善意</h3>
+        <p>
+          <b>哑火</b>：力度不足 0.15 阈值，球弹出去但掉回柱塞，不扣珠子、不换盘面、不计局数。
+          不会因"手滑"受罚，也刷不了盘面。<b>余额不足</b>：中央 toast + 语音播报全句 + 2.9s 节流防连点叠弹。
+          <b>卡死兜底</b>：看位移不看时间，避免球晃动未落袋时提前结算。
+        </p>
+      </div>
+
+      <!-- Card 3 -->
+      <div class="card accent-green reveal reveal-d2">
+        <div class="card-num">03</div>
+        <h3>&#x267f; 无障碍与可访问性</h3>
+        <p>
+          语音播报替代琶音是深思熟虑的选择：手机外放低频响应极差，琶音听感模糊，
+          人声在中频段则清晰可辨。默认模式即为"语音已开"。
+          字体层级刻意分层：UI 用 sp 跟随系统，场景内用逻辑 px 跟盘面缩放，
+          Hero 大字按屏宽占比独立，互不干扰。
+        </p>
+      </div>
+
+      <!-- Card 4 -->
+      <div class="card accent-green reveal reveal-d2">
+        <div class="card-num">04</div>
+        <h3>&#x1f44d; 单手操作与屏幕适配</h3>
+        <p>
+          全竖屏布局，蓄力按钮位于<b>底部拇指热区</b>。双因子自适应
+          (<span class="highlight hl-green">_font_scale</span> 宽缩放 +
+          <span class="highlight hl-green">_ui_scale</span> 高缩放) 独立计算：
+          窄屏缩字、矮屏 (横屏) 缩 UI 还游戏区垂直空间。
+          宽屏内容居中、两侧深色边——不追求填满屏幕，而是填满注意力。
+        </p>
+      </div>
+
+      <!-- Card 5 -->
+      <div class="card accent-green reveal reveal-d3" style="grid-column: 1 / -1;">
+        <div class="card-num">05</div>
+        <h3>&#x1f499; 最打动人心的 UX 细节</h3>
+        <div class="grid-3" style="margin-top:12px;">
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f3ac; 哑火保留表演，零损失</p>
+            <p>球弹起、落回柱塞——完整的"差点就出去了"戏剧感，但零损失。
+            惩罚感被替换为"下一次"的参与感。</p>
+          </div>
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x23f1; 130ms 呼吸空白</p>
+            <p>结果音头部烘了 130ms 前置静音，等落袋声落地。
+            让"咚"和"珠子加五十"之间有呼吸，而不是叠在一起抢耳。</p>
+          </div>
+          <div>
+            <p style="font-weight:700;color:#fff;margin-bottom:6px;">&#x1f6cb; 切静音可反悔</p>
+            <p>"关闭声音"语音播完才真静音，延迟 1s；窗口内切回则取消。
+            给了足够时间反悔，没有"按下去就掉进黑洞"的焦虑。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ SUMMARY ═══════════════ -->
+<section class="summary-section">
+  <div class="container">
+    <div class="section-header">
+      <span class="emoji">&#x1f31f;</span>
+      <h2 style="color:#fff;">一个弹珠机里的 100 个设计细节</h2>
+      <p class="desc">四维视角交汇：当美术、程序、设计、UX 同时做到极致，一个小游戏就有了大作品的质感</p>
+    </div>
+
+    <div class="pillars">
+      <div class="pillar">
+        <span class="p-icon">&#x1f3a8;</span>
+        <div class="p-title">美术审美</div>
+        <div class="p-desc">
+          6 级字体 &middot; 五档配色渐变 &middot; 三段式动画 &middot; 双因子缩放 &middot; 径向渐变球
+        </div>
+      </div>
+      <div class="pillar">
+        <span class="p-icon">&#x1f9ee;</span>
+        <div class="p-title">程序架构</div>
+        <div class="p-desc">
+          双层预定架构 &middot; 程序化音效 &middot; 三级降级 &middot; 卡死兜底 &middot; 管线分离
+        </div>
+      </div>
+      <div class="pillar">
+        <span class="p-icon">&#x1f3ae;</span>
+        <div class="p-title">游戏设计</div>
+        <div class="p-desc">
+          老虎机内核 &middot; 67px 蓄力 &middot; 倍率分布 &middot; 心理账户 &middot; 三态声音
+        </div>
+      </div>
+      <div class="pillar">
+        <span class="p-icon">&#x1f9e0;</span>
+        <div class="p-title">用户体验</div>
+        <div class="p-desc">
+          三通道反馈 &middot; 容错三件套 &middot; 语音无障碍 &middot; 单手操作 &middot; 130ms 呼吸
+        </div>
+      </div>
+    </div>
+
+    <div class="quote-block" style="margin-top: 40px;">
+      跳跳的弹珠机的每一处设计都在回答同一个问题：<b>如何让一个"简单"的东西不简陋？</b>
+      答案是——在每一个玩家看得见、听得到、触碰到的细节上，都比"够用"多走一步。
+      这不是炫技，是对玩家的尊重。
+      <span class="author">&mdash; 综合评审</span>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════ FOOTER ═══════════════ -->
+<footer class="footer">
+  <div class="ftitle">跳跳的弹珠机 &mdash; DanZhu Plinko</div>
+  <div class="fsub">
+    一个用 Python + Kivy 构建的 Android 弹珠机游戏
+    <span class="divider"></span>
+    设计评审报告 v1.0
+  </div>
+  <div>
+    <a href="https://github.com/twoplate2/DanZhu" target="_blank" rel="noopener">
+      github.com/twoplate2/DanZhu
+    </a>
+  </div>
+</footer>
+
+<script>
+  // Fade-up reveal on scroll
+  (function() {
+    const observer = new IntersectionObserver(function(entries) {
+      entries.forEach(function(entry) {
+        if (entry.isIntersecting) {
+          entry.target.style.animationPlayState = 'running';
+          observer.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.reveal').forEach(function(el) {
+      el.style.animationPlayState = 'paused';
+      observer.observe(el);
+    });
+  })();
+</script>
+
+</body>
+</html>
