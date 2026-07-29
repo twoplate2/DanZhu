@@ -2952,9 +2952,6 @@ class RootWidget(BoxLayout):
             self.power = min(1.0, self.power + CHARGE_RATE * FIXED_DT)
             self._play_charge_sound(self.power)
             weak = self.power < MISFIRE_POWER
-            self.power_lbl.text = "力度%d%%%s" % (int(round(self.power * 100)),
-                                                  "不足" if weak else "")
-            self.power_lbl.color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
             self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
