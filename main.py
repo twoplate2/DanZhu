@@ -2175,14 +2175,12 @@ class GameArea(FloatLayout):
         kw = self._rect(LANE_L + 6, py, RIGHT_INNER - 6, py + 5)
         self._spring_base.pos = kw["pos"]
         self._spring_base.size = kw["size"]
-        # 弹簧锯齿线圈: 从底座顶到球底, 4圈, 随蓄力压缩
-        # 弹簧 Z 字形: 底座顶→左→右→球底, 蓄力越足越压扁
-        ball_bottom = (b["y"] + BALL_R * BALL_VIEW) if b is not None else PLUNGER_Y + BALL_R
-        h = max(1.0, ball_bottom - py)
-        cx = self._px(PLUNGER_X)
+        # 弹簧 Z 字形: 底座→球静止位, 锚定不动(不跟飞行球拖尾)
+        rest_top = PLUNGER_Y + BALL_R * BALL_VIEW
+        h = max(1.0, rest_top - py)
         left_x = self._px(LANE_L + 10)
         right_x = self._px(RIGHT_INNER - 10)
-        top_y = self._py(ball_bottom)
+        top_y = self._py(rest_top)
         mid_y = self._py(py + h * 0.5)
         bot_y = self._py(py)
         pts = [left_x, top_y, right_x, mid_y, left_x, bot_y]
