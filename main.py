@@ -2332,9 +2332,9 @@ class RootWidget(BoxLayout):
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
-                        padding=[dp(6), dp(4)], spacing=dp(14))
+                        padding=[dp(24), dp(4)], spacing=dp(5))
         self._row_rtp = rtp
-        self._rtp_title_lbl = self._mk_label("期望返还比例:  ", "14sp", COL_TEXT, "right", False,
+        self._rtp_title_lbl = self._mk_label("期望返还比例：", "14sp", COL_TEXT, "left", False,
                                       size_hint_x=None, width=dp(115))
         rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
@@ -2348,9 +2348,9 @@ class RootWidget(BoxLayout):
         self.add_widget(rtp)
         # 投入行: 投入珠子单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
-                         padding=[dp(6), dp(4)], spacing=dp(10))
+                         padding=[dp(24), dp(4)], spacing=dp(5))
         self._row_bets = bets
-        self._bet_title_lbl = self._mk_label("每次投入珠子:  ", "14sp", COL_TEXT, "right", False,
+        self._bet_title_lbl = self._mk_label("每次投入珠子：", "14sp", COL_TEXT, "left", False,
                                        size_hint_x=None, width=dp(115))
         bets.add_widget(self._bet_title_lbl)
         self.bet_btns = {}
@@ -2856,8 +2856,8 @@ class RootWidget(BoxLayout):
         self.spacing = dp(10) * uv                      # 行间距: 激进衰减
 
         self._row_top.padding    = [dp(10), dp(4) * uv, dp(10), dp(4) * uv]
-        self._row_rtp.padding    = [dp(6),  dp(4) * uv]
-        self._row_bets.padding   = [dp(6),  dp(4) * uv]
+        self._row_rtp.padding    = [dp(24), dp(4) * uv]
+        self._row_bets.padding   = [dp(24), dp(4) * uv]
         self._row_bottom.padding = [dp(6), dp(4) * uv, dp(12), dp(4) * uv]
         self.padding = [0, 0, 0, dp(12)]  # 底部留白
 
@@ -2880,7 +2880,7 @@ class RootWidget(BoxLayout):
         self.fire_btn.font_size  = sp(16) * fs
 
         self.mute_btn.width    = dp(64)  * us
-        self.round_btn.width   = dp(88)  * us
+        self.round_btn.width   = dp(72)  * us
         self.title_lbl.width    = dp(112) * us
         self.reset_btn.width   = dp(96)  * us
         self.fire_btn.width    = dp(110) * us
