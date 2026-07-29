@@ -2075,7 +2075,7 @@ class GameArea(FloatLayout):
             self._spring_bars = []
             for _ in range(3):
                 self._spring_bars.append(
-                    Line(points=[0, 0, 0, 0], width=max(0.8, 1.6 * s),
+                    Line(points=[0, 0, 0, 0], width=max(0.8, 2.0 * s),
                          cap="round"))
             # 球(动态, 程序化渐变贴图; 视觉 BALL_VIEW 倍放大, 碰撞半径不变)
             Color(1, 1, 1)
