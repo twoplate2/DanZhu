@@ -2566,7 +2566,7 @@ class RootWidget(BoxLayout):
             # 清理旧 toast, 延迟一帧再弹避免被 _redraw 清除
             self.game_area._effects = [e for e in self.game_area._effects if e["kind"] != "toast"]
             Clock.schedule_once(lambda dt: self.game_area.center_toast(
-                "珠子数量已重置", hexcolor=COL_GREEN, size=20, life=1.5), 0.05)
+                "珠子数量已重置", hexcolor=COL_GREEN, size=28, life=1.5), 0.05)
             self.sfx.play("voice_reset_progress", throttle=1.5)
         # 恢复按钮颜色
         self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
