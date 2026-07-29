@@ -1959,6 +1959,7 @@ class GameArea(FloatLayout):
         self._meter_fill = None
         self._meter_col = None
         self._spring_bars = []
+        self._spring_power = 0.0           # 弹簧显示用力度(平滑衰减)
         self._spring_bar_col = None
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
@@ -2172,9 +2173,15 @@ class GameArea(FloatLayout):
             self._meter_col.rgb = hex_rgb(COL_FIRE if weak else COL_METER)
         else:
             self._meter_fill.size = (0, 0)
+        # 弹簧力度平滑跟踪: 蓄力时跟随, 释放后 0.3s 线性衰减
+        if g.power > self._spring_power:
+            self._spring_power = g.power
+        else:
+            self._spring_power = max(0.0, self._spring_power - FIXED_DT / 0.3)
+        sp = self._spring_power
         # 弹簧 Z 字形: 上横线→斜线→下横线
         bar_top = FLOOR
-        bar_bot = FLOOR + 9 + g.power * 14
+        bar_bot = FLOOR + 9 + sp * 14
         lx = self._px(LANE_L + 10)
         rx = self._px(RIGHT_INNER - 10)
         y0 = self._py(bar_top)
@@ -2183,13 +2190,13 @@ class GameArea(FloatLayout):
         bars[0].points = [lx, y0, rx, y0]              # 上横线
         bars[1].points = [rx, y0, lx, y1]              # 斜线(右上→左下)
         bars[2].points = [lx, y1, rx, y1]              # 下横线
-        # 颜色: 哑火→红, 正常→灰蓝, 满蓄力→亮金
-        weak = g.power < MISFIRE_POWER
-        if g.power < 0.01:
+        # 弹簧颜色: 哑火→红, 正常→灰蓝, 满蓄力→亮金
+        weak = sp < MISFIRE_POWER
+        if sp < 0.01:
             self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
         elif weak:
             self._spring_bar_col.rgb = hex_rgb("#c45a4a")
-        elif g.power >= 1.0:
+        elif sp >= 1.0:
             self._spring_bar_col.rgb = hex_rgb("#ffd700")
         else:
             self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
