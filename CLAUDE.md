@@ -39,7 +39,7 @@ python -m py_compile main.py
 
 1. **常量+几何**: 520×660 逻辑坐标系(y 向下), 全部绘制由它换算
 2. **纯物理层**: `physics_step`(纯函数) + `steer_ball`(引导只改 vx 不改位置);
-   `choose_target` 发射前预定落点 → RTP 精确(80/100/110 三档), 物理只是表演;
+   `choose_target` 发射前预定落点 → RTP 精确(80/100/120 三档), 物理只是表演;
    哑火(power<0.15)走 `advance_misfire` 一维积分, 不扣珠不换盘面。
    **卡死兜底看位移不看表**: flying 帧里球"位置不动(位移≤1px/帧)超 MAX_FALL_SEC(4s)"
    才强制 settle —— 旧版"发射后 8s"会在球晃动久未落袋时提前结算(音效/飘字/震动全早于
@@ -49,7 +49,7 @@ python -m py_compile main.py
    `PlinkoApp.build()` 中 `Sfx(sync=True)` **同步烘焙**, 全部音效就绪后才建 UI,
    冷启动不空窗。Cold-bake 后等 0.5s 让 SoundPool 异步解码完(否则首次安装必静音)。
    热启动命中磁盘 WAV 缓存(~20ms)。SFX_MASTER=1.0, `_pack()` 峰值 +30%。
-   **另有 20 个 edge-tts 预录语音**(`voice/*.wav`, 22050Hz 16bit mono 与合成音效同格式,
+   **另有 42 个 edge-tts 预录语音**(`voice/*.wav`, 22050Hz 16bit mono 与合成音效同格式,
    由父项目 `tools/generate_voice.py` 生成): named 后端直接 prime APK 内原路径
    (不落缓存、不进 stamp 指纹、语音更新即生效), pcm 后端剥 WAV 头并入 bank ——
    两种播放路径与合成音效完全同构(gain/节流/并发都走 Sfx 总线同一套)。
@@ -71,8 +71,12 @@ python -m py_compile main.py
      **`_font_scale = min(1.0, width/360dp)` + `_ui_scale = min(1.0, height/680dp)`**
      双因子缩放: 窗口窄时字体缩小, 窗口矮时(横屏)所有固定 UI(行高/按钮宽/字号)等比缩小,
      把垂直空间还给游戏区。`_apply_sizes()` 统一写到所有控件, 竖屏时两因子均为 1.0 不影响。
-   - 标签统一右对齐(115dp), 顶栏标题左右等 flex 居中。底部 RootWidget 12dp padding,
+   - 标签统一右对齐(115dp), 顶栏标题左右等 flex 居中。顶部 RootWidget 12dp padding,
      H_INFO 26dp, 底行双 flex(0.95/0.05)控制蓄力按钮位置。
+   - **防沉迷机制**: 每轮最多 N 次(20/50/100 可选, 默认 50)。
+     达到上限弹出总结窗口("本轮游戏 X 次已结束, 剩余 X 个珠子, 数据已重置")并语音播报,
+     播完自动重置。轮次历史持久化到 JSON(`plinko_round_history.json`, 最近 100 条)。
+     顶栏"每轮X次"按钮(绿底黑字)弹出设定窗口, 切换即重置。统计行精简为"累计X投X中(X%)"。
    - 余额不足只在屏幕中央弹 toast。中奖大字 2.4s 停留, 落地 0.3~0.7s 后可再发射。
    - **颜色五档**: x2绿(#39d98a) x3蓝(#3d8bfd) x5红(#e0533b) x10紫(#a335ee) x20金(#f0b000),
      大字/指示灯/槽位底三处统一。槽位底色用深色版(绿#1e8a5a 金#c88800)保证白字对比度。
@@ -91,6 +95,10 @@ python -m py_compile main.py
   (20/100/200/500/1000 各有两种组合)。pocket 入袋声、coin 滚分音各档照播。
 - 余额不足: 播 `voice_nomoney`("珠子数量不足请重置或降低投入")替换 error 嗡声,
   全长 2.9s 故 throttle=3.0 防重叠; toast 飘字三档都弹。
+- 轮次结束: 播 `voice_round_end_{20,50,100}`("本轮游戏X次已结束,剩余") + 数字朗读片段
+  (0~9/十百千万/两, 队列拼接, 对标 Clac 方案) + `voice_round_suffix`("个珠子,数据已重置")。
+  数字朗读支持二/两规则(千位/万位的 2→"两")。队列间隔 5ms, 不拼接 PCM。
+- 轮次设定切换: 播 `voice_round_set_{20,50,100}`("每轮已设定为X次")。
 - 失败: `voice_lose`("好遗憾")已制作**未接入**, lose 音照播。
 - 语音头部烘 130ms 前置静音(= SFX_RESULT_LEAD), 节奏与被替换的 win 音对齐(等 pocket 落地)。
 
