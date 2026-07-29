@@ -1959,10 +1959,8 @@ class GameArea(FloatLayout):
         self._meter_fill = None
         self._meter_col = None
         self._spring_bars = []
-        self._spring_glow = []
         self._spring_power = 0.0           # 弹簧显示用力度(平滑衰减)
         self._spring_bar_col = None
-        self._spring_glow_col = None
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
         self.bind(size=self._redraw, pos=self._redraw)
@@ -2073,19 +2071,11 @@ class GameArea(FloatLayout):
             Color(*hex_rgb("#060e18"))
             Rectangle(**self._rect(LANE_L, FLOOR, RIGHT_INNER, CH))
             # 弹簧: 2 条横线(在凹槽内, 间距=松弛, 贴紧=压缩)
-            # 弹簧 Z 字形: 辉光线(抗锯齿) + 主线
-            self._spring_glow_col = Color(*hex_rgb("#8fa0c4"))
-            self._spring_glow_col.a = 0.25
-            self._spring_glow = []
-            for _ in range(3):
-                self._spring_glow.append(
-                    Line(points=[0, 0, 0, 0], width=max(1.0, 3.5 * s),
-                         cap="round"))
             self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
             self._spring_bars = []
             for _ in range(3):
                 self._spring_bars.append(
-                    Line(points=[0, 0, 0, 0], width=max(0.8, 2.0 * s),
+                    Line(points=[0, 0, 0, 0], width=max(0.8, 1.5 * s),
                          cap="round"))
             # 球(动态, 程序化渐变贴图; 视觉 BALL_VIEW 倍放大, 碰撞半径不变)
             Color(1, 1, 1)
@@ -2197,18 +2187,15 @@ class GameArea(FloatLayout):
         y0 = self._py(bar_top)
         y1 = self._py(bar_bot)
         bars = self._spring_bars
-        glow = self._spring_glow
-        bars[0].points = glow[0].points = [lx, y0, rx, y0]
-        bars[1].points = glow[1].points = [rx, y0, lx, y1]
-        bars[2].points = glow[2].points = [lx, y1, rx, y1]
+        bars[0].points = [lx, y0, rx, y0]
+        bars[1].points = [rx, y0, lx, y1]
+        bars[2].points = [lx, y1, rx, y1]
         # 弹簧颜色: 哑火→红, 正常蓄力→灰蓝渐变至金黄(10档颗粒度)
         weak = sp < MISFIRE_POWER
         if sp < 0.01:
             self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
-            self._spring_glow_col.rgb = hex_rgb("#8fa0c4")
         elif weak:
             self._spring_bar_col.rgb = hex_rgb("#c45a4a")
-            self._spring_glow_col.rgb = hex_rgb("#c45a4a")
         else:
             u = power_u(sp)
             r0, g0, b0 = 0x8f, 0xa0, 0xc4
@@ -2216,9 +2203,7 @@ class GameArea(FloatLayout):
             r = int(r0 + (r1 - r0) * u)
             g = int(g0 + (g1 - g0) * u)
             b = int(b0 + (b1 - b0) * u)
-            rgb = (r / 255.0, g / 255.0, b / 255.0)
-            self._spring_bar_col.rgb = rgb
-            self._spring_glow_col.rgb = rgb
+            self._spring_bar_col.rgb = (r / 255.0, g / 255.0, b / 255.0)
         # 槽位白闪
         if self._pulse is not None:
             i, end = self._pulse
