@@ -2320,6 +2320,7 @@ class RootWidget(BoxLayout):
         left_box.add_widget(self.round_btn)
         left_box.add_widget(Widget())
         top.add_widget(left_box)
+        top.add_widget(Widget(size_hint_x=None, width=dp(36)))  # 标题右移防移动端重叠
         self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
                                         "center", True, size_hint_x=None, width=dp(112))
         top.add_widget(self.title_lbl)
