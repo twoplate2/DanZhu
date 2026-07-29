@@ -2174,7 +2174,7 @@ class GameArea(FloatLayout):
             self._meter_fill.size = (0, 0)
         # 弹簧 Z 字形: 上横线→斜线→下横线
         bar_top = FLOOR
-        bar_bot = FLOOR + 9 + g.power * 4
+        bar_bot = FLOOR + 9 + g.power * 14
         lx = self._px(LANE_L + 10)
         rx = self._px(RIGHT_INNER - 10)
         y0 = self._py(bar_top)
