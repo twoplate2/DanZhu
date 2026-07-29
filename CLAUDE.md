@@ -42,14 +42,13 @@ python -m py_compile main.py
    `choose_target` 发射前预定落点 → RTP 精确(80/100/120 三档), 物理只是表演;
    哑火(power<0.15)走 `advance_misfire` 一维积分, 不扣珠不换盘面。
    **卡死兜底看位移不看表**: flying 帧里球"位置不动(位移≤1px/帧)超 MAX_FALL_SEC(4s)"
-   才强制 settle —— 旧版"发射后 8s"会在球晃动久未落袋时提前结算(音效/飘字/震动全早于
-   真实落袋)。判据不能用速度或碰撞事件: `steer_ball` 每帧注入 vx, 卡死球的速度数值和
-   微碰撞从未停, 只有位置被碰撞钉死不说谎。
+   才强制 settle —— 旧版"发射后 8s"会在球晃动久未落袋时提前结算。判据不能用速度或碰撞事件:
+   `steer_ball` 每帧注入 vx, 卡死球的速度数值和微碰撞从未停, 只有位置被碰撞钉死不说谎。
 3. **音效合成**: `bake_bank()` 程序化合成 36 个 16bit PCM(~11.7s 素材)。
    `PlinkoApp.build()` 中 `Sfx(sync=True)` **同步烘焙**, 全部音效就绪后才建 UI,
    冷启动不空窗。Cold-bake 后等 0.5s 让 SoundPool 异步解码完(否则首次安装必静音)。
    热启动命中磁盘 WAV 缓存(~20ms)。SFX_MASTER=1.0, `_pack()` 峰值 +30%。
-   **另有 42 个 edge-tts 预录语音**(`voice/*.wav`, 22050Hz 16bit mono 与合成音效同格式,
+   **另有 43 个 edge-tts 预录语音**(`voice/*.wav`, 22050Hz 16bit mono 与合成音效同格式,
    由父项目 `tools/generate_voice.py` 生成): named 后端直接 prime APK 内原路径
    (不落缓存、不进 stamp 指纹、语音更新即生效), pcm 后端剥 WAV 头并入 bank ——
    两种播放路径与合成音效完全同构(gain/节流/并发都走 Sfx 总线同一套)。
@@ -59,25 +58,31 @@ python -m py_compile main.py
    **不再用 OnLoadCompleteListener** — 那个跨线程 JNI 代理失灵就是全库永久静音,
    而 `play()` 对未加载完的 sample 本来就返回 0。缓存用 stamp 文件记指纹+逐文件字节数校验。
 5. **Kivy UI**:
-   - `GameArea(FloatLayout)`: 逻辑坐标→物理像素等比缩放居中。静态元素(墙/钉/槽/弧)仅尺寸变或换盘面时重绘; 球/力度条/柱塞每帧只改 pos; 特效(落袋浮字/中奖大字/余额不足 toast)是 FloatLayout 子 Label, 每帧 `tick_draw` 驱动
+   - `GameArea(FloatLayout)`: 逻辑坐标→物理像素等比缩放居中。静态元素(墙/钉/槽/弧)仅尺寸变或换盘面时重绘;
+     球/力度条/弹簧每帧只改 pos; 特效(落袋浮字/中奖大字/toast)是 FloatLayout 子 Label, 每帧 `tick_draw` 驱动。
+     弹簧位于地板下方暗色凹槽(FLOOR~CH), Z 字形(上横→斜线→下横), 线宽 1.5px, 跨度 32px,
+     颜色按蓄力力度灰蓝→金黄渐变, 释放后 0.5s 平滑回弹。
    - `RootWidget(BoxLayout)`: 6 行上下结构(顶栏/返还/投入/游戏区/信息/底行),
      行间距 10dp。状态机 ready→charging→flying/misfire→landing→landed, 每帧 `_frame(FIXED_DT)`。
      发射不再播飞行音(已移除); launch 音量按哑火/成功分级(0.35→0.50 / 0.60→1.00)。
-     页边距和行间距也纳入 `_ui_scale` 缩放, 横屏时不浪费垂直空间。
+   - **防沉迷机制**: 每轮最多 N 次(20/50/100 可选, 默认 50)。达到上限弹出总结窗口
+     ("本轮游戏 X 次已结束, 剩余 X 个珠子, 珠子数量已调整到1000个, 欢迎你重新挑战")
+     并语音播报, 播完自动重置。轮次历史持久化到 JSON(`plinko_round_history.json`, 最近 100 条)。
+     顶栏"每轮X次"按钮(绿底黑字, 72dp, 13sp bold, 同语音按钮样式)弹出设定窗口, 切换即重置。
+     设定弹窗采用纵向自适应布局防手机溢出, 历史记录 ScrollView 可滚动。
+   - **排版统一左对齐 24dp**: 返还/投入/信息/底行四行首字符统一左沿, 行内 spacing 5dp。
+     顶栏标题左右等 flex 居中, 左栏(语音 64dp + 每轮X次 72dp + 间距 6dp)右侧 36dp spacer 防移动端重叠。
+   - **重置按钮反馈**: on_press 变色(#2a2a35→#4a5a6a), 强制中断任何状态重置,
+     toast 28sp "珠子数量已重置" + 语音 "voice_reset_progress", 自动重置时不弹提示。
+   - **发射按钮**: 充电时颜色随力度变化(哑火红→深棕 #8B6914), 蓄力百分比文字已移除。
+   - 飞行时语音按钮和轮次按钮同步灰化(`_set_controls_enabled` 统一管理)。
    - `PlinkoApp`: AnchorLayout 居中 + **每帧轮询窗口尺寸**调 `_fit_width`
      (`Window.bind(size)` 对启动期程序化 resize 不触发, 这是实测坑)。
      `build()` 中 Android 运行时调 `setRequestedOrientation(PORTRAIT)` 强制竖屏,
      配合 `_fit_width()` 横屏容错(宽高比>1.2 时以宽度为限)。
      **`_font_scale = min(1.0, width/360dp)` + `_ui_scale = min(1.0, height/680dp)`**
-     双因子缩放: 窗口窄时字体缩小, 窗口矮时(横屏)所有固定 UI(行高/按钮宽/字号)等比缩小,
+     双因子缩放: 窗口窄时字体缩小, 窗口矮时(横屏)所有固定 UI 等比缩小,
      把垂直空间还给游戏区。`_apply_sizes()` 统一写到所有控件, 竖屏时两因子均为 1.0 不影响。
-   - 返还/投入/信息三行文字统一左对齐, 左沿 24dp(与重置按钮对齐)。
-     顶栏标题左右等 flex 居中, 左栏(语音按钮 64dp + 每轮X次 72dp + 间距 6dp)右侧 36dp spacer 防移动端重叠。
-     底部 RootWidget 12dp padding, H_INFO 26dp, 底行双 flex(0.95/0.05)控制蓄力按钮位置。
-   - **防沉迷机制**: 每轮最多 N 次(20/50/100 可选, 默认 50)。
-     达到上限弹出总结窗口("本轮游戏 X 次已结束, 剩余 X 个珠子, 数据已重置")并语音播报,
-     播完自动重置。轮次历史持久化到 JSON(`plinko_round_history.json`, 最近 100 条)。
-     顶栏"每轮X次"按钮(绿底黑字)弹出设定窗口, 切换即重置。统计行精简为"累计X投X中(X%)"。
    - 余额不足只在屏幕中央弹 toast。中奖大字 2.4s 停留, 落地 0.3~0.7s 后可再发射。
    - **颜色五档**: x2绿(#39d98a) x3蓝(#3d8bfd) x5红(#e0533b) x10紫(#a335ee) x20金(#f0b000),
      大字/指示灯/槽位底三处统一。槽位底色用深色版(绿#1e8a5a 金#c88800)保证白字对比度。
@@ -90,23 +95,20 @@ python -m py_compile main.py
 其中"关闭声音"**在静音前播**, 延迟 1s 才 `set_enabled(False)` 让播报收尾,
 窗口内玩家又切回则取消关闭(`_apply_sound_off` 校验 mode)。
 
-语音档的播报规则(`_play_result_sound` / `start_charge`):
+语音档的播报规则:
 - 中奖: 播 `voice_win{payout}`("珠子加xx")**替换 win 琶音** —— 同播会互盖(win rms 全库最响)。
-  payout = bet{1,10,50,100} × 倍率{2,3,5,10,20} 共 20 种组合, 按数值去重 = 15 个文件全覆盖
-  (20/100/200/500/1000 各有两种组合)。pocket 入袋声、coin 滚分音各档照播。
-- 余额不足: 播 `voice_nomoney`("珠子数量不足请重置或降低投入")替换 error 嗡声,
-  全长 2.9s 故 throttle=3.0 防重叠; toast 飘字三档都弹。
-- 轮次结束: 播 `voice_round_end_{20,50,100}`("本轮游戏X次已结束,剩余") + 数字朗读片段
-  (0~9/十百千万/两, 队列拼接, 对标 Clac 方案) + `voice_round_suffix`("个珠子,数据已重置")。
-  数字朗读支持二/两规则(千位/万位的 2→"两")。队列间隔 5ms, 不拼接 PCM。
-- 轮次设定切换: 播 `voice_round_set_{20,50,100}`("每轮已设定为X次")。
+  payout = bet{1,10,50,100} × 倍率{2,3,5,10,20} 共 20 种组合, 按数值去重 = 15 个文件全覆盖。
+- 余额不足: 播 `voice_nomoney`("珠子数量不足请重置或降低投入")替换 error 嗡声, throttle=3.0。
+- 轮次结束: 播 `voice_round_end_{20,50,100}` + 数字朗读片段(0~9/十百千万/两, 队列拼接 5ms 间隔)
+  + `voice_round_suffix`("个珠子,珠子数量已调整到一千个,欢迎你重新挑战")。二/两规则: 千位/万位 2→"两"。
+- 轮次设定: 播 `voice_round_set_{20,50,100}`("每轮已设定为X次")。
+- 手动重置: 播 `voice_reset_progress`("珠子数量已重置"), throttle=1.5s, toast 28sp 绿色。
 - 失败: `voice_lose`("好遗憾")已制作**未接入**, lose 音照播。
 - 语音头部烘 130ms 前置静音(= SFX_RESULT_LEAD), 节奏与被替换的 win 音对齐(等 pocket 落地)。
 
 语音再生成(改文案/新增词条): 改父项目 `tools/generate_voice.py` 的 PHRASES 后
 `python tools/generate_voice.py`(缺啥补啥)或 `--force`(全量); edge-tts 需联网,
-XiaoxiaoNeural +10% 语速, 重采样 22050Hz, peak 0.65 归一(实测 rms 0.119~0.158 与 win 音同档)。
-生成后直接提交 `voice/*.wav` 即可, 加载侧零改动。
+XiaoxiaoNeural +10% 语速, 重采样 22050Hz, peak 0.65 归一。生成后直接提交 `voice/*.wav` 即可。
 
 ## 移植期踩过的坑(详解在 BUILD_APK.md 第三节)
 
@@ -119,6 +121,7 @@ XiaoxiaoNeural +10% 语速, 重采样 22050Hz, peak 0.65 归一(实测 rms 0.119
 - 震动必须 spec 里声明 `android.permissions = VIBRATE`, 否则 pyjnius 静默失败不抛异常。
   振幅用 `255`(最大值)而非 `DEFAULT_AMPLITUDE`(-1 / ~50%), 否则手机震感太弱。
 - 中文字体 `fonts/NotoSansSC-Medium.otf` 必须列进 `source.include_patterns`, 否则汉字全豆腐块
+- ScrollView 内 Label 用 `width→text_size` 绑定而非 `size→text_size`, 否则死循环
 
 ## 验证标准(selftest 门禁, 与 PC 版同一套)
 
