@@ -2190,16 +2190,20 @@ class GameArea(FloatLayout):
         bars[0].points = [lx, y0, rx, y0]              # 上横线
         bars[1].points = [rx, y0, lx, y1]              # 斜线(右上→左下)
         bars[2].points = [lx, y1, rx, y1]              # 下横线
-        # 弹簧颜色: 哑火→红, 正常→灰蓝, 满蓄力→亮金
+        # 弹簧颜色: 哑火→红, 正常蓄力→灰蓝渐变至金黄(10档颗粒度)
         weak = sp < MISFIRE_POWER
         if sp < 0.01:
             self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
         elif weak:
             self._spring_bar_col.rgb = hex_rgb("#c45a4a")
-        elif sp >= 1.0:
-            self._spring_bar_col.rgb = hex_rgb("#ffd700")
         else:
-            self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
+            u = power_u(sp)
+            r0, g0, b0 = 0x8f, 0xa0, 0xc4
+            r1, g1, b1 = 0xff, 0xd7, 0x00
+            r = int(r0 + (r1 - r0) * u)
+            g = int(g0 + (g1 - g0) * u)
+            b = int(b0 + (b1 - b0) * u)
+            self._spring_bar_col.rgb = (r / 255.0, g / 255.0, b / 255.0)
         # 槽位白闪
         if self._pulse is not None:
             i, end = self._pulse
