@@ -2424,8 +2424,6 @@ class RootWidget(BoxLayout):
         self.reset_btn.width = dp(96)
         self.reset_btn.bind(on_press=lambda _b: setattr(self.reset_btn, "background_color",
             hex_rgb("#4a5a6a") + (1,)))
-        self.reset_btn.bind(on_release=lambda _b: Clock.schedule_once(
-            lambda dt: setattr(self.reset_btn, "background_color", hex_rgb("#2a2a35") + (1,)), 0.1))
         fire.add_widget(Widget(size_hint_x=None, width=dp(12)))     # 重置按钮右移
         fire.add_widget(self.reset_btn)
         fire.add_widget(Widget(size_hint_x=0.95))                 # 弹簧(让出少量给右侧)
@@ -2547,8 +2545,10 @@ class RootWidget(BoxLayout):
             self.game_area._redraw()
 
     def reset_balance(self, notify=True):
-        if self.state in ("flying", "misfire", "landing", "charging"):
-            return
+        # 强制中断当前操作(充电/飞行/哑火/着陆), 回到 ready
+        if self.state in ("charging", "flying", "misfire", "landing"):
+            self.state = "ready"
+            self.power = 0.0
         self.balance = START_BEADS
         self.display_balance = float(START_BEADS)
         self._anim_target_balance = float(START_BEADS)
@@ -2563,10 +2563,13 @@ class RootWidget(BoxLayout):
         self.sfx.play("cash")
         self._set_controls_enabled(True)
         if notify:
-            # 清理旧 toast 确保重置提示不被门禁拦截
+            # 清理旧 toast, 延迟一帧再弹避免被 _redraw 清除
             self.game_area._effects = [e for e in self.game_area._effects if e["kind"] != "toast"]
-            self.game_area.center_toast("珠子数量已重置", hexcolor=COL_GREEN, size=20, life=1.5)
+            Clock.schedule_once(lambda dt: self.game_area.center_toast(
+                "珠子数量已重置", hexcolor=COL_GREEN, size=20, life=1.5), 0.05)
             self.sfx.play("voice_reset_progress", throttle=1.5)
+        # 恢复按钮颜色
+        self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
 
     def start_charge(self):
         if self.state != "ready":
@@ -2951,8 +2954,8 @@ class RootWidget(BoxLayout):
             weak = self.power < MISFIRE_POWER
             self.power_lbl.text = "力度%d%%%s" % (int(round(self.power * 100)),
                                                   "不足" if weak else "")
-            self.power_lbl.color = hex_rgb(COL_FIRE if weak else COL_METER) + (1,)
-            self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else COL_METER) + (1,)
+            self.power_lbl.color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
+            self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
             landed = advance_flight(b, self.geo, self.target_x)
