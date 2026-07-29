@@ -2040,16 +2040,26 @@ class GameArea(FloatLayout):
             self._pulse = (i, time.time() + 0.30)
 
     def center_toast(self, text, hexcolor=COL_FIRE, size=22, life=1.5):
-        """画布中央两行警示飘字(如余额不足): 上浮+淡出。size 单位是 sp(见 big_result_text)。"""
+        """画布中央两行警示飘字(如余额不足): 上浮+淡出。size 单位是 sp(见 big_result_text)。
+        老 toast 未消失前不再弹新的(连点发射会瞬间叠一排); 创建即摆位到中央 ——
+        默认 pos=(0,0) 是 GameArea 左下角(=重置按钮附近), 下一帧才被 tick_draw 摆位,
+        连点时会在那里闪出"第二个提示"。"""
         if self._ball_e is None:
             return
+        for e in self._effects:
+            if e["kind"] == "toast":
+                return                            # 已有 toast 存活, 不重复弹
         lbl = Label(text=text, font_size=sp(size), bold=True, halign="center",
                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+        lbl.texture_update()                      # 立刻出纹理, 尺寸跟文字(center 才摆得准)
+        lbl.size = lbl.texture_size
+        cx = self._px(CW / 2.0) - self.x
+        cy = self._py(CH / 2.0 - 40) - self.y
+        lbl.center = (cx, cy)
         self.add_widget(lbl)
         self._effects.append({"kind": "toast", "ws": [lbl], "born": time.time(),
                               "life": life, "rgb": hex_rgb(hexcolor),
-                              "cx": self._px(CW / 2.0) - self.x,
-                              "cy": self._py(CH / 2.0 - 40) - self.y})
+                              "cx": cx, "cy": cy})
 
     def set_lamp(self, i, hex_color):
         if 0 <= i < len(self._lamp_cols):

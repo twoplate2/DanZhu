@@ -18,6 +18,9 @@ python main.py --nosound    # 静音启动
 python -m py_compile main.py
 ```
 
+语音/兜底的行为级验证脚本在父项目(不在本仓库): `scratch/archive/three_state_shots.py`(三态按钮截图)、
+`scratch/archive/stall_fallback_check.py`(晃动不提前结算/钉死 4s 兜底)、`tools/generate_voice.py`(语音再生成)。
+
 ## main.py 是生成物 — 本仓库最重要的结构事实
 
 `main.py` 由**父项目(不在本仓库)** 的 `tools/build_android_main.py` 生成:
@@ -37,11 +40,19 @@ python -m py_compile main.py
 1. **常量+几何**: 520×660 逻辑坐标系(y 向下), 全部绘制由它换算
 2. **纯物理层**: `physics_step`(纯函数) + `steer_ball`(引导只改 vx 不改位置);
    `choose_target` 发射前预定落点 → RTP 精确(80/100/110 三档), 物理只是表演;
-   哑火(power<0.15)走 `advance_misfire` 一维积分, 不扣珠不换盘面
+   哑火(power<0.15)走 `advance_misfire` 一维积分, 不扣珠不换盘面。
+   **卡死兜底看位移不看表**: flying 帧里球"位置不动(位移≤1px/帧)超 MAX_FALL_SEC(4s)"
+   才强制 settle —— 旧版"发射后 8s"会在球晃动久未落袋时提前结算(音效/飘字/震动全早于
+   真实落袋)。判据不能用速度或碰撞事件: `steer_ball` 每帧注入 vx, 卡死球的速度数值和
+   微碰撞从未停, 只有位置被碰撞钉死不说谎。
 3. **音效合成**: `bake_bank()` 程序化合成 36 个 16bit PCM(~11.7s 素材)。
    `PlinkoApp.build()` 中 `Sfx(sync=True)` **同步烘焙**, 全部音效就绪后才建 UI,
    冷启动不空窗。Cold-bake 后等 0.5s 让 SoundPool 异步解码完(否则首次安装必静音)。
    热启动命中磁盘 WAV 缓存(~20ms)。SFX_MASTER=1.0, `_pack()` 峰值 +30%。
+   **另有 20 个 edge-tts 预录语音**(`voice/*.wav`, 22050Hz 16bit mono 与合成音效同格式,
+   由父项目 `tools/generate_voice.py` 生成): named 后端直接 prime APK 内原路径
+   (不落缓存、不进 stamp 指纹、语音更新即生效), pcm 后端剥 WAV 头并入 bank ——
+   两种播放路径与合成音效完全同构(gain/节流/并发都走 Sfx 总线同一套)。
 4. **输出后端三级降级**: `_SoundPoolOut`(Android, pyjnius) > `_WaveOut`(winmm) > `_KivySoundOut` > 静音。
    两种接口模式: `"pcm"`(winmm 播缩放后的 PCM) / `"named"`(SoundPool 按名播, gain 即音量)。
    `Sfx` 总线: gain 量化 10 档缓存、按名节流、`impact(bit, sp)` 按撞击速率选音色变体+音量。
@@ -65,6 +76,28 @@ python -m py_compile main.py
    - 余额不足只在屏幕中央弹 toast。中奖大字 2.4s 停留, 落地 0.3~0.7s 后可再发射。
    - **颜色五档**: x2绿(#39d98a) x3蓝(#3d8bfd) x5红(#e0533b) x10紫(#a335ee) x20金(#f0b000),
      大字/指示灯/槽位底三处统一。槽位底色用深色版(绿#1e8a5a 金#c88800)保证白字对比度。
+
+## 语音播报与三态声音开关
+
+顶栏声音钮三态循环(`RootWidget.sound_mode` + `_refresh_mute_btn`):
+**语音已开**(绿底深字, 默认) → **音效已开**(蓝底白字) → **音效已关**(深底灰字)。
+`sfx.enabled = (mode != "off")`; 切换时播对应提示音(voice_mode_voice/sfx/off),
+其中"关闭声音"**在静音前播**, 延迟 1s 才 `set_enabled(False)` 让播报收尾,
+窗口内玩家又切回则取消关闭(`_apply_sound_off` 校验 mode)。
+
+语音档的播报规则(`_play_result_sound` / `start_charge`):
+- 中奖: 播 `voice_win{payout}`("珠子加xx")**替换 win 琶音** —— 同播会互盖(win rms 全库最响)。
+  payout = bet{1,10,50,100} × 倍率{2,3,5,10,20} 共 20 种组合, 按数值去重 = 15 个文件全覆盖
+  (20/100/200/500/1000 各有两种组合)。pocket 入袋声、coin 滚分音各档照播。
+- 余额不足: 播 `voice_nomoney`("珠子数量不足请重置或降低投入")替换 error 嗡声,
+  全长 2.9s 故 throttle=3.0 防重叠; toast 飘字三档都弹。
+- 失败: `voice_lose`("好遗憾")已制作**未接入**, lose 音照播。
+- 语音头部烘 130ms 前置静音(= SFX_RESULT_LEAD), 节奏与被替换的 win 音对齐(等 pocket 落地)。
+
+语音再生成(改文案/新增词条): 改父项目 `tools/generate_voice.py` 的 PHRASES 后
+`python tools/generate_voice.py`(缺啥补啥)或 `--force`(全量); edge-tts 需联网,
+XiaoxiaoNeural +10% 语速, 重采样 22050Hz, peak 0.65 归一(实测 rms 0.119~0.158 与 win 音同档)。
+生成后直接提交 `voice/*.wav` 即可, 加载侧零改动。
 
 ## 移植期踩过的坑(详解在 BUILD_APK.md 第三节)
 

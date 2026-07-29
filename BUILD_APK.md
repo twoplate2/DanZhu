@@ -33,6 +33,7 @@ project/
 ├── icon.png                      # 1024×1024 启动器图标
 ├── presplash.png                 # 1080×1920 启动屏
 ├── fonts/NotoSansSC-Medium.otf   # 中文字体(不打 = 汉字全豆腐块)
+├── voice/*.wav                   # 预录语音(edge-tts, 语音播报用)
 ├── .github/workflows/build-apk.yml
 └── .gitignore                    # .buildozer/ bin/ *.apk __pycache__/
 ```
@@ -46,7 +47,7 @@ package.name = plinko              # 小写/无空格/无中文
 package.domain = org.danzhu
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
-source.include_patterns = fonts/*.otf   # 子目录资源必须显式列, 否则不进 APK
+source.include_patterns = fonts/*.otf,voice/*.wav   # 子目录资源必须显式列, 否则不进 APK
 version = 0.4.0
 requirements = python3,kivy==2.3.0,pyjnius
 p4a.branch = v2024.01.21          # 见上, 命根子
@@ -119,6 +120,7 @@ tools/android_part_ui.py       (GameArea/RootWidget/App/冒烟)
 | Kivy 界面/布局/帧循环 | `tools/android_part_ui.py` |
 | 音效后端(SoundPool 等) | `tools/android_part_backends.py` |
 | 字体/参数解析/入口 | `tools/android_part_head.py` |
+| 语音播报文案/词条 | `tools/generate_voice.py` 重跑 → 提交 `voice/*.wav`(加载侧零改动) |
 
 ### 桌面测试循环(打包前必跑)
 
@@ -129,7 +131,7 @@ python main.py              # 手动玩(540×960 窗口, 16:9)
 python main.py --nosound    # 静音
 ```
 
-窗口尺寸回归: `python ../scratch/screen_16x10.py`(1920×1200)/ `screen_narrow.py`(360×740)。
+窗口尺寸回归: `python ../scratch/archive/screen_16x10.py`(1920×1200)/ `screen_narrow.py`(360×740)。
 
 注意 `--selftest` 的 RTP 判定是统计检验(±0.05 门, n=40000, σ≈0.015),
 **偶尔 3σ 抖动假失败(实测 ~2/10 次), 重跑一次过了就没事**, 别去改物理。

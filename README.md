@@ -73,6 +73,7 @@ BUILD_APK.md             # 云构建流程 + 移植弯路集(下次做 APK 必�
 icon.png                 # 1024x1024 启动器图标
 presplash.png            # 1080x1920 启动屏(边缘 #0b1220 = presplash_color)
 fonts/NotoSansSC-Medium.otf   # 中文字体(不打进 APK 汉字全豆腐块)
+voice/*.wav                  # 预录语音 20 个(edge-tts, ../tools/generate_voice.py 生成)
 .github/workflows/build-apk.yml   # 云构建流水线
 ```
 
