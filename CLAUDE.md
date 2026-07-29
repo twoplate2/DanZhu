@@ -71,8 +71,9 @@ python -m py_compile main.py
      **`_font_scale = min(1.0, width/360dp)` + `_ui_scale = min(1.0, height/680dp)`**
      双因子缩放: 窗口窄时字体缩小, 窗口矮时(横屏)所有固定 UI(行高/按钮宽/字号)等比缩小,
      把垂直空间还给游戏区。`_apply_sizes()` 统一写到所有控件, 竖屏时两因子均为 1.0 不影响。
-   - 标签统一右对齐(115dp), 顶栏标题左右等 flex 居中。顶部 RootWidget 12dp padding,
-     H_INFO 26dp, 底行双 flex(0.95/0.05)控制蓄力按钮位置。
+   - 返还/投入/信息三行文字统一左对齐, 左沿 24dp(与重置按钮对齐)。
+     顶栏标题左右等 flex 居中, 左栏(语音按钮 64dp + 每轮X次 72dp + 间距 6dp)右侧 36dp spacer 防移动端重叠。
+     底部 RootWidget 12dp padding, H_INFO 26dp, 底行双 flex(0.95/0.05)控制蓄力按钮位置。
    - **防沉迷机制**: 每轮最多 N 次(20/50/100 可选, 默认 50)。
      达到上限弹出总结窗口("本轮游戏 X 次已结束, 剩余 X 个珠子, 数据已重置")并语音播报,
      播完自动重置。轮次历史持久化到 JSON(`plinko_round_history.json`, 最近 100 条)。
