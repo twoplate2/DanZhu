@@ -2558,7 +2558,7 @@ class RootWidget(BoxLayout):
         self.sfx.play("cash")
         self._set_controls_enabled(True)
         if notify:
-            self.game_area.center_toast("游戏进度已重置", hexcolor=COL_GREEN, size=20, life=1.5)
+            self.game_area.center_toast("珠子数量已重置", hexcolor=COL_GREEN, size=20, life=1.5)
             self.sfx.play("voice_reset_progress", throttle=1.5)
 
     def start_charge(self):
