@@ -2314,7 +2314,7 @@ class RootWidget(BoxLayout):
         self.round_btn = self._mk_button("每轮%d次" % self.max_plays,
             lambda _b: self._show_round_settings(), bg=COL_GREEN)
         self.round_btn.size_hint_x = None
-        self.round_btn.width = dp(88)
+        self.round_btn.width = dp(80)
         self.round_btn.font_size = "13sp"
         self.round_btn.color = (0, 0, 0, 1)          # 黑字配绿底
         left_box.add_widget(self.round_btn)
