@@ -2181,7 +2181,7 @@ class GameArea(FloatLayout):
         sp = self._spring_power
         # 弹簧 Z 字形: 上横线→斜线→下横线
         bar_top = FLOOR
-        bar_bot = FLOOR + 9 + sp * 14
+        bar_bot = FLOOR + 9 + sp * 20
         lx = self._px(LANE_L + 10)
         rx = self._px(RIGHT_INNER - 10)
         y0 = self._py(bar_top)
