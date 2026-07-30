@@ -76,7 +76,7 @@
   .closing .big-quote{ font-size:clamp(1.05rem,2.5vw,1.35rem);color:#fff;font-weight:700;line-height:1.8;max-width:620px;margin:0 auto 8px; }
   .closing .big-quote em{ font-style:normal;color:var(--gold); }
   .closing .kick{ font-size:clamp(1.2rem,3vw,1.7rem);font-weight:900;color:var(--gold);margin-top:18px; }
-  .pillars{ display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-top:30px; }
+  .pillars{ display:grid;grid-template-columns:repeat(6,1fr);gap:14px;margin-top:30px; }
   .pillar{ text-align:center;padding:22px 10px;border-radius:var(--radius);background:var(--card);border:1px solid rgba(255,255,255,0.03);transition:transform 0.25s; }
   .pillar:hover{ transform:translateY(-3px); }
   .pillar .p-icon{ font-size:1.6rem;display:block;margin-bottom:6px; }
@@ -103,7 +103,7 @@
 <nav class="toc-bar"><div class="toc-inner">
   <span class="toc-label">目录</span>
   <a href="#sec-spring">弹簧</a><a href="#sec-voice">声音</a><a href="#sec-fair">公平</a><a href="#sec-miss">擦边</a>
-  <a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a>
+  <a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a><a href="#sec-perf">性能</a>
   <span class="toc-sep">|</span>
   <a href="#appendix-a" style="color:var(--gold)">A·音效</a><a href="#appendix-b" style="color:var(--gold)">B·物理</a>
   <a href="#appendix-c" style="color:var(--gold)">C·数学</a><a href="#appendix-d" style="color:var(--gold)">D·架构</a>
@@ -112,10 +112,10 @@
 <header class="hero">
   <div class="hero-badge">跳跳的弹珠机 · 设计深潜 · 2026.07</div>
   <h1><span>一个小游戏的大设计</span></h1>
-  <p class="subtitle">一根<em>看得见力量</em>的弹簧，一个<em>会说话报数</em>的游戏——<br>当七个维度同时做到极致，弹珠机就不再只是弹珠机</p>
+  <p class="subtitle">一根<em>看得见力量</em>的弹簧，一个<em>会说话报数</em>的游戏——<br>当八个维度同时做到极致，弹珠机就不再只是弹珠机</p>
   <div class="hero-numbers">
     <div class="hero-num"><div class="num">120%</div><div class="label">返奖率<br>三档可切</div></div>
-    <div class="hero-num"><div class="num">50</div><div class="label">条真人语音<br>43+7智能场景</div></div>
+    <div class="hero-num"><div class="num">50</div><div class="label">条真人语音<br>场景全覆盖</div></div>
     <div class="hero-num"><div class="num">36</div><div class="label">种音效<br>代码生成</div></div>
     <div class="hero-num"><div class="num">0</div><div class="label">个音频文件<br>零外部依赖</div></div>
   </div>
@@ -159,7 +159,7 @@
   <div class="big-number-spot reveal reveal-d1"><div class="giant">120%</div><div class="giant-label">三档可切（80 / 100 / 120）· 精确到小数点后两位 · 40000次自测验证</div></div>
   <div class="grid-2" style="margin-top:20px;">
     <div class="card reveal reveal-d2"><h3>结果提前算好，物理只管表演</h3><p>每颗球的落点<span class="tag tag-green">在发射前就按概率选好</span>，物理引擎只负责生成可信的弹跳轨迹。你看的每颗球都是"真的在弹"——但数值始终精确可控。不是"调倍率赌运气慢慢收敛"，是每一发都在计划之内。</p></div>
-    <div class="card reveal reveal-d2"><h3>发射前预判：不让你看到"卡住"</h3><p>松手瞬间，系统用<span class="tag tag-green">21毫秒</span>快速模拟完整飞行轨迹。如果这条轨迹会卡死，后台静默换一个盘面重算。用户永远只看到<span class="tag tag-green">一次流畅飞行</span>，不知道后台已经换过。</p></div>
+    <div class="card reveal reveal-d2"><h3>发射前预判：先算一遍再真飞</h3><p>按下发射的瞬间，游戏会<span class="tag tag-green">提前在后台把这条轨迹跑一遍</span>——如果轨迹正常（99.95% 的情况），就按这个方案真飞。如果检测到球可能会卡住，就<span class="tag tag-green">悄悄换一个盘面</span>重新算。整个过程不到 6 毫秒，玩家<span class="tag tag-green">完全感知不到</span>。这 6 毫秒的门槛来自 28584 次真实飞行的统计数据——P99.95 的飞行在 600 帧内落地，所以只跑 600 帧就够了。</p></div>
   </div>
 </section>
 
@@ -204,6 +204,16 @@
     <div class="card reveal reveal-d1"><h3>GitHub Actions云构建</h3><p>push到main → 自动出APK。锁定版本组合：Kivy 2.3.0 + p4a v2024.01.21 + Cython<3.0。首次构建20分钟，<span class="tag tag-blue">缓存命中后3分钟</span>。全程不需要本地装Android SDK。</p></div>
   </div>
   <div class="insight reveal reveal-d2"><h3>双因子缩放：一套布局适配所有屏幕</h3><p>_font_scale = min(1.0, 屏宽/360dp) 窄屏时字体等比缩小；_ui_scale = min(1.0, 屏高/680dp) 横屏时固定UI等比缩小。竖屏时双因子均为1.0，不影响原有布局。从4寸小屏到平板，内容始终居中、比例始终正确。</p></div>
+</section>
+
+<!-- ═══════════ 8. 性能 ═══════════ -->
+<section class="section sect-build" id="sec-perf">
+  <div class="section-header"><h2>性能看得见</h2><p class="desc">不是嘴上说"很快"，是用真实物理代码跑出来的数据</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>28584 次飞行实测</h3><p>用游戏里真实使用的 advance_flight 物理循环，完整跑了两万八千次发射→落袋。结果：<span class="tag tag-blue">平均 205 帧/次</span>，P50=203，P95=240，P99=303。97% 的飞行在 250 帧内落地——这就是预判阈值 600 帧的数据来源。</p></div>
+    <div class="card reveal reveal-d1"><h3>隐藏性能测试</h3><p>长按标题"跳跳的弹珠机"3 秒 → 所有按钮灰化 → 后台跑 <span class="tag tag-blue">10 秒真实物理模拟</span> → 弹窗显示结果：累计模拟帧数、每秒小球飞行次数、设备型号。PC 和手机都支持，是骡子是马拉出来遛遛。</p></div>
+  </div>
+  <div class="insight reveal reveal-d2"><h3>bench_gui.py：给硬核玩家的跑分工具</h3><p>独立 tkinter GUI，可调并发数（1~N 线程/进程）、测试时长。每次测试输出 <span class="tag tag-blue">output/bench_*.md</span> 高可读报告 + JSON 原始数据，含 P50/P90/P99/P99.9/P99.99 完整帧数分布。多线程模式能直观看到 Python GIL 的威力——2 线程和 1 线程速度几乎一样。</p></div>
 </section>
 
 <!-- ═══════════ APPENDICES ═══════════ -->
@@ -298,6 +308,7 @@
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">数学不坑人</div><div class="p-desc">120%返奖·发射前预判</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎢</span><div class="p-title">差一点就中了</div><div class="p-desc">near-miss·情绪钩子</div></div>
     <div class="pillar reveal reveal-d3"><span class="p-icon">💜</span><div class="p-title">细节有温度</div><div class="p-desc">震动·回弹·灰化·互斥</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能看得见</div><div class="p-desc">28584次实测·205帧均值</div></div>
   </div>
 </section>
 
