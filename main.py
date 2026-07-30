@@ -2755,7 +2755,7 @@ class RootWidget(BoxLayout):
         rate = n / 10.0
         total_frames = n * 205
         dev = self._device_info()
-        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
+        content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
                           halign='center', color=hex_rgb(COL_TEXT) + (1,),
                           size_hint_y=None, height=dp(28))
@@ -2774,7 +2774,7 @@ class RootWidget(BoxLayout):
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(data_lbl)
-        popup = Popup(title='', content=content, size_hint=(0.85, None), height=dp(280),
+        popup = Popup(title='', content=content, size_hint=(0.90, None), height=dp(280),
                       auto_dismiss=True, separator_height=0)
         popup.open()
         self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
