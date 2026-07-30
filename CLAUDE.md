@@ -15,7 +15,6 @@ python main.py              # 桌面预览(540×960)
 python main.py --selftest   # 无界面门禁自测(改完必跑; 偶发 3σ 假失败, 重跑一次)
 python main.py --smoke      # 自动冒烟 + 截图到 %TEMP%/plinko_smoke
 python main.py --nosound    # 静音启动
-python bench_gui.py         # 性能测试 GUI(多线程/多进程, 结果→output/)
 python -m py_compile main.py
 ```
 
@@ -32,9 +31,9 @@ python -m py_compile main.py
 ## main.py 内部结构
 
 1. **常量+几何**: 520×660 逻辑坐标系(y 向下)
-2. **物理层**: `Ball`(__slots__ class, 15属性), `physics_step`, `steer_ball`, `choose_target`, `preflight_check`(1000帧), `benchmark_trajectories`
+2. **物理层**: `Ball`(__slots__ class, 15属性), `physics_step`, `steer_ball`, `choose_target`, `preflight_check`(1000帧超时), `benchmark_trajectories`
    - near-miss: TEASE_FRAC=0.80, 仅 vy>150 激活(慢了不推防卡死)
-   - stall-retry: 1.2s不动→重掷(最多2次)/4s→强制结算
+   - **stall 检测**: 累加器循环内每步位移检测(帧计数, 不用墙钟)。72步不动→速度踢向下(max(abs(vy)+80, 400) + 随机水平扰动150, 最多2次)/240步→强制结算。不再 relaunch_stalled(用户看不到重发)
    - **帧率适配**: `_frame(dt)` 用累加器模式, `dt` 累加到≥FIXED_DT 才推物理步, 60/90/120/144Hz+30fps 物理速度精确一致
 3. **音效**: 36 合成 PCM + 50 edge-tts 语音(voice/*.wav)。`Sfx.play()`: gain 10档缓存、按名节流
    - **全局语音互斥**: voice_rtp_/voice_bet_/voice_mode_ 3.0s 间隔。click throttle 0.08s。flight 跳过 bake/prime
@@ -62,8 +61,9 @@ voice_lose 有意不接入(合成 lose 音更中性)。
 RTP≈档位±0.05、卡死=0、撞钉音>90%、天花板<10%、哑火零泄漏、
 冲顶x跨度≥50px、首钉80~95帧、near-miss不越格+卡死=0、音效体检0异常。
 
-## 性能测试
+## 已知陷阱（改代码时注意）
 
-- `bench_gui.py`: 多线程/多进程 GUI, 输出 output/bench_*.md + *.json
-- `benchmark_result.md`: 28584次实测, 均值205帧, P50=203, P99=303
-- 隐藏: 长按标题3s→10s benchmark→弹窗
+- **`start_charge()` 必须立即调 `_set_controls_enabled(False)`**：否则充电窗口(0.5~1.0s)内 bet 按钮可点，多点触控可切下注额导致余额变负。`launch()` 才禁用为时已晚。
+- **哑火分支的累加器必须与飞行分支同构**：`_misfire_frames` 递增和 `advance_misfire()` 都必须在 `while self._accumulator >= FIXED_DT` 循环**内部**，每物理步+1 而非每渲染帧+1。否则 120Hz 上超时误杀、30Hz 上动画变慢。
+- **stall 位移检测必须在累加器循环内每步做**：循环外看净位移会漏检（多步子步位移矢量抵消）。帧计数不用墙钟，与 selftest 一致。
+- **plinko.py 与 main.py 架构不同**：plinko.py 用 `tkinter.after(FIXED_DT)` 定时间隔（无累加器），改物理/引导逻辑时两边要分别评估是否受影响。

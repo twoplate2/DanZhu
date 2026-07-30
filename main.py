@@ -2660,6 +2660,7 @@ class RootWidget(BoxLayout):
         self.fire_btn.width = dp(110)
         self.fire_btn.bind(on_press=lambda _b: self.start_charge(),
                            on_release=lambda _b: self.launch())
+        self.fire_btn.always_release = True   # 手指滑出按钮外释放也触发 launch, 防卡死
         fire.add_widget(self.fire_btn)
         fire.add_widget(Widget(size_hint_x=0.05))                 # 右侧弹簧(蓄力左移≈2dp)
         self.add_widget(fire)
@@ -2674,15 +2675,17 @@ class RootWidget(BoxLayout):
             btn.background_color = hex_rgb(COL_BTN if abs(tv - self.rtp_target) < 1e-6
                                            else COL_BTN_OFF) + (1,)
 
-    def _set_controls_enabled(self, enabled):
-        self.fire_btn.disabled = not enabled
+    def _set_controls_enabled(self, enabled, fire_too=True):
+        if fire_too:
+            self.fire_btn.disabled = not enabled
         self.reset_btn.disabled = not enabled
         for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
             btn.disabled = not enabled
         self.round_btn.disabled = not enabled
         self.mute_btn.disabled = not enabled
         if enabled:
-            self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
+            if fire_too:
+                self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
             self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
             self._restyle_selects()
             self._refresh_mute_btn()
@@ -2695,7 +2698,8 @@ class RootWidget(BoxLayout):
         else:
             off = hex_rgb(COL_BTN_OFF) + (1,)
             dim = hex_rgb(COL_GRAY) + (0.6,)
-            self.fire_btn.background_color = off
+            if fire_too:
+                self.fire_btn.background_color = off
             self.reset_btn.background_color = hex_rgb("#1a1a22") + (1,)
             for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
                 btn.background_color = off
@@ -2912,7 +2916,7 @@ class RootWidget(BoxLayout):
             self._show_round_end()
             return
         self.state = "charging"
-        self._set_controls_enabled(False)
+        self._set_controls_enabled(False, fire_too=False)  # 蓄力中发射按钮不禁用, 防手指滑出卡死
         self.power = 0.0
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
