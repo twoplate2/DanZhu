@@ -2729,18 +2729,45 @@ class RootWidget(BoxLayout):
             threading.Thread(target=self._run_benchmark, daemon=True).start()
 
     def _run_benchmark(self):
-        n = benchmark_trajectories(5.0)
+        n = benchmark_trajectories(10.0)
         Clock.schedule_once(lambda dt: self._bench_done(n), 0)
 
+    def _device_info(self):
+        try:
+            if platform == 'android':
+                from jnius import autoclass
+                b = autoclass('android.os.Build')
+                return '%s / Android %s' % (b.MODEL, b.VERSION.RELEASE)
+        except Exception:
+            pass
+        import platform as pf
+        return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
+
     def _bench_done(self, n):
-        rate = n / 5.0
+        rate = n / 10.0
         fps = int(rate * 200)
-        msg = "每秒模拟%d帧，约%.0f次小球飞行\n单核心python物理运算" % (fps, rate)
-        self.game_area.center_toast(msg, hexcolor=COL_GREEN, size=26, life=4.0)
-        self.status_lbl.text = getattr(self, "_bench_saved_status", "按住蓄力发射")
-        self._set_controls_enabled(True)
-        self._bench_running = False
-        self._bench_start = 0.0
+        dev = self._device_info()
+        content = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(10))
+        title_lbl = Label(text='性能测试结果', font_size='19sp', bold=True,
+                          halign='center', color=hex_rgb(COL_TEXT) + (1,),
+                          size_hint_y=None, height=dp(28))
+        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        content.add_widget(title_lbl)
+        msg = ('测试时长: 10 秒\n'
+               '模拟帧数: %d 帧/秒\n'
+               '小球飞行: %.1f 次/秒\n'
+               '10秒总计: %d 次\n'
+               '单核心 Python 物理运算\n\n'
+               '设备: %s' % (fps, rate, n, dev))
+        lbl = Label(text=msg, font_size='15sp', halign='center', valign='middle',
+                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(185))
+        lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        content.add_widget(lbl)
+        popup = Popup(title='', content=content, size_hint=(0.72, None), height=dp(300),
+                      auto_dismiss=True, separator_color=hex_rgb(COL_DIV) + (1,),
+                      title_size='0sp')
+        popup.open()
+        self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
         self._set_controls_enabled(True)
         self._bench_running = False
         self._bench_start = 0.0
