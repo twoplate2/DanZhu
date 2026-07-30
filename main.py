@@ -2311,7 +2311,7 @@ class GameArea(FloatLayout):
         else:
             self._meter_fill.size = (0, 0)
         # 弹簧: 蓄力时跟随, 释放后阻尼振荡回弹(过冲→往复→停止)
-        if g.power > self._spring_power:
+        if g.state == "charging":
             self._spring_power = g.power
             self._spring_vel = 0.0
         elif abs(self._spring_power) > 0.0005 or abs(self._spring_vel) > 0.005:
