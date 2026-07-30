@@ -2628,14 +2628,23 @@ class RootWidget(BoxLayout):
             self._restyle_selects()
             self._refresh_mute_btn()
             self.round_btn.background_color = hex_rgb(COL_GREEN) + (1,)
+            bright = hex_rgb(COL_SUB) + (1,)
+            white = hex_rgb(COL_TEXT) + (1,)
+            self._rtp_title_lbl.color = bright
+            self._bet_title_lbl.color = bright
+            self.stats_lbl.color = white
         else:
             off = hex_rgb(COL_BTN_OFF) + (1,)
+            dim = hex_rgb(COL_GRAY) + (0.6,)
             self.fire_btn.background_color = off
             self.reset_btn.background_color = hex_rgb("#1a1a22") + (1,)
             for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
                 btn.background_color = off
             self.round_btn.background_color = off
             self.mute_btn.background_color = off
+            self._rtp_title_lbl.color = dim
+            self._bet_title_lbl.color = dim
+            self.stats_lbl.color = dim
 
     # ------------------------------ 交互 ------------------------------
     def _on_key_down(self, win, key, *rest):
