@@ -2758,12 +2758,13 @@ class RootWidget(BoxLayout):
                '小球飞行: %.1f 次/秒\n'
                '10秒总计: %d 次\n'
                '单核心 Python 物理运算\n\n'
-               '设备: %s' % (fps, rate, n, dev))
+               '设备: %s\n'
+               '(每次飞行实测均值 205 帧)' % (fps, rate, n, dev))
         lbl = Label(text=msg, font_size='15sp', halign='center', valign='middle',
-                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(185))
+                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(210))
         lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(lbl)
-        popup = Popup(title='', content=content, size_hint=(0.72, None), height=dp(300),
+        popup = Popup(title='', content=content, size_hint=(0.72, None), height=dp(320),
                       auto_dismiss=True, separator_color=hex_rgb(COL_DIV) + (1,),
                       title_size='0sp')
         popup.open()
