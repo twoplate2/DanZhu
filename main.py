@@ -496,8 +496,9 @@ def advance_flight(b, geo, target_x):
     return physics_step(b, geo, FIXED_DT)
 
 
-def preflight_check(b, geo, target_x, max_frames=4000):
-    """发射前预判: 快速模拟完整轨迹, 返回 True=能落地, False=会卡死。
+def preflight_check(b, geo, target_x, max_frames=600):
+    """发射前预判: 快速模拟完整轨迹, 返回 True=能落地, False=大概率卡死。
+    600帧覆盖实测 P99.95, 超过此值直接判死重掷盘面(概率 ~0.05%)。
     调用前 ball 已由 launch_ball 创建, 调用后 ball 状态被消耗(坐标/速度已变),
     所以正式发射时需重新 launch_ball。"""
     for _ in range(max_frames):
