@@ -2587,7 +2587,9 @@ class RootWidget(BoxLayout):
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
         self.reset_btn.bind(on_press=lambda _b: setattr(self.reset_btn, "background_color",
-            hex_rgb("#4a5a6a") + (1,)))
+            hex_rgb("#4a5a6a") + (1,)),
+            on_release=lambda _b: setattr(self.reset_btn, "background_color",
+            hex_rgb("#2a2a35") + (1,)))
         fire.add_widget(Widget(size_hint_x=None, width=dp(12)))     # 重置按钮右移
         fire.add_widget(self.reset_btn)
         fire.add_widget(Widget(size_hint_x=0.95))                 # 弹簧(让出少量给右侧)
@@ -2624,12 +2626,16 @@ class RootWidget(BoxLayout):
             self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
             self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
             self._restyle_selects()
+            self._refresh_mute_btn()
+            self.round_btn.background_color = hex_rgb(COL_GREEN) + (1,)
         else:
             off = hex_rgb(COL_BTN_OFF) + (1,)
             self.fire_btn.background_color = off
             self.reset_btn.background_color = hex_rgb("#1a1a22") + (1,)
             for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
                 btn.background_color = off
+            self.round_btn.background_color = off
+            self.mute_btn.background_color = off
 
     # ------------------------------ 交互 ------------------------------
     def _on_key_down(self, win, key, *rest):
@@ -2737,13 +2743,18 @@ class RootWidget(BoxLayout):
         self.sfx.play("cash")
         self._set_controls_enabled(True)
         if notify:
-            # 清理旧 toast, 延迟一帧再弹避免被 _redraw 清除
+            # 清理旧 toast(先移除 widget 再从列表过滤, 防控件泄漏)
+            for e in self.game_area._effects:
+                if e["kind"] == "toast":
+                    for w in e["ws"]:
+                        self.game_area.remove_widget(w)
             self.game_area._effects = [e for e in self.game_area._effects if e["kind"] != "toast"]
             Clock.schedule_once(lambda dt: self.game_area.center_toast(
                 "弹珠数量已调整到1000个", hexcolor=COL_GREEN, size=28, life=1.5), 0.05)
             self.sfx.play("voice_reset_progress", throttle=1.5)
         # 恢复按钮颜色
         self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
+        self._save_config()
 
     def start_charge(self):
         if self.state != "ready":
@@ -2993,7 +3004,7 @@ class RootWidget(BoxLayout):
                       size_hint=(0.82, None), height=dp(260),
                       auto_dismiss=False,
                       title_color=hex_rgb(COL_TEXT) + (1,),
-                      title_size="17sp",
+                      title_size="19sp",
                       separator_color=hex_rgb(COL_DIV) + (1,))
         popup.open()
         # 语音播完后自动重置并关闭弹窗
@@ -3063,7 +3074,7 @@ class RootWidget(BoxLayout):
                       size_hint=(0.84, None), height=dp(500),
                       auto_dismiss=True,
                       title_color=hex_rgb(COL_TEXT) + (1,),
-                      title_size="17sp",
+                      title_size="19sp",
                       separator_color=hex_rgb(COL_DIV) + (1,))
         ok_btn.bind(on_release=popup.dismiss)
         content.add_widget(ok_btn)
