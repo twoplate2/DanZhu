@@ -2745,25 +2745,34 @@ class RootWidget(BoxLayout):
 
     def _bench_done(self, n):
         rate = n / 10.0
-        fps = int(rate * 205)
+        total_frames = n * 205
         dev = self._device_info()
-        content = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(10))
-        title_lbl = Label(text='性能测试结果', font_size='19sp', bold=True,
+        content = BoxLayout(orientation='vertical', padding=dp(22), spacing=dp(10))
+        # 标题
+        title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
                           halign='center', color=hex_rgb(COL_TEXT) + (1,),
                           size_hint_y=None, height=dp(28))
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
-        msg = ('测试时长: 10 秒\n'
-               '模拟帧数: %d 帧/秒\n'
-               '小球飞行: %.1f 次/秒\n'
-               '10秒总计: %d 次\n'
-               '单核心 Python 物理运算\n\n'
-               '设备: %s\n'
-               '(每次飞行实测均值 205 帧)' % (fps, rate, n, dev))
-        lbl = Label(text=msg, font_size='15sp', halign='center', valign='middle',
-                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(210))
-        lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-        content.add_widget(lbl)
+        # 副标题
+        sub_lbl = Label(text='使用单核心 Python 物理运算', font_size='13sp', halign='center',
+                        color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
+        content.add_widget(sub_lbl)
+        # 分隔线
+        sep_lbl = Label(text='─' * 28, font_size='10sp', halign='center',
+                        color=hex_rgb(COL_BTN) + (1,), size_hint_y=None, height=dp(14))
+        content.add_widget(sep_lbl)
+        # 数据行(等宽字体对齐)
+        data = ('设备       %s\n'
+                '时长       10 秒\n'
+                '总帧数     %d 帧    (%d 帧/秒)\n'
+                '预估总飞行 %d 次    (%.1f 次/秒)\n'
+                '\n注: 小球飞行平均需 205 帧/次' % (
+                    dev, total_frames, total_frames // 10, n, rate))
+        data_lbl = Label(text=data, font_size='15sp', halign='left', valign='middle',
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(150))
+        data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        content.add_widget(data_lbl)
         popup = Popup(title='', content=content, size_hint=(0.72, None), height=dp(320),
                       auto_dismiss=True, separator_color=hex_rgb(COL_DIV) + (1,),
                       title_size='0sp')
