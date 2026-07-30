@@ -496,6 +496,17 @@ def advance_flight(b, geo, target_x):
     return physics_step(b, geo, FIXED_DT)
 
 
+def preflight_check(b, geo, target_x, max_frames=4000):
+    """发射前预判: 快速模拟完整轨迹, 返回 True=能落地, False=会卡死。
+    调用前 ball 已由 launch_ball 创建, 调用后 ball 状态被消耗(坐标/速度已变),
+    所以正式发射时需重新 launch_ball。"""
+    for _ in range(max_frames):
+        landed = advance_flight(b, geo, target_x)
+        if landed is not None:
+            return True
+    return False
+
+
 def choose_target(mult, rtp):
     """发射前预定落点槽, 使 RTP 精确 = rtp。
     命中奖励概率 w = min(1, rtp / 奖励格均值) -> E[目标倍率] = w x 均值 = rtp。"""
@@ -2774,7 +2785,7 @@ class RootWidget(BoxLayout):
                 self.sfx.play("voice_nomoney", throttle=3.0)
             else:
                 self.sfx.play("error", throttle=0.4)
-            self.game_area.center_toast("弹珠数量不足\n请降低投入或点击重置按钮")
+            self.game_area.center_toast("弹珠数量不足\n请重置或降低投入")
             return
         if self.round_plays >= self.max_plays:
             self._show_round_end()
@@ -2801,10 +2812,20 @@ class RootWidget(BoxLayout):
             self._set_controls_enabled(False)
             self.status_lbl.text = "力度不足,未扣弹珠"
             return
-        self.balance -= self.bet
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
         frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
+        # 发射前预判: 快速跑一遍轨迹, 卡死则重掷盘面(用户只看到一次正常飞行)
+        for _ in range(3):
+            test_ball = launch_ball(frozen_power)
+            test_ball["tease_dx"] = tease_dx(self.multipliers, self.target_slot)
+            if preflight_check(test_ball, self.geo, self.target_x):
+                break
+            self.multipliers = roll_multipliers(self.rtp_target)
+            self.target_slot = choose_target(self.multipliers, self.rtp_target)
+            self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
+            self.game_area._redraw()
+        self.balance -= self.bet
         self.ball = launch_ball(self.power)
         self.state = "flying"
         self.power = 0.0                      # 发射后清除蓄力显示
