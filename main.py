@@ -2762,11 +2762,11 @@ class RootWidget(BoxLayout):
                 '估计可飞行 %d 次    (%.1f 次/秒)\n'
                 '注: 小球每次飞行平均需 205 帧') % (
                     dev, total_frames, total_frames // 10, n, rate)
-        data_lbl = Label(text=data, font_size='15sp', halign='left', valign='middle',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(125))
+        data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(data_lbl)
-        popup = Popup(title='', content=content, size_hint=(0.72, None), height=dp(250),
+        popup = Popup(title='', content=content, size_hint=(0.72, None), height=dp(280),
                       auto_dismiss=True, separator_height=0)
         popup.open()
         self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
