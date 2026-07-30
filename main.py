@@ -2722,6 +2722,8 @@ class RootWidget(BoxLayout):
         if t > 0 and not self._bench_triggered and time.time() - t >= 3.0:
             self._bench_triggered = True
             self._bench_running = True
+            self._bench_saved_status = self.status_lbl.text
+            self.status_lbl.text = "性能测试中…"
             self._set_controls_enabled(False)
             threading.Thread(target=self._run_benchmark, daemon=True).start()
 
@@ -2730,8 +2732,13 @@ class RootWidget(BoxLayout):
         Clock.schedule_once(lambda dt: self._bench_done(n), 0)
 
     def _bench_done(self, n):
-        msg = "5秒模拟 %d 发 (单核Python物理)" % n
-        self.game_area.center_toast(msg, hexcolor=COL_GREEN, size=22, life=4.0)
+        rate = n / 5.0
+        msg = "每秒可模拟%.1f次小球下落\n单核心python物理运算" % rate
+        self.game_area.center_toast(msg, hexcolor=COL_GREEN, size=26, life=4.0)
+        self.status_lbl.text = getattr(self, "_bench_saved_status", "按住蓄力发射")
+        self._set_controls_enabled(True)
+        self._bench_running = False
+        self._bench_start = 0.0
         self._set_controls_enabled(True)
         self._bench_running = False
         self._bench_start = 0.0
