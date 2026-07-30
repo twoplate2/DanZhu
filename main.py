@@ -1517,9 +1517,9 @@ class Sfx:
         if not self.enabled:
             return False
         now = time.time()
-        # 全局语音间隔: 任何语音播完后 0.5s 内, 新的语音不出声(防重叠)
-        if name.startswith("voice_"):
-            if now - self._last_voice < 0.5:
+        # UI交互语音互斥: 上一个没播完(≤3s)前新的不出声; 结果/轮次语音不在此限
+        if name.startswith(("voice_rtp_", "voice_bet_", "voice_mode_")):
+            if now - self._last_voice < 3.0:
                 return False
             self._last_voice = now
         pcm_mode = getattr(self.out, "mode", "pcm") == "pcm"
