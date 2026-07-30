@@ -2717,6 +2717,13 @@ class RootWidget(BoxLayout):
     def _on_title_touch_up(self, win, touch):
         self._title_hold_start = 0.0
 
+    def _check_title_hold(self):
+        if self._title_hold_start > 0 and not self._title_hold_triggered:
+            if time.time() - self._title_hold_start >= 3.0:
+                self._title_hold_triggered = True
+                self._title_hold_start = 0.0
+                threading.Thread(target=self._run_benchmark, daemon=True).start()
+
     def _run_benchmark(self):
         n = benchmark_trajectories(5.0)
         msg = "5秒模拟 %d 发 (单核Python物理)" % n
