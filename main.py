@@ -3436,6 +3436,7 @@ class RootWidget(BoxLayout):
                 if b.vy < LAND_BOUNCE_MIN_VY:
                     b.vy = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
             self._accumulator += dt
+            floor_y = FLOOR - BALL_R
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
                 b.vx += (self.land_target_x - b.x) * LAND_K * FIXED_DT
@@ -3444,7 +3445,6 @@ class RootWidget(BoxLayout):
                 b.vy += G * FIXED_DT
                 b.x += b.vx * FIXED_DT
                 b.y += b.vy * FIXED_DT
-                floor_y = FLOOR - BALL_R
                 if b.y >= floor_y:
                     b.y = floor_y
                     if b.vy > 0:
