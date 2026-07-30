@@ -507,6 +507,27 @@ def preflight_check(b, geo, target_x, max_frames=4000):
     return False
 
 
+def benchmark_trajectories(duration=5.0):
+    """性能测试: duration 秒内能模拟多少次完整飞行(发射→落地)。
+    纯 CPU 测试, 不涉及渲染/音效, PC 和移动端通用。"""
+    geo = build_geo()
+    count = 0
+    t0 = time.time()
+    while time.time() - t0 < duration:
+        board = roll_multipliers(random.choice((0.80, 1.00, 1.20)))
+        target = choose_target(board, 1.00)
+        tx = FIELD_L + (target + 0.5) * SLOT_W
+        power = random.uniform(MISFIRE_POWER, 1.0)
+        b = launch_ball(power)
+        b["tease_dx"] = tease_dx(board, target)
+        for _ in range(4000):
+            landed = advance_flight(b, geo, tx)
+            if landed is not None:
+                count += 1
+                break
+    return count
+
+
 def choose_target(mult, rtp):
     """发射前预定落点槽, 使 RTP 精确 = rtp。
     命中奖励概率 w = min(1, rtp / 奖励格均值) -> E[目标倍率] = w x 均值 = rtp。"""
@@ -2467,6 +2488,10 @@ class RootWidget(BoxLayout):
         self.set_rtp(self.rtp_target, silent=True)
         self.park_ball(reroll=False, silent=True)
         Window.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
+        Window.bind(on_touch_down=self._on_title_touch_down,
+                    on_touch_up=self._on_title_touch_up)
+        self._title_hold_start = 0.0
+        self._title_hold_triggered = False
         Clock.schedule_interval(self._frame, FIXED_DT)
 
     def _fit_width(self):
@@ -2683,6 +2708,20 @@ class RootWidget(BoxLayout):
             self.power = self._release_power
             self._release_power = None
         self.launch()
+
+    def _on_title_touch_down(self, win, touch):
+        if self.title_lbl.collide_point(*touch.pos):
+            self._title_hold_start = time.time()
+            self._title_hold_triggered = False
+
+    def _on_title_touch_up(self, win, touch):
+        self._title_hold_start = 0.0
+
+    def _run_benchmark(self):
+        n = benchmark_trajectories(5.0)
+        msg = "5秒模拟 %d 发 (单核Python物理)" % n
+        Clock.schedule_once(lambda dt: self.game_area.center_toast(
+            msg, hexcolor=COL_GREEN, size=22, life=4.0), 0)
 
     SOUND_MODES = ("voice", "sfx", "off")   # 顶栏音效钮三态循环顺序
 
@@ -3234,6 +3273,7 @@ class RootWidget(BoxLayout):
             b.width = dp(56) * us
 
     def _frame(self, dt):
+        self._check_title_hold()
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
             self._last_win_size = ws
