@@ -462,7 +462,7 @@ def relaunch_stalled(b, power):
     初始条件, 原地踢很可能踢回同一个楔子里。"""
     nb = launch_ball(power)
     nb.tease_dx = b.tease_dx
-    nb._stall_retry = b._stall_retry + 1
+    nb._stall_retry = getattr(b, "_stall_retry", 0) + 1
     return nb
 
 
@@ -1709,7 +1709,7 @@ def selftest(n=40000):
                 stall_frames = 0
             else:
                 stall_frames += 1
-            if stall_frames > 72 and b._stall_retry < STALL_MAX_RETRY:
+            if stall_frames > 72 and getattr(b, "_stall_retry", 0) < STALL_MAX_RETRY:
                 b = relaunch_stalled(b, getattr(b, "launch_power", 0.60))
                 stall_frames = 0
                 entered = False
@@ -1816,7 +1816,7 @@ def selftest(n=40000):
                 stall_frames = 0
             else:
                 stall_frames += 1
-            if stall_frames > 72 and b._stall_retry < STALL_MAX_RETRY:
+            if stall_frames > 72 and getattr(b, "_stall_retry", 0) < STALL_MAX_RETRY:
                 b = relaunch_stalled(b, getattr(b, "launch_power", 0.60))
                 stall_frames = 0
                 mouth = None
@@ -3393,7 +3393,7 @@ class RootWidget(BoxLayout):
                 if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
                     self._last_motion = time.time()     # 位移>1px/帧: 还在动, 不是卡死
                 elif (time.time() - self._last_motion > STALL_RETRY_SEC
-                      and b._stall_retry < STALL_MAX_RETRY):
+                      and getattr(b, "_stall_retry", 0) < STALL_MAX_RETRY):
                     b = self.ball = relaunch_stalled(
                         b, getattr(b, "launch_power", 0.60))
                     self._last_motion = time.time()
@@ -3427,8 +3427,8 @@ class RootWidget(BoxLayout):
                     self.ball.y = PLUNGER_Y
                     self.ball.vx = 0.0
                     self.ball.vy = 0.0
-                self.sfx.play("bounce", 0.55)
-                self.park_ball(reroll=False)
+                    self.sfx.play("bounce", 0.55)
+                    self.park_ball(reroll=False)
         elif self.state == "landing":
             b = self.ball
             if self._landing_primed:
