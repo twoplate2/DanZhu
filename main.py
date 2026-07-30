@@ -2497,7 +2497,7 @@ class RootWidget(BoxLayout):
         self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._landing_primed = False   # landing首帧标记(防每帧重置vy)
-        self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
+        self._stall_frames = 0       # 连续位移≤1px的步数; fly内刷新,替代墙钟
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
         self.land_target_x = PLUNGER_X
@@ -2912,6 +2912,7 @@ class RootWidget(BoxLayout):
             self._show_round_end()
             return
         self.state = "charging"
+        self._set_controls_enabled(False)
         self.power = 0.0
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
@@ -2957,7 +2958,7 @@ class RootWidget(BoxLayout):
         self._crossed = False
         self._risen = False
         self._topped = False
-        self._last_motion = time.time()   # 卡死兜底的运动锚点(之后由帧内位移检测刷新)
+        self._stall_frames = 0   # 每步位移检测的锚点(帧计数替代墙钟)
         self._last_ball_xy = (self.ball["x"], self.ball["y"])
         self.sfx.play("launch", SFX_LAUNCH_GAIN + (SFX_LAUNCH_GAIN_MAX -
                       SFX_LAUNCH_GAIN) * power_u(frozen_power))
@@ -3374,7 +3375,26 @@ class RootWidget(BoxLayout):
             landed = None
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
+                lx, ly = self._last_ball_xy
                 landed = advance_flight(b, self.geo, self.target_x)
+                if landed is not None:
+                    break          # 落地即停, 与 selftest 一致
+                # 每步位移检测(与 selftest 一致): 帧计数, 不依赖墙钟
+                if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
+                    self._stall_frames = 0
+                else:
+                    self._stall_frames += 1
+                nudge = getattr(b, "_stall_retry", 0)
+                if self._stall_frames > 72 and nudge < STALL_MAX_RETRY:
+                    # 局部震荡: 给向下的速度踢, 打破死循环让他掉下去
+                    b.vy = max(abs(b.vy) + 80.0, 400.0)
+                    b.vx += random.uniform(-150.0, 150.0)
+                    b._stall_retry = nudge + 1
+                    self._stall_frames = 0
+                elif self._stall_frames > 240:
+                    landed = self.target_slot   # 踢不动, 强制结算
+                    break
+                self._last_ball_xy = (b.x, b.y)
             if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
                 self._crossed = True
             elif self._crossed and not self._risen and b.y > RISER_Y:
@@ -3389,22 +3409,6 @@ class RootWidget(BoxLayout):
                 self.status_lbl.text = "弹跳中…"
             else:
                 self.status_lbl.text = "入场中…"
-            if landed is None:
-                lx, ly = self._last_ball_xy
-                if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
-                    self._last_motion = time.time()     # 位移>1px/帧: 还在动, 不是卡死
-                elif (time.time() - self._last_motion > STALL_RETRY_SEC
-                      and getattr(b, "_stall_retry", 0) < STALL_MAX_RETRY):
-                    b = self.ball = relaunch_stalled(
-                        b, getattr(b, "launch_power", 0.60))
-                    self._last_motion = time.time()
-                    self._last_ball_xy = (b.x, b.y)
-                    self._crossed = self._risen = self._topped = False
-                elif time.time() - self._last_motion > MAX_FALL_SEC:
-                    landed = self.target_slot           # 位置不动 MAX_FALL_SEC: 真卡死才兜底
-                self._last_ball_xy = (b.x, b.y)
-                # 判据必须用位移而非速度/碰撞事件: steer_ball 每帧给球注入 vx, 卡死球的
-                # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
                 i = self.target_slot
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
@@ -3416,20 +3420,21 @@ class RootWidget(BoxLayout):
             if self.ball is not None:
                 self._play_events(self.ball)
         elif self.state == "misfire":
-            self._misfire_frames += 1
             self._accumulator += dt
-            stepped = False
+            done = False
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
-                stepped = True
-            if stepped:
+                self._misfire_frames += 1
                 if advance_misfire(self.ball) or self._misfire_frames > MISFIRE_MAX_FRAMES:
-                    self.ball.x = PLUNGER_X
-                    self.ball.y = PLUNGER_Y
-                    self.ball.vx = 0.0
-                    self.ball.vy = 0.0
-                    self.sfx.play("bounce", 0.55)
-                    self.park_ball(reroll=False)
+                    done = True
+                    break
+            if done:
+                self.ball.x = PLUNGER_X
+                self.ball.y = PLUNGER_Y
+                self.ball.vx = 0.0
+                self.ball.vy = 0.0
+                self.sfx.play("bounce", 0.55)
+                self.park_ball(reroll=False)
         elif self.state == "landing":
             b = self.ball
             if self._landing_primed:
