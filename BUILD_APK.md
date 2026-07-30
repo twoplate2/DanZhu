@@ -96,9 +96,9 @@ warn_on_root = 1
 从 PC 版 `plinko.py` **原样抽取**纯逻辑段 + 手写的 Kivy 段拼接生成的。
 
 ```
-plinko.py (2278行, tkinter版)
+plinko.py (tkinter版)
    ├─ 常量/几何/物理/引导/落点预定/盘面生成   ──┐
-   ├─ 34个音效合成 + bake_bank + pcm_to_wav   ──┤  原样抽取(字符串切片)
+   ├─ 36个音效合成 + bake_bank + pcm_to_wav   ──┤  原样抽取(字符串切片)
    ├─ winmm _WaveOut (Windows 桌面后端)       ──┤
    └─ selftest + sfx_check                    ──┘
                                                   ↓ build_android_main.py

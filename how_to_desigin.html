@@ -160,7 +160,7 @@
   <div class="big-number-spot reveal reveal-d1"><div class="giant">120%</div><div class="giant-label">三档可切（80 / 100 / 120）· 精确到小数点后两位 · 40000次自测验证</div></div>
   <div class="grid-2" style="margin-top:20px;">
     <div class="card reveal reveal-d2"><h3>结果提前算好，物理只管表演</h3><p>每颗球的落点<span class="tag tag-green">在发射前就按概率选好</span>，物理引擎只负责生成可信的弹跳轨迹。你看的每颗球都是"真的在弹"——但数值始终精确可控。不是"调倍率赌运气慢慢收敛"，是每一发都在计划之内。</p></div>
-    <div class="card reveal reveal-d2"><h3>发射前预判：先算一遍再真飞</h3><p>按下发射的瞬间，游戏会<span class="tag tag-green">提前在后台把这条轨迹跑一遍</span>——如果轨迹正常（99.95% 的情况），就按这个方案真飞。如果检测到球可能会卡住，就<span class="tag tag-green">悄悄换一个盘面</span>重新算。整个过程不到 0.1 秒，玩家<span class="tag tag-green">松手即发</span>。这 600 帧的门槛来自 28584 次真实飞行的统计数据——P99.95 的飞行在 600 帧内落地，所以只跑 600 帧就够了。</p></div>
+    <div class="card reveal reveal-d2"><h3>发射前预判：先算一遍再真飞</h3><p>按下发射的瞬间，游戏会<span class="tag tag-green">提前在后台把这条轨迹跑一遍</span>——如果轨迹正常（99.95% 的情况），就按这个方案真飞。如果检测到球可能会卡住，就<span class="tag tag-green">悄悄换一个盘面</span>重新算。整个过程不到 0.1 秒，玩家<span class="tag tag-green">松手即发</span>。这 1000 帧的门槛来自 28584 次真实飞行的统计数据——P99.95 的飞行在 600 帧内落地，1000 帧留足了慢设备余量。</p></div>
   </div>
 </section>
 
@@ -171,7 +171,7 @@
     <div class="card reveal reveal-d1"><h3>诱饵偏移：朝高倍槽"滑过去"</h3><p>如果目标槽的邻槽倍率更高，球在钉阵中段会被<span class="tag tag-red">故意推向高倍槽方向偏移40像素</span>，碰到隔板"咔"一声——玩家心脏一紧。然后弹簧把球拉回真实目标槽，有惊无险。<span class="tag tag-red">结算永远是预定槽，RTP分毫不差。</span></p></div>
     <div class="card reveal reveal-d1"><h3>慢了根本不推</h3><p>诱饵只在球竖直速度<span class="tag tag-red">高于150px/s</span>时激活——球快速下落时有足够动能，被横向推40px只会偏一下，撞隔板"咔"一声继续走。一旦球慢下来（vy&lt;150），横向推力会让它多撞一次钉子——钉子碰撞保留系数只有 <span class="tag tag-red">E=0.20</span>，每撞一次丢掉80%速度。慢球本来就没多少能量，多撞一下直接归零，<span class="tag tag-red">楔在钉子上</span>卡死。所以条件是反着写的：<span class="tag tag-red">慢了就不推</span>，让球走回已验证零卡死的正常引导。这三个参数是n=3000真实盘面扫出来的。</p></div>
   </div>
-  <div class="insight reveal reveal-d2"><h3>卡死重掷：看不见的安全网</h3><p>万一球真的卡住（位置不动超1.2秒），系统自动把球退回柱塞、按原力度重飞——落点不变、RTP不变、不重复扣珠。最多重试2次，玩家最多看到"球卡了一下重新飞"，比"定住4秒再凭空结算"优雅得多。</p></div>
+  <div class="insight reveal reveal-d2"><h3>速度踢：看不见的安全网</h3><p>万一球真的卡在局部震荡（72个物理步位移≤1px），系统不会让球消失重来——而是<span class="tag tag-red">给球一个向下的速度踢</span>（vy=max(|vy|+80, 400)）加上随机水平扰动，打破死循环让它赶紧掉下去。落点不变、RTP不变、不重复扣珠。最多踢5次，还不动才在240步后强制结算。整个过程玩家看不到任何"重来"，球只是突然加速往下掉。</p></div>
 </section>
 
 <!-- ═══════════ 5. 防沉迷 ═══════════ -->
@@ -211,10 +211,10 @@
 <section class="section sect-build" id="sec-perf">
   <div class="section-header"><h2>性能看得见</h2><p class="desc">不是嘴上说"很快"，是用真实物理代码跑出来的数据</p></div>
   <div class="grid-2">
-    <div class="card reveal reveal-d1"><h3>28584 次飞行实测</h3><p>用游戏里真实使用的 advance_flight 物理循环，完整跑了两万八千次发射→落袋。结果：<span class="tag tag-blue">平均 205 帧/次</span>，P50=203，P95=240，P99=303。97% 的飞行在 250 帧内落地——这就是预判阈值 600 帧的数据来源。</p></div>
+    <div class="card reveal reveal-d1"><h3>28584 次飞行实测</h3><p>用游戏里真实使用的 advance_flight 物理循环，完整跑了两万八千次发射→落袋。结果：<span class="tag tag-blue">平均 205 帧/次</span>，P50=203，P95=240，P99=303。97% 的飞行在 250 帧内落地——这就是预判阈值 1000 帧的数据基础（P99.95 约 600 帧，留足余量到 1000）。</p></div>
     <div class="card reveal reveal-d1"><h3>隐藏性能测试</h3><p>长按标题"跳跳的弹珠机"3 秒 → 所有按钮灰化 → 后台跑 <span class="tag tag-blue">10 秒真实物理模拟</span> → 弹窗显示结果：累计模拟帧数、每秒小球飞行次数、设备型号。PC 和手机都支持，是骡子是马拉出来遛遛。</p></div>
   </div>
-  <div class="insight reveal reveal-d2"><h3>bench_gui.py：给硬核玩家的跑分工具</h3><p>独立 tkinter GUI，可调并发数（1~N 线程/进程）、测试时长。每次测试输出 <span class="tag tag-blue">output/bench_*.md</span> 高可读报告 + JSON 原始数据，含 P50/P90/P99/P99.9/P99.99 完整帧数分布。多线程模式能直观看到 Python GIL 的威力——2 线程和 1 线程速度几乎一样。</p></div>
+  <div class="insight reveal reveal-d2"><h3>跑分工具</h3><p>PC 版附带 <span class="tag tag-blue">bench_gui.py</span>：独立 tkinter GUI，可调并发数（1~N 线程/进程）、测试时长，输出高可读报告 + JSON 原始数据。Android 版内置隐藏跑分：<span class="tag tag-blue">长按标题3秒</span> → 10 秒真实物理模拟 → 弹窗显示设备型号、累计帧数和每秒飞行次数。</p></div>
 </section>
 
 <!-- ═══════════ APPENDICES ═══════════ -->
