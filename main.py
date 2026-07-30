@@ -2762,15 +2762,16 @@ class RootWidget(BoxLayout):
         sep_lbl = Label(text='─' * 28, font_size='10sp', halign='center',
                         color=hex_rgb(COL_BTN) + (1,), size_hint_y=None, height=dp(14))
         content.add_widget(sep_lbl)
-        # 数据行(等宽字体对齐)
+        # 数据行
         data = ('设备       %s\n'
                 '时长       10 秒\n'
                 '总帧数     %d 帧    (%d 帧/秒)\n'
-                '预估总飞行 %d 次    (%.1f 次/秒)\n'
-                '\n注: 小球飞行平均需 205 帧/次' % (
+                '估计可飞行 %d 次    (%.1f 次/秒)\n'
+                '──────\n'
+                '注: 小球每次飞行平均需 205 帧' % (
                     dev, total_frames, total_frames // 10, n, rate))
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='middle',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(150))
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(165))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(data_lbl)
         popup = Popup(title='', content=content, size_hint=(0.72, None), height=dp(320),
