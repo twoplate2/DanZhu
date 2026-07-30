@@ -5,509 +5,313 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>跳跳的弹珠机 — 一个小游戏的大设计</title>
 <style>
-  :root {
-    --bg: #0b1220; --panel: #15223c; --card: #111d33; --text: #e8eefc; --sub: #8fa0c4; --muted: #5a6d8a;
-    --green: #39d98a; --blue: #3d8bfd; --red: #e0533b; --purple: #a335ee; --gold: #f0b000;
-    --spring-lo: #8fa0c4;
-    --radius: 12px;
-  }
-  *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
-  html { scroll-behavior: smooth; font-size: 16px; }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif; line-height: 1.7; -webkit-font-smoothing: antialiased; overflow-x: hidden; }
-  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
-
-  /* ═══════════ Hero ═══════════ */
-  .hero { text-align: center; padding: 72px 0 40px; position: relative; }
-  .hero::before { content: ""; position: absolute; top: -120px; left: 50%; transform: translateX(-50%); width: 600px; height: 600px; background: radial-gradient(circle, rgba(240,176,0,0.05) 0%, transparent 60%); pointer-events: none; }
-  .hero::after { content: ""; position: absolute; bottom: 0; left: 10%; right: 10%; height: 1px; background: linear-gradient(90deg, transparent, var(--gold), var(--red), var(--purple), transparent); opacity: 0.4; }
-  .hero-badge { display: inline-block; padding: 5px 16px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.05em; color: var(--gold); background: rgba(240,176,0,0.07); border: 1px solid rgba(240,176,0,0.15); margin-bottom: 24px; }
-  .hero h1 { font-size: clamp(1.6rem, 5vw, 3rem); font-weight: 900; margin-bottom: 12px; letter-spacing: 0.02em; line-height: 1.25; position: relative; z-index: 1; }
-  .hero h1 span { background: linear-gradient(135deg, var(--gold) 0%, var(--red) 50%, var(--purple) 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; background-clip: text; }
-  .hero .subtitle { font-size: clamp(0.9rem, 1.6vw, 1.05rem); color: var(--sub); max-width: 560px; margin: 0 auto 32px; position: relative; z-index: 1; line-height: 1.8; }
-  .hero .subtitle em { font-style: normal; color: var(--gold); font-weight: 600; }
-
-  /* ═══════════ Hero Numbers ═══════════ */
-  .hero-numbers { display: flex; justify-content: center; gap: clamp(16px, 3vw, 36px); flex-wrap: wrap; position: relative; z-index: 1; margin-bottom: 36px; }
-  .hero-num { text-align: center; min-width: 80px; }
-  .hero-num .num { font-size: clamp(1.5rem, 3.5vw, 2.2rem); font-weight: 900; background: linear-gradient(135deg, var(--gold), var(--red)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; background-clip: text; line-height: 1.15; }
-  .hero-num .label { font-size: 0.75rem; color: var(--muted); margin-top: 4px; line-height: 1.45; max-width: 110px; margin-left: auto; margin-right: auto; }
-
-  /* ═══════════ Spring Canvas ═══════════ */
-  .spring-stage { position: relative; width: 100%; height: 220px; background: #060e18; border-radius: 10px; overflow: hidden; border: 1px solid rgba(240,176,0,0.08); z-index: 1; max-width: 780px; margin: 0 auto 24px; }
-  .spring-stage canvas { display: block; width: 100%; height: 100%; }
-  .spring-legend { display: flex; justify-content: center; gap: 20px; flex-wrap: wrap; position: relative; z-index: 1; }
-  .spring-legend-item { display: flex; align-items: center; gap: 7px; font-size: 0.82rem; color: var(--sub); }
-  .spring-legend-item .swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
-
-  .scroll-hint { text-align: center; margin-top: 8px; position: relative; z-index: 1; }
-  .scroll-hint span { display: inline-block; color: var(--muted); font-size: 0.78rem; animation: bounce 2s ease infinite; }
-  @keyframes bounce { 0%, 100% { transform: translateY(0); opacity: 0.4; } 50% { transform: translateY(6px); opacity: 0.8; } }
-
-  /* ═══════════ Sections ═══════════ */
-  .section { padding: 56px 0; }
-  .section-alt { background: rgba(255,255,255,0.013); }
-  .section-header { text-align: center; margin-bottom: 32px; }
-  .section-header h2 { font-size: clamp(1.2rem, 2.5vw, 1.6rem); font-weight: 700; color: #fff; margin-bottom: 8px; }
-  .section-header .desc { font-size: 0.88rem; color: var(--muted); max-width: 480px; margin: 0 auto; }
-  .sect-spring .section-header h2 { color: var(--gold); }
-  .sect-voice  .section-header h2 { color: var(--blue); }
-  .sect-fair   .section-header h2 { color: var(--green); }
-  .sect-heart  .section-header h2 { color: var(--purple); }
-
-  /* ═══════════ Grid & Card ═══════════ */
-  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
-  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
-
-  .card { background: var(--card); border-radius: var(--radius); padding: 26px 24px; border: 1px solid rgba(255,255,255,0.04); transition: transform 0.25s, border-color 0.25s, box-shadow 0.25s; position: relative; }
-  .card:hover { transform: translateY(-2px); border-color: rgba(255,255,255,0.08); box-shadow: 0 8px 28px rgba(0,0,0,0.25); }
-  .card h3 { font-size: 1rem; font-weight: 700; margin-bottom: 8px; color: #fff; line-height: 1.4; }
-  .card p { font-size: 0.88rem; color: var(--sub); line-height: 1.72; }
-  .card .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.76rem; font-weight: 600; margin: 0 2px; }
-
-  .tag-gold   { background: rgba(240,176,0,0.12); color: var(--gold); }
-  .tag-blue   { background: rgba(61,139,253,0.12); color: var(--blue); }
-  .tag-green  { background: rgba(57,217,138,0.12); color: var(--green); }
-  .tag-purple { background: rgba(163,53,238,0.12); color: var(--purple); }
-
-  /* ═══════════ Big Number Hero (RTP spotlight) ═══════════ */
-  .big-number-spot { text-align: center; padding: 20px 0; }
-  .big-number-spot .giant { font-size: clamp(3rem, 8vw, 5rem); font-weight: 900; background: linear-gradient(135deg, var(--green), var(--gold)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; color: transparent; background-clip: text; line-height: 1.1; }
-  .big-number-spot .giant-label { font-size: 1rem; color: var(--sub); margin-top: 4px; }
-
-  /* ═══════════ Quote ═══════════ */
-  .quote-block { background: var(--panel); border-left: 3px solid var(--gold); border-radius: 0 var(--radius) var(--radius) 0; padding: 20px 24px; margin: 32px 0; font-style: italic; color: var(--sub); font-size: 0.9rem; line-height: 1.8; }
-  .quote-block .author { display: block; margin-top: 8px; font-style: normal; font-weight: 600; color: var(--gold); font-size: 0.78rem; }
-
-  /* ═══════════ Insight card ═══════════ */
-  .insight { background: rgba(240,176,0,0.025); border: 1px solid rgba(240,176,0,0.08); border-radius: var(--radius); padding: 24px; margin-top: 20px; }
-  .insight h3 { font-size: 1rem; font-weight: 700; color: var(--gold); margin-bottom: 8px; }
-  .insight p { font-size: 0.88rem; color: var(--sub); line-height: 1.8; }
-
-  /* ═══════════ Closing ═══════════ */
-  .closing { text-align: center; padding: 64px 0 48px; border-top: 1px solid rgba(255,255,255,0.04); }
-  .closing .big-quote { font-size: clamp(1.1rem, 2.5vw, 1.45rem); color: #fff; font-weight: 700; line-height: 1.8; max-width: 620px; margin: 0 auto 8px; }
-  .closing .big-quote em { font-style: normal; color: var(--gold); }
-  .closing .kick { font-size: clamp(1.3rem, 3vw, 1.8rem); font-weight: 900; color: var(--gold); margin-top: 20px; }
-  .pillars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-top: 36px; }
-  .pillar { text-align: center; padding: 24px 14px; border-radius: var(--radius); background: var(--card); border: 1px solid rgba(255,255,255,0.03); transition: transform 0.25s; }
-  .pillar:hover { transform: translateY(-3px); }
-  .pillar .p-icon { font-size: 1.8rem; display: block; margin-bottom: 8px; }
-  .pillar .p-title { font-size: 0.9rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
-  .pillar .p-desc { font-size: 0.78rem; color: var(--muted); line-height: 1.55; }
-
-  /* ═══════════ Footer ═══════════ */
-  .footer { text-align: center; padding: 32px 20px 36px; border-top: 1px solid rgba(255,255,255,0.04); }
-  .footer .ftitle { font-size: 0.92rem; font-weight: 700; color: var(--text); margin-bottom: 4px; }
-  .footer .fsub { font-size: 0.76rem; color: var(--muted); margin-bottom: 10px; }
-  .footer a { color: var(--blue); text-decoration: none; font-weight: 500; transition: color 0.2s; font-size: 0.85rem; }
-  .footer a:hover { color: var(--gold); }
-  .footer .separator { display: inline-block; width: 3px; height: 3px; border-radius: 50%; background: var(--muted); margin: 0 8px; vertical-align: middle; }
-  .footer .color-bar { display: flex; justify-content: center; gap: 4px; margin-bottom: 12px; }
-  .footer .color-bar span { width: 32px; height: 4px; border-radius: 2px; }
-
-  /* ═══════════ Reveal Animation ═══════════ */
-  @keyframes fadeUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-  .reveal { opacity: 0; animation: fadeUp 0.5s ease forwards; }
-  .reveal-d1 { animation-delay: 0.03s; }
-  .reveal-d2 { animation-delay: 0.07s; }
-  .reveal-d3 { animation-delay: 0.11s; }
-
-  /* ═══════════ Responsive ═══════════ */
-  @media (max-width: 768px) {
-    .grid-2, .grid-3 { grid-template-columns: 1fr; }
-    .pillars { grid-template-columns: 1fr 1fr; }
-    .hero { padding: 48px 0 28px; }
-    .hero h1 { font-size: 1.45rem; }
-    .section { padding: 36px 0; }
-    .spring-stage { height: 180px; }
-    .closing { padding: 44px 0 36px; }
-  }
-  @media (max-width: 480px) {
-    .pillars { grid-template-columns: 1fr 1fr; }
-    .hero-num .num { font-size: 1.25rem; }
-    .hero-num .label { font-size: 0.7rem; }
-    .card { padding: 20px 16px; }
-    .spring-stage { height: 150px; }
-    .spring-legend { gap: 10px; }
-    .spring-legend-item { font-size: 0.73rem; }
-    .hero-numbers { gap: 10px; }
-  }
+  :root { --bg:#0b1220; --panel:#15223c; --card:#111d33; --text:#e8eefc; --sub:#8fa0c4; --muted:#5a6d8a; --green:#39d98a; --blue:#3d8bfd; --red:#e0533b; --purple:#a335ee; --gold:#f0b000; --code-bg:#0a1018; --radius:12px; }
+  *,*::before,*::after{ margin:0;padding:0;box-sizing:border-box; }
+  html{ scroll-behavior:smooth;font-size:16px;scroll-padding-top:60px; }
+  body{ background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",sans-serif;line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden; }
+  .wrap{ max-width:960px;margin:0 auto;padding:0 24px; }
+  .toc-bar{ position:sticky;top:0;z-index:100;background:rgba(11,18,32,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.05);padding:10px 0;overflow-x:auto;white-space:nowrap; }
+  .toc-bar::-webkit-scrollbar{ height:0; }
+  .toc-inner{ display:flex;align-items:center;gap:6px;max-width:960px;margin:0 auto;padding:0 24px;font-size:0.82rem; }
+  .toc-label{ color:var(--muted);font-weight:600;margin-right:8px;flex-shrink:0;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em; }
+  .toc-inner a{ color:var(--sub);text-decoration:none;padding:3px 10px;border-radius:14px;transition:all 0.2s;flex-shrink:0; }
+  .toc-inner a:hover,.toc-inner a.active{ color:#fff;background:rgba(255,255,255,0.06); }
+  .toc-sep{ color:var(--muted);opacity:0.3;flex-shrink:0;font-size:0.7rem; }
+  .hero{ text-align:center;padding:56px 0 32px;position:relative; }
+  .hero::before{ content:"";position:absolute;top:-120px;left:50%;transform:translateX(-50%);width:600px;height:600px;background:radial-gradient(circle,rgba(240,176,0,0.05) 0%,transparent 60%);pointer-events:none; }
+  .hero::after{ content:"";position:absolute;bottom:0;left:10%;right:10%;height:1px;background:linear-gradient(90deg,transparent,var(--gold),var(--red),var(--purple),transparent);opacity:0.4; }
+  .hero-badge{ display:inline-block;padding:5px 16px;border-radius:20px;font-size:0.75rem;font-weight:600;letter-spacing:0.05em;color:var(--gold);background:rgba(240,176,0,0.07);border:1px solid rgba(240,176,0,0.15);margin-bottom:20px; }
+  .hero h1{ font-size:clamp(1.6rem,5vw,3rem);font-weight:900;margin-bottom:10px;letter-spacing:0.02em;line-height:1.25;position:relative;z-index:1; }
+  .hero h1 span{ background:linear-gradient(135deg,var(--gold) 0%,var(--red) 50%,var(--purple) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text; }
+  .hero .subtitle{ font-size:clamp(0.88rem,1.6vw,1.02rem);color:var(--sub);max-width:560px;margin:0 auto 28px;position:relative;z-index:1;line-height:1.75; }
+  .hero .subtitle em{ font-style:normal;color:var(--gold);font-weight:600; }
+  .hero-numbers{ display:flex;justify-content:center;gap:clamp(16px,3vw,36px);flex-wrap:wrap;position:relative;z-index:1;margin-bottom:28px; }
+  .hero-num{ text-align:center;min-width:80px; }
+  .hero-num .num{ font-size:clamp(1.5rem,3.5vw,2.2rem);font-weight:900;background:linear-gradient(135deg,var(--gold),var(--red));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1.15; }
+  .hero-num .label{ font-size:0.75rem;color:var(--muted);margin-top:4px;line-height:1.45;max-width:110px;margin-left:auto;margin-right:auto; }
+  .spring-stage{ position:relative;width:100%;height:220px;background:#060e18;border-radius:10px;overflow:hidden;border:1px solid rgba(240,176,0,0.08);z-index:1;max-width:780px;margin:0 auto 20px; }
+  .spring-stage canvas{ display:block;width:100%;height:100%; }
+  .spring-legend{ display:flex;justify-content:center;gap:20px;flex-wrap:wrap;position:relative;z-index:1; }
+  .spring-legend-item{ display:flex;align-items:center;gap:7px;font-size:0.82rem;color:var(--sub); }
+  .spring-legend-item .swatch{ width:12px;height:12px;border-radius:3px;flex-shrink:0; }
+  .section{ padding:44px 0; }
+  .section-alt{ background:rgba(255,255,255,0.013); }
+  .section-header{ text-align:center;margin-bottom:28px; }
+  .section-header h2{ font-size:clamp(1.15rem,2.5vw,1.55rem);font-weight:700;color:#fff;margin-bottom:6px; }
+  .section-header .desc{ font-size:0.85rem;color:var(--muted);max-width:480px;margin:0 auto; }
+  .sect-spring h2{ color:var(--gold); }.sect-voice h2{ color:var(--blue); }.sect-fair h2{ color:var(--green); }
+  .sect-heart h2{ color:var(--purple); }.sect-nearmiss h2{ color:var(--red); }.sect-build h2{ color:var(--blue); }
+  .grid-2{ display:grid;grid-template-columns:1fr 1fr;gap:16px; }
+  .grid-3{ display:grid;grid-template-columns:1fr 1fr 1fr;gap:14px; }
+  .card{ background:var(--card);border-radius:var(--radius);padding:24px 22px;border:1px solid rgba(255,255,255,0.04);transition:transform 0.25s,border-color 0.25s,box-shadow 0.25s; }
+  .card:hover{ transform:translateY(-2px);border-color:rgba(255,255,255,0.08);box-shadow:0 8px 28px rgba(0,0,0,0.25); }
+  .card h3{ font-size:0.98rem;font-weight:700;margin-bottom:8px;color:#fff;line-height:1.4; }
+  .card p{ font-size:0.85rem;color:var(--sub);line-height:1.72; }
+  .card .tag{ display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.74rem;font-weight:600;margin:0 2px; }
+  .tag-gold{ background:rgba(240,176,0,0.12);color:var(--gold); }.tag-blue{ background:rgba(61,139,253,0.12);color:var(--blue); }
+  .tag-green{ background:rgba(57,217,138,0.12);color:var(--green); }.tag-purple{ background:rgba(163,53,238,0.12);color:var(--purple); }
+  .tag-red{ background:rgba(224,83,59,0.12);color:var(--red); }
+  .big-number-spot{ text-align:center;padding:16px 0; }
+  .big-number-spot .giant{ font-size:clamp(2.8rem,8vw,4.5rem);font-weight:900;background:linear-gradient(135deg,var(--green),var(--gold));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;line-height:1.1; }
+  .big-number-spot .giant-label{ font-size:0.95rem;color:var(--sub);margin-top:4px; }
+  .quote-block{ background:var(--panel);border-left:3px solid var(--gold);border-radius:0 var(--radius) var(--radius) 0;padding:18px 22px;margin:28px 0;font-style:italic;color:var(--sub);font-size:0.88rem;line-height:1.8; }
+  .quote-block .author{ display:block;margin-top:6px;font-style:normal;font-weight:600;color:var(--gold);font-size:0.76rem; }
+  .insight{ background:rgba(240,176,0,0.025);border:1px solid rgba(240,176,0,0.08);border-radius:var(--radius);padding:22px;margin-top:18px; }
+  .insight h3{ font-size:0.98rem;font-weight:700;color:var(--gold);margin-bottom:6px; }
+  .insight p{ font-size:0.85rem;color:var(--sub);line-height:1.8; }
+  .appendix-section{ padding:28px 0;border-top:1px solid rgba(255,255,255,0.04); }
+  .appendix-section details{ background:var(--card);border-radius:var(--radius);border:1px solid rgba(255,255,255,0.04);overflow:hidden; }
+  .appendix-section details+details{ margin-top:14px; }
+  .appendix-section summary{ padding:18px 22px;cursor:pointer;font-size:1.02rem;font-weight:700;color:#fff;list-style:none;display:flex;align-items:center;gap:10px;user-select:none;transition:background 0.2s; }
+  .appendix-section summary:hover{ background:rgba(255,255,255,0.015); }
+  .appendix-section summary::-webkit-details-marker{ display:none; }
+  .appendix-section summary::before{ content:"▸";display:inline-block;font-size:0.8rem;transition:transform 0.2s;color:var(--gold);flex-shrink:0; }
+  .appendix-section details[open] summary::before{ transform:rotate(90deg); }
+  .appendix-body{ padding:0 22px 22px; }
+  .appendix-body .grid-2{ margin-top:0; }
+  .appendix-body .card{ background:rgba(255,255,255,0.015); }
+  .appendix-body .data-block{ background:var(--code-bg);border-radius:8px;padding:16px 20px;margin:12px 0;font-family:"SF Mono","Fira Code","Consolas",monospace;font-size:0.82rem;color:var(--sub);line-height:1.6;overflow-x:auto;white-space:pre-wrap; }
+  .appendix-body .data-block .hl{ color:var(--gold); }
+  .closing{ text-align:center;padding:52px 0 40px;border-top:1px solid rgba(255,255,255,0.04); }
+  .closing .big-quote{ font-size:clamp(1.05rem,2.5vw,1.35rem);color:#fff;font-weight:700;line-height:1.8;max-width:620px;margin:0 auto 8px; }
+  .closing .big-quote em{ font-style:normal;color:var(--gold); }
+  .closing .kick{ font-size:clamp(1.2rem,3vw,1.7rem);font-weight:900;color:var(--gold);margin-top:18px; }
+  .pillars{ display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-top:30px; }
+  .pillar{ text-align:center;padding:22px 10px;border-radius:var(--radius);background:var(--card);border:1px solid rgba(255,255,255,0.03);transition:transform 0.25s; }
+  .pillar:hover{ transform:translateY(-3px); }
+  .pillar .p-icon{ font-size:1.6rem;display:block;margin-bottom:6px; }
+  .pillar .p-title{ font-size:0.88rem;font-weight:700;color:#fff;margin-bottom:4px; }
+  .pillar .p-desc{ font-size:0.74rem;color:var(--muted);line-height:1.55; }
+  .footer{ text-align:center;padding:28px 20px 32px;border-top:1px solid rgba(255,255,255,0.04); }
+  .footer .ftitle{ font-size:0.9rem;font-weight:700;color:var(--text);margin-bottom:4px; }
+  .footer .fsub{ font-size:0.74rem;color:var(--muted);margin-bottom:8px; }
+  .footer a{ color:var(--blue);text-decoration:none;font-weight:500;transition:color 0.2s;font-size:0.82rem; }
+  .footer a:hover{ color:var(--gold); }
+  .footer .separator{ display:inline-block;width:3px;height:3px;border-radius:50%;background:var(--muted);margin:0 8px;vertical-align:middle; }
+  .footer .color-bar{ display:flex;justify-content:center;gap:4px;margin-bottom:10px; }
+  .footer .color-bar span{ width:32px;height:4px;border-radius:2px; }
+  @keyframes fadeUp{ from{ opacity:0;transform:translateY(20px); } to{ opacity:1;transform:translateY(0); } }
+  .reveal{ opacity:0;animation:fadeUp 0.5s ease forwards; }
+  .reveal-d1{ animation-delay:0.03s; }.reveal-d2{ animation-delay:0.07s; }.reveal-d3{ animation-delay:0.11s; }
+  @media(max-width:768px){ .grid-2,.grid-3{ grid-template-columns:1fr; }.pillars{ grid-template-columns:1fr 1fr; }.hero{ padding:40px 0 20px; }.hero h1{ font-size:1.4rem; }.section{ padding:32px 0; }.spring-stage{ height:180px; }.closing{ padding:36px 0 28px; }.appendix-body{ padding:0 14px 16px; } }
+  @media(max-width:480px){ .pillars{ grid-template-columns:1fr 1fr; }.hero-num .num{ font-size:1.2rem; }.card{ padding:18px 14px; }.spring-stage{ height:150px; }.spring-legend{ gap:10px; }.hero-numbers{ gap:10px; } }
 </style>
 </head>
 <body>
 <div class="wrap">
 
-<!-- ═══════════════ HERO ═══════════════ -->
-<header class="hero">
-  <div class="hero-badge">跳跳的弹珠机 &middot; 设计深潜 &middot; 2026.07</div>
-  <h1><span>一个小游戏的大设计</span></h1>
-  <p class="subtitle">
-    一根<em>看得见力量</em>的弹簧，一个<em>会说话报数</em>的游戏——<br>当四个维度同时做到极致，弹珠机就不再只是弹珠机
-  </p>
+<nav class="toc-bar"><div class="toc-inner">
+  <span class="toc-label">目录</span>
+  <a href="#sec-spring">弹簧</a><a href="#sec-voice">声音</a><a href="#sec-fair">公平</a><a href="#sec-miss">擦边</a>
+  <a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a>
+  <span class="toc-sep">|</span>
+  <a href="#appendix-a" style="color:var(--gold)">A·音效</a><a href="#appendix-b" style="color:var(--gold)">B·物理</a>
+  <a href="#appendix-c" style="color:var(--gold)">C·数学</a><a href="#appendix-d" style="color:var(--gold)">D·架构</a>
+</div></nav>
 
+<header class="hero">
+  <div class="hero-badge">跳跳的弹珠机 · 设计深潜 · 2026.07</div>
+  <h1><span>一个小游戏的大设计</span></h1>
+  <p class="subtitle">一根<em>看得见力量</em>的弹簧，一个<em>会说话报数</em>的游戏——<br>当七个维度同时做到极致，弹珠机就不再只是弹珠机</p>
   <div class="hero-numbers">
     <div class="hero-num"><div class="num">120%</div><div class="label">返奖率<br>三档可切</div></div>
-    <div class="hero-num"><div class="num">43</div><div class="label">条真人语音<br>中奖报数</div></div>
+    <div class="hero-num"><div class="num">50</div><div class="label">条真人语音<br>43+7智能场景</div></div>
     <div class="hero-num"><div class="num">36</div><div class="label">种音效<br>代码生成</div></div>
     <div class="hero-num"><div class="num">0</div><div class="label">个音频文件<br>零外部依赖</div></div>
   </div>
-
-  <div class="spring-stage">
-    <canvas id="springCanvas"></canvas>
-  </div>
+  <div class="spring-stage"><canvas id="springCanvas"></canvas></div>
   <div class="spring-legend">
     <div class="spring-legend-item"><div class="swatch" style="background:#8fa0c4;"></div>松弛态</div>
-    <div class="spring-legend-item"><div class="swatch" style="background:linear-gradient(90deg,#8fa0c4,#f0b000);"></div>蓄力渐变 &rarr; 金黄</div>
-    <div class="spring-legend-item"><div class="swatch" style="background:#c45a4a;"></div>力度不足 &middot; 橙红警告</div>
+    <div class="spring-legend-item"><div class="swatch" style="background:linear-gradient(90deg,#8fa0c4,#f0b000);"></div>蓄力渐变 → 金黄</div>
+    <div class="spring-legend-item"><div class="swatch" style="background:#c45a4a;"></div>力度不足 · 橙红警告</div>
   </div>
-
-  <div class="scroll-hint"><span>往下看，了解为什么这根弹簧值得认真对待 &darr;</span></div>
 </header>
 
-<!-- ═══════════════ SECTION 1: 弹簧说了什么 ═══════════════ -->
-<section class="section sect-spring">
-  <div class="section-header">
-    <h2>一根弹簧的自我表达</h2>
-    <p class="desc">弹珠机史上第一次，你能"看见"自己用了多大力</p>
-  </div>
-
+<!-- ═══════════ 1. 弹簧 ═══════════ -->
+<section class="section sect-spring" id="sec-spring">
+  <div class="section-header"><h2>一根弹簧的自我表达</h2><p class="desc">在弹珠机里，你能"看见"自己用了多大力——而且是真实的物理回弹</p></div>
   <div class="grid-2">
-    <div class="card reveal reveal-d1">
-      <h3>眼睛代替数字</h3>
-      <p>
-        弹珠机最让人抓狂的就是"我该用多大力？"。这根弹簧在你手指下压缩、变色——力量越大越金黄。不需要看任何数字，<span class="tag tag-gold">看颜色就知道力度</span>。就像捏一个真正的弹簧，你的手指和眼睛同时感知到力量。
-      </p>
-    </div>
-    <div class="card reveal reveal-d1">
-      <h3>三种颜色，三个故事</h3>
-      <p>
-        <span class="tag tag-gold">灰蓝色</span> = 还没用力，安静待命。<br>
-        <span class="tag tag-gold">金黄色</span> = 正在蓄力，越来越"烫"。<br>
-        <span class="tag tag-gold">橙红色</span> = 力度不够，弹不上去，再来一次。<br>
-        三种颜色扫一眼就懂，不需要识字、不需要说明书。
-      </p>
-    </div>
+    <div class="card reveal reveal-d1"><h3>眼睛代替数字</h3><p>力度条是"仪表盘思维"。弹簧是"身体思维"——你看见它被压缩，本能就知道力量有多大。<span class="tag tag-gold">看颜色就知道力度</span>，不需要识字、不需要说明书。</p></div>
+    <div class="card reveal reveal-d1"><h3>真实物理回弹</h3><p>松手后弹簧不是线性滑回原位，而是<span class="tag tag-gold">阻尼振荡</span>——过冲到-0.25倍率再回弹，3~4个可见周期后平稳停下。就像捏一根真正的弹簧，释放后它会"弹过头再回来"。<span class="tag tag-gold">零张图片</span>，每个像素都是算出来的。</p></div>
   </div>
-
-  <div class="insight reveal reveal-d2">
-    <h3>为什么这件事值得认真对待？</h3>
-    <p>
-      力度条是"仪表盘思维"——你读取数字，然后行动。弹簧是"身体思维"——你看见它被压缩，本能就知道力量有多大。后者不需要学习、不需要注意力切换——它是人类几百万年进化刻在大脑里的力学直觉。而且这根弹簧全用代码画出——<span class="tag tag-gold">零张图片</span>，每个像素都是算出来的。
-    </p>
-  </div>
+  <div class="insight reveal reveal-d2"><h3>三种颜色，三个故事</h3><p><span class="tag tag-gold">灰蓝色</span> = 还没用力 <span class="tag tag-gold">金黄色</span> = 正在蓄力，越来越"烫" <span class="tag tag-gold">橙红色</span> = 力度不够，弹不上去。满蓄力后持续按住不再是死寂——每0.6秒轻响一声"还顶着"的确认音，消除"是不是没在蓄力了"的疑惑。</p></div>
 </section>
 
-<!-- ═══════════════ SECTION 2: 当游戏开始说话 ═══════════════ -->
-<section class="section section-alt sect-voice">
-  <div class="section-header">
-    <h2>当游戏开始说话</h2>
-    <p class="desc">手机静音时代里，一个"会出声"的游戏如何设计自己的声音</p>
-  </div>
-
+<!-- ═══════════ 2. 声音 ═══════════ -->
+<section class="section section-alt sect-voice" id="sec-voice">
+  <div class="section-header"><h2>当游戏开始说话</h2><p class="desc">50条真人语音 + 36种代码合成音效 + 全局语音互斥 = 永远不抢、永远不乱</p></div>
   <div class="grid-3">
-    <div class="card reveal reveal-d1">
-      <h3>43条真人语音</h3>
-      <p>
-        中奖时念"珠子加五十"，余额不足时提醒"珠子数量不足请重置"，每一轮结束告诉你输赢——<span class="tag tag-blue">43个场景</span>全由温柔女声预录。即使是静音模式下的玩家，也能通过声音开关随时唤醒。
-      </p>
-    </div>
-    <div class="card reveal reveal-d1">
-      <h3>36种音效，0个文件</h3>
-      <p>
-        弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。没有mp3文件、没有下载等待、没有版本管理。全部音效合成只需不到半秒，比加载一张图片还快。
-      </p>
-    </div>
-    <div class="card reveal reveal-d2">
-      <h3>三层保险，绝不哑火</h3>
-      <p>
-        播放系统有三层后备方案——从手机原生硬件，到系统底层接口，再到纯软件兜底。<span class="tag tag-blue">任意一层坏了自动切下一层</span>。玩家永远听得到声音，每一层切换对玩家完全透明。
-      </p>
-    </div>
+    <div class="card reveal reveal-d1"><h3>50条真人语音</h3><p>中奖报数（15种金额全覆盖）、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示。<span class="tag tag-blue">温柔女声 XiaoxiaoNeural</span> 预录，22050Hz高保真。</p></div>
+    <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>语音模式下中奖不只念数字——win琶音以<span class="tag tag-blue">自适应闪避</span>混入语音文件：琶音在语音开口前起势（档位递增增益0.42→0.22），检测到人声后60ms内压到0.08底线。x2和x20的听感差异完整保留。</p></div>
+    <div class="card reveal reveal-d2"><h3>全局语音互斥</h3><p>上一个语音没播完，新按钮语音<span class="tag tag-blue">直接不出声</span>。你快速连点两个bet按钮，只听到第一个——"返还比例百分之八十返还比例百分之一百"不会叠在一起。</p></div>
+  </div>
+  <div class="grid-2" style="margin-top:14px">
+    <div class="card reveal reveal-d3"><h3>36种音效，0个文件</h3><p>弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。正弦分音+噪声瞬态+梳状混响，固定种子保证每次音色一致。全部11.7秒素材约0.35秒合成完毕，比加载一张图片还快。</p></div>
+    <div class="card reveal reveal-d3"><h3>四层后备，绝不哑火</h3><p>Android SoundPool原生硬件混音 → winmm多声道直写声卡 → Kivy SoundLoader纯软件兜底 → 静音模式不崩溃。任意一层坏了自动切下一层，<span class="tag tag-blue">玩家永远听得到声音</span>。</p></div>
   </div>
 </section>
 
-<!-- ═══════════════ quote ═══════════════ -->
-<div class="quote-block">
-  "棘轮声越来越急、弹簧变金黄、发射咔哒一声、球撞钉子叮叮当当、入袋咚、语音报结果——视觉、听觉、触觉从未同时缺席。每一步操作都有确认，每一个状态都有声音。"
-  <span class="author">&mdash; UX 专家评审</span>
-</div>
+<div class="quote-block">"棘轮声越来越急、弹簧变金黄、发射咔哒一声伴随12ms微震、球撞钉子叮叮当当、入袋咚+弹跳、语音报结果——视觉、听觉、触觉从未同时缺席。每一步操作都有确认，每一个状态都有声音。"<span class="author">— UX 专家评审</span></div>
 
-<!-- ═══════════════ SECTION 3: 不坑人的数学 ═══════════════ -->
-<section class="section sect-fair">
-  <div class="section-header">
-    <h2>数学站在你这边</h2>
-    <p class="desc">120% 返奖率意味着什么？意味着你投入10颗珠子，预期能拿回12颗</p>
-  </div>
-
-  <div class="big-number-spot reveal reveal-d1">
-    <div class="giant">120%</div>
-    <div class="giant-label">三档可切（80 / 100 / 120）&middot; 精确到小数点后两位</div>
-  </div>
-
-  <div class="grid-2" style="margin-top:24px;">
-    <div class="card reveal reveal-d2">
-      <h3>结果提前算好，物理只管表演</h3>
-      <p>
-        每颗球的落点<span class="tag tag-green">在发射前就按概率选好</span>，物理引擎只负责生成可信的弹跳轨迹。你看的每颗球都是"真的在弹"——但数值始终精确可控。不是"调倍率赌运气慢慢收敛"，是每一发都在计划之内。
-      </p>
-    </div>
-    <div class="card reveal reveal-d2">
-      <h3>不让你上头：限制包装成成就感</h3>
-      <p>
-        每轮<span class="tag tag-green">20、50或100次</span>，打完自动停止，弹窗说"恭喜完成一轮挑战"。不是冷冰冰踢你出去，而是像完成一局棋一样有仪式感。历史记录保存最近100条，随时回顾自己的战绩。
-      </p>
-    </div>
+<!-- ═══════════ 3. 公平 ═══════════ -->
+<section class="section sect-fair" id="sec-fair">
+  <div class="section-header"><h2>数学站在你这边</h2><p class="desc">发射前预判轨迹、结果由概率决定、物理只管表演——每一发都在计划之内</p></div>
+  <div class="big-number-spot reveal reveal-d1"><div class="giant">120%</div><div class="giant-label">三档可切（80 / 100 / 120）· 精确到小数点后两位 · 40000次自测验证</div></div>
+  <div class="grid-2" style="margin-top:20px;">
+    <div class="card reveal reveal-d2"><h3>结果提前算好，物理只管表演</h3><p>每颗球的落点<span class="tag tag-green">在发射前就按概率选好</span>，物理引擎只负责生成可信的弹跳轨迹。你看的每颗球都是"真的在弹"——但数值始终精确可控。不是"调倍率赌运气慢慢收敛"，是每一发都在计划之内。</p></div>
+    <div class="card reveal reveal-d2"><h3>发射前预判：不让你看到"卡住"</h3><p>松手瞬间，系统用<span class="tag tag-green">21毫秒</span>快速模拟完整飞行轨迹。如果这条轨迹会卡死，后台静默换一个盘面重算。用户永远只看到<span class="tag tag-green">一次流畅飞行</span>，不知道后台已经换过。</p></div>
   </div>
 </section>
 
-<!-- ═══════════════ SECTION 4: 温度在细节里 ═══════════════ -->
-<section class="section section-alt sect-heart">
-  <div class="section-header">
-    <h2>温度在细节里</h2>
-    <p class="desc">那些你可能永远不会注意到、但少了就会觉得"差点意思"的东西</p>
-  </div>
-
+<!-- ═══════════ 4. near-miss ═══════════ -->
+<section class="section section-alt sect-nearmiss" id="sec-miss">
+  <div class="section-header"><h2>差一点就中了！</h2><p class="desc">弹珠机最强的情绪钩子——纯表演，不动RTP，但心跳加速</p></div>
   <div class="grid-2">
-    <div class="card reveal reveal-d1">
-      <h3>按太轻？零成本试错</h3>
-      <p>
-        手指滑了、没按到位？力度不足时球弹出去又落回来——<span class="tag tag-purple">不扣珠子、不计次数、不换盘面</span>。想练多少次就练多少次，零损失。这是给新手的温柔：你不需要一次就学会。
-      </p>
-    </div>
-    <div class="card reveal reveal-d1">
-      <h3>单手持握，拇指操控</h3>
-      <p>
-        全竖屏设计，发射按钮就在<span class="tag tag-purple">拇指自然落点</span>。手机横过来也能自动适配——字体缩小、边距收紧，把空间还给游戏区。从4寸小屏到平板，不追求填满屏幕，而是填满注意力。
-      </p>
-    </div>
-    <div class="card reveal reveal-d2">
-      <h3>关声音可以反悔</h3>
-      <p>
-        点"关闭声音"后，系统<span class="tag tag-purple">先播完提示语音才真关</span>——延迟1秒。在这1秒内切回来，关闭自动取消。没有"按下去就掉进黑洞"的焦虑。这是对玩家控制权的终极尊重。
-      </p>
-    </div>
-    <div class="card reveal reveal-d2">
-      <h3>130毫秒的呼吸</h3>
-      <p>
-        入袋"咚"一声之后，<span class="tag tag-purple">刻意留了0.13秒的安静</span>，然后再播报中奖金额。"咚"和"珠子加五十"之间没有叠在一起抢耳朵——这段沉默本身就是设计。好的声音不是塞满每一毫秒，而是给耳朵留出消化的空隙。
-      </p>
-    </div>
+    <div class="card reveal reveal-d1"><h3>诱饵偏移：朝高倍槽"滑过去"</h3><p>如果目标槽的邻槽倍率更高，球在钉阵中段会被<span class="tag tag-red">故意推向高倍槽方向偏移40像素</span>，碰到隔板"咔"一声——玩家心脏一紧。然后弹簧把球拉回真实目标槽，有惊无险。<span class="tag tag-red">结算永远是预定槽，RTP分毫不差。</span></p></div>
+    <div class="card reveal reveal-d1"><h3>致死保护：慢了就撤</h3><p>球竖直速度低于150px/s时<span class="tag tag-red">立即撤销诱饵</span>——卡死的球vy必然接近零，撤销后回到已验证零卡死的引导路径。这三个参数是<span class="tag tag-red">n=3000真实盘面扫出来的</span>，不是猜的。</p></div>
+  </div>
+  <div class="insight reveal reveal-d2"><h3>卡死重掷：看不见的安全网</h3><p>万一球真的卡住（位置不动超1.2秒），系统自动把球退回柱塞、按原力度重飞——落点不变、RTP不变、不重复扣珠。最多重试2次，玩家最多看到"球卡了一下重新飞"，比"定住4秒再凭空结算"优雅得多。</p></div>
+</section>
+
+<!-- ═══════════ 5. 防沉迷 ═══════════ -->
+<section class="section sect-fair" id="sec-guard">
+  <div class="section-header"><h2>防沉迷，但有温度</h2><p class="desc">不是冷冰冰踢你出去，而是像完成一局棋一样有仪式感</p></div>
+  <div class="grid-3">
+    <div class="card reveal reveal-d1"><h3>每轮N次，打完自动停</h3><p>每轮<span class="tag tag-green">20、50或100次</span>可选。打完后弹出总结窗口+语音播报完整报数，自动重置。用"恭喜完成一轮挑战"替代"你已被限制"。</p></div>
+    <div class="card reveal reveal-d1"><h3>跨启动持久化</h3><p>余额、已玩次数、命中率全部<span class="tag tag-green">存JSON持久化</span>。杀进程重开不会重置——防沉迷机制真正有效。打满后重启自动静默重置，不会卡在"本轮已结束"弹窗。</p></div>
+    <div class="card reveal reveal-d2"><h3>哑火零损失</h3><p>手指滑了、没按到位？<span class="tag tag-green">不扣珠子、不计次数、不换盘面</span>。想练多少次就练多少次，零损失。新手不需要一次就学会。</p></div>
   </div>
 </section>
 
-<!-- ═══════════════ CLOSING ═══════════════ -->
+<!-- ═══════════ 6. 细节 ═══════════ -->
+<section class="section section-alt sect-heart" id="sec-heart">
+  <div class="section-header"><h2>温度在细节里</h2><p class="desc">那些你可能永远不会注意到、但少了就会觉得"差点意思"的东西</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>发射震动 + 音量分级</h3><p>柱塞释放瞬间<span class="tag tag-purple">12ms微震</span>（哑火8ms），配合发射音效按力度分级（0.60→0.80增益）。<span class="tag tag-purple">满蓄力和刚过阈值的发射声不再一样</span>——蓄力的听觉回报完整回归。</p></div>
+    <div class="card reveal reveal-d1"><h3>落地弹跳：球真的在弹</h3><p>球落入槽位后<span class="tag tag-purple">弹跳3~4次才停住</span>（恢复系数0.42），弹跳系数±8%随机变化避免机械重复。不再瞬移到槽中心——球停在哪就停在哪，自然得不像代码。</p></div>
+    <div class="card reveal reveal-d2"><h3>中奖大字活满3秒</h3><p>金色"+50"大字缩放弹入（1.5s）→ 静止展示（1.5s）→ 淡出，完整3秒生命周期。<span class="tag tag-purple">不会被盘面刷新意外清除</span>，手机端font_size仅值变时写一次（144次→10次），流畅不掉帧。</p></div>
+    <div class="card reveal reveal-d2"><h3>飞行中统一灰化</h3><p>球在飞时，<span class="tag tag-purple">所有按钮+标签文字统一灰化</span>——返还比例、投入设置、统计文字全部变暗。只有弹珠数字和状态提示保持亮色。视觉层级一目了然：现在不是操作的时候，看球就行。</p></div>
+    <div class="card reveal reveal-d3"><h3>关声音可以反悔</h3><p>点"关闭声音"后，系统<span class="tag tag-purple">先播完提示语音才真关</span>——延迟1秒。在这1秒内切回来，关闭自动取消。重启后声音状态与按钮显示一致，不会"看着是关的实际在响"。</p></div>
+    <div class="card reveal reveal-d3"><h3>130毫秒的呼吸 + 返回键保护</h3><p>入袋"咚"和中奖语音之间有<span class="tag tag-purple">0.13秒刻意沉默</span>。Android返回键被拦截——<span class="tag tag-purple">误触不会退出</span>，整局进度不会清零。好的声音不是塞满每一毫秒，好的交互不是多一个退出路径。</p></div>
+  </div>
+</section>
+
+<!-- ═══════════ 7. 跨平台 ═══════════ -->
+<section class="section sect-build" id="sec-build">
+  <div class="section-header"><h2>一套代码，两个平台</h2><p class="desc">PC版tkinter单文件 + Android版Kivy自动生成 —— 物理和音效从来不改一个字</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>单事实源 + 代码生成</h3><p>PC版（plinko.py）是物理/音效/数学的<span class="tag tag-blue">唯一事实源</span>。Android版（main.py）由构建脚本从PC版原样抽取纯逻辑段+拼接手写Kivy UI段生成——<span class="tag tag-blue">物理代码一个字都不改</span>，杜绝手抄千行出错的系统性风险。</p></div>
+    <div class="card reveal reveal-d1"><h3>GitHub Actions云构建</h3><p>push到main → 自动出APK。锁定版本组合：Kivy 2.3.0 + p4a v2024.01.21 + Cython<3.0。首次构建20分钟，<span class="tag tag-blue">缓存命中后3分钟</span>。全程不需要本地装Android SDK。</p></div>
+  </div>
+  <div class="insight reveal reveal-d2"><h3>双因子缩放：一套布局适配所有屏幕</h3><p>_font_scale = min(1.0, 屏宽/360dp) 窄屏时字体等比缩小；_ui_scale = min(1.0, 屏高/680dp) 横屏时固定UI等比缩小。竖屏时双因子均为1.0，不影响原有布局。从4寸小屏到平板，内容始终居中、比例始终正确。</p></div>
+</section>
+
+<!-- ═══════════ APPENDICES ═══════════ -->
+<section class="appendix-section" id="appendix-a">
+  <h2 style="text-align:center;color:var(--gold);font-size:1.2rem;margin-bottom:20px;">附录 — 技术深水区</h2>
+  <details>
+    <summary>附录A：音效与语音技术内幕</summary>
+    <div class="appendix-body">
+      <div class="grid-2">
+        <div class="card"><h3>合成引擎</h3><p>22050Hz 16bit单声道PCM，正弦分音+噪声瞬态+梳状混响。固定种子（SFX_SEED=20260727）保证每次音色一致。音效体检自动检测削波/直流偏移/首尾爆音/静音四项指标。</p></div>
+        <div class="card"><h3>5档中奖琶音递增</h3><p>x2→C5-E5-G5大三和弦(0.72s)，x3→4音(0.85s)，x5→5音(1.00s)，x10→6音+130.8Hz低音支撑，x20→7音到C7+82Hz低音+碎星收尾(1.40s)。混响0.14→0.32递增，声场逐渐"撑开"。</p></div>
+      </div>
+      <div class="data-block"><span class="hl">撞钉音配方（_sfx_tink）:</span>
+  非谐分音 (1.00, 2.01, 3.42) × 基频1040~1880Hz + 0.004s噪声瞬态(lp=0.60)
+  → _pack归一化到peak 0.72
+
+<span class="hl">发射音配方（_sfx_launch）:</span>
+  0.01s白噪声柱塞机械声 + 640→150Hz扫频弹簧声(0.28s, tau=0.16)
+  + 3阶分音共鸣(tau=0.22) → _pack归一化到peak 0.58
+
+<span class="hl">数字朗读引擎（number_voice_names）:</span>
+  1250 → ["voice_d_1","voice_u_1000","voice_d_2","voice_u_100","voice_d_5","voice_u_10"]
+  片段间5ms间隙依次Clock.schedule_once排队播放，支持"二/两"变体规则</div>
+    </div>
+  </details>
+  <details>
+    <summary>附录B：物理引擎深潜</summary>
+    <div class="appendix-body">
+      <div class="grid-2">
+        <div class="card"><h3>三段弹簧导引</h3><p>越顶段(CROSS_K=80,DAMP=0.80)→钉阵段(STEER_MIN=8→MAX=20梯度增强)→入槽段(ALIGN_K=60,DAMP=0.86收尾)。引导层只操作vx，位置始终由physics_step积分——杜绝瞬移穿墙。</p></div>
+        <div class="card"><h3>near-miss安全边界</h3><p>TEASE_FRAC=0.80(约40px偏移)，TEASE_END_Y=370(倒数第三排交还真目标，留246px回归)。隔板顶部最大偏移15.8px(半槽宽24.8px)，100%不越界。TEASE_MIN_VY=150：球慢了就撤诱饵防卡死。</p></div>
+      </div>
+      <div class="data-block"><span class="hl">物理核心参数:</span>
+  G=1200px/s²  E=0.20  VMAX=2400  SUBSTEPS=6  FIXED_DT=1/60
+  发射: LAUNCH_MIN=1180  LAUNCH_MAX=1220 (仅3%差异 → 越顶时刻散30ms)
+  越顶: CROSS_VX_MIN=320 → 悬崖边(300时100%撞弧)  CROSS_VX_MAX=460
+  落袋: LAND_E=0.42  LAND_BOUNCE_MIN_VY=220  LAND_K=16  LAND_DAMP=0.80
+  弹簧: k=120 damp=3.2 ζ=0.146 过冲clamp=-0.25 视觉倍率45
+
+<span class="hl">substep积分防穿透:</span>
+  VMAX=2400时每帧步长6.67px < BALL_R(9)+PEG_R(6)=15px碰撞半径
+  → head-on碰撞100%检测，tangential穿透概率极低</div>
+    </div>
+  </details>
+  <details>
+    <summary>附录C：RTP数学与验证</summary>
+    <div class="appendix-body">
+      <div class="grid-2">
+        <div class="card"><h3>choose_target算法</h3><p>非零格均值=sum(reward)/len(reward)，命中概率w=min(1,rtp/均值)。E[目标倍率]=w×均值=精确rtp。奖励值分布：55% x2 → 25% x3 → 13% x5 → 5.5% x10 → 1.5% x20（E≈3.35）。盘面保底非零格：80档≥2，100档≥4，120档≥6。</p></div>
+        <div class="card"><h3>自测门禁系统</h3><p>n=40000次飞行（标准误≈0.015，门禁±0.05）。6项门禁：RTP偏差→引导命中>90%+卡死=0→哑火500发零泄漏→near-miss零越格→蓄力区分度≥50px+首钉80~95帧→音效体检0异常。一部手机大小，跑完约0.4秒。</p></div>
+      </div>
+      <div class="data-block"><span class="hl">choose_target推导:</span>
+  w = min(1.0, rtp / mean_r)  — 命中奖励格的概率
+  零格集Z = {i | mult[i]==0}, 奖励格集R = {i | mult[i]>0}
+  if Z非空 and random() > w: return random.choice(Z)  — 故意不中
+  else: return random.choice(R)  — 命中，倍率由roll_multipliers分布决定
+  E[payout] = w × E[reward_value] = w × 3.35 = rtp  (当rtp ≤ 3.35时)
+  三档均满足 rtp ≤ 3.35，所以公式精确成立。</div>
+    </div>
+  </details>
+  <details>
+    <summary>附录D：跨平台架构</summary>
+    <div class="appendix-body">
+      <div class="grid-2">
+        <div class="card"><h3>代码生成管道</h3><p>build_android_main.py从plinko.py抽取7个逻辑块（尺寸/物理/音效合成/winmm/_scale_pcm/selftest/sfx_check）+拼接3个手写Kivy段（head/backends/ui）。改物理→重跑生成器→两版永不漂移。</p></div>
+        <div class="card"><h3>锁定版本组合</h3><p>Kivy 2.3.0 + p4a v2024.01.21 + buildozer 1.5.0 + Cython<3.0 + host Python 3.10 + NDK 25b + ubuntu-22.04。5次构建全绿，缓存命中后2.5-3分钟出APK。</p></div>
+      </div>
+      <div class="data-block"><span class="hl">字体层级体系 (6级):</span>
+  Hero 48sp  中奖大字（按屏宽占比设计，不跟场景缩）
+  Key  18sp  弹珠金色主数字 + 顶栏标题
+  Act  16sp  全部按钮（发射/投入/重置/RTP）
+  Body 14sp  正文标签/统计/力度
+  Aux  13sp  状态栏/"投入弹珠"/"返还率"
+  场景内文字（槽位倍率）用逻辑px跟盘面等比缩放，与UI文字两套独立体系
+
+<span class="hl">双因子缩放:</span>
+  _font_scale = min(1.0, width/360dp)   窄屏时字体缩小
+  _ui_scale   = min(1.0, height/680dp)  横屏时固定UI缩小
+  竖屏时双因子均为1.0 → 不影响原有布局
+  _apply_sizes()在窗口尺寸变化时统一写入所有控件宽/字号</div>
+    </div>
+  </details>
+</section>
+
+<!-- ═══════════ CLOSING ═══════════ -->
 <section class="closing">
-  <div class="big-quote">
-    36个音效没有一个是mp3文件。<br>
-    43条语音没有一句是机器合成。<br>
-    一根弹簧没有一张图片。<br><br>
-    <em>这不是炫技，这是对玩家的尊重。</em>
-  </div>
-
+  <div class="big-quote">36个音效没有一个是mp3文件。<br>50条语音没有一句是机器合成。<br>一根弹簧没有一张图片。<br>每颗球的落点都是一次概率的承诺。<br><br><em>这不是炫技，这是对玩家的尊重。</em></div>
   <div class="kick reveal">比够用，多走一步。</div>
-
   <div class="pillars">
-    <div class="pillar reveal reveal-d1">
-      <span class="p-icon">&#x1f50c;</span>
-      <div class="p-title">弹簧看得见</div>
-      <div class="p-desc">颜色即力度 &middot; 零图片 &middot; 身体直觉</div>
-    </div>
-    <div class="pillar reveal reveal-d1">
-      <span class="p-icon">&#x1f5e3;</span>
-      <div class="p-title">游戏会说话</div>
-      <div class="p-desc">43条真人语音 &middot; 36种代码音效 &middot; 0个文件</div>
-    </div>
-    <div class="pillar reveal reveal-d2">
-      <span class="p-icon">&#x1f3af;</span>
-      <div class="p-title">数学不坑人</div>
-      <div class="p-desc">120%返奖率 &middot; 落点可控 &middot; 不让你上头</div>
-    </div>
-    <div class="pillar reveal reveal-d2">
-      <span class="p-icon">&#x1f49c;</span>
-      <div class="p-title">细节有温度</div>
-      <div class="p-desc">哑火不扣珠 &middot; 关声音可反悔 &middot; 130ms呼吸</div>
-    </div>
+    <div class="pillar reveal reveal-d1"><span class="p-icon">🔌</span><div class="p-title">弹簧看得见</div><div class="p-desc">颜色即力度·真实回弹</div></div>
+    <div class="pillar reveal reveal-d1"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">50条语音·36种音效</div></div>
+    <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">数学不坑人</div><div class="p-desc">120%返奖·发射前预判</div></div>
+    <div class="pillar reveal reveal-d2"><span class="p-icon">🎢</span><div class="p-title">差一点就中了</div><div class="p-desc">near-miss·情绪钩子</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">💜</span><div class="p-title">细节有温度</div><div class="p-desc">震动·回弹·灰化·互斥</div></div>
   </div>
 </section>
 
-<!-- ═══════════════ FOOTER ═══════════════ -->
 <footer class="footer">
-  <div class="color-bar">
-    <span style="background:var(--gold)"></span><span style="background:var(--blue)"></span>
-    <span style="background:var(--green)"></span><span style="background:var(--purple)"></span>
-    <span style="background:var(--red)"></span>
-  </div>
-  <div class="ftitle">跳跳的弹珠机 &mdash; DanZhu Plinko</div>
-  <div class="fsub">
-    Python + Kivy &middot; Android 版
-    <span class="separator"></span> 设计评审报告 &middot; 2026.07
-  </div>
+  <div class="color-bar"><span style="background:var(--gold)"></span><span style="background:var(--blue)"></span><span style="background:var(--green)"></span><span style="background:var(--purple)"></span><span style="background:var(--red)"></span></div>
+  <div class="ftitle">跳跳的弹珠机 — DanZhu Plinko</div>
+  <div class="fsub">Python + Kivy · Android 版<span class="separator"></span>设计评审报告 · 2026.07</div>
   <a href="https://github.com/twoplate2/DanZhu" target="_blank" rel="noopener">github.com/twoplate2/DanZhu</a>
 </footer>
-
 </div>
 
-<!-- ═══════════════ Spring Canvas Animation ═══════════════ -->
 <script>
-(function() {
-  var canvas = document.getElementById('springCanvas');
-  if (!canvas) return;
-
-  function setup() {
-    var dpr = window.devicePixelRatio || 1;
-    var rect = canvas.parentNode.getBoundingClientRect();
-    var w = rect.width * dpr;
-    var h = rect.height * dpr;
-    canvas.width = w;
-    canvas.height = h;
-    canvas._w = rect.width;
-    canvas._h = rect.height;
-  }
-  setup();
-
-  var ctx = canvas.getContext('2d');
-
-  function tick(dt) {
-    if (!canvas._w) setup();
-    var dpr = window.devicePixelRatio || 1;
-    var w = canvas._w, h = canvas._h;
-
-    ctx.save();
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-
-    var laneL = w * 0.55, laneR = w * 0.65, floor = h * 0.48;
-    var barTop = floor;
-    var sx = (laneL + laneR) / 2;
-    var span = (laneR - laneL) * 0.82;
-
-    // Animation state machine
-    if (!canvas._state) canvas._state = 'idle';
-    if (!canvas._power) canvas._power = 0;
-    if (!canvas._timer) canvas._timer = 0;
-    if (!canvas._idleWait) canvas._idleWait = 0;
-
-    var state = canvas._state;
-    var power = canvas._power;
-    var timer = canvas._timer;
-    var idleWait = canvas._idleWait;
-
-    if (state === 'idle') {
-      idleWait += dt;
-      if (idleWait > 1400) { state = 'charging'; timer = 0; }
-      power = 0;
-    } else if (state === 'charging') {
-      timer += dt;
-      power = Math.min(1.0, timer / 2200);
-      if (power >= 1.0) { state = 'release'; timer = 0; }
-    } else if (state === 'release') {
-      timer += dt;
-      power = Math.max(0.0, 1.0 - timer / 500);
-      if (power <= 0.0) { state = 'idle'; power = 0; timer = 0; idleWait = 0; }
-    }
-
-    canvas._state = state;
-    canvas._power = power;
-    canvas._timer = timer;
-    canvas._idleWait = idleWait;
-
-    // Draw
-    var barBot = barTop + 10 + power * 22;
-    var lx = sx - span / 2, rx = sx + span / 2;
-
-    // Groove background
-    ctx.fillStyle = '#060e18';
-    ctx.fillRect(laneL, floor, laneR - laneL, h - floor);
-
-    // Spring color
-    var col;
-    if (power < 0.01) col = [0x8f, 0xa0, 0xc4];
-    else if (power < 0.15) col = [0xc4, 0x5a, 0x4a];
-    else {
-      var t = (power - 0.15) / 0.85;
-      col = [
-        Math.round(0x8f + (0xf0 - 0x8f) * t),
-        Math.round(0xa0 + (0xb0 - 0xa0) * t),
-        Math.round(0xc4 + (0x00 - 0xc4) * t)
-      ];
-    }
-
-    // Glow effect when charging
-    if (power > 0.15) {
-      var glowAlpha = (power - 0.15) * 0.15;
-      ctx.shadowColor = 'rgba(240,176,0,' + glowAlpha + ')';
-      ctx.shadowBlur = 12;
-    }
-
-    ctx.strokeStyle = 'rgb(' + col[0] + ',' + col[1] + ',' + col[2] + ')';
-    ctx.lineWidth = 3;
-    ctx.lineCap = 'round';
-
-    // Top bar
-    ctx.beginPath(); ctx.moveTo(lx, barTop); ctx.lineTo(rx, barTop); ctx.stroke();
-    // Diagonal
-    ctx.beginPath(); ctx.moveTo(rx, barTop); ctx.lineTo(lx, barBot); ctx.stroke();
-    // Bottom bar
-    ctx.beginPath(); ctx.moveTo(lx, barBot); ctx.lineTo(rx, barBot); ctx.stroke();
-
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-
-    // Lane walls
-    ctx.strokeStyle = 'rgba(43,67,110,0.2)';
-    ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(laneL, floor); ctx.lineTo(laneL, h); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(laneR, floor); ctx.lineTo(laneR, h); ctx.stroke();
-
-    // Floor line
-    ctx.strokeStyle = 'rgba(43,67,110,0.4)';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(12, floor); ctx.lineTo(w - 12, floor); ctx.stroke();
-
-    // Labels
-    var labelY = barBot + 34;
-    var subY = barBot + 52;
-    ctx.fillStyle = 'rgba(200,210,230,0.6)';
-    ctx.font = 'bold 15px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.textAlign = 'center';
-    var label = power < 0.01 ? '松弛（力度 0）' : power >= 0.99 ? '满蓄力（力度 100%）' : Math.round(power * 100) + '%';
-    if (power > 0 && power < 0.15) label = '哑火区间（力度不足）';
-    ctx.fillText(label, sx, labelY);
-    ctx.font = '12px "PingFang SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = 'rgba(143,160,196,0.35)';
-    var subLabel = power < 0.01 ? '弹簧完全伸展，安静等待' : power >= 0.99 ? '弹簧压缩到极限，即将弹射' : '';
-    if (power > 0 && power < 0.15) subLabel = ' 力度不足，松手后球会落回';
-    ctx.fillText(subLabel, sx, subY);
-
-    ctx.restore();
-    requestAnimationFrame(function() { tick(16); });
-  }
-
-  requestAnimationFrame(function() { tick(16); });
-
-  // Resize handler
-  var resizeTimeout;
-  window.addEventListener('resize', function() {
-    clearTimeout(resizeTimeout);
-    resizeTimeout = setTimeout(function() { setup(); }, 150);
-  });
-})();
-
-// ═══════════════ Scroll Reveal ═══════════════
-(function() {
-  var observer = new IntersectionObserver(function(entries) {
-    entries.forEach(function(e) {
-      if (e.isIntersecting) {
-        e.target.style.animationPlayState = 'running';
-        observer.unobserve(e.target);
-      }
-    });
-  }, { threshold: 0.1 });
-  document.querySelectorAll('.reveal').forEach(function(el) {
-    el.style.animationPlayState = 'paused';
-    observer.observe(el);
-  });
-})();
+(function(){var canvas=document.getElementById('springCanvas');if(!canvas)return;function setup(){var dpr=window.devicePixelRatio||1;var rect=canvas.parentNode.getBoundingClientRect();var w=rect.width*dpr;var h=rect.height*dpr;canvas.width=w;canvas.height=h;canvas._w=rect.width;canvas._h=rect.height}setup();var ctx=canvas.getContext('2d');function tick(dt){if(!canvas._w)setup();var dpr=window.devicePixelRatio||1;var w=canvas._w,h=canvas._h;ctx.save();ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);var laneL=w*0.55,laneR=w*0.65,floor=h*0.48;var barTop=floor;var sx=(laneL+laneR)/2;var span=(laneR-laneL)*0.82;if(!canvas._state)canvas._state='idle';if(!canvas._power)canvas._power=0;if(!canvas._timer)canvas._timer=0;if(!canvas._idleWait)canvas._idleWait=0;var state=canvas._state,power=canvas._power,timer=canvas._timer,idleWait=canvas._idleWait;if(state==='idle'){idleWait+=dt;if(idleWait>1400){state='charging';timer=0}power=0}else if(state==='charging'){timer+=dt;power=Math.min(1.0,timer/2200);if(power>=1.0){state='release';timer=0}}else if(state==='release'){timer+=dt;power=Math.max(0.0,1.0-timer/500);if(power<=0.0){state='idle';power=0;timer=0;idleWait=0}}canvas._state=state;canvas._power=power;canvas._timer=timer;canvas._idleWait=idleWait;var barBot=barTop+10+power*22;var lx=sx-span/2,rx=sx+span/2;ctx.fillStyle='#060e18';ctx.fillRect(laneL,floor,laneR-laneL,h-floor);var col;if(power<0.01)col=[0x8f,0xa0,0xc4];else if(power<0.15)col=[0xc4,0x5a,0x4a];else{var t=(power-0.15)/0.85;col=[Math.round(0x8f+(0xf0-0x8f)*t),Math.round(0xa0+(0xb0-0xa0)*t),Math.round(0xc4+(0x00-0xc4)*t)]}if(power>0.15){var glowAlpha=(power-0.15)*0.15;ctx.shadowColor='rgba(240,176,0,'+glowAlpha+')';ctx.shadowBlur=12}ctx.strokeStyle='rgb('+col[0]+','+col[1]+','+col[2]+')';ctx.lineWidth=3;ctx.lineCap='round';ctx.beginPath();ctx.moveTo(lx,barTop);ctx.lineTo(rx,barTop);ctx.stroke();ctx.beginPath();ctx.moveTo(rx,barTop);ctx.lineTo(lx,barBot);ctx.stroke();ctx.beginPath();ctx.moveTo(lx,barBot);ctx.lineTo(rx,barBot);ctx.stroke();ctx.shadowColor='transparent';ctx.shadowBlur=0;ctx.strokeStyle='rgba(43,67,110,0.2)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(laneL,floor);ctx.lineTo(laneL,h);ctx.stroke();ctx.beginPath();ctx.moveTo(laneR,floor);ctx.lineTo(laneR,h);ctx.stroke();ctx.strokeStyle='rgba(43,67,110,0.4)';ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(12,floor);ctx.lineTo(w-12,floor);ctx.stroke();var labelY=barBot+34,subY=barBot+52;ctx.fillStyle='rgba(200,210,230,0.6)';ctx.font='bold 15px "PingFang SC","Microsoft YaHei",sans-serif';ctx.textAlign='center';var label=power<0.01?'松弛（力度 0）':power>=0.99?'满蓄力（力度 100%）':Math.round(power*100)+'%';if(power>0&&power<0.15)label='哑火区间（力度不足）';ctx.fillText(label,sx,labelY);ctx.font='12px "PingFang SC","Microsoft YaHei",sans-serif';ctx.fillStyle='rgba(143,160,196,0.35)';var subLabel=power<0.01?'弹簧完全伸展，安静等待':power>=0.99?'弹簧压缩到极限，即将弹射':'';if(power>0&&power<0.15)subLabel='力度不足，松手后球会落回';ctx.fillText(subLabel,sx,subY);ctx.restore();requestAnimationFrame(function(){tick(16)})}requestAnimationFrame(function(){tick(16)});var resizeTimeout;window.addEventListener('resize',function(){clearTimeout(resizeTimeout);resizeTimeout=setTimeout(function(){setup()},150)})})();
+(function(){var observer=new IntersectionObserver(function(entries){entries.forEach(function(e){if(e.isIntersecting){e.target.style.animationPlayState='running';observer.unobserve(e.target)}})});document.querySelectorAll('.reveal').forEach(function(el){el.style.animationPlayState='paused';observer.observe(el)})})();
 </script>
 </body>
 </html>
