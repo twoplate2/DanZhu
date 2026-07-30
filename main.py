@@ -496,9 +496,9 @@ def advance_flight(b, geo, target_x):
     return physics_step(b, geo, FIXED_DT)
 
 
-def preflight_check(b, geo, target_x, max_frames=600):
+def preflight_check(b, geo, target_x, max_frames=1000):
     """发射前预判: 快速模拟完整轨迹, 返回 True=能落地, False=大概率卡死。
-    600帧覆盖实测 P99.95, 超过此值直接判死重掷盘面(概率 ~0.05%)。
+    1000帧覆盖实测 P99.95 + 慢设备余量, 超过此值直接判死重掷盘面。
     调用前 ball 已由 launch_ball 创建, 调用后 ball 状态被消耗(坐标/速度已变),
     所以正式发射时需重新 launch_ball。"""
     for _ in range(max_frames):
@@ -3339,13 +3339,16 @@ class RootWidget(BoxLayout):
             self._fit_width()
             self._apply_sizes()
         if self.state == "charging":
-            self.power = min(1.0, self.power + CHARGE_RATE * FIXED_DT)
+            self.power = min(1.0, self.power + CHARGE_RATE * dt)  # 用真实dt, 适配30fps设备
             self._play_charge_sound(self.power)
             weak = self.power < MISFIRE_POWER
             self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
-            landed = advance_flight(b, self.geo, self.target_x)
+            substeps = max(1, min(4, round(dt / FIXED_DT)))  # 30fps→2步, 不掉速
+            landed = None
+            for _ in range(substeps):
+                landed = advance_flight(b, self.geo, self.target_x)
             if not self._crossed and b["x"] < FIELD_R and b["y"] < LANE_WALL_TOP:
                 self._crossed = True
             elif self._crossed and not self._risen and b["y"] > RISER_Y:
@@ -3396,24 +3399,25 @@ class RootWidget(BoxLayout):
                 self.park_ball(reroll=False)
         elif self.state == "landing":
             b = self.ball
-            # 首帧补初速(只一次): 保证球有足够动能产生可见弹跳, 之后全交物理
             if self._landing_primed:
                 self._landing_primed = False
                 if b["vy"] < LAND_BOUNCE_MIN_VY:
                     b["vy"] = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
-            b["vx"] += (self.land_target_x - b["x"]) * LAND_K * FIXED_DT
-            b["vx"] *= LAND_DAMP
-            b["vx"] = clamp(b["vx"], -ALIGN_VX_MAX, ALIGN_VX_MAX)
-            b["vy"] += G * FIXED_DT
-            b["x"] += b["vx"] * FIXED_DT
-            b["y"] += b["vy"] * FIXED_DT
-            floor_y = FLOOR - BALL_R
-            if b["y"] >= floor_y:
-                b["y"] = floor_y
-                if b["vy"] > 0:
-                    if b["vy"] > 60.0:
-                        self.sfx.play("bounce", clamp(b["vy"] / 500.0, 0.3, 1.0), 0.05)
-                    b["vy"] = -b["vy"] * LAND_E * random.uniform(0.92, 1.08)
+            substeps = max(1, min(4, round(dt / FIXED_DT)))
+            for _ in range(substeps):
+                b["vx"] += (self.land_target_x - b["x"]) * LAND_K * FIXED_DT
+                b["vx"] *= LAND_DAMP
+                b["vx"] = clamp(b["vx"], -ALIGN_VX_MAX, ALIGN_VX_MAX)
+                b["vy"] += G * FIXED_DT
+                b["x"] += b["vx"] * FIXED_DT
+                b["y"] += b["vy"] * FIXED_DT
+                floor_y = FLOOR - BALL_R
+                if b["y"] >= floor_y:
+                    b["y"] = floor_y
+                    if b["vy"] > 0:
+                        if b["vy"] > 60.0:
+                            self.sfx.play("bounce", clamp(b["vy"] / 500.0, 0.3, 1.0), 0.05)
+                        b["vy"] = -b["vy"] * LAND_E * random.uniform(0.92, 1.08)
             if (abs(b["x"] - self.land_target_x) < SLOT_W * 0.45 and abs(b["vy"]) < 10.0
                     and b["y"] >= floor_y - 0.5):
                 b["vx"] = 0.0
