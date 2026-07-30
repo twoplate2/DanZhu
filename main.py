@@ -2897,6 +2897,8 @@ class RootWidget(BoxLayout):
             pass
         if self.sound_mode == "off":
             self.sfx.set_enabled(False)
+        if self.round_plays >= self.max_plays:
+            self.reset_balance(notify=False)    # 上轮已打满被kill: 启动时静默重置
 
     def _save_config(self):
         try:
