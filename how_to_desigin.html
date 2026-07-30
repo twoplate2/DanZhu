@@ -133,6 +133,7 @@
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>眼睛代替数字</h3><p>力度条是"仪表盘思维"。弹簧是"身体思维"——你看见它被压缩，本能就知道力量有多大。<span class="tag tag-gold">看颜色就知道力度</span>，不需要识字、不需要说明书。</p></div>
     <div class="card reveal reveal-d1"><h3>真实物理回弹</h3><p>松手后弹簧不是线性滑回原位，而是<span class="tag tag-gold">阻尼振荡</span>——过冲到-0.25倍率再回弹，3~4个可见周期后平稳停下。就像捏一根真正的弹簧，释放后它会"弹过头再回来"。<span class="tag tag-gold">零张图片</span>，每个像素都是算出来的。</p></div>
+    <div class="card reveal reveal-d1"><h3>蓄力只改变方向，不改变节奏</h3><p>竖直发射速度几乎不变（仅1180→1220px/s，<span class="tag tag-gold">3%差异</span>）。为什么？因为有一条1.5秒的预烘飞行音，按400次实测飞行的速度曲线烘焙的。如果竖直速度变化太大，球到首次撞钉的时刻就会漂移，声音节律就会和画面脱节。蓄力的"手感差异"全部转移到横向——蓄力越足，球横穿越多的钉排。</p></div>
   </div>
   <div class="insight reveal reveal-d2"><h3>三种颜色，三个故事</h3><p><span class="tag tag-gold">灰蓝色</span> = 还没用力 <span class="tag tag-gold">金黄色</span> = 正在蓄力，越来越"烫" <span class="tag tag-gold">橙红色</span> = 力度不够，弹不上去。满蓄力后持续按住不再是死寂——每0.6秒轻响一声"还顶着"的确认音，消除"是不是没在蓄力了"的疑惑。</p></div>
 </section>
@@ -142,11 +143,11 @@
   <div class="section-header"><h2>当游戏开始说话</h2><p class="desc">50条真人语音 + 36种代码合成音效 + 全局语音互斥 = 永远不抢、永远不乱</p></div>
   <div class="grid-3">
     <div class="card reveal reveal-d1"><h3>50条真人语音</h3><p>中奖报数（15种金额全覆盖）、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示。<span class="tag tag-blue">温柔女声 XiaoxiaoNeural</span> 预录，22050Hz高保真。</p></div>
-    <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>语音模式下中奖不只念数字——win琶音以<span class="tag tag-blue">自适应闪避</span>混入语音文件：琶音在语音开口前起势（档位递增增益0.42→0.22），检测到人声后60ms内压到0.08底线。x2和x20的听感差异完整保留。</p></div>
+    <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>中奖音分<span class="tag tag-blue">5档递增</span>：x2只有3个音（C-E-G大三和弦），像小铃铛；x3加一音，x5再加一音，x10加低音支撑（像管风琴踏板），x20加到7个音+碎星收尾——像教堂钟声。混响从0.14递增到0.32，声场逐渐"撑开"。语音模式下，这些琶音以自适应闪避混入语音文件：人声开口前起势，检测到人声60ms内压到0.08底线，x2和x20的听感差异完整保留。</p></div>
     <div class="card reveal reveal-d2"><h3>全局语音互斥</h3><p>上一个语音没播完，新按钮语音<span class="tag tag-blue">直接不出声</span>。你快速连点两个bet按钮，只听到第一个——"返还比例百分之八十返还比例百分之一百"不会叠在一起。</p></div>
   </div>
   <div class="grid-2" style="margin-top:14px">
-    <div class="card reveal reveal-d3"><h3>36种音效，0个文件</h3><p>弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。正弦分音+噪声瞬态+梳状混响，固定种子保证每次音色一致。全部11.7秒素材约0.35秒合成完毕，比加载一张图片还快。</p></div>
+    <div class="card reveal reveal-d3"><h3>36种音效，0个文件</h3><p>弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。正弦分音+噪声瞬态+梳状混响，固定种子保证每次音色一致。其中 6 种撞钉声的频率（1040~1880Hz）并非随机挑选，而是恰好构成<span class="tag tag-blue">C-D-E-F#-G#-A# 全音阶</span>——全音阶不含半音，任何两个音叠在一起都不会刺耳。如果做到 7 个音就会出现半音（E-F、B-C），撞到那两个音时会有小二度不协和——"刺啦"一声。球下落时随机撞钉，每次触发的音高不同、节奏不同，但无论怎么排列都是天然和谐的旋律，像在听一段每次都不一样的即兴音乐。全部11.7秒素材约0.35秒合成完毕。</p></div>
     <div class="card reveal reveal-d3"><h3>四层后备，绝不哑火</h3><p>Android SoundPool原生硬件混音 → winmm多声道直写声卡 → Kivy SoundLoader纯软件兜底 → 静音模式不崩溃。任意一层坏了自动切下一层，<span class="tag tag-blue">玩家永远听得到声音</span>。</p></div>
   </div>
 </section>
