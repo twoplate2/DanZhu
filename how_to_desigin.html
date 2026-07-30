@@ -168,7 +168,7 @@
   <div class="section-header"><h2>差一点就中了！</h2><p class="desc">弹珠机最强的情绪钩子——纯表演，不动RTP，但心跳加速</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>诱饵偏移：朝高倍槽"滑过去"</h3><p>如果目标槽的邻槽倍率更高，球在钉阵中段会被<span class="tag tag-red">故意推向高倍槽方向偏移40像素</span>，碰到隔板"咔"一声——玩家心脏一紧。然后弹簧把球拉回真实目标槽，有惊无险。<span class="tag tag-red">结算永远是预定槽，RTP分毫不差。</span></p></div>
-    <div class="card reveal reveal-d1"><h3>慢了根本不推</h3><p>诱饵只在球竖直速度<span class="tag tag-red">高于150px/s</span>时激活——球快速下落时有足够动能，被横向推40px只会偏一下，撞隔板"咔"一声继续走。一旦球慢下来（vy&lt;150），横向推力会把它<span class="tag tag-red">楔在钉子上</span>形成卡死。所以条件是反着写的：<span class="tag tag-red">慢了就不推</span>，让球走回已验证零卡死的正常引导。这三个参数是n=3000真实盘面扫出来的，不是猜的。</p></div>
+    <div class="card reveal reveal-d1"><h3>慢了根本不推</h3><p>诱饵只在球竖直速度<span class="tag tag-red">高于150px/s</span>时激活——球快速下落时有足够动能，被横向推40px只会偏一下，撞隔板"咔"一声继续走。一旦球慢下来（vy&lt;150），横向推力会让它多撞一次钉子——钉子碰撞保留系数只有 <span class="tag tag-red">E=0.20</span>，每撞一次丢掉80%速度。慢球本来就没多少能量，多撞一下直接归零，<span class="tag tag-red">楔在钉子上</span>卡死。所以条件是反着写的：<span class="tag tag-red">慢了就不推</span>，让球走回已验证零卡死的正常引导。这三个参数是n=3000真实盘面扫出来的。</p></div>
   </div>
   <div class="insight reveal reveal-d2"><h3>卡死重掷：看不见的安全网</h3><p>万一球真的卡住（位置不动超1.2秒），系统自动把球退回柱塞、按原力度重飞——落点不变、RTP不变、不重复扣珠。最多重试2次，玩家最多看到"球卡了一下重新飞"，比"定住4秒再凭空结算"优雅得多。</p></div>
 </section>
