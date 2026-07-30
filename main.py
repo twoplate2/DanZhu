@@ -1410,7 +1410,7 @@ class Sfx:
             except Exception:
                 continue
         for name in ("win0", "win1", "win2", "win3", "win4", "lose",
-                     "launch", "flight", "riser", "top0", "top1"):
+                     "launch", "riser", "top0", "top1"):
             for g in (1.0, 0.9, 0.85):     # 预热长音效的音量缓存
                 self.play_prepare(name, g)
         warm = getattr(self.out, "warm", None)
@@ -1433,6 +1433,8 @@ class Sfx:
         _wav_wipe(d)
         lines = []
         for name, pcm in iter_bank():
+            if name == "flight":           # flight 音效已移除, 但 iter_bank 必须保留(顺序即音色)
+                continue
             path = os.path.join(d, name + ".wav")
             try:
                 _wav_write(path, pcm)
@@ -1473,6 +1475,8 @@ class Sfx:
             name, _, size = line.partition(":")
             if not name or not size.isdigit():
                 return False
+            if name == "flight":               # flight 已移除, 跳过缓存加载
+                continue
             path = os.path.join(d, name + ".wav")
             try:
                 if os.path.getsize(path) != int(size):
@@ -2100,6 +2104,7 @@ class GameArea(FloatLayout):
         self._spring_bar_col = None
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
+        self._last_size = None        # 上次尺寸: 变了才清特效
         self.bind(size=self._redraw, pos=self._redraw)
 
     # ---- 坐标换算: 逻辑(x, y向下) -> 控件像素(Kivy y向上); 返回 kwargs 便于 ** 展开 ----
@@ -2124,16 +2129,19 @@ class GameArea(FloatLayout):
         if self.width < 20 or self.height < 20:
             return
         s = min(self.width / CW, self.height / CH)
+        size_changed = (self.width, self.height) != self._last_size
+        self._last_size = (self.width, self.height)
         self._s = s
         self._ox = self.x + (self.width - CW * s) / 2.0
         self._oyt = self.y + (self.height + CH * s) / 2.0
         g = self.game
         self._pulse = None
-        # 尺寸变了, 特效位置参考系失效, 直接清掉(存在时间短, 无伤大雅)
-        for e in self._effects:
-            for w in e["ws"]:
-                self.remove_widget(w)
-        self._effects = []
+        # 仅尺寸真变了才清特效(否则 park_ball 重掷盘面会把中奖大字一起杀了)
+        if size_changed:
+            for e in self._effects:
+                for w in e["ws"]:
+                    self.remove_widget(w)
+            self._effects = []
         self.canvas.clear()
         with self.canvas:
             Color(*hex_rgb(COL_CANVAS))
@@ -2378,8 +2386,10 @@ class GameArea(FloatLayout):
                 fs = max(8, int(e["size"] * sc))
                 rise = 38 * (now - e["born"])
                 main, shadow = e["ws"]
-                main.font_size = fs
-                shadow.font_size = fs
+                if fs != e.get("_last_fs", 0):     # 仅值变了才写 font_size, 跳过冗余纹理重建
+                    main.font_size = fs
+                    shadow.font_size = fs
+                    e["_last_fs"] = fs
                 main.color = e["rgb"] + (alpha,)
                 shadow.color = (0, 0, 0, alpha * 0.6)
                 main.center = (e["cx"], e["cy"] + rise)
@@ -3094,9 +3104,14 @@ class RootWidget(BoxLayout):
 
     def _play_charge_sound(self, power):
         if power >= 1.0:
+            now = time.time()
             if not self._charge_topped:
                 self._charge_topped = True
+                self._last_charge_sound = now
                 self.sfx.play("charge_full")
+            elif now - self._last_charge_sound >= CHARGE_HOLD_SEC:
+                self._last_charge_sound = now
+                self.sfx.play("charge_full", CHARGE_HOLD_GAIN)
             return
         now = time.time()
         if now - self._last_charge_sound < 0.25 - 0.18 * clamp(power, 0.0, 1.0):
