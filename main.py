@@ -254,21 +254,21 @@ def clamp(v, lo, hi):
 
 def _reflect(b, nx, ny, e):
     """沿法线反弹, 返回撞击前的法向接近速率(>0 表示真的撞上了, 供音效定音量)。"""
-    vn = b["vx"] * nx + b["vy"] * ny
+    vn = b.vx * nx + b.vy * ny
     if vn < 0:
-        b["vx"] -= (1 + e) * vn * nx
-        b["vy"] -= (1 + e) * vn * ny
+        b.vx -= (1 + e) * vn * nx
+        b.vy -= (1 + e) * vn * ny
         return -vn
     return 0.0
 
 
 def _mark(b, bit, sp):
     """记录碰撞事件位 + 该类碰撞本帧的最大撞击速率(GUI 读后清零)。"""
-    b["events"] = b.get("events", 0) | bit
+    b.events = b.get("events", 0) | bit
     amp = b.get("amp")
     if amp is None:
         amp = {}
-        b["amp"] = amp
+        b.amp = amp
     if sp > amp.get(bit, 0.0):
         amp[bit] = sp
 
@@ -276,46 +276,46 @@ def _mark(b, bit, sp):
 def _collide_pegs(b, pegs):
     rr = BALL_R + PEG_R
     for px, py in pegs:
-        dx = b["x"] - px
-        dy = b["y"] - py
+        dx = b.x - px
+        dy = b.y - py
         d2 = dx * dx + dy * dy
         if d2 < rr * rr:
-            sp0 = math.hypot(b["vx"], b["vy"])   # 撞前速率
+            sp0 = math.hypot(b.vx, b.vy)   # 撞前速率
             d = math.sqrt(d2)
             if d > 1e-9:
                 nx, ny = dx / d, dy / d
             else:
                 a = random.uniform(0, math.tau)
                 nx, ny = math.cos(a), math.sin(a)
-            b["x"] = px + nx * rr
-            b["y"] = py + ny * rr
+            b.x = px + nx * rr
+            b.y = py + ny * rr
             hit = _reflect(b, nx, ny, E)
             if hit > 0.0:
                 _mark(b, EV_PEG, hit)
             # 角度微扰(模拟表面粗糙度): 只旋转方向, 不注入能量(修"弹跳越弹越高")
-            angle = math.atan2(b["vy"], b["vx"])
+            angle = math.atan2(b.vy, b.vx)
             angle += random.uniform(-0.06, 0.06)  # ±3.4°
-            sp = math.hypot(b["vx"], b["vy"])
+            sp = math.hypot(b.vx, b.vy)
             if sp > sp0 and sp > 1e-9:             # 安全兜底: 绝不快于撞前
                 sp = sp0
-            b["vx"] = sp * math.cos(angle)
-            b["vy"] = sp * math.sin(angle)
+            b.vx = sp * math.cos(angle)
+            b.vy = sp * math.sin(angle)
 
 
 
 def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
-    cx = max(rx1, min(b["x"], rx2))
-    cy = max(ry1, min(b["y"], ry2))
-    dx = b["x"] - cx
-    dy = b["y"] - cy
+    cx = max(rx1, min(b.x, rx2))
+    cy = max(ry1, min(b.y, ry2))
+    dx = b.x - cx
+    dy = b.y - cy
     d2 = dx * dx + dy * dy
     if d2 < BALL_R * BALL_R:
         d = math.sqrt(d2)
         if d > 1e-9:
             nx, ny = dx / d, dy / d
         else:                                   # 球心在矩形内: 朝最近边推出
-            left, right = b["x"] - rx1, rx2 - b["x"]
-            top, bot = b["y"] - ry1, ry2 - b["y"]
+            left, right = b.x - rx1, rx2 - b.x
+            top, bot = b.y - ry1, ry2 - b.y
             m = min(left, right, top, bot)
             if m == left:
                 nx, ny = -1.0, 0.0
@@ -325,8 +325,8 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
                 nx, ny = 0.0, -1.0
             else:
                 nx, ny = 0.0, 1.0
-        b["x"] = cx + nx * BALL_R
-        b["y"] = cy + ny * BALL_R
+        b.x = cx + nx * BALL_R
+        b.y = cy + ny * BALL_R
         hit = _reflect(b, nx, ny, e)
         if ev and hit > 0.0:
             _mark(b, ev, hit)
@@ -335,10 +335,10 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
 def _collide_segment(b, x1, y1, x2, y2, e, jitter=JITTER):
     dx, dy = x2 - x1, y2 - y1
     L2 = dx * dx + dy * dy
-    t = 0.0 if L2 == 0 else ((b["x"] - x1) * dx + (b["y"] - y1) * dy) / L2
+    t = 0.0 if L2 == 0 else ((b.x - x1) * dx + (b.y - y1) * dy) / L2
     t = max(0.0, min(1.0, t))
     cx, cy = x1 + t * dx, y1 + t * dy
-    ox, oy = b["x"] - cx, b["y"] - cy
+    ox, oy = b.x - cx, b.y - cy
     d2 = ox * ox + oy * oy
     if d2 < BALL_R * BALL_R:
         d = math.sqrt(d2)
@@ -346,30 +346,30 @@ def _collide_segment(b, x1, y1, x2, y2, e, jitter=JITTER):
             nx, ny = ox / d, oy / d
         else:
             nx, ny = 0.0, -1.0
-        b["x"] = cx + nx * BALL_R
-        b["y"] = cy + ny * BALL_R
+        b.x = cx + nx * BALL_R
+        b.y = cy + ny * BALL_R
         hit = _reflect(b, nx, ny, e)
         if hit > 0.0:
             _mark(b, EV_CEIL, hit)
         if jitter:                          # 切向扰动(导轨传0=平滑滑行不散射)
             tx, ty = -ny, nx
             j = random.uniform(-jitter, jitter)
-            b["vx"] += tx * j
-            b["vy"] += ty * j
+            b.vx += tx * j
+            b.vy += ty * j
 
 
 def physics_step(b, geo, dt):
     """推进一帧(拆 SUBSTEPS 子步)。落袋返回槽序号, 否则 None。"""
     sub = dt / SUBSTEPS
     for _ in range(SUBSTEPS):
-        b["vy"] += G * sub
-        sp = math.hypot(b["vx"], b["vy"])
+        b.vy += G * sub
+        sp = math.hypot(b.vx, b.vy)
         if sp > VMAX:
             f = VMAX / sp
-            b["vx"] *= f
-            b["vy"] *= f
-        b["x"] += b["vx"] * sub
-        b["y"] += b["vy"] * sub
+            b.vx *= f
+            b.vy *= f
+        b.x += b.vx * sub
+        b.y += b.vy * sub
         for w in geo["walls"]:
             _collide_rect(b, w[0], w[1], w[2], w[3], WALL_E, EV_WALL)
         for s in geo["deflectors"]:
@@ -377,8 +377,8 @@ def physics_step(b, geo, dt):
         _collide_pegs(b, geo["pegs"])
         for d in geo["dividers"]:
             _collide_rect(b, d[0], d[1], d[2], d[3], E, EV_DIV)
-        if b["y"] + BALL_R >= FLOOR - 0.5:
-            i = int((b["x"] - FIELD_L) / SLOT_W)
+        if b.y + BALL_R >= FLOOR - 0.5:
+            i = int((b.x - FIELD_L) / SLOT_W)
             return max(0, min(NUM_SLOTS - 1, i))
     return None
 
@@ -390,7 +390,7 @@ def power_u(power):
 
 class Ball:
     """弹珠物理状态。__slots__ 消除 dict 哈希开销(每发 ~18000 次查找→0)。
-    保留 __getitem__/__setitem__/get 兼容旧 b["x"] 语法, 同时支持 b.x 直接访问。"""
+    保留 __getitem__/__setitem__/get 兼容旧 b.x 语法, 同时支持 b.x 直接访问。"""
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
                  'cross_vx', 'climb', 'misfire', 'tease_dx',
                  'launch_power', '_stall_retry', '_land_primed')
@@ -433,23 +433,23 @@ def misfire_speed(power):
 def launch_misfire(power):
     """力度不足: 球照样弹出去, 只是升不过隔墙顶, 会掉回柱塞。"""
     b = launch_ball(power)
-    b["vy"] = -misfire_speed(power)
-    b["misfire"] = True
-    b["climb"] = False
+    b.vy = -misfire_speed(power)
+    b.misfire = True
+    b.climb = False
     return b
 
 
 def advance_misfire(b):
     """竖井内一维升降(实测全程零碰撞, x 恒=PLUNGER_X)。归位返回 True。
     不能走 physics_step: 它的落袋判定没有 x<FIELD_R 保护, 会把落回柱塞的球报成 8 号槽。"""
-    b["vy"] += G * FIXED_DT
-    b["y"] += b["vy"] * FIXED_DT
-    if b["vy"] > 0 and b["y"] >= PLUNGER_Y:
-        b["y"] = PLUNGER_Y
-        if b["vy"] > MISFIRE_BOUNCE_VY:
-            b["vy"] = -b["vy"] * MISFIRE_E
+    b.vy += G * FIXED_DT
+    b.y += b.vy * FIXED_DT
+    if b.vy > 0 and b.y >= PLUNGER_Y:
+        b.y = PLUNGER_Y
+        if b.vy > MISFIRE_BOUNCE_VY:
+            b.vy = -b.vy * MISFIRE_E
             return False
-        b["vy"] = 0.0
+        b.vy = 0.0
         return True
     return False
 
@@ -461,8 +461,8 @@ def relaunch_stalled(b, power):
     纯粹是"这条轨迹废了, 再走一条"。回柱塞而不是原地踢一脚: 柱塞是已验证 100% 能落地的
     初始条件, 原地踢很可能踢回同一个楔子里。"""
     nb = launch_ball(power)
-    nb["tease_dx"] = b.get("tease_dx", 0.0)
-    nb["_stall_retry"] = b.get("_stall_retry", 0) + 1
+    nb.tease_dx = b.tease_dx
+    nb._stall_retry = b._stall_retry + 1
     return nb
 
 
@@ -471,49 +471,49 @@ def steer_ball(b, target_x):
     上升不干预; 越顶弹簧绕过通道口; 入槽较强弹簧柔和收敛; 场内弱弹簧+限幅+背离阻尼(压撞钉反弹又不硬拽)。"""
     if b.get("misfire"):                             # 哑火球在竖井里自由升降, 一律不引导
         return
-    if b["vy"] >= 0:
-        b["climb"] = False        # 一次性闩锁: 只有发射后到冲顶那一段算爬升。
+    if b.vy >= 0:
+        b.climb = False        # 一次性闩锁: 只有发射后到冲顶那一段算爬升。
                                   # 不能用 vy<0 判断爬升 —— 每次撞钉向上反弹都满足,
                                   # 衰减会泄漏到整个下落段并造成卡死(histroy.md 第四轮第4条)
-    if b["vy"] < 0 and b["y"] > LANE_WALL_TOP - BALL_R:
+    if b.vy < 0 and b.y > LANE_WALL_TOP - BALL_R:
         return                    # 上升中且球底沿还没高过隔墙顶(160): 此时横推会让球以
                                   # 400px/s 的横速撞进 7px 厚的隔墙内部, 被"推出最近边"
                                   # 逻辑传送穿墙并白拿 9px 高度(实测 apex 41→21 贴天花板)
-    if b["x"] >= FIELD_R:
-        b["vx"] += (ENTRY_X - b["x"]) * CROSS_K * FIXED_DT
-        b["vx"] *= CROSS_DAMP
+    if b.x >= FIELD_R:
+        b.vx += (ENTRY_X - b.x) * CROSS_K * FIXED_DT
+        b.vx *= CROSS_DAMP
         cv = b.get("cross_vx", CROSS_VX_MAX)         # 蓄力决定越顶能冲多左
-        b["vx"] = clamp(b["vx"], -cv, cv)
+        b.vx = clamp(b.vx, -cv, cv)
         return
-    if b["y"] > SLOT_TOP - ALIGN_H:
-        b["vx"] += (target_x - b["x"]) * ALIGN_K * FIXED_DT
-        b["vx"] *= ALIGN_DAMP
-        b["vx"] = clamp(b["vx"], -ALIGN_VX_MAX, ALIGN_VX_MAX)
+    if b.y > SLOT_TOP - ALIGN_H:
+        b.vx += (target_x - b.x) * ALIGN_K * FIXED_DT
+        b.vx *= ALIGN_DAMP
+        b.vx = clamp(b.vx, -ALIGN_VX_MAX, ALIGN_VX_MAX)
         return
-    progress = (b["y"] - PEG_TOP) / max(1.0, SLOT_TOP - PEG_TOP)
+    progress = (b.y - PEG_TOP) / max(1.0, SLOT_TOP - PEG_TOP)
     progress = max(0.0, min(1.0, progress))
     pull = STEER_MIN + (STEER_MAX - STEER_MIN) * progress
-    climbing = b.get("climb", False)
+    climbing = b.climb
     if climbing:
         pull *= ASCENT_PULL       # 爬升期弱引导, 否则入场横速 0.3s 内就被擦干净
     tx = target_x
-    if ((not climbing) and TEASE_START_Y < b["y"] < TEASE_END_Y
-            and b["vy"] > TEASE_MIN_VY):
-        tx += b.get("tease_dx", 0.0)   # near-miss: 钉阵中段先朝高倍邻槽走
-    dvx = clamp((tx - b["x"]) * pull * FIXED_DT, -STEER_DVX_MAX, STEER_DVX_MAX)
-    b["vx"] += dvx
-    if (not climbing) and ((b["vx"] > 0.0) != (tx - b["x"] > 0.0)):
-        b["vx"] *= 0.7            # 背离阻尼同样只在下落段生效
-    b["vx"] = clamp(b["vx"], -STEER_VX_MAX, STEER_VX_MAX)
+    if ((not climbing) and TEASE_START_Y < b.y < TEASE_END_Y
+            and b.vy > TEASE_MIN_VY):
+        tx += b.tease_dx   # near-miss: 钉阵中段先朝高倍邻槽走
+    dvx = clamp((tx - b.x) * pull * FIXED_DT, -STEER_DVX_MAX, STEER_DVX_MAX)
+    b.vx += dvx
+    if (not climbing) and ((b.vx > 0.0) != (tx - b.x > 0.0)):
+        b.vx *= 0.7            # 背离阻尼同样只在下落段生效
+    b.vx = clamp(b.vx, -STEER_VX_MAX, STEER_VX_MAX)
 
 
 def advance_flight(b, geo, target_x):
     """推进一帧(GUI/selftest 共用): 弧形导轨越顶 + 分段速度引导 + 槽区减速 + 物理。
     引导层只改 vx, 位置一律由 physics_step 积分; 越顶入场改由弧形导轨(build_deflectors)物理导流, 不再注入种子横速。"""
     steer_ball(b, target_x)
-    if b["y"] > SLOT_TOP and b["vy"] > 0:
-        b["vy"] *= SLOT_BRAKE_VY
-        b["vx"] *= SLOT_BRAKE_VX
+    if b.y > SLOT_TOP and b.vy > 0:
+        b.vy *= SLOT_BRAKE_VY
+        b.vx *= SLOT_BRAKE_VX
     return physics_step(b, geo, FIXED_DT)
 
 
@@ -541,7 +541,7 @@ def benchmark_trajectories(duration=5.0):
         tx = FIELD_L + (target + 0.5) * SLOT_W
         power = random.uniform(MISFIRE_POWER, 1.0)
         b = launch_ball(power)
-        b["tease_dx"] = tease_dx(board, target)
+        b.tease_dx = tease_dx(board, target)
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
             if landed is not None:
@@ -1695,38 +1695,38 @@ def selftest(n=40000):
         target = random.randrange(NUM_SLOTS)
         tx = FIELD_L + (target + 0.5) * SLOT_W
         b = launch_ball(random.uniform(MISFIRE_POWER, 1.0))   # 低于阈值的是哑火, 由 (2b) 覆盖
-        min_y = b["y"]
+        min_y = b.y
         entered = False
         landed = None
         seen = 0
         loud = 0
         stall_frames = 0
-        last_xy = (b["x"], b["y"])
+        last_xy = (b.x, b.y)
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
             lx, ly = last_xy
-            if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
+            if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
                 stall_frames = 0
             else:
                 stall_frames += 1
-            if stall_frames > 72 and b.get("_stall_retry", 0) < STALL_MAX_RETRY:
-                b = relaunch_stalled(b, b.get("launch_power", 0.60))
+            if stall_frames > 72 and b._stall_retry < STALL_MAX_RETRY:
+                b = relaunch_stalled(b, getattr(b, "launch_power", 0.60))
                 stall_frames = 0
                 entered = False
-            last_xy = (b["x"], b["y"])
-            ev = b["events"]
+            last_xy = (b.x, b.y)
+            ev = b.events
             if ev:                             # 模拟 GUI: 每帧读事件位后清零
                 seen |= ev
-                for bit, sp in b["amp"].items():
+                for bit, sp in b.amp.items():
                     if sp >= SFX_MIN_SP[bit]:
                         loud |= bit
-                b["events"] = 0
-                b["amp"].clear()
-            min_y = min(min_y, b["y"])
-            if b["x"] < FIELD_R:
+                b.events = 0
+                b.amp.clear()
+            min_y = min(min_y, b.y)
+            if b.x < FIELD_R:
                 entered = True
             if landed is not None:
-                actual = max(0, min(NUM_SLOTS - 1, int((b["x"] - FIELD_L) / SLOT_W)))
+                actual = max(0, min(NUM_SLOTS - 1, int((b.x - FIELD_L) / SLOT_W)))
                 if actual == target:
                     hit += 1
                 break
@@ -1758,13 +1758,13 @@ def selftest(n=40000):
     for k in range(mf):
         power = MISFIRE_POWER * k / (mf - 1.0)
         b = launch_misfire(power)
-        apex = b["y"]
+        apex = b.y
         home = False
         used = 0
         for used in range(1, MISFIRE_MAX_FRAMES + 1):
             done = advance_misfire(b)
-            apex = min(apex, b["y"])
-            if abs(b["x"] - PLUNGER_X) > 1e-9:
+            apex = min(apex, b.y)
+            if abs(b.x - PLUNGER_X) > 1e-9:
                 break
             if done:
                 home = True
@@ -1774,9 +1774,9 @@ def selftest(n=40000):
         apex_lo_y = max(apex_lo_y, apex)
         if apex <= LANE_WALL_TOP + 40:       # 离隔墙顶(160)留 40px 安全余量
             bad_apex += 1
-        if abs(b["x"] - PLUNGER_X) > 1e-9:   # 竖井内不该有任何横向位移
+        if abs(b.x - PLUNGER_X) > 1e-9:   # 竖井内不该有任何横向位移
             bad_x += 1
-        if not (home and b["y"] == PLUNGER_Y and b["vy"] == 0.0):
+        if not (home and b.y == PLUNGER_Y and b.vy == 0.0):
             bad_home += 1
     probe = {"x": PLUNGER_X, "y": 400.0, "vx": 0.0, "vy": 300.0, "misfire": True}
     steer_ball(probe, FIELD_L + 100.0)       # 回归守卫: 引导层绝不能碰哑火球
@@ -1800,36 +1800,36 @@ def selftest(n=40000):
         target = choose_target(board, 1.00)
         tx = FIELD_L + (target + 0.5) * SLOT_W
         b = launch_ball(random.uniform(MISFIRE_POWER, 1.0))
-        b["tease_dx"] = tease_dx(board, target)
-        if b["tease_dx"] != 0.0:
+        b.tease_dx = tease_dx(board, target)
+        if b.tease_dx != 0.0:
             t_tease += 1
         landed = None
         mouth = None
         swing = 0.0
         infield = False
         stall_frames = 0
-        last_xy = (b["x"], b["y"])
+        last_xy = (b.x, b.y)
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
             lx, ly = last_xy
-            if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
+            if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
                 stall_frames = 0
             else:
                 stall_frames += 1
-            if stall_frames > 72 and b.get("_stall_retry", 0) < STALL_MAX_RETRY:
-                b = relaunch_stalled(b, b.get("launch_power", 0.60))
+            if stall_frames > 72 and b._stall_retry < STALL_MAX_RETRY:
+                b = relaunch_stalled(b, getattr(b, "launch_power", 0.60))
                 stall_frames = 0
                 mouth = None
                 infield = False
-            last_xy = (b["x"], b["y"])
-            if b["x"] < FIELD_R and b["y"] > TEASE_START_Y:
+            last_xy = (b.x, b.y)
+            if b.x < FIELD_R and b.y > TEASE_START_Y:
                 infield = True
-            if infield and b["vy"] > 0:
-                swing = max(swing, abs(b["x"] - tx))
-            if mouth is None and infield and b["y"] > DIV_TOP - 6:
-                mouth = abs(b["x"] - tx)
-            b["events"] = 0
-            b["amp"].clear()
+            if infield and b.vy > 0:
+                swing = max(swing, abs(b.x - tx))
+            if mouth is None and infield and b.y > DIV_TOP - 6:
+                mouth = abs(b.x - tx)
+            b.events = 0
+            b.amp.clear()
             if landed is not None:
                 break
         else:
@@ -1864,25 +1864,25 @@ def selftest(n=40000):
         for k in range(100):
             tx = FIELD_L + (k % NUM_SLOTS + 0.5) * SLOT_W
             b = launch_ball(power)
-            best_y, best_x = b["y"], b["x"]
+            best_y, best_x = b.y, b.x
             npeg, fp = 0, -1
             crossed = False
             turn = -1
             for f in range(4000):
                 landed = advance_flight(b, geo, tx)
-                if b["y"] < best_y:
-                    best_y, best_x = b["y"], b["x"]
-                if not crossed and b["x"] < FIELD_R and b["y"] < LANE_WALL_TOP:
+                if b.y < best_y:
+                    best_y, best_x = b.y, b.x
+                if not crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
                     crossed = True
-                if turn < 0 and crossed and b["vy"] >= 0.0:
+                if turn < 0 and crossed and b.vy >= 0.0:
                     turn = f                   # 顶部碰撞音的触发帧(GUI 用同一判据)
-                    turn_ys.append(b["y"])
-                if b["events"] & EV_PEG:
+                    turn_ys.append(b.y)
+                if b.events & EV_PEG:
                     npeg += 1
                     if fp < 0:
                         fp = f
-                b["events"] = 0
-                b["amp"].clear()
+                b.events = 0
+                b.amp.clear()
                 if landed is not None:
                     break
             axs.append(best_x)
@@ -2367,8 +2367,8 @@ class GameArea(FloatLayout):
         b = g.ball
         if b is not None:
             br = BALL_R * BALL_VIEW
-            self._ball_e.pos = (self._ox + (b["x"] - br) * self._s,
-                                self._oyt - (b["y"] + br) * self._s)
+            self._ball_e.pos = (self._ox + (b.x - br) * self._s,
+                                self._oyt - (b.y + br) * self._s)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
@@ -3264,10 +3264,10 @@ class RootWidget(BoxLayout):
         amp = b.get("amp") or {}
         for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
             if ev & bit:
-                if bit == EV_WALL and b["y"] < SFX_TOP_Y:
+                if bit == EV_WALL and b.y < SFX_TOP_Y:
                     continue          # 顶墙撞击与 apex 转向同帧发生, 交给 top 音, 不再叠闷咚
                 self.sfx.impact(bit, amp.get(bit, 0.0))
-        b["events"] = 0
+        b.events = 0
         amp.clear()
 
     def _play_charge_sound(self, power):
@@ -3370,34 +3370,34 @@ class RootWidget(BoxLayout):
             landed = None
             for _ in range(substeps):
                 landed = advance_flight(b, self.geo, self.target_x)
-            if not self._crossed and b["x"] < FIELD_R and b["y"] < LANE_WALL_TOP:
+            if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
                 self._crossed = True
-            elif self._crossed and not self._risen and b["y"] > RISER_Y:
+            elif self._crossed and not self._risen and b.y > RISER_Y:
                 self._risen = True
                 self.sfx.play("riser", 0.9)
-            if self._crossed and not self._topped and b["vy"] >= 0.0:
+            if self._crossed and not self._topped and b.vy >= 0.0:
                 self._topped = True           # 冲到顶点转向(恒在 0.95~1.00s): 顶部碰撞声
-                self.sfx.top(b["y"])
-            if b["y"] > SLOT_TOP - 40:
+                self.sfx.top(b.y)
+            if b.y > SLOT_TOP - 40:
                 self.status_lbl.text = "即将入袋…"
-            elif b["y"] > PEG_TOP:
+            elif b.y > PEG_TOP:
                 self.status_lbl.text = "弹跳中…"
             else:
                 self.status_lbl.text = "入场中…"
             if landed is None:
                 lx, ly = self._last_ball_xy
-                if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
+                if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
                     self._last_motion = time.time()     # 位移>1px/帧: 还在动, 不是卡死
                 elif (time.time() - self._last_motion > STALL_RETRY_SEC
-                      and b.get("_stall_retry", 0) < STALL_MAX_RETRY):
+                      and b._stall_retry < STALL_MAX_RETRY):
                     b = self.ball = relaunch_stalled(
-                        b, b.get("launch_power", 0.60))
+                        b, getattr(b, "launch_power", 0.60))
                     self._last_motion = time.time()
-                    self._last_ball_xy = (b["x"], b["y"])
+                    self._last_ball_xy = (b.x, b.y)
                     self._crossed = self._risen = self._topped = False
                 elif time.time() - self._last_motion > MAX_FALL_SEC:
                     landed = self.target_slot           # 位置不动 MAX_FALL_SEC: 真卡死才兜底
-                self._last_ball_xy = (b["x"], b["y"])
+                self._last_ball_xy = (b.x, b.y)
                 # 判据必须用位移而非速度/碰撞事件: steer_ball 每帧给球注入 vx, 卡死球的
                 # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
@@ -3422,33 +3422,33 @@ class RootWidget(BoxLayout):
             b = self.ball
             if self._landing_primed:
                 self._landing_primed = False
-                if b["vy"] < LAND_BOUNCE_MIN_VY:
-                    b["vy"] = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
+                if b.vy < LAND_BOUNCE_MIN_VY:
+                    b.vy = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
             substeps = max(1, min(4, round(dt / FIXED_DT)))
             for _ in range(substeps):
-                b["vx"] += (self.land_target_x - b["x"]) * LAND_K * FIXED_DT
-                b["vx"] *= LAND_DAMP
-                b["vx"] = clamp(b["vx"], -ALIGN_VX_MAX, ALIGN_VX_MAX)
-                b["vy"] += G * FIXED_DT
-                b["x"] += b["vx"] * FIXED_DT
-                b["y"] += b["vy"] * FIXED_DT
+                b.vx += (self.land_target_x - b.x) * LAND_K * FIXED_DT
+                b.vx *= LAND_DAMP
+                b.vx = clamp(b.vx, -ALIGN_VX_MAX, ALIGN_VX_MAX)
+                b.vy += G * FIXED_DT
+                b.x += b.vx * FIXED_DT
+                b.y += b.vy * FIXED_DT
                 floor_y = FLOOR - BALL_R
-                if b["y"] >= floor_y:
-                    b["y"] = floor_y
-                    if b["vy"] > 0:
-                        if b["vy"] > 60.0:
-                            self.sfx.play("bounce", clamp(b["vy"] / 500.0, 0.3, 1.0), 0.05)
-                        b["vy"] = -b["vy"] * LAND_E * random.uniform(0.92, 1.08)
-            if (abs(b["x"] - self.land_target_x) < SLOT_W * 0.45 and abs(b["vy"]) < 10.0
-                    and b["y"] >= floor_y - 0.5):
-                b["vx"] = 0.0
-                b["vy"] = 0.0
+                if b.y >= floor_y:
+                    b.y = floor_y
+                    if b.vy > 0:
+                        if b.vy > 60.0:
+                            self.sfx.play("bounce", clamp(b.vy / 500.0, 0.3, 1.0), 0.05)
+                        b.vy = -b.vy * LAND_E * random.uniform(0.92, 1.08)
+            if (abs(b.x - self.land_target_x) < SLOT_W * 0.45 and abs(b.vy) < 10.0
+                    and b.y >= floor_y - 0.5):
+                b.vx = 0.0
+                b.vy = 0.0
                 self.state = "landed"
                 self.landed_at = time.time()
             elif time.time() - self.landed_at >= 0.5:
-                b["y"] = floor_y
-                b["vx"] = 0.0
-                b["vy"] = 0.0
+                b.y = floor_y
+                b.vx = 0.0
+                b.vy = 0.0
                 self.state = "landed"
                 self.landed_at = time.time()
         elif self.state == "landed":
