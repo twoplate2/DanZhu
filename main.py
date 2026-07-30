@@ -2430,8 +2430,8 @@ class RootWidget(BoxLayout):
         self.ball = None
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
         self._build_ui()
-        self.set_bet(self.bet)
-        self.set_rtp(self.rtp_target)
+        self.set_bet(self.bet, silent=True)
+        self.set_rtp(self.rtp_target, silent=True)
         self.park_ball(reroll=False, silent=True)
         Window.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
         Clock.schedule_interval(self._frame, FIXED_DT)
@@ -2675,20 +2675,22 @@ class RootWidget(BoxLayout):
         self.stats_lbl.text = "累计%d投%d中(%.0f%%)" % (
             self.plays, self.hits, rate)
 
-    def set_bet(self, v):
+    def set_bet(self, v, silent=False):
         self.bet = v
         self._restyle_selects()
         self._refresh_stats()
         self.sfx.play("click")
-        self.sfx.play("voice_bet_%d" % v, throttle=0.6)
+        if not silent:
+            self.sfx.play("voice_bet_%d" % v, throttle=0.6)
         self._save_config()
 
-    def set_rtp(self, t):
+    def set_rtp(self, t, silent=False):
         self.rtp_target = t
         self._restyle_selects()
         self.sfx.play("click")
-        pct = int(t * 100)
-        self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
+        if not silent:
+            pct = int(t * 100)
+            self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
         if self.state == "ready":
             self.multipliers = roll_multipliers(self.rtp_target)
             self.game_area._redraw()
