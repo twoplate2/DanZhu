@@ -2606,7 +2606,7 @@ class RootWidget(BoxLayout):
             self._misfire_frames = 0
             self.sfx.play("launch", 0.35 + 0.15 * (self.power / MISFIRE_POWER))
             self._set_controls_enabled(False)
-            self.status_lbl.text = "力度不足未扣珠"
+            self.status_lbl.text = "力度不足,未扣弹珠"
             return
         self.balance -= self.bet
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
