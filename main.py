@@ -1636,18 +1636,19 @@ def selftest(n=40000):
         landed = None
         seen = 0
         loud = 0
-        last_motion = time.time()
+        stall_frames = 0
         last_xy = (b["x"], b["y"])
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
             lx, ly = last_xy
             if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
-                last_motion = time.time()
-            elif (time.time() - last_motion > STALL_RETRY_SEC
-                  and b.get("_stall_retry", 0) < STALL_MAX_RETRY):
+                stall_frames = 0
+            else:
+                stall_frames += 1
+            if stall_frames > 72 and b.get("_stall_retry", 0) < STALL_MAX_RETRY:
                 b = relaunch_stalled(b, b.get("launch_power", 0.60))
-                last_motion = time.time()
-                entered = False      # 重掷后重置入场标记
+                stall_frames = 0
+                entered = False
             last_xy = (b["x"], b["y"])
             ev = b["events"]
             if ev:                             # 模拟 GUI: 每帧读事件位后清零
@@ -1742,18 +1743,19 @@ def selftest(n=40000):
         mouth = None
         swing = 0.0
         infield = False
-        last_motion = time.time()
+        stall_frames = 0
         last_xy = (b["x"], b["y"])
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
             lx, ly = last_xy
             if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
-                last_motion = time.time()
-            elif (time.time() - last_motion > STALL_RETRY_SEC
-                  and b.get("_stall_retry", 0) < STALL_MAX_RETRY):
+                stall_frames = 0
+            else:
+                stall_frames += 1
+            if stall_frames > 72 and b.get("_stall_retry", 0) < STALL_MAX_RETRY:
                 b = relaunch_stalled(b, b.get("launch_power", 0.60))
-                last_motion = time.time()
-                mouth = None           # 重掷后重新记录, 取最终落地的槽口偏移
+                stall_frames = 0
+                mouth = None
                 infield = False
             last_xy = (b["x"], b["y"])
             if b["x"] < FIELD_R and b["y"] > TEASE_START_Y:
@@ -3249,15 +3251,13 @@ class RootWidget(BoxLayout):
                     if b["vy"] > 60.0:
                         self.sfx.play("bounce", clamp(b["vy"] / 500.0, 0.3, 1.0), 0.05)
                     b["vy"] = -b["vy"] * LAND_E * random.uniform(0.92, 1.08)
-            if (abs(b["x"] - self.land_target_x) < 0.8 and abs(b["vy"]) < 10.0
+            if (abs(b["x"] - self.land_target_x) < SLOT_W * 0.45 and abs(b["vy"]) < 10.0
                     and b["y"] >= floor_y - 0.5):
-                b["x"] = self.land_target_x
                 b["vx"] = 0.0
                 b["vy"] = 0.0
                 self.state = "landed"
                 self.landed_at = time.time()
             elif time.time() - self.landed_at >= 0.5:
-                b["x"] = self.land_target_x
                 b["y"] = floor_y
                 b["vx"] = 0.0
                 b["vy"] = 0.0
