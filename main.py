@@ -2488,7 +2488,8 @@ class RootWidget(BoxLayout):
         self.set_rtp(self.rtp_target, silent=True)
         self.park_ball(reroll=False, silent=True)
         Window.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
-        Window.bind(on_touch_down=self._on_title_touch_down)
+        Window.bind(on_touch_down=self._on_title_touch_down,
+                    on_touch_up=self._on_title_touch_up)
         self._bench_running = False
         Clock.schedule_interval(self._frame, FIXED_DT)
 
@@ -2710,15 +2711,30 @@ class RootWidget(BoxLayout):
     def _on_title_touch_down(self, win, touch):
         if (self.title_lbl.collide_point(*touch.pos)
                 and not getattr(self, "_bench_running", False)):
+            self._bench_start = time.time()
+            self._bench_triggered = False
+
+    def _on_title_touch_up(self, win, touch):
+        self._bench_start = 0.0
+
+    def _check_title_hold(self):
+        t = getattr(self, "_bench_start", 0)
+        if t > 0 and not self._bench_triggered and time.time() - t >= 3.0:
+            self._bench_triggered = True
             self._bench_running = True
+            self._set_controls_enabled(False)
             threading.Thread(target=self._run_benchmark, daemon=True).start()
 
     def _run_benchmark(self):
         n = benchmark_trajectories(5.0)
+        Clock.schedule_once(lambda dt: self._bench_done(n), 0)
+
+    def _bench_done(self, n):
         msg = "5秒模拟 %d 发 (单核Python物理)" % n
-        Clock.schedule_once(lambda dt: self.game_area.center_toast(
-            msg, hexcolor=COL_GREEN, size=22, life=4.0), 0)
+        self.game_area.center_toast(msg, hexcolor=COL_GREEN, size=22, life=4.0)
+        self._set_controls_enabled(True)
         self._bench_running = False
+        self._bench_start = 0.0
 
     SOUND_MODES = ("voice", "sfx", "off")   # 顶栏音效钮三态循环顺序
 
@@ -3270,6 +3286,7 @@ class RootWidget(BoxLayout):
             b.width = dp(56) * us
 
     def _frame(self, dt):
+        self._check_title_hold()
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
             self._last_win_size = ws
