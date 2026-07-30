@@ -2319,10 +2319,10 @@ class GameArea(FloatLayout):
         else:
             self._spring_power = 0.0
             self._spring_vel = 0.0
-        sp = max(-0.12, self._spring_power)  # 允许小幅负值: 弹簧压缩回弹的视觉过冲
+        sp = max(-0.25, self._spring_power)  # 过冲到 -0.25(回弹约 11px), 视觉明显
         # 弹簧 Z 字形: 上横线→斜线→下横线
         bar_top = FLOOR
-        bar_bot = FLOOR + 9 + sp * 30
+        bar_bot = FLOOR + 9 + sp * 45
         lx = self._px(LANE_L + 5)
         rx = self._px(RIGHT_INNER - 5)
         y0 = self._py(bar_top)
@@ -2419,6 +2419,7 @@ class RootWidget(BoxLayout):
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
         self._load_history()           # 从磁盘恢复(跨启动持久化)
+        self._auto_reset_on_start = False
         self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
@@ -2430,6 +2431,8 @@ class RootWidget(BoxLayout):
         self.ball = None
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
         self._build_ui()
+        if self._auto_reset_on_start:
+            self.reset_balance(notify=False)  # 上轮打满被kill: UI就绪后静默重置
         self.set_bet(self.bet, silent=True)
         self.set_rtp(self.rtp_target, silent=True)
         self.park_ball(reroll=False, silent=True)
@@ -2900,7 +2903,7 @@ class RootWidget(BoxLayout):
         if self.sound_mode == "off":
             self.sfx.set_enabled(False)
         if self.round_plays >= self.max_plays:
-            self.reset_balance(notify=False)    # 上轮已打满被kill: 启动时静默重置
+            self._auto_reset_on_start = True   # UI还没建, 延后到 _build_ui 之后
 
     def _save_config(self):
         try:
@@ -3213,6 +3216,7 @@ class RootWidget(BoxLayout):
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
                 self.landed_at = time.time()
                 self.state = "landing"
+                self._landing_primed = True   # 首帧补初速, 之后交给物理
                 self.settle(i)
             if self.ball is not None:
                 self._play_events(self.ball)
@@ -3227,9 +3231,11 @@ class RootWidget(BoxLayout):
                 self.park_ball(reroll=False)
         elif self.state == "landing":
             b = self.ball
-            # 首帧补初速: 球从槽口落下, 必须有一定速度才弹得起来
-            if b["vy"] < LAND_BOUNCE_MIN_VY:
-                b["vy"] = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
+            # 首帧补初速(只一次): 保证球有足够动能产生可见弹跳, 之后全交物理
+            if self._landing_primed:
+                self._landing_primed = False
+                if b["vy"] < LAND_BOUNCE_MIN_VY:
+                    b["vy"] = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
             b["vx"] += (self.land_target_x - b["x"]) * LAND_K * FIXED_DT
             b["vx"] *= LAND_DAMP
             b["vx"] = clamp(b["vx"], -ALIGN_VX_MAX, ALIGN_VX_MAX)
