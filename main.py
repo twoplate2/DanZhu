@@ -2313,7 +2313,7 @@ class GameArea(FloatLayout):
             self._spring_power = g.power
             self._spring_vel = 0.0
         elif abs(self._spring_power) > 0.0005 or abs(self._spring_vel) > 0.005:
-            k, damp = 140.0, 9.0
+            k, damp = 120.0, 3.2
             self._spring_vel += (-k * self._spring_power - damp * self._spring_vel) * FIXED_DT
             self._spring_power += self._spring_vel * FIXED_DT
         else:
@@ -3240,7 +3240,7 @@ class RootWidget(BoxLayout):
             if b["y"] >= floor_y:
                 b["y"] = floor_y
                 if b["vy"] > 0:
-                    if b["vy"] > 35.0:
+                    if b["vy"] > 60.0:
                         self.sfx.play("bounce", clamp(b["vy"] / 500.0, 0.3, 1.0), 0.05)
                     b["vy"] = -b["vy"] * LAND_E * random.uniform(0.92, 1.08)
             if (abs(b["x"] - self.land_target_x) < 0.8 and abs(b["vy"]) < 10.0
