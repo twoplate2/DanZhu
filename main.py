@@ -111,7 +111,8 @@ ASCENT_PULL = 0.45           # 爬升期场内引导衰减: 保住入场横速�
 RAIL_E = 0.55                # 天花板反弹系数
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
-LAND_E = 0.20                # 落袋地板恢复系数(弹一两下停住)
+LAND_E = 0.42                # 落袋地板恢复系数: 0.42→弹3~4次逐渐停住, 视觉明显
+LAND_BOUNCE_MIN_VY = 220.0   # 落地最低初速: 低于此值就补到这么多, 保证每次都有可见回弹
 STEER_DVX_MAX = 200.0        # 场内每帧引导增量上限(提高: 匹配高速)
 STEER_VX_MAX = 800.0         # 场内横速上限(提高)
 
@@ -2093,6 +2094,7 @@ class GameArea(FloatLayout):
         self._meter_col = None
         self._spring_bars = []
         self._spring_power = 0.0           # 弹簧显示用力度(平滑衰减)
+        self._spring_vel = 0.0             # 弹簧回弹速度(阻尼振荡用)
         self._spring_bar_col = None
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
@@ -2306,12 +2308,18 @@ class GameArea(FloatLayout):
             self._meter_col.rgb = hex_rgb(COL_FIRE if weak else COL_METER)
         else:
             self._meter_fill.size = (0, 0)
-        # 弹簧力度平滑跟踪: 蓄力时跟随, 释放后 0.3s 线性衰减
+        # 弹簧: 蓄力时跟随, 释放后阻尼振荡回弹(过冲→往复→停止)
         if g.power > self._spring_power:
             self._spring_power = g.power
+            self._spring_vel = 0.0
+        elif abs(self._spring_power) > 0.0005 or abs(self._spring_vel) > 0.005:
+            k, damp = 140.0, 9.0
+            self._spring_vel += (-k * self._spring_power - damp * self._spring_vel) * FIXED_DT
+            self._spring_power += self._spring_vel * FIXED_DT
         else:
-            self._spring_power = max(0.0, self._spring_power - FIXED_DT / 0.5)
-        sp = self._spring_power
+            self._spring_power = 0.0
+            self._spring_vel = 0.0
+        sp = max(-0.12, self._spring_power)  # 允许小幅负值: 弹簧压缩回弹的视觉过冲
         # 弹簧 Z 字形: 上横线→斜线→下横线
         bar_top = FLOOR
         bar_bot = FLOOR + 9 + sp * 30
@@ -2672,12 +2680,15 @@ class RootWidget(BoxLayout):
         self._restyle_selects()
         self._refresh_stats()
         self.sfx.play("click")
+        self.sfx.play("voice_bet_%d" % v, throttle=0.6)
         self._save_config()
 
     def set_rtp(self, t):
         self.rtp_target = t
         self._restyle_selects()
         self.sfx.play("click")
+        pct = int(t * 100)
+        self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
         if self.state == "ready":
             self.multipliers = roll_multipliers(self.rtp_target)
             self.game_area._redraw()
@@ -3212,6 +3223,9 @@ class RootWidget(BoxLayout):
                 self.park_ball(reroll=False)
         elif self.state == "landing":
             b = self.ball
+            # 首帧补初速: 球从槽口落下, 必须有一定速度才弹得起来
+            if b["vy"] < LAND_BOUNCE_MIN_VY:
+                b["vy"] = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
             b["vx"] += (self.land_target_x - b["x"]) * LAND_K * FIXED_DT
             b["vx"] *= LAND_DAMP
             b["vx"] = clamp(b["vx"], -ALIGN_VX_MAX, ALIGN_VX_MAX)
@@ -3222,9 +3236,9 @@ class RootWidget(BoxLayout):
             if b["y"] >= floor_y:
                 b["y"] = floor_y
                 if b["vy"] > 0:
-                    if b["vy"] > 60.0:
+                    if b["vy"] > 35.0:
                         self.sfx.play("bounce", clamp(b["vy"] / 500.0, 0.3, 1.0), 0.05)
-                    b["vy"] = -b["vy"] * LAND_E
+                    b["vy"] = -b["vy"] * LAND_E * random.uniform(0.92, 1.08)
             if (abs(b["x"] - self.land_target_x) < 0.8 and abs(b["vy"]) < 10.0
                     and b["y"] >= floor_y - 0.5):
                 b["x"] = self.land_target_x
