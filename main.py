@@ -2745,7 +2745,7 @@ class RootWidget(BoxLayout):
 
     def _bench_done(self, n):
         rate = n / 10.0
-        fps = int(rate * 200)
+        fps = int(rate * 205)
         dev = self._device_info()
         content = BoxLayout(orientation='vertical', padding=dp(20), spacing=dp(10))
         title_lbl = Label(text='性能测试结果', font_size='19sp', bold=True,
