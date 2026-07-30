@@ -168,7 +168,7 @@
   <div class="section-header"><h2>差一点就中了！</h2><p class="desc">弹珠机最强的情绪钩子——纯表演，不动RTP，但心跳加速</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>诱饵偏移：朝高倍槽"滑过去"</h3><p>如果目标槽的邻槽倍率更高，球在钉阵中段会被<span class="tag tag-red">故意推向高倍槽方向偏移40像素</span>，碰到隔板"咔"一声——玩家心脏一紧。然后弹簧把球拉回真实目标槽，有惊无险。<span class="tag tag-red">结算永远是预定槽，RTP分毫不差。</span></p></div>
-    <div class="card reveal reveal-d1"><h3>致死保护：慢了就撤</h3><p>球竖直速度低于150px/s时<span class="tag tag-red">立即撤销诱饵</span>——卡死的球vy必然接近零，撤销后回到已验证零卡死的引导路径。这三个参数是<span class="tag tag-red">n=3000真实盘面扫出来的</span>，不是猜的。</p></div>
+    <div class="card reveal reveal-d1"><h3>慢了根本不推</h3><p>诱饵只在球竖直速度<span class="tag tag-red">高于150px/s</span>时激活。球一旦慢下来（被楔住时vy必然接近零），诱饵自动失效——<span class="tag tag-red">不是"检测到卡死再撤销"，而是慢了压根不推</span>。球回到已验证零卡死的引导路径。这三个参数是n=3000真实盘面扫出来的，不是猜的。</p></div>
   </div>
   <div class="insight reveal reveal-d2"><h3>卡死重掷：看不见的安全网</h3><p>万一球真的卡住（位置不动超1.2秒），系统自动把球退回柱塞、按原力度重飞——落点不变、RTP不变、不重复扣珠。最多重试2次，玩家最多看到"球卡了一下重新飞"，比"定住4秒再凭空结算"优雅得多。</p></div>
 </section>
