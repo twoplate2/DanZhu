@@ -1378,6 +1378,7 @@ class Sfx:
         self.cached = False         # 本次启动是否命中磁盘缓存(没现场合成)
         self._scaled = {}
         self._last = {}
+        self._last_voice = 0.0       # 全局语音间隔: 防重叠
         self._thread = None
         if not self.enabled:
             return
@@ -1515,6 +1516,12 @@ class Sfx:
     def play(self, name, gain=1.0, throttle=0.0):
         if not self.enabled:
             return False
+        now = time.time()
+        # 全局语音间隔: 任何语音播完后 0.5s 内, 新的语音不出声(防重叠)
+        if name.startswith("voice_"):
+            if now - self._last_voice < 0.5:
+                return False
+            self._last_voice = now
         pcm_mode = getattr(self.out, "mode", "pcm") == "pcm"
         if pcm_mode:
             pcm = self.bank.get(name)
@@ -1526,7 +1533,6 @@ class Sfx:
         if lvl <= 0:
             return False
         if throttle > 0.0:
-            now = time.time()
             if now - self._last.get(name, 0.0) < throttle:
                 return False
             self._last[name] = now
@@ -2259,7 +2265,7 @@ class GameArea(FloatLayout):
         self.add_widget(shadow)
         self.add_widget(main)
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
-                              "life": 2.4, "size": size, "rgb": hex_rgb(hexcolor),
+                              "life": 3.0, "size": size, "rgb": hex_rgb(hexcolor),
                               "cx": self._px(CW / 2.0) - self.x,
                               "cy": self._py(CH / 2.0 - 80) - self.y})
 
@@ -2267,7 +2273,7 @@ class GameArea(FloatLayout):
         if 0 <= i < len(self._slot_cols):
             self._pulse = (i, time.time() + 0.30)
 
-    def center_toast(self, text, hexcolor=COL_FIRE, size=22, life=1.5):
+    def center_toast(self, text, hexcolor=COL_FIRE, size=26, life=2.0):
         """画布中央两行警示飘字(如余额不足): 上浮+淡出。size 单位是 sp(见 big_result_text)。
         老 toast 未消失前不再弹新的(连点发射会瞬间叠一排); 创建即摆位到中央 ——
         默认 pos=(0,0) 是 GameArea 左下角(=重置按钮附近), 下一帧才被 tick_draw 摆位,
@@ -2373,16 +2379,16 @@ class GameArea(FloatLayout):
                 self._effects.remove(e)
                 continue
             if e["kind"] == "toast":
-                alpha = max(0.0, 1.0 - max(0.0, p - 0.6) / 0.4)   # 前 60% 实色, 后 40% 淡出
+                alpha = max(0.0, 1.0 - max(0.0, p - 0.65) / 0.35)   # 前 65% 实色, 后 35% 淡出
                 w = e["ws"][0]
                 w.color = e["rgb"] + (alpha,)
                 w.center = (e["cx"], e["cy"] + 20 * (now - e["born"]))
             else:
-                if p < 0.3:
-                    sc = 1.0 + (p / 0.3) * 0.2       # 1.0 -> 1.2
+                if p < 0.5:
+                    sc = 1.0 + (p / 0.5) * 0.2       # 前50%生命(1.5s): 1.0→1.2 弹入
                 else:
-                    sc = 1.2 - ((p - 0.3) / 0.7) * 0.2  # 1.2 -> 1.0
-                alpha = max(0.0, 1.0 - max(0.0, p - 0.4) / 0.6)
+                    sc = 1.2 - ((p - 0.5) / 0.5) * 0.2  # 后50%: 1.2→1.0 慢收
+                alpha = max(0.0, 1.0 - max(0.0, p - 0.55) / 0.45)
                 fs = max(8, int(e["size"] * sc))
                 rise = 38 * (now - e["born"])
                 main, shadow = e["ws"]
@@ -2412,6 +2418,7 @@ class RootWidget(BoxLayout):
         self._anim_dur = 0.5
         self._coin_until = 0.0
         self._land_hold = LAND_HOLD
+        self._result_until = 0.0       # 结算结果窗口: 期内抑制UI语音, 让结果音优先
         self.bet = DEFAULT_BET
         self.state = "ready"          # ready | charging | flying | misfire | landing | landed
         self.power = 0.0
@@ -2694,16 +2701,16 @@ class RootWidget(BoxLayout):
         self.bet = v
         self._restyle_selects()
         self._refresh_stats()
-        self.sfx.play("click")
-        if not silent:
+        self.sfx.play("click", throttle=0.08)
+        if not silent and time.time() >= self._result_until:
             self.sfx.play("voice_bet_%d" % v, throttle=0.6)
         self._save_config()
 
     def set_rtp(self, t, silent=False):
         self.rtp_target = t
         self._restyle_selects()
-        self.sfx.play("click")
-        if not silent:
+        self.sfx.play("click", throttle=0.08)
+        if not silent and time.time() >= self._result_until:
             pct = int(t * 100)
             self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
         if self.state == "ready":
@@ -2815,6 +2822,7 @@ class RootWidget(BoxLayout):
         self.game_area.pulse_slot(i)
         self._play_result_sound(m, payout)
         self.game_area.big_result_text(m, payout)
+        self._result_until = time.time() + 2.5   # 结果窗口: 期内抑制UI语音
         if m > 0:                             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))
         # 数字滚动动画 + 大奖节奏分档(x10 以上滚更久, 看得清中大奖)
