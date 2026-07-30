@@ -2733,7 +2733,8 @@ class RootWidget(BoxLayout):
 
     def _bench_done(self, n):
         rate = n / 5.0
-        msg = "每秒可模拟%.1f次小球下落\n单核心python物理运算" % rate
+        fps = int(rate * 200)
+        msg = "每秒模拟%d帧，约%.0f次小球飞行\n单核心python物理运算" % (fps, rate)
         self.game_area.center_toast(msg, hexcolor=COL_GREEN, size=26, life=4.0)
         self.status_lbl.text = getattr(self, "_bench_saved_status", "按住蓄力发射")
         self._set_controls_enabled(True)
