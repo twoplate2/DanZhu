@@ -2767,7 +2767,7 @@ class RootWidget(BoxLayout):
                 '时长       10 秒\n'
                 '总帧数     %d 帧    (%d 帧/秒)\n'
                 '估计可飞行 %d 次    (%.1f 次/秒)\n'
-                '──────\n'
+                + '─' * 28 + '\n'
                 '注: 小球每次飞行平均需 205 帧' % (
                     dev, total_frames, total_frames // 10, n, rate))
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='middle',
