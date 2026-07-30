@@ -2482,6 +2482,7 @@ class RootWidget(BoxLayout):
         self._risen = False
         self._topped = False          # 本次飞行是否已播顶部碰撞音
         self._misfire_frames = 0
+        self._accumulator = 0.0       # 固定步长累加器(适配任意刷新率)
         self._space_held = False
         self._release_power = None
         self.plays = 0
@@ -2923,6 +2924,7 @@ class RootWidget(BoxLayout):
             frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
             self.ball = launch_misfire(self.power)
             self.state = "misfire"
+            self._accumulator = 0.0
             self.power = 0.0                  # 哑火后清除蓄力显示
             self._misfire_frames = 0
             self.sfx.play("launch", SFX_MISFIRE_GAIN + (SFX_MISFIRE_GAIN_MAX -
@@ -2947,6 +2949,7 @@ class RootWidget(BoxLayout):
         self.balance -= self.bet
         self.ball = launch_ball(self.power)
         self.state = "flying"
+        self._accumulator = 0.0
         self.power = 0.0                      # 发射后清除蓄力显示
         self.plays += 1
         self.round_plays += 1
@@ -3366,9 +3369,10 @@ class RootWidget(BoxLayout):
             self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
-            substeps = max(1, min(4, round(dt / FIXED_DT)))  # 30fps→2步, 不掉速
+            self._accumulator += dt
             landed = None
-            for _ in range(substeps):
+            while self._accumulator >= FIXED_DT:
+                self._accumulator -= FIXED_DT
                 landed = advance_flight(b, self.geo, self.target_x)
             if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
                 self._crossed = True
@@ -3405,17 +3409,24 @@ class RootWidget(BoxLayout):
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
                 self.landed_at = time.time()
                 self.state = "landing"
+                self._accumulator = 0.0
                 self._landing_primed = True   # 首帧补初速, 之后交给物理
                 self.settle(i)
             if self.ball is not None:
                 self._play_events(self.ball)
         elif self.state == "misfire":
             self._misfire_frames += 1
-            if advance_misfire(self.ball) or self._misfire_frames > MISFIRE_MAX_FRAMES:
-                self.ball["x"] = PLUNGER_X
-                self.ball["y"] = PLUNGER_Y
-                self.ball["vx"] = 0.0
-                self.ball["vy"] = 0.0
+            self._accumulator += dt
+            stepped = False
+            while self._accumulator >= FIXED_DT:
+                self._accumulator -= FIXED_DT
+                stepped = True
+            if stepped:
+                if advance_misfire(self.ball) or self._misfire_frames > MISFIRE_MAX_FRAMES:
+                    self.ball.x = PLUNGER_X
+                    self.ball.y = PLUNGER_Y
+                    self.ball.vx = 0.0
+                    self.ball.vy = 0.0
                 self.sfx.play("bounce", 0.55)
                 self.park_ball(reroll=False)
         elif self.state == "landing":
@@ -3424,8 +3435,9 @@ class RootWidget(BoxLayout):
                 self._landing_primed = False
                 if b.vy < LAND_BOUNCE_MIN_VY:
                     b.vy = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
-            substeps = max(1, min(4, round(dt / FIXED_DT)))
-            for _ in range(substeps):
+            self._accumulator += dt
+            while self._accumulator >= FIXED_DT:
+                self._accumulator -= FIXED_DT
                 b.vx += (self.land_target_x - b.x) * LAND_K * FIXED_DT
                 b.vx *= LAND_DAMP
                 b.vx = clamp(b.vx, -ALIGN_VX_MAX, ALIGN_VX_MAX)
