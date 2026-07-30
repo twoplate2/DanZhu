@@ -388,6 +388,27 @@ def power_u(power):
     return clamp((power - MISFIRE_POWER) / (1.0 - MISFIRE_POWER), 0.0, 1.0)
 
 
+class Ball:
+    """弹珠物理状态。__slots__ 消除 dict 哈希开销(每发 ~18000 次查找→0)。
+    保留 __getitem__/__setitem__/get 兼容旧 b["x"] 语法, 同时支持 b.x 直接访问。"""
+    __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
+                 'cross_vx', 'climb', 'misfire', 'tease_dx',
+                 'launch_power', '_stall_retry', '_land_primed')
+
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def __getitem__(self, key):
+        return getattr(self, key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
+    def get(self, key, default=None):
+        return getattr(self, key, default)
+
+
 def launch_ball(power):
     """按蓄力比例 power 生成一颗向上发射的球(位于弹簧柱塞处)。
 
@@ -396,11 +417,11 @@ def launch_ball(power):
     cross_vx 是这颗球越顶时允许累积的最大左向速度, 蓄力越足冲得越左、横穿越多排钉。"""
     u = power_u(power)
     speed = LAUNCH_MIN + (LAUNCH_MAX - LAUNCH_MIN) * u
-    return {"x": PLUNGER_X, "y": PLUNGER_Y, "vx": 0.0, "vy": -speed,
-            "item": None, "born": time.time(), "events": 0, "amp": {},
-            "cross_vx": CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
-            "climb": True, "misfire": False, "tease_dx": 0.0,
-            "launch_power": power, "_stall_retry": 0}
+    return Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=-speed,
+                item=None, born=time.time(), events=0, amp={},
+                cross_vx=CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
+                climb=True, misfire=False, tease_dx=0.0,
+                launch_power=power, _stall_retry=0)
 
 
 def misfire_speed(power):
@@ -2981,9 +3002,9 @@ class RootWidget(BoxLayout):
             self.game_area._redraw()
         else:
             self.game_area.lamps_off()
-        self.ball = {"x": PLUNGER_X, "y": PLUNGER_Y, "vx": 0.0, "vy": 0.0,
-                     "item": None, "born": time.time(), "events": 0, "amp": {},
-                     "climb": False, "misfire": False}
+        self.ball = Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=0.0,
+                         item=None, born=time.time(), events=0, amp={},
+                         climb=False, misfire=False)
         self.state = "ready"
         self.power = 0.0
         self._set_controls_enabled(True)
