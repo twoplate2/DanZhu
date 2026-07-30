@@ -398,7 +398,8 @@ def launch_ball(power):
     return {"x": PLUNGER_X, "y": PLUNGER_Y, "vx": 0.0, "vy": -speed,
             "item": None, "born": time.time(), "events": 0, "amp": {},
             "cross_vx": CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
-            "climb": True, "misfire": False, "tease_dx": 0.0}
+            "climb": True, "misfire": False, "tease_dx": 0.0,
+            "launch_power": power, "_stall_retry": 0}
 
 
 def misfire_speed(power):
@@ -439,6 +440,7 @@ def relaunch_stalled(b, power):
     初始条件, 原地踢很可能踢回同一个楔子里。"""
     nb = launch_ball(power)
     nb["tease_dx"] = b.get("tease_dx", 0.0)
+    nb["_stall_retry"] = b.get("_stall_retry", 0) + 1
     return nb
 
 
@@ -1633,8 +1635,19 @@ def selftest(n=40000):
         landed = None
         seen = 0
         loud = 0
+        last_motion = time.time()
+        last_xy = (b["x"], b["y"])
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
+            lx, ly = last_xy
+            if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
+                last_motion = time.time()
+            elif (time.time() - last_motion > STALL_RETRY_SEC
+                  and b.get("_stall_retry", 0) < STALL_MAX_RETRY):
+                b = relaunch_stalled(b, b.get("launch_power", 0.60))
+                last_motion = time.time()
+                entered = False      # 重掷后重置入场标记
+            last_xy = (b["x"], b["y"])
             ev = b["events"]
             if ev:                             # 模拟 GUI: 每帧读事件位后清零
                 seen |= ev
@@ -1728,8 +1741,20 @@ def selftest(n=40000):
         mouth = None
         swing = 0.0
         infield = False
+        last_motion = time.time()
+        last_xy = (b["x"], b["y"])
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
+            lx, ly = last_xy
+            if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
+                last_motion = time.time()
+            elif (time.time() - last_motion > STALL_RETRY_SEC
+                  and b.get("_stall_retry", 0) < STALL_MAX_RETRY):
+                b = relaunch_stalled(b, b.get("launch_power", 0.60))
+                last_motion = time.time()
+                mouth = None           # 重掷后重新记录, 取最终落地的槽口偏移
+                infield = False
+            last_xy = (b["x"], b["y"])
             if b["x"] < FIELD_R and b["y"] > TEASE_START_Y:
                 infield = True
             if infield and b["vy"] > 0:
@@ -3156,6 +3181,13 @@ class RootWidget(BoxLayout):
                 lx, ly = self._last_ball_xy
                 if (b["x"] - lx) ** 2 + (b["y"] - ly) ** 2 > 1.0:
                     self._last_motion = time.time()     # 位移>1px/帧: 还在动, 不是卡死
+                elif (time.time() - self._last_motion > STALL_RETRY_SEC
+                      and b.get("_stall_retry", 0) < STALL_MAX_RETRY):
+                    b = self.ball = relaunch_stalled(
+                        b, b.get("launch_power", 0.60))
+                    self._last_motion = time.time()
+                    self._last_ball_xy = (b["x"], b["y"])
+                    self._crossed = self._risen = self._topped = False
                 elif time.time() - self._last_motion > MAX_FALL_SEC:
                     landed = self.target_slot           # 位置不动 MAX_FALL_SEC: 真卡死才兜底
                 self._last_ball_xy = (b["x"], b["y"])
