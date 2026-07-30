@@ -264,8 +264,8 @@ def _reflect(b, nx, ny, e):
 
 def _mark(b, bit, sp):
     """记录碰撞事件位 + 该类碰撞本帧的最大撞击速率(GUI 读后清零)。"""
-    b.events = b.get("events", 0) | bit
-    amp = b.get("amp")
+    b.events = b.events | bit
+    amp = b.amp
     if amp is None:
         amp = {}
         b.amp = amp
@@ -469,7 +469,7 @@ def relaunch_stalled(b, power):
 def steer_ball(b, target_x):
     """引导(全程速度驱动: 只改 vx, 位置由 physics_step 积分, 单帧横移<=ALIGN_VX_MAX*FIXED_DT~5px, 杜绝瞬移)。
     上升不干预; 越顶弹簧绕过通道口; 入槽较强弹簧柔和收敛; 场内弱弹簧+限幅+背离阻尼(压撞钉反弹又不硬拽)。"""
-    if b.get("misfire"):                             # 哑火球在竖井里自由升降, 一律不引导
+    if b.misfire:                             # 哑火球在竖井里自由升降, 一律不引导
         return
     if b.vy >= 0:
         b.climb = False        # 一次性闩锁: 只有发射后到冲顶那一段算爬升。
@@ -482,7 +482,7 @@ def steer_ball(b, target_x):
     if b.x >= FIELD_R:
         b.vx += (ENTRY_X - b.x) * CROSS_K * FIXED_DT
         b.vx *= CROSS_DAMP
-        cv = b.get("cross_vx", CROSS_VX_MAX)         # 蓄力决定越顶能冲多左
+        cv = getattr(b, "cross_vx", CROSS_VX_MAX)         # 蓄力决定越顶能冲多左
         b.vx = clamp(b.vx, -cv, cv)
         return
     if b.y > SLOT_TOP - ALIGN_H:
@@ -1778,7 +1778,7 @@ def selftest(n=40000):
             bad_x += 1
         if not (home and b.y == PLUNGER_Y and b.vy == 0.0):
             bad_home += 1
-    probe = {"x": PLUNGER_X, "y": 400.0, "vx": 0.0, "vy": 300.0, "misfire": True}
+    probe = Ball(x=PLUNGER_X, y=400.0, vx=0.0, vy=300.0, misfire=True)
     steer_ball(probe, FIELD_L + 100.0)       # 回归守卫: 引导层绝不能碰哑火球
     steer_ok = probe["vx"] == 0.0
     mf_ok = (bad_apex == 0 and bad_x == 0 and bad_home == 0 and steer_ok
@@ -2496,6 +2496,7 @@ class RootWidget(BoxLayout):
         self._auto_reset_on_start = False
         self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
+        self._landing_primed = False   # landing首帧标记(防每帧重置vy)
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
@@ -3261,10 +3262,10 @@ class RootWidget(BoxLayout):
 
     # ------------------------------ 音效 ------------------------------
     def _play_events(self, b):
-        ev = b.get("events", 0)
+        ev = b.events
         if not ev:
             return
-        amp = b.get("amp") or {}
+        amp = b.amp or {}
         for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
             if ev & bit:
                 if bit == EV_WALL and b.y < SFX_TOP_Y:
