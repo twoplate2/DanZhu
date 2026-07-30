@@ -115,6 +115,25 @@ LAND_E = 0.20                # 落袋地板恢复系数(弹一两下停住)
 STEER_DVX_MAX = 200.0        # 场内每帧引导增量上限(提高: 匹配高速)
 STEER_VX_MAX = 800.0         # 场内横速上限(提高)
 
+# ------------------ near-miss(擦边): 只改表演, 不改落格 --------------------
+# 诱饵只能放在钉阵里: 末排钉(480)到槽口(616)之间球只飞 ~0.15s(2~3 帧), ALIGN_K=60 的
+# 收尾弹簧在那么短的窗口里推不动几个像素 —— 实测把诱饵放在对齐窗口内, 擦隔板率只从
+# 10% 抬到 13%, 等于没做。钉阵段有 ~1.8s, 弱弹簧(pull 8~20)才有时间把球带偏再拉回。
+TEASE_START_Y = PEG_TOP + 2 * PEG_SY   # 260: 前两排先按真目标走, 免得扰动入场/冲顶
+TEASE_FRAC = 0.80            # 诱饵横向偏移占槽宽比例(0.80 x 49.7 ≈ 40px)
+TEASE_END_Y = PEG_TOP + 4 * PEG_SY     # 370: 倒数第三排; 之后交还真目标, 留 246px 回归。
+TEASE_MIN_VY = 150.0         # 球竖直速度低于此值就撤销诱饵。卡死 = 球被横向力压在钉子侧面
+                             # 楔住, 而楔住时 vy 必然掉到近 0 —— 所以"慢了就撤诱饵"直接掐掉
+                             # 了这条新增的失效路径, 球立刻回到原本零卡死的引导上。
+                             # 没有这一条时实测 1/800~1/3000 会卡死(真机上表现为球定住 4s
+                             # 等位移兜底才结算), 而卡死=0 是硬门禁。
+# 上面三个值是扫出来的, 不是猜的(n=3000 真实盘面)。安全不变量是"球下到隔板顶时必须还在
+# 本槽这一侧"(|偏移| < 半槽宽 24.8px) —— 越过去就真进邻槽了, 结算却报预定槽, 当场穿帮。
+#   frac 0.80 / end 370 -> 命中 100.0%  槽口最大偏移 15.8px   下落游移中位 20.6->29.7
+#   frac 0.90 / end 370 -> 命中  99.9%  槽口最大偏移 47.9px  (越界, 靠隔板侥幸兜回)
+#   frac 0.90 / end 315 -> 卡死骤增 (诱饵压进上部密钉区就开始楔球)
+# 想加大摆幅只能往 end_y 更早 + frac 更大试, 且必须重跑 selftest 的 (2b') 门禁。
+
 # --------------------- 哑火: 球发射了, 但升不过隔墙顶 -----------------------
 # h = v^2/(2G); 要 apex y > LANE_WALL_TOP(160) 需 v < sqrt(2*1200*477) ≈ 1070
 MISFIRE_POWER = 0.15         # 力度阈值: 低于此值球飞不出竖井
@@ -130,6 +149,11 @@ DEFAULT_BET = 10
 MAX_FALL_SEC = 4.0           # 卡死兜底: 连续静止(无碰撞且 |v|<=40px/s)超过此值才强制结算。
                              # 旧语义"发射后 8s 强制结算"会在球晃动久未落袋时提前 settle ——
                              # 球还在屏幕上动, pocket/win/飘字/震动先出来了, 反馈与画面脱节。
+STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就把球退回柱塞、按同一力度重飞。
+                             # 落点在发射前就预定了(choose_target), 重掷只换轨迹 —— 不重复扣珠、
+                             # 不重复计局、RTP 一点不动, 所以可以比 MAX_FALL_SEC 早得多地介入。
+                             # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
+STALL_MAX_RETRY = 2          # 重掷次数上限; 还是不落地才退回 MAX_FALL_SEC 的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
 SLOT_BRAKE_VY = 0.65         # 槽区可见减速(竖直)
 SLOT_BRAKE_VX = 0.5          # 槽区可见减速(水平)
@@ -374,7 +398,7 @@ def launch_ball(power):
     return {"x": PLUNGER_X, "y": PLUNGER_Y, "vx": 0.0, "vy": -speed,
             "item": None, "born": time.time(), "events": 0, "amp": {},
             "cross_vx": CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
-            "climb": True, "misfire": False}
+            "climb": True, "misfire": False, "tease_dx": 0.0}
 
 
 def misfire_speed(power):
@@ -407,6 +431,17 @@ def advance_misfire(b):
     return False
 
 
+def relaunch_stalled(b, power):
+    """卡死重掷: 球退回柱塞按同一力度重新发射, 只换轨迹。
+
+    落点(target_slot)是发射前就预定好的, 珠子也早扣了 —— 所以重掷不碰 RTP、不重复计局,
+    纯粹是"这条轨迹废了, 再走一条"。回柱塞而不是原地踢一脚: 柱塞是已验证 100% 能落地的
+    初始条件, 原地踢很可能踢回同一个楔子里。"""
+    nb = launch_ball(power)
+    nb["tease_dx"] = b.get("tease_dx", 0.0)
+    return nb
+
+
 def steer_ball(b, target_x):
     """引导(全程速度驱动: 只改 vx, 位置由 physics_step 积分, 单帧横移<=ALIGN_VX_MAX*FIXED_DT~5px, 杜绝瞬移)。
     上升不干预; 越顶弹簧绕过通道口; 入槽较强弹簧柔和收敛; 场内弱弹簧+限幅+背离阻尼(压撞钉反弹又不硬拽)。"""
@@ -437,9 +472,13 @@ def steer_ball(b, target_x):
     climbing = b.get("climb", False)
     if climbing:
         pull *= ASCENT_PULL       # 爬升期弱引导, 否则入场横速 0.3s 内就被擦干净
-    dvx = clamp((target_x - b["x"]) * pull * FIXED_DT, -STEER_DVX_MAX, STEER_DVX_MAX)
+    tx = target_x
+    if ((not climbing) and TEASE_START_Y < b["y"] < TEASE_END_Y
+            and b["vy"] > TEASE_MIN_VY):
+        tx += b.get("tease_dx", 0.0)   # near-miss: 钉阵中段先朝高倍邻槽走
+    dvx = clamp((tx - b["x"]) * pull * FIXED_DT, -STEER_DVX_MAX, STEER_DVX_MAX)
     b["vx"] += dvx
-    if (not climbing) and ((b["vx"] > 0.0) != (target_x - b["x"] > 0.0)):
+    if (not climbing) and ((b["vx"] > 0.0) != (tx - b["x"] > 0.0)):
         b["vx"] *= 0.7            # 背离阻尼同样只在下落段生效
     b["vx"] = clamp(b["vx"], -STEER_VX_MAX, STEER_VX_MAX)
 
@@ -466,6 +505,21 @@ def choose_target(mult, rtp):
     if zero and random.random() > w:
         return random.choice(zero)              # 判负 -> 落 0 格
     return random.choice(reward)                # 判胜 -> 落某奖励格
+
+
+def tease_dx(mult, slot):
+    """near-miss(擦边)表演: 目标槽的邻槽倍率更高时, 返回入槽前朝那一侧偏移的像素量(无则 0)。
+
+    结算恒用预定槽, 落格判定也不受影响(隔板把球心封在离槽心 12.8px 内, 见 TEASE_FRAC),
+    所以这纯粹是表演: 球看起来直冲高倍槽 -> 撞隔板"咔"一声 -> 被 ALIGN/LAND 弹簧滚回槽心。
+    偏出整格是不行的: ALIGN_K 只是 5~6 帧的收尾弹簧, 拉不回一格, 球会落在 A 槽而 UI 报 B 槽。"""
+    best = mult[slot]
+    side = 0
+    for nb in (slot - 1, slot + 1):
+        if 0 <= nb < len(mult) and mult[nb] > best:
+            best = mult[nb]
+            side = 1 if nb > slot else -1
+    return side * TEASE_FRAC * SLOT_W
 
 
 def _reward_value():
@@ -511,10 +565,15 @@ SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数)
 SFX_MASTER = 1.0             # 总音量 (0~1), 手机喇叭需要满幅
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
 SFX_RESULT_LEAD = 0.13       # 结果音(中奖/未中)前置静音: 让入袋声先落地
-SFX_LAUNCH_GAIN = 0.60       # 发射音音量: 固定用"哑火那一声"的档位, 不跟蓄力放大。
-                             # 原来 0.75~1.0 被评价为"像大炮发射, 太夸张"; launch 本身是
-                             # 全库最响的非中奖音(rms .146), 满蓄力时还会盖掉飞行音。
-                             # 哑火走的是同一个样本, 玩家点名要那个听感 —— 别再往上调。
+SFX_LAUNCH_GAIN = 0.60       # 发射音基准音量(=玩家点名要的"哑火那一声"的听感档位)
+SFX_LAUNCH_GAIN_MAX = 0.80   # 满蓄力上限。曾经的 0.75~1.0 被评价为"像大炮发射, 太夸张",
+                             # 所以顶不能再摸到 1.0(launch 是全库最响的非中奖音, rms .146);
+                             # 但也不能像旧代码那样恒定 —— 蓄力没有听觉回报, 手感就少一半。
+                             # 0.60~0.80 是"听得出差别但不炸"的折中, 要动请用耳朵校准。
+SFX_MISFIRE_GAIN = 0.35      # 哑火发射音: 弱蓄力
+SFX_MISFIRE_GAIN_MAX = 0.50  # 哑火发射音: 贴着阈值(差一点就飞出去了)
+CHARGE_HOLD_SEC = 0.60       # 满蓄力后"还顶着"提示音的重复间隔
+CHARGE_HOLD_GAIN = 0.40      # 该提示音的音量(轻版, 只是凭证不是事件)
 SOUND_ENABLED = True         # --nosound / demo 可关
 
 # 音效专用随机流: 与游戏随机流完全隔离(否则合成会扰乱盘面/落点的随机序列)
@@ -1651,6 +1710,55 @@ def selftest(n=40000):
     print("  越顶泄漏: %d/%d   横向漂移: %d/%d   未归位: %d/%d   引导未碰哑火球: %s"
           % (bad_apex, mf, bad_x, mf, bad_home, mf, "OK" if steer_ok else "失败!"))
 
+    # (2b') near-miss 擦边: 诱饵是纯表演, 球下到隔板顶时必须还在本槽这一侧
+    print("== near-miss 擦边(诱饵不越格) ==")
+    tm = 800
+    t_hit = t_tease = t_stuck = 0
+    t_mouth = 0.0        # 到达隔板顶时离槽心的最大偏移 = 真正的安全不变量
+    t_swing = []         # 下落段横向游移(near-miss 的可见幅度)
+    for _ in range(tm):
+        board = roll_multipliers(random.choice((0.80, 1.00, 1.20)))
+        target = choose_target(board, 1.00)
+        tx = FIELD_L + (target + 0.5) * SLOT_W
+        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0))
+        b["tease_dx"] = tease_dx(board, target)
+        if b["tease_dx"] != 0.0:
+            t_tease += 1
+        landed = None
+        mouth = None
+        swing = 0.0
+        infield = False
+        for _ in range(4000):
+            landed = advance_flight(b, geo, tx)
+            if b["x"] < FIELD_R and b["y"] > TEASE_START_Y:
+                infield = True
+            if infield and b["vy"] > 0:
+                swing = max(swing, abs(b["x"] - tx))
+            if mouth is None and infield and b["y"] > DIV_TOP - 6:
+                mouth = abs(b["x"] - tx)
+            b["events"] = 0
+            b["amp"].clear()
+            if landed is not None:
+                break
+        else:
+            t_stuck += 1
+            continue
+        if landed == target:
+            t_hit += 1
+        if mouth is not None:
+            t_mouth = max(t_mouth, mouth)
+        t_swing.append(swing)
+    t_swing.sort()
+    t_rate = 100.0 * t_hit / tm
+    tease_ok = t_stuck == 0 and t_rate > 99.0 and t_mouth < SLOT_W / 2.0
+    ok = ok and tease_ok
+    print("  %d 发: 诱饵触发 %.0f%%   落格==预定 %.1f%%   卡死 %d   下落游移中位 %.0f px"
+          % (tm, 100.0 * t_tease / tm, t_rate, t_stuck,
+             t_swing[len(t_swing) // 2] if t_swing else 0))
+    print("  到隔板顶时最大偏移 %.1f px (半槽宽 %.1f, 越过就真进邻槽了)  %s"
+          % (t_mouth, SLOT_W / 2.0,
+             "OK" if tease_ok else "诱饵越格/卡死! 调小 TEASE_FRAC 或提前 TEASE_END_Y"))
+
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
     print("== 蓄力观感区分度(竖直时序必须不变) ==")
@@ -2475,6 +2583,8 @@ class RootWidget(BoxLayout):
                 self._space_held = True
                 self.start_charge()
             return True
+        if key == 27:                     # Android 返回键 / ESC: 吞掉, 防止误触退出
+            return True
         return False
 
     def _on_key_up(self, win, key, *rest):
@@ -2600,17 +2710,21 @@ class RootWidget(BoxLayout):
             return
         if self.power < MISFIRE_POWER:
             # 哑火: 球照样弹出去, 只是升不过隔墙顶 -> 掉回柱塞。不扣弹珠、不计一局、不换盘面
+            frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
             self.ball = launch_misfire(self.power)
             self.state = "misfire"
             self.power = 0.0                  # 哑火后清除蓄力显示
             self._misfire_frames = 0
-            self.sfx.play("launch", 0.35 + 0.15 * (self.power / MISFIRE_POWER))
+            self.sfx.play("launch", SFX_MISFIRE_GAIN + (SFX_MISFIRE_GAIN_MAX -
+                          SFX_MISFIRE_GAIN) * clamp(frozen_power / MISFIRE_POWER, 0.0, 1.0))
+            _vibrate(8)
             self._set_controls_enabled(False)
             self.status_lbl.text = "力度不足,未扣弹珠"
             return
         self.balance -= self.bet
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
+        frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
         self.ball = launch_ball(self.power)
         self.state = "flying"
         self.power = 0.0                      # 发射后清除蓄力显示
@@ -2621,7 +2735,9 @@ class RootWidget(BoxLayout):
         self._topped = False
         self._last_motion = time.time()   # 卡死兜底的运动锚点(之后由帧内位移检测刷新)
         self._last_ball_xy = (self.ball["x"], self.ball["y"])
-        self.sfx.play("launch", 0.60 + 0.40 * power_u(self.power))
+        self.sfx.play("launch", SFX_LAUNCH_GAIN + (SFX_LAUNCH_GAIN_MAX -
+                      SFX_LAUNCH_GAIN) * power_u(frozen_power))
+        _vibrate(14)
         self._set_controls_enabled(False)
         self.status_lbl.text = "发射!"
 
@@ -2656,6 +2772,7 @@ class RootWidget(BoxLayout):
         self._anim_target_balance = float(self.balance)
         self._anim_start_time = time.time()
         self._coin_until = (time.time() + (1.2 if big else 0.5)) if payout > 0 else 0.0
+        self._save_config()
 
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
@@ -2729,8 +2846,21 @@ class RootWidget(BoxLayout):
                     self.rtp_target = float(cfg["rtp_target"])
                 if isinstance(cfg.get("bet"), int) and cfg["bet"] in PRESETS:
                     self.bet = cfg["bet"]
+                if isinstance(cfg.get("balance"), (int, float)) and cfg["balance"] >= 0:
+                    self.balance = int(cfg["balance"])
+                    self.display_balance = float(self.balance)
+                    self._anim_target_balance = float(self.balance)
+                    self._anim_start_balance = float(self.balance)
+                if isinstance(cfg.get("round_plays"), int) and 0 <= cfg["round_plays"] <= self.max_plays:
+                    self.round_plays = cfg["round_plays"]
+                if isinstance(cfg.get("plays"), int) and cfg["plays"] >= 0:
+                    self.plays = cfg["plays"]
+                if isinstance(cfg.get("hits"), int) and cfg["hits"] >= 0:
+                    self.hits = cfg["hits"]
         except Exception:
             pass
+        if self.sound_mode == "off":
+            self.sfx.set_enabled(False)
 
     def _save_config(self):
         try:
@@ -2739,6 +2869,10 @@ class RootWidget(BoxLayout):
                 "max_plays": self.max_plays,
                 "rtp_target": self.rtp_target,
                 "bet": self.bet,
+                "balance": self.balance,
+                "round_plays": self.round_plays,
+                "plays": self.plays,
+                "hits": self.hits,
             }
             with open(self._config_path(), "w") as f:
                 json.dump(cfg, f)
@@ -2750,7 +2884,8 @@ class RootWidget(BoxLayout):
         return self.sfx.voice_duration(name)
 
     def _play_voice_sequence(self, names, gap=0.005, on_done=None):
-        """依次播放语音片段列表。on_done 在整个序列播完后回调(用于解锁弹窗按钮等)。"""
+        """依次播放语音片段列表。on_done 在整个序列播完后回调(用于解锁弹窗按钮等)。
+        返回总时长(秒), 供调用方设定兜底定时器。"""
         delay = 0.0
         total = 0.0
         for name in names:
@@ -2760,14 +2895,15 @@ class RootWidget(BoxLayout):
             total = delay
         if on_done:
             Clock.schedule_once(lambda dt: on_done(), total)
+        return total
 
     def _play_round_end_voice(self, on_done=None):
-        """组装并播放轮次结束语音: 模板 + 当前弹珠数 + 后缀。"""
+        """组装并播放轮次结束语音: 模板 + 当前弹珠数 + 后缀。返回总时长(秒)。"""
         prefix_key = "voice_round_end_%d" % self.max_plays
         voices = [prefix_key]
         voices.extend(number_voice_names(self.balance))
         voices.append("voice_round_suffix")
-        self._play_voice_sequence(voices, on_done=on_done)
+        return self._play_voice_sequence(voices, on_done=on_done)
 
     def _show_round_end(self):
         """本轮游戏结束弹窗: 恭喜文案 + 统计 + 语音播报(播完自动重置并关闭)。"""
@@ -2805,9 +2941,9 @@ class RootWidget(BoxLayout):
             _done[0] = True
             self.reset_balance(notify=False)
             popup.dismiss()
-        self._play_round_end_voice(on_done=_auto_reset)
-        # 兜底定时器: 语音回调若因任何原因没触发, 8 秒后强制重置
-        Clock.schedule_once(lambda dt: _auto_reset(), 8.0)
+        voice_total = self._play_round_end_voice(on_done=_auto_reset)
+        # 兜底定时器: 语音回调若因任何原因没触发, 在总时长+3秒后强制重置
+        Clock.schedule_once(lambda dt: _auto_reset(), voice_total + 3.0)
 
     def _show_round_settings(self):
         """轮次设定弹窗: 选择 20/50/100 + 最近完成的轮次历史。"""
