@@ -313,6 +313,7 @@ lbl.bind(width=lambda w,*_: setattr(w,"text_size",(w.width,None)))
 | 首次构建 15-20 分钟以为卡死 | 正常, 在下 SDK/NDK; 后续缓存命中 ~3 分钟 |
 | selftest 偶发失败 | RTP 统计检验的 3σ 抖动, 重跑一次 |
 | 截图验证布局 | Kivy `Window.screenshot()` + 直接读 PNG 检查, 比肉眼开窗口快 |
+| PowerShell here-string `@'...'@` 在 bash 里会变成 `@` 字符 | 在 bash 环境直接用 `-m "message"` 或 `-m "$(cat <<'EOF' ... EOF)"`，别用 `@'` 语法。否则 GitHub 上只显示一个 `@` |
 
 ## 本项目构建记录
 
