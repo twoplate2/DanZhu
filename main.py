@@ -154,7 +154,7 @@ STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就�
                              # 落点在发射前就预定了(choose_target), 重掷只换轨迹 —— 不重复扣珠、
                              # 不重复计局、RTP 一点不动, 所以可以比 MAX_FALL_SEC 早得多地介入。
                              # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
-STALL_MAX_RETRY = 5          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
+STALL_MAX_RETRY = 10          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
 SLOT_BRAKE_VY = 0.65         # 槽区可见减速(竖直)
 SLOT_BRAKE_VX = 0.5          # 槽区可见减速(水平)
@@ -2942,16 +2942,6 @@ class RootWidget(BoxLayout):
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
         frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
-        # 发射前预判: 快速跑一遍轨迹, 卡死则重掷盘面(用户只看到一次正常飞行)
-        for _ in range(3):
-            test_ball = launch_ball(frozen_power)
-            test_ball["tease_dx"] = tease_dx(self.multipliers, self.target_slot)
-            if preflight_check(test_ball, self.geo, self.target_x):
-                break
-            self.multipliers = roll_multipliers(self.rtp_target)
-            self.target_slot = choose_target(self.multipliers, self.rtp_target)
-            self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
-            self.game_area._redraw()
         self.balance -= self.bet
         self.ball = launch_ball(self.power)
         self.state = "flying"
@@ -3145,6 +3135,7 @@ class RootWidget(BoxLayout):
         self._set_controls_enabled(False)
         self.round_history.append({
             "plays": self.round_plays,
+            "hits": self.hits,
             "balance": self.balance,
             "time": time.time(),
         })
@@ -3203,15 +3194,15 @@ class RootWidget(BoxLayout):
         _refresh_sel()
 
         # 历史记录(ScrollView 可滚动, 最多显示最近 100 条)
-        hist_lbl = Label(text="最近完成的轮次：", font_size="15sp", halign="left", valign="middle",
+        hist_lbl = Label(text="完成的轮次：", font_size="15sp", halign="left", valign="middle",
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
         hist_lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
         content.add_widget(hist_lbl)
         if self.round_history:
             lines = []
             for i, r in enumerate(reversed(self.round_history[-100:])):
-                lines.append("最近第%d轮  每轮%d次  剩 %d 个弹珠" %
-                            (i + 1, r["plays"], r["balance"]))
+                lines.append("第%d轮  %d投%d中  剩 %d 个弹珠" %
+                            (i + 1, r["plays"], r.get("hits", 0), r["balance"]))
             text = "\n".join(lines)
         else:
             text = "暂无完成的轮次记录"
