@@ -2413,19 +2413,34 @@ class GameArea(FloatLayout):
             if hp is not None and hp in self._peg_cols:
                 self._peg_flash[hp] = now
                 b.hit_peg = None
-        # 钉子高亮动画: 90ms 电光金→COL_PEG
+        # 钉子高亮动画: 30ms保持电光金 + 120ms渐回COL_PEG
         for (px, py), t0 in list(self._peg_flash.items()):
-            f = clamp((now - t0) / 0.09, 0.0, 1.0)
-            if f >= 1.0:
+            e = self._peg_ellipses.get((px, py))
+            elapsed = now - t0
+            if elapsed > 0.15:
                 self._peg_cols[(px, py)].rgb = hex_rgb(COL_PEG)
+                if e is not None:
+                    r = PEG_R * self._s
+                    e.size = (2 * r, 2 * r)
                 del self._peg_flash[(px, py)]
             else:
-                base = hex_rgb(COL_PEG)
                 flash = (1.0, 0.898, 0.0)  # 电光金 #ffe500
-                self._peg_cols[(px, py)].rgb = (
-                    flash[0] + (base[0] - flash[0]) * f,
-                    flash[1] + (base[1] - flash[1]) * f,
-                    flash[2] + (base[2] - flash[2]) * f)
+                base = hex_rgb(COL_PEG)
+                if elapsed < 0.03:
+                    # 保持峰值
+                    self._peg_cols[(px, py)].rgb = flash
+                else:
+                    # 缓出衰减
+                    f = (elapsed - 0.03) / 0.12
+                    self._peg_cols[(px, py)].rgb = (
+                        flash[0] + (base[0] - flash[0]) * f,
+                        flash[1] + (base[1] - flash[1]) * f,
+                        flash[2] + (base[2] - flash[2]) * f)
+                # 半径微扩 1.2x
+                if e is not None:
+                    scale = 1.0 if elapsed < 0.03 else (1.2 - 0.2 * (elapsed - 0.03) / 0.12)
+                    r = PEG_R * self._s * scale
+                    e.size = (2 * r, 2 * r)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
