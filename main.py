@@ -176,7 +176,7 @@ COL_PANEL = "#15223c"
 COL_CANVAS = "#0b1220"
 COL_WALL = "#2b436e"
 COL_LANE = "#0e1830"
-COL_PEG = "#c9d6f5"
+COL_PEG = "#7b8fad"            # 调暗留出受击高亮空间(原#c9d6f5过亮)
 COL_BALL = "#ffd451"
 COL_TEXT = "#e8eefc"
 COL_SUB = "#8fa0c4"
@@ -302,6 +302,7 @@ def _collide_pegs(b, pegs):
                 njx /= nrm; njy /= nrm
                 hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
                 _mark(b, EV_PEG, hit)
+                b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
 
 
 
@@ -395,7 +396,8 @@ class Ball:
     保留 __getitem__/__setitem__/get 兼容旧 b.x 语法, 同时支持 b.x 直接访问。"""
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
                  'cross_vx', 'climb', 'misfire', 'tease_dx',
-                 'launch_power', '_stall_retry', '_land_primed')
+                 'launch_power', '_stall_retry', '_land_primed',
+                 'last_nx', 'last_ny')
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -423,7 +425,8 @@ def launch_ball(power):
                 item=None, born=time.time(), events=0, amp={},
                 cross_vx=CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
                 climb=True, misfire=False, tease_dx=0.0,
-                launch_power=power, _stall_retry=0)
+                launch_power=power, _stall_retry=0,
+                last_nx=0.0, last_ny=-1.0)
 
 
 def misfire_speed(power):
@@ -3387,9 +3390,12 @@ class RootWidget(BoxLayout):
                     self._stall_frames += 1
                 nudge = getattr(b, "_stall_retry", 0)
                 if self._stall_frames > 72 and nudge < STALL_MAX_RETRY:
-                    # 局部震荡: 给向下的速度踢, 打破死循环让他掉下去
-                    b.vy = max(abs(b.vy) + 80.0, 400.0)
-                    b.vx += random.uniform(-150.0, 150.0)
+                    # 沿接触切向滚落, 替代凭空速度注入
+                    nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
+                    tx_, ty_ = -ny, nx           # 切向
+                    if ty_ > 0: tx_, ty_ = -tx_, -ty_  # 取朝下方向
+                    b.vx += tx_ * 120.0
+                    b.vy += ty_ * 120.0
                     b._stall_retry = nudge + 1
                     self._stall_frames = 0
                 elif self._stall_frames > 240:
