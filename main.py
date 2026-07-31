@@ -2413,7 +2413,7 @@ class GameArea(FloatLayout):
             if hp is not None and hp in self._peg_cols:
                 self._peg_flash[hp] = now
                 b.hit_peg = None
-        # 钉子高亮动画: 90ms 纯白→COL_PEG
+        # 钉子高亮动画: 90ms 电光金→COL_PEG
         for (px, py), t0 in list(self._peg_flash.items()):
             f = clamp((now - t0) / 0.09, 0.0, 1.0)
             if f >= 1.0:
@@ -2421,10 +2421,11 @@ class GameArea(FloatLayout):
                 del self._peg_flash[(px, py)]
             else:
                 base = hex_rgb(COL_PEG)
+                flash = (1.0, 0.898, 0.0)  # 电光金 #ffe500
                 self._peg_cols[(px, py)].rgb = (
-                    1.0 + (base[0] - 1.0) * f,
-                    1.0 + (base[1] - 1.0) * f,
-                    1.0 + (base[2] - 1.0) * f)
+                    flash[0] + (base[0] - flash[0]) * f,
+                    flash[1] + (base[1] - flash[1]) * f,
+                    flash[2] + (base[2] - flash[2]) * f)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
