@@ -2852,8 +2852,9 @@ class RootWidget(BoxLayout):
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
     def _bench_done(self, n):
+        AVG_FRAMES = 228  # 73326次实测均值
         rate = n / 10.0
-        total_frames = n * 205
+        total_frames = n * AVG_FRAMES
         dev = self._device_info()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
@@ -2868,8 +2869,8 @@ class RootWidget(BoxLayout):
                 '时长       10 秒\n'
                 '总帧数     %d 帧    (%d 帧/秒)\n'
                 '估计可飞行 %d 次    (%.1f 次/秒)\n'
-                '注: 小球每次飞行平均需 205 帧') % (
-                    dev, total_frames, total_frames // 10, n, rate)
+                '注: 小球每次飞行平均需 %d 帧') % (
+                    dev, total_frames, total_frames // 10, n, rate, AVG_FRAMES)
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
