@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """无预判基准测试: 去掉 preflight_check, 只靠速度踢, 测真实飞行帧数分布。
+当前基线: 73326次实测, 平均228帧(3.80s), P50=231, P99=289, 踢球率0.02%
 
 物理层精确复制自 main.py。GUI(tkinter): 开始/停止 + 时长 + 线程数 + 实时进度。
 输出: output/bench_no_preflight_*.md
