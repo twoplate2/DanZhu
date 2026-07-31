@@ -304,7 +304,7 @@ def _collide_pegs(b, pegs):
                 _mark(b, EV_PEG, hit)
                 b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
                 b.hit_peg = (px, py)                   # 被撞钉子坐标(高亮用)
-                b.squash = 0.85                        # 压扁(沿法线)
+                b.squash = 1.0 - 0.05 * clamp(vn / E_VREF, 0.0, 1.0)  # 压扁(高速5%,掠射≈0%)
                 b.squash_nx = njx; b.squash_ny = njy
                 b.spin += (b.vx * njy - b.vy * njx) * 0.02  # 自转积分
 
@@ -2403,7 +2403,7 @@ class GameArea(FloatLayout):
             # 受击压扁: 沿法线缩、切向胀, 渐回正圆
             sq = getattr(b, "squash", 1.0)
             if sq < 0.99:
-                b.squash += (1.0 - sq) * 0.12    # 渐回
+                b.squash += (1.0 - sq) * 0.5     # 快回弹(2~3帧≈50ms, 硬钢感)
                 if b.squash > 0.99: b.squash = 1.0
                 sq = b.squash
             self._ball_e.pos = (bx + bs * (1 - sq) * 0.5, by + bs * (1 - sq) * 0.5)
