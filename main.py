@@ -84,6 +84,9 @@ RISER_Y = PEG_TOP + (PEG_ROWS - 1) * PEG_SY + BALL_R + PEG_R   # 495: 无钉区�
 # ----------------------------- 物理常量 -----------------------------------
 G = 1200.0                   # 重力 px/s^2(大幅提高: 加速下落, 缩短飞行时间)
 E = 0.20                     # 钉子恢复系数(再降: 接近自由落体穿过钉阵)
+E_FAST = 0.18                # 高速撞击恢复系数(e(v)低速高弹/高速粘)
+E_SLOW = 0.55                # 低速接触恢复系数
+E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
 VMAX = 2400.0                # 限速(需 >= 最大发射速度, 防穿透)
 FIXED_DT = 1.0 / 60.0
@@ -125,6 +128,7 @@ TEASE_FRAC = 0.80            # 诱饵横向偏移占槽宽比例(0.80 x 49.7 ≈
 TEASE_END_Y = PEG_TOP + 4 * PEG_SY     # 370: 倒数第三排; 之后交还真目标, 留 246px 回归。
 TEASE_MIN_VY = 150.0         # 球竖直速度低于此值就撤销诱饵。卡死 = 球被横向力压在钉子侧面
                              # 楔住, 而楔住时 vy 必然掉到近 0 —— 所以"慢了就撤诱饵"直接掐掉
+STEER_MIN_VY = 280.0         # 球竖直速度低于此值, 全场引导按比例淡出(与 TEASE_MIN_VY 同构)
                              # 了这条新增的失效路径, 球立刻回到原本零卡死的引导上。
                              # 没有这一条时实测 1/800~1/3000 会卡死(真机上表现为球定住 4s
                              # 等位移兜底才结算), 而卡死=0 是硬门禁。
@@ -190,17 +194,16 @@ HILITE = "#ffffff"
 FONT = "Segoe UI"
 
 def build_pegs():
-    """相对均匀的交错网格: 偶数行钉在槽中心, 奇数行钉在槽边界。"""
-    pegs = []
+    """相对均匀的交错网格: 偶数行钉在槽中心, 奇数行钉在槽边界。返回按行分组的列表。"""
+    rows = []
     for r in range(PEG_ROWS):
         y = PEG_TOP + r * PEG_SY
         if r % 2 == 0:
             xs = [FIELD_L + (i + 0.5) * PEG_SX for i in range(NUM_SLOTS)]
         else:
             xs = [FIELD_L + i * PEG_SX for i in range(1, NUM_SLOTS)]
-        for x in xs:
-            pegs.append((x, y))
-    return pegs
+        rows.append([(x, y) for x in xs])
+    return rows
 
 
 def build_dividers():
@@ -224,21 +227,18 @@ def build_walls():
 
 
 def build_deflectors():
-    """顶部天花板: 4段微弧细分, 右端稍延伸盖住墙壁接头。"""
+    """顶部天花板: 4段微弧。"""
     cpts = [(510, 108), (492, 101), (480, 94), (466, 90), (450, 88)]
     segs = []
     for i in range(len(cpts) - 1):
-        x1, y1 = cpts[i]; x2, y2 = cpts[i + 1]
-        sub = 5
-        for j in range(sub):
-            t0, t1 = j / sub, (j + 1) / sub
-            segs.append((x1 + (x2 - x1) * t0, y1 + (y2 - y1) * t0,
-                         x1 + (x2 - x1) * t1, y1 + (y2 - y1) * t1))
+        segs.append((cpts[i][0], cpts[i][1], cpts[i+1][0], cpts[i+1][1]))
     return segs
 
 def build_geo():
+    peg_rows = build_pegs()
     return {
-        "pegs": build_pegs(),
+        "pegs": [p for row in peg_rows for p in row],  # 渲染用(平铺)
+        "peg_rows": peg_rows,                            # 物理用(按行)
         "dividers": build_dividers(),
         "walls": build_walls(),
         "deflectors": build_deflectors(),
@@ -280,7 +280,6 @@ def _collide_pegs(b, pegs):
         dy = b.y - py
         d2 = dx * dx + dy * dy
         if d2 < rr * rr:
-            sp0 = math.hypot(b.vx, b.vy)   # 撞前速率
             d = math.sqrt(d2)
             if d > 1e-9:
                 nx, ny = dx / d, dy / d
@@ -289,17 +288,20 @@ def _collide_pegs(b, pegs):
                 nx, ny = math.cos(a), math.sin(a)
             b.x = px + nx * rr
             b.y = py + ny * rr
-            hit = _reflect(b, nx, ny, E)
-            if hit > 0.0:
+            vn = -(b.vx * nx + b.vy * ny)           # 法向接近速率
+            if vn > 0:                               # 真反弹才处理
+                # e(v): 低速弹得高(逃逸卡死), 高速粘(保持节奏)
+                E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
+                # 法线扰动(模拟表面粗糙度): 先扰动法线, 再反射一次
+                g = random.gauss(0, 0.04)
+                g = clamp(g, -0.15, 0.15)
+                tx_, ty_ = -ny, nx                   # 切向
+                njx = nx + tx_ * g
+                njy = ny + ty_ * g
+                nrm = math.hypot(njx, njy)
+                njx /= nrm; njy /= nrm
+                hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
                 _mark(b, EV_PEG, hit)
-            # 角度微扰(模拟表面粗糙度): 只旋转方向, 不注入能量(修"弹跳越弹越高")
-            angle = math.atan2(b.vy, b.vx)
-            angle += random.uniform(-0.06, 0.06)  # ±3.4°
-            sp = math.hypot(b.vx, b.vy)
-            if sp > sp0 and sp > 1e-9:             # 安全兜底: 绝不快于撞前
-                sp = sp0
-            b.vx = sp * math.cos(angle)
-            b.vy = sp * math.sin(angle)
 
 
 
@@ -501,6 +503,10 @@ def steer_ball(b, target_x):
             and b.vy > TEASE_MIN_VY):
         tx += b.tease_dx   # near-miss: 钉阵中段先朝高倍邻槽走
     dvx = clamp((tx - b.x) * pull * FIXED_DT, -STEER_DVX_MAX, STEER_DVX_MAX)
+    # 慢速撤引导: vy→0 时缩 dvx(含诱饵), 交给重力把球从钉肩上滚下来
+    if not climbing:
+        f = clamp(b.vy / STEER_MIN_VY, 0.0, 1.0) if b.vy > 0 else 0.0
+        dvx *= f
     b.vx += dvx
     if (not climbing) and ((b.vx > 0.0) != (tx - b.x > 0.0)):
         b.vx *= 0.7            # 背离阻尼同样只在下落段生效
