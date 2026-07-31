@@ -67,3 +67,17 @@ RTP≈档位±0.05、卡死=0、撞钉音>90%、天花板<10%、哑火零泄漏�
 - **哑火分支的累加器必须与飞行分支同构**：`_misfire_frames` 递增和 `advance_misfire()` 都必须在 `while self._accumulator >= FIXED_DT` 循环**内部**，每物理步+1 而非每渲染帧+1。否则 120Hz 上超时误杀、30Hz 上动画变慢。
 - **stall 位移检测必须在累加器循环内每步做**：循环外看净位移会漏检（多步子步位移矢量抵消）。帧计数不用墙钟，与 selftest 一致。
 - **plinko.py 与 main.py 架构不同**：plinko.py 用 `tkinter.after(FIXED_DT)` 定时间隔（无累加器），改物理/引导逻辑时两边要分别评估是否受影响。
+
+## git commit 注意
+
+本仓库的 shell 环境是 bash。**不要用 PowerShell 的 here-string 语法 `@'...'@`** 来写多行 commit message——bash 会把 `@` 当作文本内容，导致 GitHub 提交记录只显示一个 `@`。正确做法：
+
+```
+git commit -m "第一行标题" -m "第二行正文"   # 多行最简单
+# 或
+git commit -m "$(cat <<'EOF'
+标题行
+正文行
+EOF
+)"
+```
