@@ -2180,6 +2180,9 @@ class GameArea(FloatLayout):
         self._lamp_cols = []
         self._ball_e = None
         self._meter_fill = None
+        self._peg_cols = {}             # (px,py)→Color 受击高亮用
+        self._peg_ellipses = {}         # (px,py)→Ellipse 半径动画用
+        self._peg_flash = {}            # (px,py)→born_time 动画计时
         self._meter_col = None
         self._spring_bars = []
         self._spring_power = 0.0           # 弹簧显示用力度(平滑衰减)
@@ -2242,10 +2245,14 @@ class GameArea(FloatLayout):
             x1, y1, x2, y2 = g.geo["deflectors"][-1]
             pts.extend([self._px(x2), self._py(y2)])
             Line(points=pts, width=max(1.0, 7 * s), cap="round", joint="round")
-            # 钉阵
-            Color(*hex_rgb(COL_PEG))
+            # 钉阵(每颗独立Color+Ellipse, 支持单颗高亮)
+            self._peg_cols.clear()
+            self._peg_ellipses.clear()
             for px, py in g.geo["pegs"]:
-                Ellipse(**self._circle(px, py, PEG_R))
+                col = Color(*hex_rgb(COL_PEG))
+                e = Ellipse(**self._circle(px, py, PEG_R))
+                self._peg_cols[(px, py)] = col
+                self._peg_ellipses[(px, py)] = e
             # 槽隔板
             Color(*hex_rgb(COL_BUMPER))
             for d in g.geo["dividers"]:
@@ -2401,6 +2408,23 @@ class GameArea(FloatLayout):
                 sq = b.squash
             self._ball_e.pos = (bx + bs * (1 - sq) * 0.5, by + bs * (1 - sq) * 0.5)
             self._ball_e.size = (bs * (2 - sq), bs * sq)
+            # 钉子受击高亮: 触发新闪光
+            hp = getattr(b, "hit_peg", None)
+            if hp is not None and hp in self._peg_cols:
+                self._peg_flash[hp] = now
+                b.hit_peg = None
+        # 钉子高亮动画: 90ms 纯白→COL_PEG
+        for (px, py), t0 in list(self._peg_flash.items()):
+            f = clamp((now - t0) / 0.09, 0.0, 1.0)
+            if f >= 1.0:
+                self._peg_cols[(px, py)].rgb = hex_rgb(COL_PEG)
+                del self._peg_flash[(px, py)]
+            else:
+                base = hex_rgb(COL_PEG)
+                self._peg_cols[(px, py)].rgb = (
+                    1.0 + (base[0] - 1.0) * f,
+                    1.0 + (base[1] - 1.0) * f,
+                    1.0 + (base[2] - 1.0) * f)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
