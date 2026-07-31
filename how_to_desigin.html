@@ -211,7 +211,7 @@
 <section class="section sect-build" id="sec-perf">
   <div class="section-header"><h2>性能看得见</h2><p class="desc">不是嘴上说"很快"，是用真实物理代码跑出来的数据</p></div>
   <div class="grid-2">
-    <div class="card reveal reveal-d1"><h3>28584 次飞行实测</h3><p>用游戏里真实使用的 advance_flight 物理循环，完整跑了两万八千次发射→落袋。结果：<span class="tag tag-blue">平均 205 帧/次</span>，P50=203，P95=240，P99=303。97% 的飞行在 250 帧内落地——这就是预判阈值 1000 帧的数据基础（P99.95 约 600 帧，留足余量到 1000）。</p></div>
+    <div class="card reveal reveal-d1"><h3>15640 次飞行实测</h3><p>用游戏里真实使用的 advance_flight 物理循环（e(v)+法线扰动+慢速撤引导），完整跑了一万五千次发射→落袋。结果：<span class="tag tag-blue">平均 230 帧/次</span>，P50=231，P90=257，P99=289。99.98% 的飞行无需速度踢——这就是去掉 preflight_check 的数据基础。</p></div>
     <div class="card reveal reveal-d1"><h3>隐藏性能测试</h3><p>长按标题"跳跳的弹珠机"3 秒 → 所有按钮灰化 → 后台跑 <span class="tag tag-blue">10 秒真实物理模拟</span> → 弹窗显示结果：累计模拟帧数、每秒小球飞行次数、设备型号。PC 和手机都支持，是骡子是马拉出来遛遛。</p></div>
   </div>
   <div class="insight reveal reveal-d2"><h3>跑分工具</h3><p>PC 版附带 <span class="tag tag-blue">bench_gui.py</span>：独立 tkinter GUI，可调并发数（1~N 线程/进程）、测试时长，输出高可读报告 + JSON 原始数据。Android 版内置隐藏跑分：<span class="tag tag-blue">长按标题3秒</span> → 10 秒真实物理模拟 → 弹窗显示设备型号、累计帧数和每秒飞行次数。</p></div>
@@ -309,7 +309,7 @@
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">数学不坑人</div><div class="p-desc">120%返奖·发射前预判</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎢</span><div class="p-title">差一点就中了</div><div class="p-desc">near-miss·情绪钩子</div></div>
     <div class="pillar reveal reveal-d3"><span class="p-icon">💜</span><div class="p-title">细节有温度</div><div class="p-desc">震动·回弹·灰化·互斥</div></div>
-    <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能看得见</div><div class="p-desc">28584次实测·205帧均值</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能看得见</div><div class="p-desc">15640次实测·230帧均值</div></div>
   </div>
 </section>
 
