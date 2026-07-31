@@ -2473,20 +2473,20 @@ class GameArea(FloatLayout):
         bars[0].points = [lx, y0, rx, y0]
         bars[1].points = [rx, y0, lx, y1]
         bars[2].points = [lx, y1, rx, y1]
-        # 弹簧颜色: 哑火→红, 正常蓄力→灰蓝渐变至金黄(10档颗粒度)
-        weak = sp < MISFIRE_POWER
-        if sp < 0.01:
-            self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
-        elif weak:
-            self._spring_bar_col.rgb = hex_rgb("#c45a4a")
+        # 弹簧颜色: 充电时灰蓝渐变至金黄(反馈力度), 回弹时维持静止色不变
+        if g.state == "charging":
+            if sp < MISFIRE_POWER:
+                self._spring_bar_col.rgb = hex_rgb("#c45a4a")
+            else:
+                u = power_u(sp)
+                r0, g0, b0 = 0x8f, 0xa0, 0xc4
+                r1, g1, b1 = 0xff, 0xd7, 0x00
+                r = int(r0 + (r1 - r0) * u)
+                g = int(g0 + (g1 - g0) * u)
+                b = int(b0 + (b1 - b0) * u)
+                self._spring_bar_col.rgb = (r / 255.0, g / 255.0, b / 255.0)
         else:
-            u = power_u(sp)
-            r0, g0, b0 = 0x8f, 0xa0, 0xc4
-            r1, g1, b1 = 0xff, 0xd7, 0x00
-            r = int(r0 + (r1 - r0) * u)
-            g = int(g0 + (g1 - g0) * u)
-            b = int(b0 + (b1 - b0) * u)
-            self._spring_bar_col.rgb = (r / 255.0, g / 255.0, b / 255.0)
+            self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
         # 槽位白闪
         if self._pulse is not None:
             i, end = self._pulse
@@ -3202,7 +3202,7 @@ class RootWidget(BoxLayout):
         return self._play_voice_sequence(voices, on_done=on_done)
 
     def _show_round_end(self):
-        """本轮游戏结束弹窗: 恭喜文案 + 统计 + 语音播报(播完自动重置并关闭)。"""
+        """本轮游戏结束弹窗: 恭喜文案 + 统计 + 确定按钮(快速开始下一局) + 语音播报。"""
         if self._round_end_shown:
             return
         self._round_end_shown = True
@@ -3223,24 +3223,29 @@ class RootWidget(BoxLayout):
                     color=hex_rgb(COL_TEXT) + (1,))
         lbl.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
         content.add_widget(lbl)
-        popup = Popup(title="本轮游戏结束", content=content,
-                      size_hint=(0.82, None), height=dp(260),
-                      auto_dismiss=False,
-                      title_color=hex_rgb(COL_TEXT) + (1,),
-                      title_size="19sp",
-                      separator_color=hex_rgb(COL_DIV) + (1,))
-        popup.open()
-        # 语音播完后自动重置并关闭弹窗
-        _done = [False]                            # 防重复调用
-        def _auto_reset():
+        # 确定按钮: 点击后立即关闭语音和弹窗, 快速开始下一局
+        _done = [False]
+        def _do_reset():
             if _done[0]:
                 return
             _done[0] = True
             self.reset_balance(notify=False)
             popup.dismiss()
-        voice_total = self._play_round_end_voice(on_done=_auto_reset)
-        # 兜底定时器: 语音回调若因任何原因没触发, 在总时长+3秒后强制重置
-        Clock.schedule_once(lambda dt: _auto_reset(), voice_total + 3.0)
+        btn = Button(text="确定", font_size="18sp", size_hint=(1, None), height=dp(48),
+                     background_normal="", background_color=hex_rgb(COL_FIRE) + (1,),
+                     color=(1, 1, 1, 1))
+        btn.bind(on_release=lambda *_: _do_reset())
+        content.add_widget(btn)
+        popup = Popup(title="本轮游戏结束", content=content,
+                      size_hint=(0.82, None), height=dp(400),
+                      auto_dismiss=False,
+                      title_color=hex_rgb(COL_TEXT) + (1,),
+                      title_size="19sp",
+                      separator_color=hex_rgb(COL_DIV) + (1,))
+        popup.open()
+        # 语音播完后自动重置(兜底: 用户不点确定按钮时也能继续)
+        voice_total = self._play_round_end_voice(on_done=_do_reset)
+        Clock.schedule_once(lambda dt: _do_reset(), voice_total + 3.0)
 
     def _show_round_settings(self):
         """轮次设定弹窗: 选择 20/50/100 + 最近完成的轮次历史。"""
