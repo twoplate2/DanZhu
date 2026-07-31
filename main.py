@@ -128,7 +128,7 @@ TEASE_FRAC = 0.80            # 诱饵横向偏移占槽宽比例(0.80 x 49.7 ≈
 TEASE_END_Y = PEG_TOP + 4 * PEG_SY     # 370: 倒数第三排; 之后交还真目标, 留 246px 回归。
 TEASE_MIN_VY = 150.0         # 球竖直速度低于此值就撤销诱饵。卡死 = 球被横向力压在钉子侧面
                              # 楔住, 而楔住时 vy 必然掉到近 0 —— 所以"慢了就撤诱饵"直接掐掉
-STEER_MIN_VY = 280.0         # 球竖直速度低于此值, 全场引导按比例淡出(与 TEASE_MIN_VY 同构)
+STEER_MIN_VY = 320.0         # 球竖直速度低于此值, 全场引导按比例淡出(与 TEASE_MIN_VY 同构)
                              # 了这条新增的失效路径, 球立刻回到原本零卡死的引导上。
                              # 没有这一条时实测 1/800~1/3000 会卡死(真机上表现为球定住 4s
                              # 等位移兜底才结算), 而卡死=0 是硬门禁。
@@ -303,6 +303,10 @@ def _collide_pegs(b, pegs):
                 hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
                 _mark(b, EV_PEG, hit)
                 b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
+                b.hit_peg = (px, py)                   # 被撞钉子坐标(高亮用)
+                b.squash = 0.85                        # 压扁(沿法线)
+                b.squash_nx = njx; b.squash_ny = njy
+                b.spin += (b.vx * njy - b.vy * njx) * 0.02  # 自转积分
 
 
 
@@ -397,7 +401,8 @@ class Ball:
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
                  'cross_vx', 'climb', 'misfire', 'tease_dx',
                  'launch_power', '_stall_retry', '_land_primed',
-                 'last_nx', 'last_ny')
+                 'last_nx', 'last_ny',
+                 'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin')
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -426,7 +431,8 @@ def launch_ball(power):
                 cross_vx=CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
                 climb=True, misfire=False, tease_dx=0.0,
                 launch_power=power, _stall_retry=0,
-                last_nx=0.0, last_ny=-1.0)
+                last_nx=0.0, last_ny=-1.0,
+                hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0)
 
 
 def misfire_speed(power):
@@ -1616,7 +1622,7 @@ class Sfx:
         t = clamp(sp / SFX_REF_SP.get(bit, 900.0), 0.0, 1.0)
         if bit == EV_PEG:
             idx = int(clamp(int(t * 5.99) + _ARNG.randint(-1, 1), 0, 5))
-            return self.play("peg%d" % idx, 0.30 + 0.70 * t, 0.038)
+            return self.play("peg%d" % idx, 0.30 + 0.70 * t, 0.022)
         if bit == EV_CEIL:
             return self.play("rail", 0.45 + 0.55 * t, 0.22)
         if bit == EV_WALL:
@@ -2025,7 +2031,7 @@ _BALL_TEX = None
 
 
 def ball_texture():
-    """程序化径向渐变小球贴图(对应 tkinter 版 PIL 渐变, 纯 Python 生成, 零依赖)。"""
+    """程序化径向渐变小球贴图, 含偏心高光(自转可见)。"""
     global _BALL_TEX
     if _BALL_TEX is not None:
         return _BALL_TEX
@@ -2054,8 +2060,16 @@ def ball_texture():
                     gg = int(c0[1] + (c1[1] - c0[1]) * f)
                     bb = int(c0[2] + (c1[2] - c0[2]) * f)
                     break
+            # 偏心高光: 中心偏右上3px, 局部提亮(自转可见)
+            hx, hy = dx - 3, dy + 2
+            hd = math.hypot(hx, hy) / 5.0
+            if hd < 1.0:
+                boost = (1.0 - hd) * 0.35
+                rr = min(255, int(rr + boost * 255))
+                gg = min(255, int(gg + boost * 255))
+                bb = min(255, int(bb + boost * 255))
             alpha = 255
-            if dist > 0.97:                      # 边缘抗锯齿
+            if dist > 0.97:
                 alpha = int(255 * (1.0 - dist) / 0.03)
             i = (y * d + x) * 4
             buf[i] = rr
@@ -2376,8 +2390,17 @@ class GameArea(FloatLayout):
         b = g.ball
         if b is not None:
             br = BALL_R * BALL_VIEW
-            self._ball_e.pos = (self._ox + (b.x - br) * self._s,
-                                self._oyt - (b.y + br) * self._s)
+            bx = self._ox + (b.x - br) * self._s
+            by = self._oyt - (b.y + br) * self._s
+            bs = 2 * br * self._s
+            # 受击压扁: 沿法线缩、切向胀, 渐回正圆
+            sq = getattr(b, "squash", 1.0)
+            if sq < 0.99:
+                b.squash += (1.0 - sq) * 0.12    # 渐回
+                if b.squash > 0.99: b.squash = 1.0
+                sq = b.squash
+            self._ball_e.pos = (bx + bs * (1 - sq) * 0.5, by + bs * (1 - sq) * 0.5)
+            self._ball_e.size = (bs * (2 - sq), bs * sq)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
@@ -2491,6 +2514,7 @@ class RootWidget(BoxLayout):
         self._risen = False
         self._topped = False          # 本次飞行是否已播顶部碰撞音
         self._misfire_frames = 0
+        self._last_peg_vibrate = 0.0   # 硬碰撞震动冷却(≥120ms)
         self._accumulator = 0.0       # 固定步长累加器(适配任意刷新率)
         self._space_held = False
         self._release_power = None
@@ -3271,11 +3295,21 @@ class RootWidget(BoxLayout):
         if not ev:
             return
         amp = b.amp or {}
+        peg_count = 0  # 本帧撞钉声计数(最多2声)
         for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
             if ev & bit:
                 if bit == EV_WALL and b.y < SFX_TOP_Y:
-                    continue          # 顶墙撞击与 apex 转向同帧发生, 交给 top 音, 不再叠闷咚
+                    continue
+                if bit == EV_PEG and peg_count < 2:
+                    peg_count += 1
                 self.sfx.impact(bit, amp.get(bit, 0.0))
+        # 硬碰撞震动: 法向速率>600px/s, ≥120ms冷却, 8ms脉冲
+        pegs_sp = amp.get(EV_PEG, 0)
+        if pegs_sp > 600:
+            now = time.time()
+            if now - self._last_peg_vibrate >= 0.12:
+                _vibrate(8)
+                self._last_peg_vibrate = now
         b.events = 0
         amp.clear()
 
