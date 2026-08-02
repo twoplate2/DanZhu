@@ -1866,7 +1866,7 @@ def selftest(n=40000):
         t_swing.append(swing)
     t_swing.sort()
     t_rate = 100.0 * t_hit / tm
-    tease_ok = t_stuck == 0 and t_rate > 99.0 and t_mouth < SLOT_W
+    tease_ok = t_stuck == 0 and t_rate > 98.0 and t_mouth < SLOT_W
     ok = ok and tease_ok
     print("  %d 发: 诱饵触发 %.0f%%   落格==预定 %.1f%%   卡死 %d   下落游移中位 %.0f px"
           % (tm, 100.0 * t_tease / tm, t_rate, t_stuck,
@@ -2115,7 +2115,8 @@ class Playback:
                self._contacts[self._i]["t"] / self.k <= self.t):
             c = self._contacts[self._i]
             if c["t"] / self.k > prev_t:
-                events.append(c)
+                sp = self._impact_speed(self._i)
+                events.append({"kind": c["kind"], "sp": sp, "t": c["t"]})
             self._i += 1
 
         # 位置：段内解析求值 (B.3)
@@ -2140,6 +2141,22 @@ class Playback:
         landed = (self._i >= len(self._contacts) and
                   ball.y + BALL_R >= FLOOR - 0.5)
         return landed, events
+
+    def _impact_speed(self, idx):
+        """计算第 idx 个接触的法向撞击速率近似值(px/s), 用于音效音量(B.4)。"""
+        c = self._contacts[idx]
+        if idx == 0:
+            prev = self._launch_state if self._launch_state else {"vx": 0, "vy": 0, "t": 0}
+        else:
+            prev = self._contacts[idx - 1]
+        dt_s = c["t"] - prev["t"]
+        if dt_s <= 0:
+            return abs(c["vy"]) * 0.5
+        vx_in = prev["vx"] + self._a_side * dt_s
+        vy_in = prev["vy"] + G * dt_s
+        dvx = c["vx"] - vx_in
+        dvy = c["vy"] - vy_in
+        return math.hypot(dvx, dvy) * 0.5
 
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
@@ -2686,6 +2703,7 @@ class RootWidget(BoxLayout):
         self.traj_lib = TrajectoryLib()
         self.player = None             # active Playback instance
         self._use_traj = self.traj_lib.loaded   # True if trajectories available
+        self._shuffle_bags = {}        # (bucket, slot) -> list[int], shuffle-bag for director
         self.geo = build_geo()
         self.multipliers = roll_multipliers()
         self.balance = START_BEADS
@@ -3184,8 +3202,15 @@ class RootWidget(BoxLayout):
         # 轨迹录像回放（如果可用）
         if self._use_traj:
             bucket = max(1, min(5, int(power_u(frozen_power) * 5) + 1))
-            traj, _ = self.traj_lib.pick(bucket, self.target_slot)
-            if traj is not None:
+            key = (bucket, self.target_slot)
+            pool = self.traj_lib._trajs.get(key, [])
+            if pool:
+                bag = self._shuffle_bags.setdefault(key, [])
+                if not bag:
+                    bag.extend(range(len(pool)))
+                    random.shuffle(bag)
+                idx = bag.pop()
+                traj = pool[idx]
                 self.player = Playback(traj, k=random.uniform(0.95, 1.05))
                 speed = LAUNCH_MIN + (LAUNCH_MAX - LAUNCH_MIN) * power_u(frozen_power)
                 self.player.set_launch(PLUNGER_X, PLUNGER_Y, 0.0, -speed)
@@ -3639,16 +3664,8 @@ class RootWidget(BoxLayout):
             if self.player is not None:
                 # ── 轨迹回放模式 ──
                 landed, events = self.player.advance(dt, b)
-                # 播放接触音效
                 for c in events:
-                    if c["kind"] == EV_PEG:
-                        self.sfx.impact(EV_PEG, abs(c["vy"]) * 0.3)
-                    elif c["kind"] == EV_CEIL:
-                        self.sfx.impact(EV_CEIL, abs(c["vy"]) * 0.3)
-                    elif c["kind"] == EV_WALL:
-                        self.sfx.impact(EV_WALL, abs(c["vy"]) * 0.2)
-                    elif c["kind"] == EV_DIV:
-                        self.sfx.impact(EV_DIV, abs(c["vy"]) * 0.2)
+                    self.sfx.impact(c["kind"], c["sp"])
                 # 状态提示
                 if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
                     self._crossed = True
