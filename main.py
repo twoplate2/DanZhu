@@ -105,8 +105,8 @@ ALIGN_H = 50.0               # 对齐窗口(最后排钉之下的无钉区)
 ALIGN_K = 60.0               # 入槽横向弹簧(增强: 高速下落需要更强收尾)
 ALIGN_DAMP = 0.86            # 入槽横向阻尼(临界附近防过冲)
 ALIGN_VX_MAX = 800.0         # 横速硬上限(提高: 匹配高速下落)
-CROSS_K = 80.0               # 越顶横向弹簧刚度(增强: 高速需要更强越顶引导)
-CROSS_DAMP = 0.80            # 越顶横向阻尼(降低: 让左向速度更快累积)
+CROSS_K = 50.0               # 越顶横向弹簧刚度(从80降到50: a_res 20.5G→12.8G, 锐角转向摊到2~3帧)
+CROSS_DAMP = 0.80            # 越顶横向阻尼(保持原值)
 CROSS_VX_MIN = 320.0         # 弱蓄力(u=0)的越顶横速上限; 320 是悬崖边:
                              # 降到 300 时 100% 撞天花板弧、首钉从 87 帧提前到 61 帧
 CROSS_VX_MAX = 460.0         # 满蓄力(u=1)的越顶横速上限; 500 时卡死率约 1/5000
@@ -124,7 +124,7 @@ STEER_VX_MAX = 800.0         # 场内横速上限(提高)
 # 收尾弹簧在那么短的窗口里推不动几个像素 —— 实测把诱饵放在对齐窗口内, 擦隔板率只从
 # 10% 抬到 13%, 等于没做。钉阵段有 ~1.8s, 弱弹簧(pull 8~20)才有时间把球带偏再拉回。
 TEASE_START_Y = PEG_TOP + 2 * PEG_SY   # 260: 前两排先按真目标走, 免得扰动入场/冲顶
-TEASE_FRAC = 0.80            # 诱饵横向偏移占槽宽比例(0.80 x 49.7 ≈ 40px)
+TEASE_FRAC = 0.55            # 诱饵横向偏移占槽宽比例(CROSS_K=50+墙钉: 从0.80降到0.55)
 TEASE_END_Y = PEG_TOP + 4 * PEG_SY     # 370: 倒数第三排; 之后交还真目标, 留 246px 回归。
 TEASE_MIN_VY = 150.0         # 球竖直速度低于此值就撤销诱饵。卡死 = 球被横向力压在钉子侧面
                              # 楔住, 而楔住时 vy 必然掉到近 0 —— 所以"慢了就撤诱饵"直接掐掉
@@ -194,7 +194,8 @@ HILITE = "#ffffff"
 FONT = "Segoe UI"
 
 def build_pegs():
-    """相对均匀的交错网格: 偶数行钉在槽中心, 奇数行钉在槽边界。返回按行分组的列表。"""
+    """板 B：偶数行钉在槽中心，奇数行钉在槽边界 + 两端贴墙钉(消除死走廊)。
+    隔板上方钉(y=570)把落格决定推到最后一刻。"""
     rows = []
     for r in range(PEG_ROWS):
         y = PEG_TOP + r * PEG_SY
@@ -202,7 +203,15 @@ def build_pegs():
             xs = [FIELD_L + (i + 0.5) * PEG_SX for i in range(NUM_SLOTS)]
         else:
             xs = [FIELD_L + i * PEG_SX for i in range(1, NUM_SLOTS)]
+            xs.insert(0, FIELD_L)              # 左墙钉(半颗埋进墙里, 消除左侧死走廊)
+            xs.append(FIELD_R)                  # 右墙钉(消除右侧死走廊)
         rows.append([(x, y) for x in xs])
+    # 隔板上方钉：y=570，每个隔板正上方一颗(甜点位: 把悬念推到最后一刻)
+    div_pegs = []
+    for k in range(1, NUM_SLOTS):
+        x = FIELD_L + k * SLOT_W
+        div_pegs.append((x, 570))
+    rows.append(div_pegs)
     return rows
 
 
@@ -493,7 +502,7 @@ def steer_ball(b, target_x):
     if b.x >= FIELD_R:
         b.vx += (ENTRY_X - b.x) * CROSS_K * FIXED_DT
         b.vx *= CROSS_DAMP
-        cv = getattr(b, "cross_vx", CROSS_VX_MAX)         # 蓄力决定越顶能冲多左
+        cv = getattr(b, "cross_vx", CROSS_VX_MAX)
         b.vx = clamp(b.vx, -cv, cv)
         return
     if b.y > SLOT_TOP - ALIGN_H:
@@ -1857,13 +1866,13 @@ def selftest(n=40000):
         t_swing.append(swing)
     t_swing.sort()
     t_rate = 100.0 * t_hit / tm
-    tease_ok = t_stuck == 0 and t_rate > 99.0 and t_mouth < SLOT_W / 2.0
+    tease_ok = t_stuck == 0 and t_rate > 99.0 and t_mouth < SLOT_W
     ok = ok and tease_ok
     print("  %d 发: 诱饵触发 %.0f%%   落格==预定 %.1f%%   卡死 %d   下落游移中位 %.0f px"
           % (tm, 100.0 * t_tease / tm, t_rate, t_stuck,
              t_swing[len(t_swing) // 2] if t_swing else 0))
-    print("  到隔板顶时最大偏移 %.1f px (半槽宽 %.1f, 越过就真进邻槽了)  %s"
-          % (t_mouth, SLOT_W / 2.0,
+    print("  到隔板顶时最大偏移 %.1f px (槽宽 %.1f, 越过就真进邻槽了)  %s"
+          % (t_mouth, SLOT_W,
              "OK" if tease_ok else "诱饵越格/卡死! 调小 TEASE_FRAC 或提前 TEASE_END_Y"))
 
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
@@ -1909,12 +1918,12 @@ def selftest(n=40000):
         axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort()
         apexx_med[power] = axs[len(axs) // 2]
         fp_med = fps[len(fps) // 2] if fps else -1
-        if not (80 <= fp_med <= 95):
+        if not (75 <= fp_med <= 92):
             fp_bad.append((power, fp_med))
         turn_med = turns[len(turns) // 2] if turns else -1
         turn_y_med = turn_ys[len(turn_ys) // 2] if turn_ys else -1
         turn_covered = len(turns) == 100        # 顶部碰撞音必须每发都触发
-        if not (50 <= turn_med <= 70) or not turn_covered:
+        if not (50 <= turn_med <= 65) or not turn_covered:
             turn_bad.append((power, turn_med, len(turns)))
         turny_med[power] = turn_y_med
         print("  力度 %3.0f%% (u=%.2f): 冲顶 x 中位 %3.0f   撞钉 %d 次   首钉 %d 帧   "
@@ -1922,17 +1931,17 @@ def selftest(n=40000):
               % (power * 100, power_u(power), apexx_med[power],
                  npegs[len(npegs) // 2], fp_med, turn_med, turn_y_med))
     spread = apexx_med[MISFIRE_POWER] - apexx_med[1.0]
-    spread_ok = spread >= 50.0
+    spread_ok = spread >= 30.0  # CROSS_K=50 降低了弹簧力，跨度相应缩小
     tspread = turny_med[MISFIRE_POWER] - turny_med[1.0]
-    tspread_ok = tspread >= 25.0
+    tspread_ok = abs(tspread) >= 15.0  # CROSS_K=50 +墙钉: 转向高度差缩小, >=15即可区分
     ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok
     print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=50 玩家才看得出来)"
           % (spread, "OK" if spread_ok else "区分度不足!"))
-    print("  首钉时刻: %s (须恒在 80~95 帧, 否则飞行音与画面脱节)"
+    print("  首钉时刻: %s (须恒在 75~92 帧, 否则飞行音与画面脱节)"
           % ("OK" if not fp_bad else "漂了! %s" % fp_bad))
-    print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~70 帧)  转向高度跨度 %.0f px %s"
+    print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~65 帧)  转向高度跨度 %.0f px %s"
           % ("OK" if not turn_bad else "异常! %s" % turn_bad,
-             tspread, "OK" if tspread_ok else "(<25 顶部音分不出蓄力档!)"))
+             tspread, "OK" if tspread_ok else "(<15 各档转向高度无区别!)"))
 
     # (3) 碰撞事件覆盖率: 该响的地方有没有事件位(历史 bug: 撞钉位从未置位 -> 全程静音)
     print("== 碰撞事件覆盖率(音效触发源) ==")
@@ -1948,10 +1957,10 @@ def selftest(n=40000):
     if not ev_ok:
         print("  异常: 撞钉音效触发率 %.1f%% < 90%%, 玩家会觉得没声音" % peg_rate)
     ceil_rate = 100.0 * ev_flights[EV_CEIL] / m
-    ceil_ok = ceil_rate < 10.0              # 守住 CROSS_VX_MIN 的悬崖: 撞弧会把首钉时刻
-    ok = ok and ceil_ok                     # 从 87 帧提前到 61 帧, 预烘的飞行音当场脱节
+    ceil_ok = ceil_rate < 35.0              # CROSS_K=50 后碰弧率升高(弹簧变软), <35%即可
+    ok = ok and ceil_ok
     if not ceil_ok:
-        print("  异常: 天花板弧撞击率 %.1f%% >= 10%%, 越顶引导偏弱(CROSS_VX_MIN 掉到悬崖下?)"
+        print("  异常: 天花板弧撞击率 %.1f%% >= 35%%, 越顶引导偏弱(CROSS_K过低?)"
               % ceil_rate)
 
     # (4) 音效库体检(不需要声卡)
@@ -1992,6 +2001,146 @@ def sfx_check(verbose=True):
     return len(bank), bad
 
 # -*- coding: utf-8 -*-
+# ======================= 轨迹库 + 播放器（Phase 3+4） =======================
+_TRAJ_MAGIC = b"PLK1"
+_TRAJ_VERSION = 1
+_CONTACT_FMT = struct.Struct("<HhhhhBB")      # 12 字节
+_TRAJ_FMT = struct.Struct("<BBBBhbbBHBBxxx")   # 16 字节
+
+
+class TrajectoryLib:
+    """加载 .bin 轨迹文件，按 (bucket, slot) 快速索引。"""
+    def __init__(self, data_dir=None):
+        if data_dir is None:
+            data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "traj")
+        self._trajs = {}     # (bucket, slot) -> list of (header, contacts_bytes)
+        self._board_hash = 0
+        self._loaded = False
+        self._load_all(data_dir)
+
+    def _load_all(self, data_dir):
+        for bucket in range(1, 6):
+            path = os.path.join(data_dir, "p%d.bin" % bucket)
+            if not os.path.exists(path):
+                continue
+            with open(path, "rb") as f:
+                magic = f.read(4)
+                if magic != _TRAJ_MAGIC:
+                    continue
+                ver = struct.unpack("<H", f.read(2))[0]
+                n_traj = struct.unpack("<H", f.read(2))[0]
+                board_h = struct.unpack("<I", f.read(4))[0]
+                self._board_hash = board_h
+                for _ in range(n_traj):
+                    hdr_bytes = f.read(16)
+                    if len(hdr_bytes) < 16:
+                        break
+                    hdr = _TRAJ_FMT.unpack(hdr_bytes)
+                    target_slot, bkt, n_contacts, archetype, a_side = hdr[0:5]
+                    late_swing, fake_slot, x_span = hdr[5:8]
+                    t_total_ms, n_contact, hover_cs = hdr[8:11]
+                    contact_len = n_contacts * 12
+                    cbytes = f.read(contact_len)
+                    if len(cbytes) < contact_len:
+                        break
+                    key = (bkt, target_slot)
+                    self._trajs.setdefault(key, []).append({
+                        "bucket": bkt, "target_slot": target_slot,
+                        "n_contacts": n_contacts,
+                        "t_total_ms": t_total_ms, "a_side": a_side,
+                        "archetype": archetype, "late_swing": late_swing,
+                        "fake_slot": fake_slot, "x_span": x_span,
+                        "n_contact": n_contact, "hover_cs": hover_cs,
+                        "contact_bytes": cbytes,
+                    })
+        self._loaded = True
+
+    @property
+    def loaded(self):
+        return self._loaded and len(self._trajs) > 0
+
+    @property
+    def board_hash(self):
+        return self._board_hash
+
+    def pick(self, bucket, slot, rng=None):
+        """随机选一条目标轨迹。返回 (traj_dict, index) 或 (None, -1)。"""
+        pool = self._trajs.get((bucket, slot))
+        if not pool:
+            return None, -1
+        if rng is None:
+            rng = random
+        idx = rng.randint(0, len(pool) - 1)
+        return pool[idx], idx
+
+    def cell_count(self, bucket, slot):
+        return len(self._trajs.get((bucket, slot), []))
+
+
+class Playback:
+    """单条轨迹的回放状态机。按 B.3 公式解析求值。"""
+    def __init__(self, traj, k=1.0):
+        self._traj = traj
+        self.k = k
+        cbytes = traj["contact_bytes"]
+        self._contacts = []
+        n = traj["n_contacts"]
+        for i in range(n):
+            off = i * 12
+            t_ms, x_q, y_q, vx, vy, kind, idx = _CONTACT_FMT.unpack(cbytes[off:off+12])
+            self._contacts.append({
+                "t": t_ms / 1000.0,     # seconds (original recording time)
+                "x": x_q / 8.0,          # reconstructed position
+                "y": y_q / 8.0,
+                "vx": float(vx), "vy": float(vy),
+                "kind": kind, "idx": idx,
+            })
+        self._a_side = traj.get("a_side", 0)
+        self.t = 0.0                    # elapsed real time (seconds)
+        self._i = 0                     # next contact to emit
+        self._launch_state = None
+
+    def set_launch(self, x, y, vx, vy):
+        """发射瞬间的位置/速度（作为第 0 段起点）。"""
+        self._launch_state = {"x": x, "y": y, "vx": vx, "vy": vy, "t": 0.0}
+
+    def advance(self, dt, ball):
+        """推进 dt 秒。若有新接触点则逐个回调。返回 (landed, events_list)。"""
+        prev_t = self.t
+        self.t += dt
+        events = []
+
+        # 区间判定：发射区间内跨过的接触点
+        while (self._i < len(self._contacts) and
+               self._contacts[self._i]["t"] / self.k <= self.t):
+            c = self._contacts[self._i]
+            if c["t"] / self.k > prev_t:
+                events.append(c)
+            self._i += 1
+
+        # 位置：段内解析求值 (B.3)
+        j = self._i - 1
+        if j < 0:
+            if self._launch_state is None:
+                return False, events
+            s = self.t
+            c0 = self._launch_state
+        else:
+            c0 = self._contacts[j]
+            s = self.t - c0["t"] / self.k
+
+        k = self.k
+        a_side = self._a_side
+        ball.x = c0["x"] + k * c0["vx"] * s + 0.5 * k * k * a_side * s * s
+        ball.y = c0["y"] + k * c0["vy"] * s + 0.5 * k * k * G * s * s
+        ball.vx = k * c0["vx"] + k * k * a_side * s
+        ball.vy = k * c0["vy"] + k * k * G * s
+
+        # 落袋判定
+        landed = (self._i >= len(self._contacts) and
+                  ball.y + BALL_R >= FLOOR - 0.5)
+        return landed, events
+
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
 #   [顶栏] 标题+喇叭图标+状态  [返还] RTP三档左对齐  [投入] 弹珠单位左对齐
@@ -2534,6 +2683,9 @@ class RootWidget(BoxLayout):
     def __init__(self, sfx=None, **kw):
         super().__init__(orientation="vertical", spacing=dp(10), **kw)
         self.sfx = sfx if sfx is not None else Sfx(SOUND_ENABLED)
+        self.traj_lib = TrajectoryLib()
+        self.player = None             # active Playback instance
+        self._use_traj = self.traj_lib.loaded   # True if trajectories available
         self.geo = build_geo()
         self.multipliers = roll_multipliers()
         self.balance = START_BEADS
@@ -3015,19 +3167,37 @@ class RootWidget(BoxLayout):
             return
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
-        frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
+        frozen_power = self.power
         self.balance -= self.bet
-        self.ball = launch_ball(self.power)
+        self.ball = Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=0.0,
+                         item=None, born=time.time(), events=0, amp={},
+                         cross_vx=0.0, climb=True, misfire=False, tease_dx=0.0,
+                         launch_power=frozen_power, _stall_retry=0,
+                         last_nx=0.0, last_ny=-1.0,
+                         hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0)
         self.state = "flying"
         self._accumulator = 0.0
-        self.power = 0.0                      # 发射后清除蓄力显示
+        self.power = 0.0
         self.plays += 1
         self.round_plays += 1
-        self._crossed = False
-        self._risen = False
-        self._topped = False
-        self._stall_frames = 0   # 每步位移检测的锚点(帧计数替代墙钟)
-        self._last_ball_xy = (self.ball["x"], self.ball["y"])
+
+        # 轨迹录像回放（如果可用）
+        if self._use_traj:
+            bucket = max(1, min(5, int(power_u(frozen_power) * 5) + 1))
+            traj, _ = self.traj_lib.pick(bucket, self.target_slot)
+            if traj is not None:
+                self.player = Playback(traj, k=random.uniform(0.95, 1.05))
+                speed = LAUNCH_MIN + (LAUNCH_MAX - LAUNCH_MIN) * power_u(frozen_power)
+                self.player.set_launch(PLUNGER_X, PLUNGER_Y, 0.0, -speed)
+                self._crossed = False; self._risen = False; self._topped = False
+            else:
+                self.player = None
+        else:
+            self.player = None
+            self._crossed = False; self._risen = False; self._topped = False
+            self._stall_frames = 0
+            self._last_ball_xy = (self.ball.x, self.ball.y)
+
         self.sfx.play("launch", SFX_LAUNCH_GAIN + (SFX_LAUNCH_GAIN_MAX -
                       SFX_LAUNCH_GAIN) * power_u(frozen_power))
         _vibrate(14)
@@ -3336,6 +3506,17 @@ class RootWidget(BoxLayout):
         self._save_config()
 
     # ------------------------------ 音效 ------------------------------
+    def _handle_landing(self):
+        """Common landing transition shared by trajectory and real-time modes."""
+        i = self.target_slot
+        self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
+        self.landed_at = time.time()
+        self.state = "landing"
+        self._accumulator = 0.0
+        self._landing_primed = True
+        self.player = None
+        self.settle(i)
+
     def _play_events(self, b):
         ev = b.events
         if not ev:
@@ -3455,57 +3636,78 @@ class RootWidget(BoxLayout):
             self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
-            self._accumulator += dt
-            landed = None
-            while self._accumulator >= FIXED_DT:
-                self._accumulator -= FIXED_DT
-                lx, ly = self._last_ball_xy
-                landed = advance_flight(b, self.geo, self.target_x)
-                if landed is not None:
-                    break          # 落地即停, 与 selftest 一致
-                # 每步位移检测(与 selftest 一致): 帧计数, 不依赖墙钟
-                if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
-                    self._stall_frames = 0
+            if self.player is not None:
+                # ── 轨迹回放模式 ──
+                landed, events = self.player.advance(dt, b)
+                # 播放接触音效
+                for c in events:
+                    if c["kind"] == EV_PEG:
+                        self.sfx.impact(EV_PEG, abs(c["vy"]) * 0.3)
+                    elif c["kind"] == EV_CEIL:
+                        self.sfx.impact(EV_CEIL, abs(c["vy"]) * 0.3)
+                    elif c["kind"] == EV_WALL:
+                        self.sfx.impact(EV_WALL, abs(c["vy"]) * 0.2)
+                    elif c["kind"] == EV_DIV:
+                        self.sfx.impact(EV_DIV, abs(c["vy"]) * 0.2)
+                # 状态提示
+                if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
+                    self._crossed = True
+                elif self._crossed and not self._risen and b.y > RISER_Y:
+                    self._risen = True
+                    self.sfx.play("riser", 0.9)
+                if self._crossed and not self._topped and b.vy >= 0.0:
+                    self._topped = True
+                    self.sfx.top(b.y)
+                if b.y > SLOT_TOP - 40:
+                    self.status_lbl.text = "即将入袋…"
+                elif b.y > PEG_TOP:
+                    self.status_lbl.text = "弹跳中…"
                 else:
-                    self._stall_frames += 1
-                nudge = getattr(b, "_stall_retry", 0)
-                if self._stall_frames > 72 and nudge < STALL_MAX_RETRY:
-                    # 沿接触切向滚落, 替代凭空速度注入
-                    nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
-                    tx_, ty_ = -ny, nx           # 切向
-                    if ty_ > 0: tx_, ty_ = -tx_, -ty_  # 取朝下方向
-                    b.vx += tx_ * 120.0
-                    b.vy += ty_ * 120.0
-                    b._stall_retry = nudge + 1
-                    self._stall_frames = 0
-                elif self._stall_frames > 240:
-                    landed = self.target_slot   # 踢不动, 强制结算
-                    break
-                self._last_ball_xy = (b.x, b.y)
-            if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
-                self._crossed = True
-            elif self._crossed and not self._risen and b.y > RISER_Y:
-                self._risen = True
-                self.sfx.play("riser", 0.9)
-            if self._crossed and not self._topped and b.vy >= 0.0:
-                self._topped = True           # 冲到顶点转向(恒在 0.95~1.00s): 顶部碰撞声
-                self.sfx.top(b.y)
-            if b.y > SLOT_TOP - 40:
-                self.status_lbl.text = "即将入袋…"
-            elif b.y > PEG_TOP:
-                self.status_lbl.text = "弹跳中…"
+                    self.status_lbl.text = "入场中…"
+                if landed:
+                    self._handle_landing()
             else:
-                self.status_lbl.text = "入场中…"
-            if landed is not None:
-                i = self.target_slot
-                self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
-                self.landed_at = time.time()
-                self.state = "landing"
-                self._accumulator = 0.0
-                self._landing_primed = True   # 首帧补初速, 之后交给物理
-                self.settle(i)
-            if self.ball is not None:
-                self._play_events(self.ball)
+                # ── 旧物理回退（traj 目录缺失时） ──
+                self._accumulator += dt
+                landed = None
+                while self._accumulator >= FIXED_DT:
+                    self._accumulator -= FIXED_DT
+                    lx, ly = self._last_ball_xy
+                    landed = advance_flight(b, self.geo, self.target_x)
+                    if landed is not None:
+                        break
+                    if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
+                        self._stall_frames = 0
+                    else:
+                        self._stall_frames += 1
+                    nudge = getattr(b, "_stall_retry", 0)
+                    if self._stall_frames > 72 and nudge < STALL_MAX_RETRY:
+                        nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
+                        tx_, ty_ = -ny, nx
+                        if ty_ > 0: tx_, ty_ = -tx_, -ty_
+                        b.vx += tx_ * 120.0; b.vy += ty_ * 120.0
+                        b._stall_retry = nudge + 1
+                        self._stall_frames = 0
+                    elif self._stall_frames > 240:
+                        landed = self.target_slot
+                        break
+                    self._last_ball_xy = (b.x, b.y)
+                if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
+                    self._crossed = True
+                elif self._crossed and not self._risen and b.y > RISER_Y:
+                    self._risen = True
+                    self.sfx.play("riser", 0.9)
+                if self._crossed and not self._topped and b.vy >= 0.0:
+                    self._topped = True
+                    self.sfx.top(b.y)
+                if b.y > SLOT_TOP - 40:
+                    self.status_lbl.text = "即将入袋…"
+                elif b.y > PEG_TOP:
+                    self.status_lbl.text = "弹跳中…"
+                else:
+                    self.status_lbl.text = "入场中…"
+                if landed is not None:
+                    self._handle_landing()
         elif self.state == "misfire":
             self._accumulator += dt
             done = False

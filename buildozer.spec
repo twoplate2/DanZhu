@@ -9,7 +9,7 @@ package.domain = org.danzhu
 
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
-source.include_patterns = fonts/*.otf,voice/*.wav
+source.include_patterns = fonts/*.otf,voice/*.wav,traj/*.bin
 
 version = 0.4.0
 
