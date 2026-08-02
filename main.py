@@ -140,7 +140,7 @@ STEER_VX_MAX = 800.0         # 场内横速上限(提高)
 # 收尾弹簧在那么短的窗口里推不动几个像素 —— 实测把诱饵放在对齐窗口内, 擦隔板率只从
 # 10% 抬到 13%, 等于没做。钉阵段有 ~1.8s, 弱弹簧(pull 8~20)才有时间把球带偏再拉回。
 TEASE_START_Y = PEG_TOP + 2 * PEG_SY   # 260: 前两排先按真目标走, 免得扰动入场/冲顶
-TEASE_FRAC = 0.55            # 诱饵横向偏移占槽宽比例(CROSS_K=50+墙钉: 从0.80降到0.55)
+TEASE_FRAC = 0.55            # 诱饵横向偏移占槽宽比例
 TEASE_END_Y = PEG_TOP + 4 * PEG_SY     # 370: 倒数第三排; 之后交还真目标, 留 246px 回归。
 TEASE_MIN_VY = 150.0         # 球竖直速度低于此值就撤销诱饵。卡死 = 球被横向力压在钉子侧面
                              # 楔住, 而楔住时 vy 必然掉到近 0 —— 所以"慢了就撤诱饵"直接掐掉
@@ -442,7 +442,7 @@ class Ball:
     保留 __getitem__/__setitem__/get 兼容旧 b.x 语法, 同时支持 b.x 直接访问。"""
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
                  'cross_vx', 'cross_slew', 'climb', 'misfire', 'tease_dx',
-                 'launch_power', '_stall_retry', '_land_primed',
+                 'launch_power', '_stall_retry',
                  'last_nx', 'last_ny',
                  'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin')
 
@@ -577,18 +577,6 @@ def advance_flight(b, geo, target_x):
         b.vy *= SLOT_BRAKE_VY
         b.vx *= SLOT_BRAKE_VX
     return physics_step(b, geo, FIXED_DT)
-
-
-def preflight_check(b, geo, target_x, max_frames=1000):
-    """发射前预判: 快速模拟完整轨迹, 返回 True=能落地, False=大概率卡死。
-    1000帧覆盖实测 P99.95 + 慢设备余量, 超过此值直接判死重掷盘面。
-    调用前 ball 已由 launch_ball 创建, 调用后 ball 状态被消耗(坐标/速度已变),
-    所以正式发射时需重新 launch_ball。"""
-    for _ in range(max_frames):
-        landed = advance_flight(b, geo, target_x)
-        if landed is not None:
-            return True
-    return False
 
 
 def benchmark_trajectories(duration=5.0):
@@ -1971,7 +1959,7 @@ def selftest(n=40000):
         apexx_med[power] = axs[len(axs) // 2]
         kink_med[power] = kinks[len(kinks) // 2]
         fp_med = fps[len(fps) // 2] if fps else -1
-        if not (75 <= fp_med <= 92):
+        if not (80 <= fp_med <= 95):
             fp_bad.append((power, fp_med))
         turn_med = turns[len(turns) // 2] if turns else -1
         turn_y_med = turn_ys[len(turn_ys) // 2] if turn_ys else -1
@@ -2059,163 +2047,6 @@ def sfx_check(verbose=True):
             bad.append((name, "首尾爆音"))
     return len(bank), bad
 
-# -*- coding: utf-8 -*-
-# ======================= 轨迹库 + 播放器（Phase 3+4） =======================
-_TRAJ_MAGIC = b"PLK1"
-_TRAJ_VERSION = 1
-_CONTACT_FMT = struct.Struct("<HhhhhBB")      # 12 字节
-_TRAJ_FMT = struct.Struct("<BBBBhbbBHBBxxx")   # 16 字节
-
-
-class TrajectoryLib:
-    """加载 .bin 轨迹文件，按 (bucket, slot) 快速索引。"""
-    def __init__(self, data_dir=None):
-        if data_dir is None:
-            data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "traj")
-        self._trajs = {}     # (bucket, slot) -> list of (header, contacts_bytes)
-        self._board_hash = 0
-        self._loaded = False
-        self._load_all(data_dir)
-
-    def _load_all(self, data_dir):
-        for bucket in range(1, 6):
-            path = os.path.join(data_dir, "p%d.bin" % bucket)
-            if not os.path.exists(path):
-                continue
-            with open(path, "rb") as f:
-                magic = f.read(4)
-                if magic != _TRAJ_MAGIC:
-                    continue
-                ver = struct.unpack("<H", f.read(2))[0]
-                n_traj = struct.unpack("<H", f.read(2))[0]
-                board_h = struct.unpack("<I", f.read(4))[0]
-                self._board_hash = board_h
-                for _ in range(n_traj):
-                    hdr_bytes = f.read(16)
-                    if len(hdr_bytes) < 16:
-                        break
-                    hdr = _TRAJ_FMT.unpack(hdr_bytes)
-                    target_slot, bkt, n_contacts, archetype, a_side = hdr[0:5]
-                    late_swing, fake_slot, x_span = hdr[5:8]
-                    t_total_ms, n_contact, hover_cs = hdr[8:11]
-                    contact_len = n_contacts * 12
-                    cbytes = f.read(contact_len)
-                    if len(cbytes) < contact_len:
-                        break
-                    key = (bkt, target_slot)
-                    self._trajs.setdefault(key, []).append({
-                        "bucket": bkt, "target_slot": target_slot,
-                        "n_contacts": n_contacts,
-                        "t_total_ms": t_total_ms, "a_side": a_side,
-                        "archetype": archetype, "late_swing": late_swing,
-                        "fake_slot": fake_slot, "x_span": x_span,
-                        "n_contact": n_contact, "hover_cs": hover_cs,
-                        "contact_bytes": cbytes,
-                    })
-        self._loaded = True
-
-    @property
-    def loaded(self):
-        return self._loaded and len(self._trajs) > 0
-
-    @property
-    def board_hash(self):
-        return self._board_hash
-
-    def pick(self, bucket, slot, rng=None):
-        """随机选一条目标轨迹。返回 (traj_dict, index) 或 (None, -1)。"""
-        pool = self._trajs.get((bucket, slot))
-        if not pool:
-            return None, -1
-        if rng is None:
-            rng = random
-        idx = rng.randint(0, len(pool) - 1)
-        return pool[idx], idx
-
-    def cell_count(self, bucket, slot):
-        return len(self._trajs.get((bucket, slot), []))
-
-
-class Playback:
-    """单条轨迹的回放状态机。按 B.3 公式解析求值。"""
-    def __init__(self, traj, k=1.0):
-        self._traj = traj
-        self.k = k
-        cbytes = traj["contact_bytes"]
-        self._contacts = []
-        n = traj["n_contacts"]
-        for i in range(n):
-            off = i * 12
-            t_ms, x_q, y_q, vx, vy, kind, idx = _CONTACT_FMT.unpack(cbytes[off:off+12])
-            self._contacts.append({
-                "t": t_ms / 1000.0,     # seconds (original recording time)
-                "x": x_q / 8.0,          # reconstructed position
-                "y": y_q / 8.0,
-                "vx": float(vx), "vy": float(vy),
-                "kind": kind, "idx": idx,
-            })
-        self._a_side = traj.get("a_side", 0)
-        self.t = 0.0                    # elapsed real time (seconds)
-        self._i = 0                     # next contact to emit
-        self._launch_state = None
-
-    def set_launch(self, x, y, vx, vy):
-        """发射瞬间的位置/速度（作为第 0 段起点）。"""
-        self._launch_state = {"x": x, "y": y, "vx": vx, "vy": vy, "t": 0.0}
-
-    def advance(self, dt, ball):
-        """推进 dt 秒。若有新接触点则逐个回调。返回 (landed, events_list)。"""
-        prev_t = self.t
-        self.t += dt
-        events = []
-
-        # 区间判定：发射区间内跨过的接触点
-        while (self._i < len(self._contacts) and
-               self._contacts[self._i]["t"] / self.k <= self.t):
-            c = self._contacts[self._i]
-            if c["t"] / self.k > prev_t:
-                sp = self._impact_speed(self._i)
-                events.append({"kind": c["kind"], "sp": sp, "t": c["t"]})
-            self._i += 1
-
-        # 位置：段内解析求值 (B.3)
-        j = self._i - 1
-        if j < 0:
-            if self._launch_state is None:
-                return False, events
-            s = self.t
-            c0 = self._launch_state
-        else:
-            c0 = self._contacts[j]
-            s = self.t - c0["t"] / self.k
-
-        k = self.k
-        a_side = self._a_side
-        ball.x = c0["x"] + k * c0["vx"] * s + 0.5 * k * k * a_side * s * s
-        ball.y = c0["y"] + k * c0["vy"] * s + 0.5 * k * k * G * s * s
-        ball.vx = k * c0["vx"] + k * k * a_side * s
-        ball.vy = k * c0["vy"] + k * k * G * s
-
-        # 落袋判定
-        landed = (self._i >= len(self._contacts) and
-                  ball.y + BALL_R >= FLOOR - 0.5)
-        return landed, events
-
-    def _impact_speed(self, idx):
-        """计算第 idx 个接触的法向撞击速率近似值(px/s), 用于音效音量(B.4)。"""
-        c = self._contacts[idx]
-        if idx == 0:
-            prev = self._launch_state if self._launch_state else {"vx": 0, "vy": 0, "t": 0}
-        else:
-            prev = self._contacts[idx - 1]
-        dt_s = c["t"] - prev["t"]
-        if dt_s <= 0:
-            return abs(c["vy"]) * 0.5
-        vx_in = prev["vx"] + self._a_side * dt_s
-        vy_in = prev["vy"] + G * dt_s
-        dvx = c["vx"] - vx_in
-        dvy = c["vy"] - vy_in
-        return math.hypot(dvx, dvy) * 0.5
 
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
@@ -2760,10 +2591,6 @@ class RootWidget(BoxLayout):
     def __init__(self, sfx=None, **kw):
         super().__init__(orientation="vertical", spacing=dp(10), **kw)
         self.sfx = sfx if sfx is not None else Sfx(SOUND_ENABLED)
-        self.traj_lib = TrajectoryLib()
-        self.player = None             # active Playback instance
-        self._use_traj = self.traj_lib.loaded   # True if trajectories available
-        self._shuffle_bags = {}        # (bucket, slot) -> list[int], shuffle-bag for director
         self.geo = build_geo()
         self.multipliers = roll_multipliers()
         self.balance = START_BEADS
@@ -3247,41 +3074,16 @@ class RootWidget(BoxLayout):
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
         frozen_power = self.power
         self.balance -= self.bet
-        self.ball = Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=0.0,
-                         item=None, born=time.time(), events=0, amp={},
-                         cross_vx=0.0, climb=True, misfire=False, tease_dx=0.0,
-                         launch_power=frozen_power, _stall_retry=0,
-                         last_nx=0.0, last_ny=-1.0,
-                         hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0)
+        self.ball = launch_ball(frozen_power)
+        self.ball.tease_dx = tease_dx(self.multipliers, self.target_slot)
         self.state = "flying"
         self._accumulator = 0.0
         self.power = 0.0
         self.plays += 1
         self.round_plays += 1
-
-        # 轨迹录像回放（如果可用）
-        if self._use_traj:
-            bucket = max(1, min(5, int(power_u(frozen_power) * 5) + 1))
-            key = (bucket, self.target_slot)
-            pool = self.traj_lib._trajs.get(key, [])
-            if pool:
-                bag = self._shuffle_bags.setdefault(key, [])
-                if not bag:
-                    bag.extend(range(len(pool)))
-                    random.shuffle(bag)
-                idx = bag.pop()
-                traj = pool[idx]
-                self.player = Playback(traj, k=random.uniform(0.95, 1.05))
-                speed = LAUNCH_MIN + (LAUNCH_MAX - LAUNCH_MIN) * power_u(frozen_power)
-                self.player.set_launch(PLUNGER_X, PLUNGER_Y, 0.0, -speed)
-                self._crossed = False; self._risen = False; self._topped = False
-            else:
-                self.player = None
-        else:
-            self.player = None
-            self._crossed = False; self._risen = False; self._topped = False
-            self._stall_frames = 0
-            self._last_ball_xy = (self.ball.x, self.ball.y)
+        self._crossed = False; self._risen = False; self._topped = False
+        self._stall_frames = 0
+        self._last_ball_xy = (self.ball.x, self.ball.y)
 
         self.sfx.play("launch", SFX_LAUNCH_GAIN + (SFX_LAUNCH_GAIN_MAX -
                       SFX_LAUNCH_GAIN) * power_u(frozen_power))
@@ -3592,14 +3394,13 @@ class RootWidget(BoxLayout):
 
     # ------------------------------ 音效 ------------------------------
     def _handle_landing(self):
-        """Common landing transition shared by trajectory and real-time modes."""
+        """Common landing transition."""
         i = self.target_slot
         self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
         self.landed_at = time.time()
         self.state = "landing"
         self._accumulator = 0.0
         self._landing_primed = True
-        self.player = None
         self.settle(i)
 
     def _play_events(self, b):
@@ -3721,70 +3522,46 @@ class RootWidget(BoxLayout):
             self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
-            if self.player is not None:
-                # ── 轨迹回放模式 ──
-                landed, events = self.player.advance(dt, b)
-                for c in events:
-                    self.sfx.impact(c["kind"], c["sp"])
-                # 状态提示
-                if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
-                    self._crossed = True
-                elif self._crossed and not self._risen and b.y > RISER_Y:
-                    self._risen = True
-                    self.sfx.play("riser", 0.9)
-                if self._crossed and not self._topped and b.vy >= 0.0:
-                    self._topped = True
-                    self.sfx.top(b.y)
-                if b.y > SLOT_TOP - 40:
-                    self.status_lbl.text = "即将入袋…"
-                elif b.y > PEG_TOP:
-                    self.status_lbl.text = "弹跳中…"
-                else:
-                    self.status_lbl.text = "入场中…"
-                if landed:
-                    self._handle_landing()
-            else:
-                # ── 旧物理回退（traj 目录缺失时） ──
-                self._accumulator += dt
-                landed = None
-                while self._accumulator >= FIXED_DT:
-                    self._accumulator -= FIXED_DT
-                    lx, ly = self._last_ball_xy
-                    landed = advance_flight(b, self.geo, self.target_x)
-                    if landed is not None:
-                        break
-                    if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
-                        self._stall_frames = 0
-                    else:
-                        self._stall_frames += 1
-                    nudge = getattr(b, "_stall_retry", 0)
-                    if self._stall_frames > 72 and nudge < STALL_MAX_RETRY:
-                        nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
-                        tx_, ty_ = -ny, nx
-                        if ty_ > 0: tx_, ty_ = -tx_, -ty_
-                        b.vx += tx_ * 120.0; b.vy += ty_ * 120.0
-                        b._stall_retry = nudge + 1
-                        self._stall_frames = 0
-                    elif self._stall_frames > 240:
-                        landed = self.target_slot
-                        break
-                    self._last_ball_xy = (b.x, b.y)
-                if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
-                    self._crossed = True
-                elif self._crossed and not self._risen and b.y > RISER_Y:
-                    self._risen = True
-                    self.sfx.play("riser", 0.9)
-                if self._crossed and not self._topped and b.vy >= 0.0:
-                    self._topped = True
-                    self.sfx.top(b.y)
-                if b.y > SLOT_TOP - 40:
-                    self.status_lbl.text = "即将入袋…"
-                elif b.y > PEG_TOP:
-                    self.status_lbl.text = "弹跳中…"
-                else:
-                    self.status_lbl.text = "入场中…"
+            self._accumulator += dt
+            landed = None
+            while self._accumulator >= FIXED_DT:
+                self._accumulator -= FIXED_DT
+                lx, ly = self._last_ball_xy
+                landed = advance_flight(b, self.geo, self.target_x)
                 if landed is not None:
-                    self._handle_landing()
+                    break
+                if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
+                    self._stall_frames = 0
+                else:
+                    self._stall_frames += 1
+                nudge = getattr(b, "_stall_retry", 0)
+                if self._stall_frames > 72 and nudge < STALL_MAX_RETRY:
+                    nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
+                    tx_, ty_ = -ny, nx
+                    if ty_ > 0: tx_, ty_ = -tx_, -ty_
+                    b.vx += tx_ * 120.0; b.vy += ty_ * 120.0
+                    b._stall_retry = nudge + 1
+                    self._stall_frames = 0
+                elif self._stall_frames > 240:
+                    landed = self.target_slot
+                    break
+                self._last_ball_xy = (b.x, b.y)
+            if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
+                self._crossed = True
+            elif self._crossed and not self._risen and b.y > RISER_Y:
+                self._risen = True
+                self.sfx.play("riser", 0.9)
+            if self._crossed and not self._topped and b.vy >= 0.0:
+                self._topped = True
+                self.sfx.top(b.y)
+            if b.y > SLOT_TOP - 40:
+                self.status_lbl.text = "即将入袋…"
+            elif b.y > PEG_TOP:
+                self.status_lbl.text = "弹跳中…"
+            else:
+                self.status_lbl.text = "入场中…"
+            if landed is not None:
+                self._handle_landing()
         elif self.state == "misfire":
             self._accumulator += dt
             done = False
