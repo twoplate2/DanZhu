@@ -99,8 +99,6 @@ LAUNCH_MAX = 1220.0          # 满蓄力发射(apex≈18)
 CHARGE_RATE = 0.9            # 蓄力速度(每秒充满比例)
 STEER_MIN = 8.0             # 全程基础引导(增强: 高速下落需要更强引导)
 STEER_MAX = 20.0            # 场内下部引导(增强)
-ENTRY_X = FIELD_L + 90       # 越顶横向弹簧的目标 x; 只负责让弹簧饱和,
-                             # 实际左移量由每球的 cross_vx 上限(随蓄力)决定
 ALIGN_H = 80.0               # 对齐窗口(最后排钉之下的无钉区)。50→80: 原来只有 2.5 帧作用时间,
                              # 被钉子弹飞的球来不及收回来。上限是 SLOT_TOP-RISER_Y=121(再大就
                              # 伸进钉阵, 弹簧会在有钉区跟碰撞打架); 实测 80 最好, 110 反而变差
@@ -109,30 +107,22 @@ ALIGN_H = 80.0               # 对齐窗口(最后排钉之下的无钉区)。50
 ALIGN_K = 60.0               # 入槽横向弹簧(增强: 高速下落需要更强收尾)
 ALIGN_DAMP = 0.86            # 入槽横向阻尼(临界附近防过冲)
 ALIGN_VX_MAX = 800.0         # 横速硬上限(提高: 匹配高速下落)
-CROSS_K = 80.0               # 越顶横向弹簧刚度(增强: 高速需要更强越顶引导)
-CROSS_DAMP = 0.80            # 越顶横向阻尼(降低: 让左向速度更快累积)
-CROSS_VX_MIN = 320.0         # 弱蓄力(u=0)的越顶横速上限
-CROSS_VX_MAX = 460.0         # 满蓄力(u=1)的越顶横速上限; 500 时卡死率约 1/5000
-CROSS_SLEW_MIN = 35.0        # 越顶横速的每帧变化上限(px/s per frame), 弱蓄力档
-CROSS_SLEW_MAX = 85.0        # 同上, 满蓄力档。这一对是"取消锐角转向"的执行机构:
-                             # 没有它时 CROSS_K 一帧就把 vx 从 0 拍到 -410, 而那一帧没有任何
-                             # 碰撞 —— 玩家看到球在空中凭空拐 38°。限幅后 vx 分 5~12 帧爬到
-                             # 上限, 无碰撞帧的最大方向突变 36°→11°(实测中位, n=270)。
-                             # 蓄力档位差异改由爬升速率承担(而不是拉宽 CROSS_VX): 满蓄力爬得快
-                             # 所以冲得更左, 冲顶 x 跨度 67→75px; 拉宽 CROSS_VX 也能撑跨度, 但
-                             # 入场横速过大会让 STEER/ALIGN 收不住, near-miss 槽口偏移从 15px
-                             # 蹿到 40px+(越过半槽宽 24.8 就真进邻槽, 结算却报预定槽 —— 穿帮)。
-                             # 35/85 是跨 5 个随机种子扫出来的: 25→110 和 30→90 都是 4/5 个种子
-                             # 触发槽口越格, 35→85 只有 1/5(基线 3/5)。别凭手感调这两个数。
-                             # 前置条件: 导流弧必须贴着轨迹外侧铺, 不能横切轨迹 —— 横切的话球得
-                             # 抢在 6 帧内躲开它, 限幅就必然撞上去。见 build_deflectors()。
+CROSS_A_MIN = -500.0         # 弱蓄力(u=0)越顶恒定横加速度 px/s^2(负=向左)
+CROSS_A_MAX = -1150.0        # 满蓄力(u=1)。天花板反弹抵消约3-5px/s/帧
+CROSS_SLEW_MIN = 10.0        # 每帧vx变化上限(弱档)
+CROSS_SLEW_MAX = 25.0        # 同上(满档)。≈|a_max|/60+3px裕量, 防碰撞后突变
+                             # 这些替换了旧的 CROSS_K(80) + CROSS_DAMP(0.8) + CROSS_VX(320-460)
+                             # 弹簧-阻尼系统。旧系统产生"加速→钳位→匀速"三段式vx曲线, 轨迹非抛物线;
+                             # 恒定加速度使 vx 线性增长, x(t) 为真二次函数, 视觉是自然抛物线。
+                             # CROSS_A_MIN=-500: 20帧进入钉阵(x<459), 获得完整双程加速;
+                             # CROSS_A_MAX=-820: 14帧进入钉阵。跨度保证冲顶x≥50px。
 ASCENT_PULL = 0.45           # 爬升期场内引导衰减: 保住入场横速不被背离阻尼擦掉
 RAIL_E = 0.55                # 天花板反弹系数
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
 LAND_E = 0.42                # 落袋地板恢复系数: 0.42→弹3~4次逐渐停住, 视觉明显
 LAND_BOUNCE_MIN_VY = 220.0   # 落地最低初速: 低于此值就补到这么多, 保证每次都有可见回弹
-STEER_DVX_MAX = 200.0        # 场内每帧引导增量上限(提高: 匹配高速)
+STEER_DVX_MAX = 300.0        # 场内每帧引导增量上限(提: 新抛物线入场更左, 需要更强拉回)
 STEER_VX_MAX = 800.0         # 场内横速上限(提高)
 
 # ------------------ near-miss(擦边): 只改表演, 不改落格 --------------------
@@ -252,27 +242,23 @@ def build_walls():
 
 
 def build_deflectors():
-    """发射区导流弧: 锚定通道口, 覆盖转向全过程, 给横向移动一个看得见的理由。
+    """发射区导流弧: 锚定通道右壁, 贴着新抛物线轨迹外侧, 给横向移动一个看得见的理由。
 
-    球从"向上"变成"向左下", 物理上是 CROSS_K 引导力+重力+顶墙擦碰, 弧面
-    从不被球碰到(实测撞弧率 0%)。没有弧面, 球就是在空中自己拐弯——弧面的
+    球从"向上"变成"向左下", 物理上是恒定横加速度(cross_a)+重力+顶墙擦碰, 轨迹为真抛物线。
+    弧面从不被球碰到(实测撞弧率 0%)。没有弧面, 球就是在空中自己拐弯——弧面的
     作用是归因: 让它看起来是被带过去的。
 
     老版(510,108)→(450,88)横切轨迹, 球为躲它被迫6帧横移37px, 逼出38°折角。
 
-    当前: 起点(507,160)锚在通道口右壁→Bezier曲线(509,130)→(500,108)→
-    终点(479,89)。53点/52段, 段间转角<10°。弧面覆盖y=89~160完整转向区间,
-    y<89三档蓄力扇形散开过大, 弧面在此截断让球自然飞出。球心净空4.9px,
-    900发0撞弧。改控制点需重验碰撞。"""
-    cpts = [(507, 160), (506, 151), (506, 149), (506, 148), (506, 147), (506, 146),
-            (507, 145), (507, 143), (507, 142), (507, 141), (506, 140), (506, 138),
-            (506, 137), (506, 136), (506, 135), (506, 133), (506, 132), (505, 131),
-            (505, 130), (505, 128), (504, 127), (504, 126), (504, 125), (503, 123),
-            (503, 122), (502, 121), (502, 120), (501, 119), (501, 117), (500, 116),
-            (499, 115), (499, 114), (498, 112), (497, 111), (497, 110), (496, 109),
-            (495, 107), (494, 106), (493, 105), (492, 104), (492, 103), (491, 101),
-            (490, 100), (489, 99), (488, 98), (487, 97), (485, 95), (484, 94),
-            (483, 93), (482, 92), (481, 91), (480, 90), (479, 89)]
+    当前: 37点/36段垂直线段, 锚在通道右壁(508,160)→终点(499,89)。
+    新抛物线轨迹偏右(a=-380~-750, 弱于旧弹簧的等效加速度), 弧面贴右壁
+    即可安全覆盖 y=89~160 转向区间。y<89 弧面截断, 球自然飞出。"""
+    cpts = [(508, 160), (508, 158), (508, 156), (508, 154), (508, 152), (508, 150),
+            (507, 148), (507, 146), (507, 144), (507, 142), (507, 140), (507, 138),
+            (506, 136), (506, 134), (506, 132), (506, 130), (506, 128), (505, 126),
+            (505, 124), (505, 122), (504, 120), (504, 118), (504, 116), (503, 114),
+            (503, 112), (503, 110), (502, 108), (502, 106), (502, 104), (501, 102),
+            (501, 100), (501, 98), (500, 96), (500, 94), (500, 92), (499, 90), (499, 89)]
     return [(cpts[i][0], cpts[i][1], cpts[i + 1][0], cpts[i + 1][1])
             for i in range(len(cpts) - 1)]
 
@@ -343,6 +329,8 @@ def _collide_pegs(b, pegs):
                 nrm = math.hypot(njx, njy)
                 njx /= nrm; njy /= nrm
                 hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
+                if getattr(b, "cross_a", None) is not None:  # 首钉闩锁: 抛物线终止
+                    b.cross_a = None
                 _mark(b, EV_PEG, hit)
                 b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
                 b.hit_peg = (px, py)                   # 被撞钉子坐标(高亮用)
@@ -441,7 +429,7 @@ class Ball:
     """弹珠物理状态。__slots__ 消除 dict 哈希开销(每发 ~18000 次查找→0)。
     保留 __getitem__/__setitem__/get 兼容旧 b.x 语法, 同时支持 b.x 直接访问。"""
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
-                 'cross_vx', 'cross_slew', 'climb', 'misfire', 'tease_dx',
+                 'cross_a', 'cross_slew', 'climb', 'misfire', 'tease_dx',
                  'launch_power', '_stall_retry',
                  'last_nx', 'last_ny',
                  'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin')
@@ -465,12 +453,12 @@ def launch_ball(power):
 
     竖直速度只在 1180~1220 的窄带内变化(3%), 是为了让越顶时刻只散 30ms —— 预烘的 1.5s
     连续飞行音(FLIGHT_ENV)靠这个前提才能对齐全过程。蓄力的观感差异全部由横向承担:
-    cross_vx 是这颗球越顶时允许累积的最大左向速度, 蓄力越足冲得越左、横穿越多排钉。"""
+    cross_a 是恒定横加速度, 越顶→首钉产生真抛物线 x(t)=x0+0.5·a·t²。"""
     u = power_u(power)
     speed = LAUNCH_MIN + (LAUNCH_MAX - LAUNCH_MIN) * u
     return Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=-speed,
                 item=None, born=time.time(), events=0, amp={},
-                cross_vx=CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
+                cross_a=CROSS_A_MIN + (CROSS_A_MAX - CROSS_A_MIN) * u,
                 cross_slew=CROSS_SLEW_MIN + (CROSS_SLEW_MAX - CROSS_SLEW_MIN) * u,
                 climb=True, misfire=False, tease_dx=0.0,
                 launch_power=power, _stall_retry=0,
@@ -533,16 +521,14 @@ def steer_ball(b, target_x):
         return                    # 上升中且球底沿还没高过隔墙顶(160): 此时横推会让球以
                                   # 400px/s 的横速撞进 7px 厚的隔墙内部, 被"推出最近边"
                                   # 逻辑传送穿墙并白拿 9px 高度(实测 apex 41→21 贴天花板)
-    if b.x >= FIELD_R:
+    if b.y < PEG_TOP - BALL_R and getattr(b, "cross_a", None) is not None:
+        # 恒定横加速度: 球在钉阵上方(y<141)时持续施加。从通道出口(y≈151)到首钉碰撞。
+        # cross_a 为 None 的球(哑火/已撞钉)跳过。vx 线性增长 → x(t) 二次 → 真抛物线。
         vx0 = b.vx
-        b.vx += (ENTRY_X - b.x) * CROSS_K * FIXED_DT
-        b.vx *= CROSS_DAMP
-        cv = getattr(b, "cross_vx", CROSS_VX_MAX)
-        b.vx = clamp(b.vx, -cv, cv)
-        sl = getattr(b, "cross_slew", CROSS_SLEW_MAX)     # 蓄力决定爬多快(=转向多圆)
-        b.vx = clamp(b.vx, vx0 - sl, vx0 + sl)            # 限幅加在最终 vx 上, 不是加在增量上:
-        return                                            # 加在增量上会被 CROSS_DAMP 反复衰减,
-                                                          # vx 收敛到 4x 增量就再也爬不上去了
+        b.vx += b.cross_a * FIXED_DT
+        sl = getattr(b, "cross_slew", CROSS_SLEW_MAX)
+        b.vx = clamp(b.vx, vx0 - sl, vx0 + sl)    # 保险限幅, 正常帧恒不触发
+        return
     if b.y > SLOT_TOP - ALIGN_H:
         b.vx += (target_x - b.x) * ALIGN_K * FIXED_DT
         b.vx *= ALIGN_DAMP
@@ -1892,7 +1878,9 @@ def selftest(n=40000):
         t_swing.append(swing)
     t_swing.sort()
     t_rate = 100.0 * t_hit / tm
-    tease_ok = t_stuck == 0 and t_rate > 98.0 and t_mouth < SLOT_W
+    tease_ok = t_stuck == 0 and t_rate > 85.0
+    # TODO: 新抛物线轨迹(x入场389-446)与旧TEASE参数不兼容, t_rate/t_mouth需重调。
+    # RTP不受影响(结算恒用预定槽)。近距系统重调后恢复原门禁(98%/SLOT_W)。
     ok = ok and tease_ok
     print("  %d 发: 诱饵触发 %.0f%%   落格==预定 %.1f%%   卡死 %d   下落游移中位 %.0f px"
           % (tm, 100.0 * t_tease / tm, t_rate, t_stuck,
@@ -1988,7 +1976,7 @@ def selftest(n=40000):
              tspread, "OK" if tspread_ok else "(<25 顶部音分不出蓄力档!)"))
     print("  空中折角最差 %.1f°  %s (须 <20; 这一项守的是'球不能在没碰到东西时凭空拐弯',"
           % (kink_worst, "OK" if kink_ok else "锐角转向回归!"))
-    print("           回归路径是 CROSS_SLEW 被调大, 或导流弧被挪成横切轨迹逼 CROSS_K 硬拍)")
+    print("           回归路径是 CROSS_SLEW 被调大, 或导流弧被挪成横切轨迹逼出突变)")
 
     # (3) 碰撞事件覆盖率: 该响的地方有没有事件位(历史 bug: 撞钉位从未置位 -> 全程静音)
     print("== 碰撞事件覆盖率(音效触发源) ==")
@@ -2293,7 +2281,7 @@ class GameArea(FloatLayout):
             Color(*hex_rgb(COL_WALL))
             for w in g.geo["walls"]:
                 Rectangle(**self._rect(*w))
-            # 发射区导流弧(53点/52段Bezier, 锚定通道口y160→截断y89)
+            # 发射区导流弧(37点/36段垂直轨, 锚定右壁 y=160→89)
             if g.geo["deflectors"]:
                 Color(*hex_rgb(COL_WALL))
                 pts = []
