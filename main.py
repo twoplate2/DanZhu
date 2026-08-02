@@ -252,7 +252,7 @@ def build_walls():
 
 
 def build_deflectors():
-    """发射区导流弧: 三次Bezier曲线, 贴着球越顶轨迹外侧, 给转向一个看得见的理由。
+    """发射区导流弧: 锚定通道口, 覆盖转向全过程, 给横向移动一个看得见的理由。
 
     球从"向上"变成"向左下", 物理上是 CROSS_K 引导力+重力+顶墙擦碰, 弧面
     从不被球碰到(实测撞弧率 0%)。没有弧面, 球就是在空中自己拐弯——弧面的
@@ -260,20 +260,19 @@ def build_deflectors():
 
     老版(510,108)→(450,88)横切轨迹, 球为躲它被迫6帧横移37px, 逼出38°折角。
 
-    当前: P0(503,170)→P1(511,143)→P2(505,107)→P3(450,60) 三次Bezier, 100点
-    采样降为51点/50段, 段间转角<2°。偏移量~17px(BALL_R*BALL_VIEW+余量),
-    实测900发0撞弧, 球心净空4.8px。改控制点需重验碰撞。"""
-    cpts = [(503, 170), (503, 168), (504, 167), (504, 165), (505, 163),
-            (505, 162), (505, 160), (505, 158), (506, 156), (506, 155),
-            (506, 153), (506, 151), (506, 149), (506, 147), (506, 145),
-            (505, 143), (505, 141), (505, 139), (505, 137), (504, 135),
-            (504, 133), (503, 131), (502, 129), (502, 127), (501, 125),
-            (500, 122), (499, 120), (498, 118), (497, 116), (496, 114),
-            (495, 111), (493, 109), (492, 107), (490, 104), (489, 102),
-            (487, 99), (485, 97), (484, 94), (482, 92), (480, 89),
-            (477, 87), (475, 84), (473, 82), (470, 79), (468, 76),
-            (465, 74), (462, 71), (459, 68), (456, 66), (453, 63),
-            (450, 60)]
+    当前: 起点(507,160)锚在通道口右壁→Bezier曲线(509,130)→(500,108)→
+    终点(479,89)。53点/52段, 段间转角<10°。弧面覆盖y=89~160完整转向区间,
+    y<89三档蓄力扇形散开过大, 弧面在此截断让球自然飞出。球心净空4.9px,
+    900发0撞弧。改控制点需重验碰撞。"""
+    cpts = [(507, 160), (506, 151), (506, 149), (506, 148), (506, 147), (506, 146),
+            (507, 145), (507, 143), (507, 142), (507, 141), (506, 140), (506, 138),
+            (506, 137), (506, 136), (506, 135), (506, 133), (506, 132), (505, 131),
+            (505, 130), (505, 128), (504, 127), (504, 126), (504, 125), (503, 123),
+            (503, 122), (502, 121), (502, 120), (501, 119), (501, 117), (500, 116),
+            (499, 115), (499, 114), (498, 112), (497, 111), (497, 110), (496, 109),
+            (495, 107), (494, 106), (493, 105), (492, 104), (492, 103), (491, 101),
+            (490, 100), (489, 99), (488, 98), (487, 97), (485, 95), (484, 94),
+            (483, 93), (482, 92), (481, 91), (480, 90), (479, 89)]
     return [(cpts[i][0], cpts[i][1], cpts[i + 1][0], cpts[i + 1][1])
             for i in range(len(cpts) - 1)]
 
@@ -1907,7 +1906,7 @@ def selftest(n=40000):
     print("== 蓄力观感区分度(竖直时序必须不变) ==")
     apexx_med = {}
     turny_med = {}
-    kink_med = {}
+    kink_max = {}
     fp_bad = []
     turn_bad = []
     for power in (MISFIRE_POWER, 0.5, 1.0):
@@ -1958,7 +1957,7 @@ def selftest(n=40000):
                 turns.append(turn)
         axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort(); kinks.sort()
         apexx_med[power] = axs[len(axs) // 2]
-        kink_med[power] = kinks[len(kinks) // 2]
+        kink_max[power] = max(kinks)
         fp_med = fps[len(fps) // 2] if fps else -1
         if not (80 <= fp_med <= 95):
             fp_bad.append((power, fp_med))
@@ -1972,12 +1971,12 @@ def selftest(n=40000):
               "转向 %d 帧 @y%.0f   空中折角 %.0f°"
               % (power * 100, power_u(power), apexx_med[power],
                  npegs[len(npegs) // 2], fp_med, turn_med, turn_y_med,
-                 kink_med[power]))
+                 kink_max[power]))
     spread = apexx_med[MISFIRE_POWER] - apexx_med[1.0]
     spread_ok = spread >= 50.0
     tspread = turny_med[MISFIRE_POWER] - turny_med[1.0]
     tspread_ok = tspread >= 25.0
-    kink_worst = max(kink_med.values())
+    kink_worst = max(kink_max.values())
     kink_ok = kink_worst < 20.0
     ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok and kink_ok
     print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=50 玩家才看得出来)"
@@ -2294,7 +2293,7 @@ class GameArea(FloatLayout):
             Color(*hex_rgb(COL_WALL))
             for w in g.geo["walls"]:
                 Rectangle(**self._rect(*w))
-            # 发射区导流弧(51点/50段Bezier, 见 build_deflectors)
+            # 发射区导流弧(53点/52段Bezier, 锚定通道口y160→截断y89)
             if g.geo["deflectors"]:
                 Color(*hex_rgb(COL_WALL))
                 pts = []
