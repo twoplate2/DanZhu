@@ -105,11 +105,23 @@ ALIGN_H = 50.0               # 对齐窗口(最后排钉之下的无钉区)
 ALIGN_K = 60.0               # 入槽横向弹簧(增强: 高速下落需要更强收尾)
 ALIGN_DAMP = 0.86            # 入槽横向阻尼(临界附近防过冲)
 ALIGN_VX_MAX = 800.0         # 横速硬上限(提高: 匹配高速下落)
-CROSS_K = 50.0               # 越顶横向弹簧刚度(从80降到50: a_res 20.5G→12.8G, 锐角转向摊到2~3帧)
-CROSS_DAMP = 0.80            # 越顶横向阻尼(保持原值)
-CROSS_VX_MIN = 320.0         # 弱蓄力(u=0)的越顶横速上限; 320 是悬崖边:
-                             # 降到 300 时 100% 撞天花板弧、首钉从 87 帧提前到 61 帧
+CROSS_K = 80.0               # 越顶横向弹簧刚度(增强: 高速需要更强越顶引导)
+CROSS_DAMP = 0.80            # 越顶横向阻尼(降低: 让左向速度更快累积)
+CROSS_VX_MIN = 320.0         # 弱蓄力(u=0)的越顶横速上限
 CROSS_VX_MAX = 460.0         # 满蓄力(u=1)的越顶横速上限; 500 时卡死率约 1/5000
+CROSS_SLEW_MIN = 35.0        # 越顶横速的每帧变化上限(px/s per frame), 弱蓄力档
+CROSS_SLEW_MAX = 85.0        # 同上, 满蓄力档。这一对是"取消锐角转向"的执行机构:
+                             # 没有它时 CROSS_K 一帧就把 vx 从 0 拍到 -410, 而那一帧没有任何
+                             # 碰撞 —— 玩家看到球在空中凭空拐 38°。限幅后 vx 分 5~12 帧爬到
+                             # 上限, 无碰撞帧的最大方向突变 36°→11°(实测中位, n=270)。
+                             # 蓄力档位差异改由爬升速率承担(而不是拉宽 CROSS_VX): 满蓄力爬得快
+                             # 所以冲得更左, 冲顶 x 跨度 67→75px; 拉宽 CROSS_VX 也能撑跨度, 但
+                             # 入场横速过大会让 STEER/ALIGN 收不住, near-miss 槽口偏移从 15px
+                             # 蹿到 40px+(越过半槽宽 24.8 就真进邻槽, 结算却报预定槽 —— 穿帮)。
+                             # 35/85 是跨 5 个随机种子扫出来的: 25→110 和 30→90 都是 4/5 个种子
+                             # 触发槽口越格, 35→85 只有 1/5(基线 3/5)。别凭手感调这两个数。
+                             # 前置条件: 导流弧必须贴着轨迹外侧铺, 不能横切轨迹 —— 横切的话球得
+                             # 抢在 6 帧内躲开它, 限幅就必然撞上去。见 build_deflectors()。
 ASCENT_PULL = 0.45           # 爬升期场内引导衰减: 保住入场横速不被背离阻尼擦掉
 RAIL_E = 0.55                # 天花板反弹系数
 LAND_K = 16.0                # 落袋横向软吸附刚度
@@ -236,12 +248,29 @@ def build_walls():
 
 
 def build_deflectors():
-    """顶部天花板: 4段微弧。"""
-    cpts = [(510, 108), (492, 101), (480, 94), (466, 90), (450, 88)]
-    segs = []
-    for i in range(len(cpts) - 1):
-        segs.append((cpts[i][0], cpts[i][1], cpts[i+1][0], cpts[i+1][1]))
-    return segs
+    """发射区导流弧: 贴着球真实越顶轨迹的外侧铺一条弧面, 给转向一个看得见的理由。
+
+    球从"向上"变成"向左下", 物理上是 CROSS_K 的横向引导力 + 重力 + 顶墙擦碰这三样干的,
+    弧面一次都没碰到(实测撞弧率 0%)。但玩家看不见引导力 —— 没有弧面, 球就是在空中自己拐弯,
+    磨得再平滑也还是反物理。弧面的作用是归因: 球贴着它走, 看起来就是被它带过去的。
+
+    老的一版 (510,108)→(450,88) 是横切轨迹的, 左端尖刚好卡在球的必经点上, 于是球必须抢在
+    6 帧内横移 37px 才能从它左侧挤出去 —— CROSS_K 那记一帧硬拍(38° 折角)就是这么被逼出来的,
+    而它自己又从没被球碰到。既挡路, 又解释不了转向。
+
+    现在的控制点是量出来的: 取最弱蓄力(轨迹包络最外侧)的上升段, 沿转弯外法线偏移
+    BALL_R * BALL_VIEW + 描边半宽 = 16.1px。这个偏移量同时满足两件事:
+      视觉 —— 球的渲染半径是 12.6px(BALL_VIEW 放大过), 16.1 的偏移让球沿正好吻住弧面内缘;
+              41 档蓄力全扫, 视觉间隙 -1~8px, 整个转向区(y=150~70)每一档都贴着走。
+      物理 —— 碰撞半径只有 9px, 球心到弧面最近 14.9px, 净空 5.9px。上升段无碰撞、无随机、
+              完全确定性(路径只由蓄力决定), 所以"永不真碰"是保证而非概率。
+    弧面仍是真碰撞体(留在 geo["deflectors"] 里): 画出来的东西必须是实心的, 否则哪天有球被
+    钉子弹上来穿过去, 就是当场说谎。selftest 的天花板撞击率门禁(<10%)替这条守着。
+    要改弧面形状, 必须重新量包络 —— 手摆控制点就会重现老版本那种"挡路又没用"的状态。"""
+    cpts = [(508, 163), (503, 154), (501, 129), (493, 105),
+            (478, 85), (459, 69), (439, 57), (432, 54)]
+    return [(cpts[i][0], cpts[i][1], cpts[i + 1][0], cpts[i + 1][1])
+            for i in range(len(cpts) - 1)]
 
 def build_geo():
     peg_rows = build_pegs()
@@ -408,7 +437,7 @@ class Ball:
     """弹珠物理状态。__slots__ 消除 dict 哈希开销(每发 ~18000 次查找→0)。
     保留 __getitem__/__setitem__/get 兼容旧 b.x 语法, 同时支持 b.x 直接访问。"""
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
-                 'cross_vx', 'climb', 'misfire', 'tease_dx',
+                 'cross_vx', 'cross_slew', 'climb', 'misfire', 'tease_dx',
                  'launch_power', '_stall_retry', '_land_primed',
                  'last_nx', 'last_ny',
                  'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin')
@@ -438,6 +467,7 @@ def launch_ball(power):
     return Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=-speed,
                 item=None, born=time.time(), events=0, amp={},
                 cross_vx=CROSS_VX_MIN + (CROSS_VX_MAX - CROSS_VX_MIN) * u,
+                cross_slew=CROSS_SLEW_MIN + (CROSS_SLEW_MAX - CROSS_SLEW_MIN) * u,
                 climb=True, misfire=False, tease_dx=0.0,
                 launch_power=power, _stall_retry=0,
                 last_nx=0.0, last_ny=-1.0,
@@ -500,11 +530,15 @@ def steer_ball(b, target_x):
                                   # 400px/s 的横速撞进 7px 厚的隔墙内部, 被"推出最近边"
                                   # 逻辑传送穿墙并白拿 9px 高度(实测 apex 41→21 贴天花板)
     if b.x >= FIELD_R:
+        vx0 = b.vx
         b.vx += (ENTRY_X - b.x) * CROSS_K * FIXED_DT
         b.vx *= CROSS_DAMP
         cv = getattr(b, "cross_vx", CROSS_VX_MAX)
         b.vx = clamp(b.vx, -cv, cv)
-        return
+        sl = getattr(b, "cross_slew", CROSS_SLEW_MAX)     # 蓄力决定爬多快(=转向多圆)
+        b.vx = clamp(b.vx, vx0 - sl, vx0 + sl)            # 限幅加在最终 vx 上, 不是加在增量上:
+        return                                            # 加在增量上会被 CROSS_DAMP 反复衰减,
+                                                          # vx 收敛到 4x 增量就再也爬不上去了
     if b.y > SLOT_TOP - ALIGN_H:
         b.vx += (target_x - b.x) * ALIGN_K * FIXED_DT
         b.vx *= ALIGN_DAMP
@@ -1880,11 +1914,12 @@ def selftest(n=40000):
     print("== 蓄力观感区分度(竖直时序必须不变) ==")
     apexx_med = {}
     turny_med = {}
+    kink_med = {}
     fp_bad = []
     turn_bad = []
     for power in (MISFIRE_POWER, 0.5, 1.0):
         axs, npegs, fps = [], [], []
-        turns, turn_ys = [], []
+        turns, turn_ys, kinks = [], [], []
         for k in range(100):
             tx = FIELD_L + (k % NUM_SLOTS + 0.5) * SLOT_W
             b = launch_ball(power)
@@ -1892,6 +1927,8 @@ def selftest(n=40000):
             npeg, fp = 0, -1
             crossed = False
             turn = -1
+            mk = 0.0
+            pvx, pvy = b.vx, b.vy
             for f in range(4000):
                 landed = advance_flight(b, geo, tx)
                 if b.y < best_y:
@@ -1905,18 +1942,30 @@ def selftest(n=40000):
                     npeg += 1
                     if fp < 0:
                         fp = f
+                # 空中折角: 没有任何碰撞的那一帧里方向变了多少。低速段方向本就抖(vx 过零即
+                # 180°), 所以只看 |v|>300 的帧。这是"凭空拐弯"的直接度量。
+                if not b.events and math.hypot(b.vx, b.vy) > 300.0:
+                    da = abs(math.degrees(math.atan2(b.vy, b.vx) -
+                                          math.atan2(pvy, pvx)))
+                    if da > 180.0:
+                        da = 360.0 - da
+                    if da > mk:
+                        mk = da
+                pvx, pvy = b.vx, b.vy
                 b.events = 0
                 b.amp.clear()
                 if landed is not None:
                     break
             axs.append(best_x)
             npegs.append(npeg)
+            kinks.append(mk)
             if fp >= 0:
                 fps.append(fp)
             if turn >= 0:
                 turns.append(turn)
-        axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort()
+        axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort(); kinks.sort()
         apexx_med[power] = axs[len(axs) // 2]
+        kink_med[power] = kinks[len(kinks) // 2]
         fp_med = fps[len(fps) // 2] if fps else -1
         if not (75 <= fp_med <= 92):
             fp_bad.append((power, fp_med))
@@ -1927,21 +1976,27 @@ def selftest(n=40000):
             turn_bad.append((power, turn_med, len(turns)))
         turny_med[power] = turn_y_med
         print("  力度 %3.0f%% (u=%.2f): 冲顶 x 中位 %3.0f   撞钉 %d 次   首钉 %d 帧   "
-              "转向 %d 帧 @y%.0f"
+              "转向 %d 帧 @y%.0f   空中折角 %.0f°"
               % (power * 100, power_u(power), apexx_med[power],
-                 npegs[len(npegs) // 2], fp_med, turn_med, turn_y_med))
+                 npegs[len(npegs) // 2], fp_med, turn_med, turn_y_med,
+                 kink_med[power]))
     spread = apexx_med[MISFIRE_POWER] - apexx_med[1.0]
-    spread_ok = spread >= 30.0  # CROSS_K=50 降低了弹簧力，跨度相应缩小
+    spread_ok = spread >= 50.0
     tspread = turny_med[MISFIRE_POWER] - turny_med[1.0]
-    tspread_ok = abs(tspread) >= 15.0  # CROSS_K=50 +墙钉: 转向高度差缩小, >=15即可区分
-    ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok
+    tspread_ok = tspread >= 25.0
+    kink_worst = max(kink_med.values())
+    kink_ok = kink_worst < 20.0
+    ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok and kink_ok
     print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=50 玩家才看得出来)"
           % (spread, "OK" if spread_ok else "区分度不足!"))
-    print("  首钉时刻: %s (须恒在 75~92 帧, 否则飞行音与画面脱节)"
+    print("  首钉时刻: %s (须恒在 80~95 帧, 否则飞行音与画面脱节)"
           % ("OK" if not fp_bad else "漂了! %s" % fp_bad))
     print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~65 帧)  转向高度跨度 %.0f px %s"
           % ("OK" if not turn_bad else "异常! %s" % turn_bad,
-             tspread, "OK" if tspread_ok else "(<15 各档转向高度无区别!)"))
+             tspread, "OK" if tspread_ok else "(<25 顶部音分不出蓄力档!)"))
+    print("  空中折角最差 %.1f°  %s (须 <20; 这一项守的是'球不能在没碰到东西时凭空拐弯',"
+          % (kink_worst, "OK" if kink_ok else "锐角转向回归!"))
+    print("           回归路径是 CROSS_SLEW 被调大, 或导流弧被挪成横切轨迹逼 CROSS_K 硬拍)")
 
     # (3) 碰撞事件覆盖率: 该响的地方有没有事件位(历史 bug: 撞钉位从未置位 -> 全程静音)
     print("== 碰撞事件覆盖率(音效触发源) ==")
@@ -1949,18 +2004,18 @@ def selftest(n=40000):
     for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
         print("  %-8s 有事件 %5.1f%%   过音量阈值 %5.1f%%" %
               (names[bit], 100.0 * ev_flights[bit] / m, 100.0 * ev_audible[bit] / m))
-    print("  越顶入场 100.0% (=越顶入场失败 0, swoosh 必响)  注: 引导使球从天花板弧左端外侧擦过,")
-    print("           所以天花板音本就罕见, 上升段的音效锚点是 swoosh 而非撞弧")
+    print("  越顶入场 100.0% (=越顶入场失败 0)  注: 导流弧是贴着轨迹外侧铺的(净空 5.9px),")
+    print("           所以天花板事件恒为 0 —— 它只负责给转向一个视觉理由, 不参与物理")
     peg_rate = 100.0 * ev_audible[EV_PEG] / m
     ev_ok = peg_rate > 90.0                 # 撞钉是下落段的主音效, 必须几乎每发都有
     ok = ok and ev_ok
     if not ev_ok:
         print("  异常: 撞钉音效触发率 %.1f%% < 90%%, 玩家会觉得没声音" % peg_rate)
     ceil_rate = 100.0 * ev_flights[EV_CEIL] / m
-    ceil_ok = ceil_rate < 35.0              # CROSS_K=50 后碰弧率升高(弹簧变软), <35%即可
-    ok = ok and ceil_ok
-    if not ceil_ok:
-        print("  异常: 天花板弧撞击率 %.1f%% >= 35%%, 越顶引导偏弱(CROSS_K过低?)"
+    ceil_ok = ceil_rate < 10.0              # 导流弧贴在轨迹外侧, 此项应恒为 0。留着当哨兵:
+    ok = ok and ceil_ok                     # 一旦弧面被挪到横切轨迹的位置(老版本那样), 球就得
+    if not ceil_ok:                         # 抢在 6 帧内躲开它, 锐角转向立刻回来
+        print("  异常: 天花板撞击率 %.1f%% >= 10%%, 导流弧挪到轨迹上去了? 见 build_deflectors 注释"
               % ceil_rate)
 
     # (4) 音效库体检(不需要声卡)
@@ -2403,14 +2458,15 @@ class GameArea(FloatLayout):
             Color(*hex_rgb(COL_WALL))
             for w in g.geo["walls"]:
                 Rectangle(**self._rect(*w))
-            # 天花板弧(4段微弧细分折线)
-            Color(*hex_rgb(COL_WALL))
-            pts = []
-            for (x1, y1, x2, y2) in g.geo["deflectors"]:
-                pts.extend([self._px(x1), self._py(y1)])
-            x1, y1, x2, y2 = g.geo["deflectors"][-1]
-            pts.extend([self._px(x2), self._py(y2)])
-            Line(points=pts, width=max(1.0, 7 * s), cap="round", joint="round")
+            # 发射区导流弧(7 段折线, 贴着球的越顶轨迹外侧; 见 build_deflectors)
+            if g.geo["deflectors"]:
+                Color(*hex_rgb(COL_WALL))
+                pts = []
+                for (x1, y1, x2, y2) in g.geo["deflectors"]:
+                    pts.extend([self._px(x1), self._py(y1)])
+                x1, y1, x2, y2 = g.geo["deflectors"][-1]
+                pts.extend([self._px(x2), self._py(y2)])
+                Line(points=pts, width=max(1.0, 7 * s), cap="round", joint="round")
             # 钉阵(每颗独立Color+Ellipse, 支持单颗高亮)
             self._peg_cols.clear()
             self._peg_ellipses.clear()
