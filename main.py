@@ -83,14 +83,16 @@ PLUNGER_Y = FLOOR - BALL_R - 2   # 发射槽在井底(老版本): 弹簧 Z 字�
 RISER_Y = PEG_TOP + (PEG_ROWS - 1) * PEG_SY + BALL_R + PEG_R   # 495: 无钉区起点
 
 # ----------------------------- 物理常量 -----------------------------------
-G = 1200.0                   # 重力 px/s^2(大幅提高: 加速下落, 缩短飞行时间)
-E = 0.20                     # 钉子恢复系数(再降: 接近自由落体穿过钉阵)
-E_FAST = 0.18                # 高速撞击恢复系数(e(v)低速高弹/高速粘)
-E_SLOW = 0.35                # 低速接触恢复系数(0.50→0.35: 碰钉反弹小, 球碰钉后
-                             # vy 保持向下继续下落, 消除"横向跳"(真实弹珠机球不会横向滑翔))
-PEG_BOUNCE_VY_MAX = 300.0    # 碰钉后向上速度上限(极端反弹限幅)
-PEG_BOUNCE_VY_MIN = 200.0    # 碰钉后保底下落速度(vy<120 补到 120: 防"水平滑翔"横穿)    # 碰钉后向上速度上限(极端反弹限幅: 弹高≤37.5px=一行内。
+G = 1000.0                   # 重力 px/s^2(1200→1000: 恢复弹珠机节奏 —— 碰钉有可见
+                             # 减速反弹, 行穿行 ~0.22s; 曾 1200 加速下落被玩家评为"嗖嗖穿过")
+E = 0.20                     # 钉子弹性(低: 接近自由落体)
+E_FAST = 0.25                # 高速撞击恢复系数(e(v)低速高弹/高速粘)
+E_SLOW = 0.55                # 低速接触恢复系数(0.35→0.55: 碰钉反弹明显=弹珠机弹跳感,
+                             # 碰钉减速比 0.83; 配合 VY_MIN=100 防滑翔横穿)
+PEG_BOUNCE_VY_MAX = 300.0    # 碰钉后向上速度上限(极端反弹限幅: 弹高≤37.5px=一行内。
                              # 专家评估: 466px 大回弹违反直觉, 保留正常小弹跳)
+PEG_BOUNCE_VY_MIN = 100.0    # 碰钉后保底下落速度(vy<100 补到 100: 防"水平滑翔"横穿;
+                             # 200→100: 允许碰钉后自然减速, 恢复弹跳节奏)
 PEG_REFLECT_VX_MAX = 300.0   # 碰钉反射横速上限(球碰钉后横速≤300, 横穿≤1钉距, 防"横向跳")
 PEG_STEER_K = 0.8           # 碰钉一次性引导: 反射后 vx 朝目标槽微调系数(碰撞=改方向,
                              # 飞行中零干预。0.20 = 修订前命中率 ~50%, 修订兜底 100%;
@@ -104,14 +106,14 @@ FRAME_MS = 16
 SUBSTEPS = 6                 # 子步数(增加: 高速下防穿透)
 JITTER = 6.0                 # 撞钉切向随机扰动(大幅降低: 防方向突变 + 防卡死)
 
-LAUNCH_MIN = 1180.0          # 最小发射(随槽回底部同步回调: apex≈57 不撞顶)
-LAUNCH_MAX = 1220.0          # 满蓄力发射(apex≈17, 不撞顶)
+LAUNCH_MIN = 1077.0          # 最小发射(随 G=1000 回调, apex≈57 不撞顶)
+LAUNCH_MAX = 1114.0          # 满蓄力发射(apex≈17, 不撞顶)
 CHARGE_RATE = 0.9            # 蓄力速度(每秒充满比例)
 ALIGN_H = 80.0               # 对齐窗口(最后排钉之下的无钉区)。50→80: 原来只有 2.5 帧作用时间,
                              # 被钉子弹飞的球来不及收回来。上限是 SLOT_TOP-RISER_Y=121(再大就
                              # 伸进钉阵, 弹簧会在有钉区跟碰撞打架); 实测 80 最好, 110 反而变差
                              # (窗口太长, ALIGN_DAMP 收不住, 过冲)。跨 12 种子 x 800 发:
-                             # 越格(球到隔板顶时已在邻槽) 5→2 例, near-miss 可见游移不变(25px)。
+                             # 越格(球到隔板顶时已在邻槽) 5→2 例。
 ALIGN_K = 60.0               # 入槽横向弹簧(增强: 高速下落需要更强收尾)
 ALIGN_DAMP = 0.86            # 入槽横向阻尼(临界附近防过冲)
 ALIGN_VX_MAX = 800.0         # 横速硬上限(提高: 匹配高速下落)
@@ -132,10 +134,10 @@ LAND_E = 0.42                # 落袋地板恢复系数: 0.42→弹3~4次逐渐�
 LAND_BOUNCE_MIN_VY = 220.0   # 落地最低初速: 低于此值就补到这么多, 保证每次都有可见回弹
 
 # --------------------- 哑火: 球发射了, 但升不过隔墙顶 -----------------------
-# h = v^2/(2G); 要 apex y > LANE_WALL_TOP(160) 需 v < sqrt(2*1200*477) ≈ 1070
+# h = v^2/(2G); 要 apex y > LANE_WALL_TOP(160) 需 v < sqrt(2*1000*477) ≈ 977
 MISFIRE_POWER = 0.15         # 力度阈值: 低于此值球飞不出竖井
-MISFIRE_V_MIN = 520.0        # power→0    的发射速度(apex y≈524, 刚离柱塞一点)
-MISFIRE_V_MAX = 980.0        # power→阈值 的发射速度(apex y≈237, 差一点就够)
+MISFIRE_V_MIN = 475.0        # power→0    的发射速度(apex y≈524, 刚离柱塞一点)
+MISFIRE_V_MAX = 935.0        # power→阈值 的发射速度(apex y≈200, 离隔墙顶留余量)
 MISFIRE_E = 0.22             # 落回柱塞的弹跳恢复系数
 MISFIRE_BOUNCE_VY = 200.0    # 落地速度低于此值直接停住
 MISFIRE_MAX_FRAMES = 180     # 兜底(实测最长 121 帧)
@@ -918,13 +920,13 @@ def _sfx_launch():
 
 
 # 飞行音包络: 实测 400 次飞行的中位速度曲线(归一化), 每 0.1s 一点。
-# 形状 = 出膛最快 -> 碰弧面转向(0.58s) -> 抛体上升减速 -> 顶部滞空(0.9s 谷)
-#      -> 俯冲加速 -> 首次撞钉(1.2s)收尾。弧面护沿方案(三段式)后首钉从 1.45s 提前到 1.2s,
-#      谷从 1.1s 移到 0.9s(碰弧面转向的顶点即抛体 apex, 实测转向 52~54 帧 = 0.87~0.90s)。
-FLIGHT_ENV = [1.00, 0.90, 0.80, 0.70, 0.59, 0.50, 0.47, 0.48,
-              0.53, 0.22, 0.24, 0.33, 0.42, 0.44, 0.30, 0.20]
+# 形状 = 出膛最快 -> 碰弧面转向(0.65s) -> 抛体上升减速 -> 顶部滞空(0.95s 谷)
+#      -> 俯冲加速 -> 首次撞钉(1.33s)收尾后淡出。G=1000 重测(2026-08-03):
+#      碰弧面 0.65s / 谷 0.95s / 首钉 1.33s(旧 0.58/0.90/1.22)。
+FLIGHT_ENV = [1.00, 0.90, 0.82, 0.72, 0.61, 0.53, 0.43, 0.34,
+              0.28, 0.25, 0.26, 0.29, 0.35, 0.42, 0.30, 0.22]
 FLIGHT_DUR = 1.50
-FLIGHT_GRAIN_END = 0.58      # 颗粒(滚动感)淡出时刻: 球此时已碰弧面离开竖井钢轨, 之后是空中气流
+FLIGHT_GRAIN_END = 0.65      # 颗粒(滚动感)淡出时刻: 球此时已碰弧面离开竖井钢轨, 之后是空中气流
 
 
 def _sfx_flight():
@@ -1896,6 +1898,52 @@ def selftest(n=40000):
           % (solve_rate, ok_solve, m2, avg_att))
     print("  盘面不变: solve_landing 不调用 roll_multipliers/choose_target (代码保证)")
 
+    # (2b'') 下落节奏门禁: 弹珠机手感 —— 碰钉要有可见减速, 球在钉阵里慢慢滚落。
+    #       历史教训: G=1200/VY_MIN=200 时球"嗖嗖穿过"钉阵(行穿行 0.17s, 碰钉不减
+    #       反加速), 玩家投诉"下落加速极快"。G=1000/E_SLOW=0.55/VY_MIN=100 后
+    #       行穿行 0.22s、碰钉减速比 0.83。
+    print("== 下落节奏(弹珠机手感: 碰钉可见减速) ==")
+    mn = 250
+    row_gaps = []
+    peg_ratios = []
+    for _ in range(mn):
+        target = random.randrange(NUM_SLOTS)
+        tx = FIELD_L + (target + 0.5) * SLOT_W
+        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0), target_x=tx)
+        prev_y = b.y
+        row_t = {}
+        t = 0.0
+        for _f in range(4000):
+            vy0 = b.vy
+            landed = advance_flight(b, geo, tx)
+            t += FIXED_DT
+            if b.events & EV_PEG:
+                if vy0 > 50:   # 碰钉减速比 = (碰后vy-重力)/碰前vy; 扣重力才是纯碰撞效应
+                    peg_ratios.append((b.vy - G * FIXED_DT) / vy0)
+                b.events = 0
+                b.amp.clear()
+            elif b.events:
+                b.events = 0
+                b.amp.clear()
+            for r in range(1, PEG_ROWS):      # 行穿行: 相邻钉行间的下落耗时
+                y = PEG_TOP + r * PEG_SY
+                if y not in row_t and b.vy > 0 and prev_y < y <= b.y:
+                    row_t[y] = t
+            prev_y = b.y
+            if landed is not None:
+                break
+        rows = sorted(row_t)
+        for a, c in zip(rows, rows[1:]):
+            row_gaps.append(row_t[c] - row_t[a])
+    row_gaps.sort()
+    peg_ratios.sort()
+    gap_med = row_gaps[len(row_gaps) // 2]
+    ratio_med = peg_ratios[len(peg_ratios) // 2]
+    rhythm_ok = gap_med >= 0.18 and ratio_med <= 0.90
+    ok = ok and rhythm_ok
+    print("  行穿行 p50=%.2fs (须>=0.18)   碰钉减速比 p50=%.2f (须<=0.90, 碰钉减速)"
+          % (gap_med, ratio_med))
+
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
     print("== 蓄力观感区分度(竖直时序必须不变) ==")
@@ -1970,12 +2018,12 @@ def selftest(n=40000):
         kink_max[power] = max(kinks)
         kink_delta[power] = max(kdeltas)
         fp_med = fps[len(fps) // 2] if fps else -1
-        if not (55 <= fp_med <= 75):
+        if not (70 <= fp_med <= 90):
             fp_bad.append((power, fp_med))
         turn_med = turns[len(turns) // 2] if turns else -1
         turn_y_med = turn_ys[len(turn_ys) // 2] if turn_ys else -1
         turn_covered = len(turns) == 100        # 顶部碰撞音必须每发都触发
-        if not (45 <= turn_med <= 60) or not turn_covered:
+        if not (50 <= turn_med <= 65) or not turn_covered:
             turn_bad.append((power, turn_med, len(turns)))
         turny_med[power] = turn_y_med
         print("  力度 %3.0f%% (u=%.2f): 冲顶 x 中位 %3.0f   撞钉 %d 次   首钉 %d 帧   "
@@ -1993,9 +2041,9 @@ def selftest(n=40000):
     ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok and kink_ok
     print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=20 玩家看得出力度差异)"
           % (spread, "OK" if spread_ok else "区分度不足!"))
-    print("  首钉时刻: %s (须恒在 60~70 帧, 否则飞行音与画面脱节)"
+    print("  首钉时刻: %s (须恒在 70~90 帧, 否则飞行音与画面脱节)"
           % ("OK" if not fp_bad else "漂了! %s" % fp_bad))
-    print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 45~60 帧)  转向高度跨度 %.0f px %s"
+    print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~65 帧)  转向高度跨度 %.0f px %s"
           % ("OK" if not turn_bad else "异常! %s" % turn_bad,
              tspread, "OK" if tspread_ok else "(<8 顶部音分不出蓄力档!)"))
     print("  空中折角(无碰撞段, 弧面接触帧豁免): 单帧最大 %.1f°  %s (须 <=4;"
