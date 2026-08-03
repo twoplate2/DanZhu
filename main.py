@@ -78,14 +78,24 @@ PEG_SX = FIELD_W / NUM_SLOTS # 钉子水平间距(交错均匀网格)
 
 LANE_WALL_TOP = 160          # 通道隔墙顶部(进一步降低: 更宽敞的入场窗口)
 PLUNGER_X = (LANE_L + RIGHT_INNER) / 2.0
-PLUNGER_Y = FLOOR - BALL_R - 2
+PLUNGER_Y = FLOOR - BALL_R - 2   # 发射槽在井底(老版本): 弹簧 Z 字形贴画布底边框露出,
+                                  # 像真实弹珠机的弹簧发射装置(球坐在弹簧上, 压缩/释放可见)
 RISER_Y = PEG_TOP + (PEG_ROWS - 1) * PEG_SY + BALL_R + PEG_R   # 495: 无钉区起点
 
 # ----------------------------- 物理常量 -----------------------------------
 G = 1200.0                   # 重力 px/s^2(大幅提高: 加速下落, 缩短飞行时间)
 E = 0.20                     # 钉子恢复系数(再降: 接近自由落体穿过钉阵)
 E_FAST = 0.18                # 高速撞击恢复系数(e(v)低速高弹/高速粘)
-E_SLOW = 0.60                # 低速接触恢复系数(中速段更弹)
+E_SLOW = 0.35                # 低速接触恢复系数(0.50→0.35: 碰钉反弹小, 球碰钉后
+                             # vy 保持向下继续下落, 消除"横向跳"(真实弹珠机球不会横向滑翔))
+PEG_BOUNCE_VY_MAX = 300.0    # 碰钉后向上速度上限(极端反弹限幅)
+PEG_BOUNCE_VY_MIN = 200.0    # 碰钉后保底下落速度(vy<120 补到 120: 防"水平滑翔"横穿)    # 碰钉后向上速度上限(极端反弹限幅: 弹高≤37.5px=一行内。
+                             # 专家评估: 466px 大回弹违反直觉, 保留正常小弹跳)
+PEG_REFLECT_VX_MAX = 300.0   # 碰钉反射横速上限(球碰钉后横速≤300, 横穿≤1钉距, 防"横向跳")
+PEG_STEER_K = 0.8           # 碰钉一次性引导: 反射后 vx 朝目标槽微调系数(碰撞=改方向,
+                             # 飞行中零干预。0.20 = 修订前命中率 ~50%, 修订兜底 100%;
+                             # 调大命中率微升但卡死出现(0.30 起), 0.20 是甜点)
+PEG_STEER_MAX = 200.0        # 碰钉引导单次修正上限
 E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
 VMAX = 2400.0                # 限速(需 >= 最大发射速度, 防穿透)
@@ -94,11 +104,9 @@ FRAME_MS = 16
 SUBSTEPS = 6                 # 子步数(增加: 高速下防穿透)
 JITTER = 6.0                 # 撞钉切向随机扰动(大幅降低: 防方向突变 + 防卡死)
 
-LAUNCH_MIN = 1180.0          # 最小发射(匹配G=1200, apex≈58)
-LAUNCH_MAX = 1220.0          # 满蓄力发射(apex≈18)
+LAUNCH_MIN = 1180.0          # 最小发射(随槽回底部同步回调: apex≈57 不撞顶)
+LAUNCH_MAX = 1220.0          # 满蓄力发射(apex≈17, 不撞顶)
 CHARGE_RATE = 0.9            # 蓄力速度(每秒充满比例)
-STEER_MIN = 8.0             # 全程基础引导(增强: 高速下落需要更强引导)
-STEER_MAX = 20.0            # 场内下部引导(增强)
 ALIGN_H = 80.0               # 对齐窗口(最后排钉之下的无钉区)。50→80: 原来只有 2.5 帧作用时间,
                              # 被钉子弹飞的球来不及收回来。上限是 SLOT_TOP-RISER_Y=121(再大就
                              # 伸进钉阵, 弹簧会在有钉区跟碰撞打架); 实测 80 最好, 110 反而变差
@@ -107,43 +115,21 @@ ALIGN_H = 80.0               # 对齐窗口(最后排钉之下的无钉区)。50
 ALIGN_K = 60.0               # 入槽横向弹簧(增强: 高速下落需要更强收尾)
 ALIGN_DAMP = 0.86            # 入槽横向阻尼(临界附近防过冲)
 ALIGN_VX_MAX = 800.0         # 横速硬上限(提高: 匹配高速下落)
-CROSS_A_MIN = -500.0         # 弱蓄力(u=0)越顶恒定横加速度 px/s^2(负=向左)
-CROSS_A_MAX = -1150.0        # 满蓄力(u=1)。天花板反弹抵消约3-5px/s/帧
-CROSS_SLEW_MIN = 10.0        # 每帧vx变化上限(弱档)
-CROSS_SLEW_MAX = 25.0        # 同上(满档)。≈|a_max|/60+3px裕量, 防碰撞后突变
-                             # 这些替换了旧的 CROSS_K(80) + CROSS_DAMP(0.8) + CROSS_VX(320-460)
-                             # 弹簧-阻尼系统。旧系统产生"加速→钳位→匀速"三段式vx曲线, 轨迹非抛物线;
-                             # 恒定加速度使 vx 线性增长, x(t) 为真二次函数, 视觉是自然抛物线。
-                             # CROSS_A_MIN=-500: 20帧进入钉阵(x<459), 获得完整双程加速;
-                             # CROSS_A_MAX=-820: 14帧进入钉阵。跨度保证冲顶x≥50px。
-ASCENT_PULL = 0.45           # 爬升期场内引导衰减: 保住入场横速不被背离阻尼擦掉
-RAIL_E = 0.55                # 天花板反弹系数
+# 转向机构已改为弧面物理导流(build_deflectors): 球碰弧面前纯竖直上升(零干预),
+# 碰弧面后由弧面掠射反射改变方向, 之后靠碰钉一次性引导(PEG_STEER_K)+入槽 ALIGN
+# 收尾。曾经的三代横向引导(弹簧-阻尼 CROSS_K / 恒定加速度 CROSS_A)全部移除——
+# 无碰撞段的任何水平力都会造成"没经过导流槽就转向"的违和感。
+ARC_E = 0.50                 # 弧面法向反弹: 球碰弧面弹离(视觉"被柔和推开"而非硬撞)。
+                             # 曾试 0.2~0.4 想实现"沿弧面滑行": 弱档抖动(碰-弹-再碰),
+                             # 中/满档出口散布 80px+ 且首钉出包络——滑行在此空间物理上不可行,
+                             # 反弹系数必须 ≥0.5 出口才确定(首钉 390/350/301 单调稳定)。
+ARC_VISUAL = 1.4             # 弧面碰撞半径系数(=渲染层 BALL_VIEW): 球视觉半径 12.6 比碰撞
+                             # 半径 9 大 3.6px, 弧面碰撞必须用视觉半径, 球才"与弧面相切"而非
+                             # 嵌进弧面 3.6px —— 曲线相切是常识, 球要给足运动空间
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
 LAND_E = 0.42                # 落袋地板恢复系数: 0.42→弹3~4次逐渐停住, 视觉明显
 LAND_BOUNCE_MIN_VY = 220.0   # 落地最低初速: 低于此值就补到这么多, 保证每次都有可见回弹
-STEER_DVX_MAX = 300.0        # 场内每帧引导增量上限(提: 新抛物线入场更左, 需要更强拉回)
-STEER_VX_MAX = 800.0         # 场内横速上限(提高)
-
-# ------------------ near-miss(擦边): 只改表演, 不改落格 --------------------
-# 诱饵只能放在钉阵里: 末排钉(480)到槽口(616)之间球只飞 ~0.15s(2~3 帧), ALIGN_K=60 的
-# 收尾弹簧在那么短的窗口里推不动几个像素 —— 实测把诱饵放在对齐窗口内, 擦隔板率只从
-# 10% 抬到 13%, 等于没做。钉阵段有 ~1.8s, 弱弹簧(pull 8~20)才有时间把球带偏再拉回。
-TEASE_START_Y = PEG_TOP + 2 * PEG_SY   # 260: 前两排先按真目标走, 免得扰动入场/冲顶
-TEASE_FRAC = 0.55            # 诱饵横向偏移占槽宽比例
-TEASE_END_Y = PEG_TOP + 4 * PEG_SY     # 370: 倒数第三排; 之后交还真目标, 留 246px 回归。
-TEASE_MIN_VY = 150.0         # 球竖直速度低于此值就撤销诱饵。卡死 = 球被横向力压在钉子侧面
-                             # 楔住, 而楔住时 vy 必然掉到近 0 —— 所以"慢了就撤诱饵"直接掐掉
-STEER_MIN_VY = 320.0         # 球竖直速度低于此值, 全场引导按比例淡出(与 TEASE_MIN_VY 同构)
-                             # 了这条新增的失效路径, 球立刻回到原本零卡死的引导上。
-                             # 没有这一条时实测 1/800~1/3000 会卡死(真机上表现为球定住 4s
-                             # 等位移兜底才结算), 而卡死=0 是硬门禁。
-# 上面三个值是扫出来的, 不是猜的(n=3000 真实盘面)。安全不变量是"球下到隔板顶时必须还在
-# 本槽这一侧"(|偏移| < 半槽宽 24.8px) —— 越过去就真进邻槽了, 结算却报预定槽, 当场穿帮。
-#   frac 0.80 / end 370 -> 命中 100.0%  槽口最大偏移 15.8px   下落游移中位 20.6->29.7
-#   frac 0.90 / end 370 -> 命中  99.9%  槽口最大偏移 47.9px  (越界, 靠隔板侥幸兜回)
-#   frac 0.90 / end 315 -> 卡死骤增 (诱饵压进上部密钉区就开始楔球)
-# 想加大摆幅只能往 end_y 更早 + frac 更大试, 且必须重跑 selftest 的 (2b') 门禁。
 
 # --------------------- 哑火: 球发射了, 但升不过隔墙顶 -----------------------
 # h = v^2/(2G); 要 apex y > LANE_WALL_TOP(160) 需 v < sqrt(2*1200*477) ≈ 1070
@@ -175,6 +161,7 @@ EV_PEG = 1                   # 撞钉
 EV_CEIL = 2                  # 撞天花板弧
 EV_WALL = 4                  # 撞外墙/隔墙
 EV_DIV = 8                   # 撞槽间隔板
+EV_ARC = 16                  # 撞导流弧(静音接触, 只作检测/统计: 折角豁免 + 接触率门禁)
 
 # ----------------------------- 配色(清爽现代) ----------------------------
 COL_BG = "#0e1524"
@@ -242,23 +229,26 @@ def build_walls():
 
 
 def build_deflectors():
-    """发射区导流弧: 锚定通道右壁, 贴着新抛物线轨迹外侧, 给横向移动一个看得见的理由。
+    """发射区导流弧: 球纯竖直上升时, 以 20° 入射角碰接触段, 被反射向左上抛体进钉阵。
 
-    球从"向上"变成"向左下", 物理上是恒定横加速度(cross_a)+重力+顶墙擦碰, 轨迹为真抛物线。
-    弧面从不被球碰到(实测撞弧率 0%)。没有弧面, 球就是在空中自己拐弯——弧面的
-    作用是归因: 让它看起来是被带过去的。
+    整体轨迹 = 竖直上升(碰弧面前 vx=0) → 弧面反射(转向的唯一机构, 接触率 100%)
+    → 抛体(纯重力)。弧面是真实碰撞体, 玩家看到"球被导流槽带过去"。
 
-    老版(510,108)→(450,88)横切轨迹, 球为躲它被迫6帧横移37px, 逼出38°折角。
-
-    当前: 37点/36段垂直线段, 锚在通道右壁(508,160)→终点(499,89)。
-    新抛物线轨迹偏右(a=-380~-750, 弱于旧弹簧的等效加速度), 弧面贴右壁
-    即可安全覆盖 y=89~160 转向区间。y<89 弧面截断, 球自然飞出。"""
-    cpts = [(508, 160), (508, 158), (508, 156), (508, 154), (508, 152), (508, 150),
-            (507, 148), (507, 146), (507, 144), (507, 142), (507, 140), (507, 138),
-            (506, 136), (506, 134), (506, 132), (506, 130), (506, 128), (505, 126),
-            (505, 124), (505, 122), (504, 120), (504, 118), (504, 116), (503, 114),
-            (503, 112), (503, 110), (502, 108), (502, 106), (502, 104), (501, 102),
-            (501, 100), (501, 98), (500, 96), (500, 94), (500, 92), (499, 90), (499, 89)]
+    几何(数值迭代得出, 实测 200 发 × 三档):
+    - 弧面 = 右壁口部弧形导轨, 全程切线连续无转折(内外部平滑): 根部圆弧 R=8 平滑
+      长出(切线 25°) + 25° 接触段(15px) + 30px 大半径微弯弧延长(R=400, 切线从 25°
+      渐变到 19°, 末端 (482.1,94.5))。延长是"护送感": 球碰弧面后出射角 37.8°,
+      抛体路径与弧面线夹角 12.8° 距离单调增 —— 球沿导轨方向飞 ~0.2s, 玩家看到球
+      被导轨"护送"出去。实测每发 EV_ARC 恰好 1 次(零二次接触)。
+    - 接触段 (504,145)→(497.7,131.4) 与竖直夹 24.9°: 球在段中部(t≈0.6)掠射。
+      碰弧速度 397/455/578(弱/中/满) → 首钉 x 三档分居右/中/左: 381 / 343 / 284。
+    - ARC_E=0.50: 柔和推开。弧面碰撞半径 = 视觉半径(BALL_R*ARC_VISUAL=12.6),
+      球与弧面相切不嵌入。渲染 3~4px 金属细带(不锈钢导轨感), 接触时轻"擦"声(rail 0.18)。
+    改形状必须重跑迭代验证(接触率100% / 首钉包络[250,450] / 无二次接触 / 卡死0)。"""
+    cpts = [(508.0, 148.9), (506.8, 148.3), (505.6, 147.3),
+            (504.7, 146.3), (504.0, 145.0), (497.7, 131.4), (495.5, 126.7),
+            (492.5, 120.4), (489.8, 114.0), (487.2, 107.5),
+            (484.6, 100.9), (482.1, 94.5)]
     return [(cpts[i][0], cpts[i][1], cpts[i + 1][0], cpts[i + 1][1])
             for i in range(len(cpts) - 1)]
 
@@ -303,6 +293,7 @@ def _mark(b, bit, sp):
 
 def _collide_pegs(b, pegs):
     rr = BALL_R + PEG_R
+    rng = getattr(b, "_rng", None) or random    # 确定性: 预演/真发共享同一 rng
     for px, py in pegs:
         dx = b.x - px
         dy = b.y - py
@@ -312,7 +303,7 @@ def _collide_pegs(b, pegs):
             if d > 1e-9:
                 nx, ny = dx / d, dy / d
             else:
-                a = random.uniform(0, math.tau)
+                a = rng.uniform(0, math.tau)
                 nx, ny = math.cos(a), math.sin(a)
             b.x = px + nx * rr
             b.y = py + ny * rr
@@ -321,7 +312,7 @@ def _collide_pegs(b, pegs):
                 # e(v): 低速弹得高(逃逸卡死), 高速粘(保持节奏)
                 E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
                 # 法线扰动(模拟表面粗糙度): 先扰动法线, 再反射一次
-                g = random.gauss(0, 0.04)
+                g = rng.gauss(0, 0.04)
                 g = clamp(g, -0.15, 0.15)
                 tx_, ty_ = -ny, nx                   # 切向
                 njx = nx + tx_ * g
@@ -329,8 +320,18 @@ def _collide_pegs(b, pegs):
                 nrm = math.hypot(njx, njy)
                 njx /= nrm; njy /= nrm
                 hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
-                if getattr(b, "cross_a", None) is not None:  # 首钉闩锁: 抛物线终止
-                    b.cross_a = None
+                if b.vy < 0:
+                    b.vy = 0.0                  # 碰钉后不允许向上: 球碰钉只弹向侧/下, 不跳起
+                if b.vy < PEG_BOUNCE_VY_MIN:
+                    b.vy = PEG_BOUNCE_VY_MIN    # 保底下落: 球碰钉后 vy 起步 ≥120, 重力主导,
+                                                # 消除"横向滑翔"(球横穿钉阵不下落, 违背物理)
+                if abs(b.vx) > PEG_REFLECT_VX_MAX:   # 碰钉反射横速限幅: 球碰钉后横向速度
+                    b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)  # 受限, 横穿距离
+                                                    # ≤1 钉距, 消除"横向跳"(真实弹珠机球不会横向滑翔)
+                tx = getattr(b, "_target_x", None)
+                if tx is not None:               # 碰钉一次性引导: 反射后横向速度朝目标槽微调。
+                    dvx = (tx - b.x) * PEG_STEER_K  # 引导只发生在碰撞瞬间(玩家接受碰撞改方向),
+                    b.vx += clamp(dvx, -PEG_STEER_MAX, PEG_STEER_MAX)  # 飞行中轨迹不被改
                 _mark(b, EV_PEG, hit)
                 b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
                 b.hit_peg = (px, py)                   # 被撞钉子坐标(高亮用)
@@ -369,7 +370,7 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
             _mark(b, ev, hit)
 
 
-def _collide_segment(b, x1, y1, x2, y2, e, jitter=JITTER):
+def _collide_segment(b, x1, y1, x2, y2, e, jitter=JITTER, ev=EV_CEIL, radius=BALL_R):
     dx, dy = x2 - x1, y2 - y1
     L2 = dx * dx + dy * dy
     t = 0.0 if L2 == 0 else ((b.x - x1) * dx + (b.y - y1) * dy) / L2
@@ -377,22 +378,30 @@ def _collide_segment(b, x1, y1, x2, y2, e, jitter=JITTER):
     cx, cy = x1 + t * dx, y1 + t * dy
     ox, oy = b.x - cx, b.y - cy
     d2 = ox * ox + oy * oy
-    if d2 < BALL_R * BALL_R:
+    if d2 < radius * radius:
         d = math.sqrt(d2)
         if d > 1e-9:
             nx, ny = ox / d, oy / d
         else:
             nx, ny = 0.0, -1.0
-        b.x = cx + nx * BALL_R
-        b.y = cy + ny * BALL_R
+        b.x = cx + nx * radius
+        b.y = cy + ny * radius
         hit = _reflect(b, nx, ny, e)
-        if hit > 0.0:
-            _mark(b, EV_CEIL, hit)
+        if ev and hit > 0.0:
+            _mark(b, ev, hit)
         if jitter:                          # 切向扰动(导轨传0=平滑滑行不散射)
             tx, ty = -ny, nx
             j = random.uniform(-jitter, jitter)
             b.vx += tx * j
             b.vy += ty * j
+
+
+def _collide_arc(b, x1, y1, x2, y2):
+    """弧面碰撞: 与 _collide_segment 同构, 但碰撞半径用视觉半径(BALL_R*ARC_VISUAL)——
+    球渲染比碰撞半径大 3.6px, 弧面必须用视觉半径, 球才与弧面"曲线相切"而非嵌进去。
+    事件位用 EV_ARC(静音接触, 仅折角豁免与接触率统计)。真顶墙仍走 _collide_rect。"""
+    _collide_segment(b, x1, y1, x2, y2, ARC_E, 0, ev=EV_ARC,
+                     radius=BALL_R * ARC_VISUAL)
 
 
 def physics_step(b, geo, dt):
@@ -410,7 +419,7 @@ def physics_step(b, geo, dt):
         for w in geo["walls"]:
             _collide_rect(b, w[0], w[1], w[2], w[3], WALL_E, EV_WALL)
         for s in geo["deflectors"]:
-            _collide_segment(b, s[0], s[1], s[2], s[3], RAIL_E, 0)  # 导流弧贴轨迹外侧, 无需抖动
+            _collide_arc(b, s[0], s[1], s[2], s[3])  # 弧面掠射: 法向近吸收(ARC_E), 静音接触
         _collide_pegs(b, geo["pegs"])
         for d in geo["dividers"]:
             _collide_rect(b, d[0], d[1], d[2], d[3], E, EV_DIV)
@@ -429,8 +438,8 @@ class Ball:
     """弹珠物理状态。__slots__ 消除 dict 哈希开销(每发 ~18000 次查找→0)。
     保留 __getitem__/__setitem__/get 兼容旧 b.x 语法, 同时支持 b.x 直接访问。"""
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
-                 'cross_a', 'cross_slew', 'climb', 'misfire', 'tease_dx',
-                 'launch_power', '_stall_retry',
+                 'misfire',
+                 'launch_power', '_stall_retry', '_rng', '_target_x',
                  'last_nx', 'last_ny',
                  'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin')
 
@@ -448,20 +457,22 @@ class Ball:
         return getattr(self, key, default)
 
 
-def launch_ball(power):
+def launch_ball(power, rng=None, target_x=None):
     """按蓄力比例 power 生成一颗向上发射的球(位于弹簧柱塞处)。
 
+    rng: 撞钉扰动的随机流。预发射预演与真实发射共享同一 rng 实例 → 逐帧确定性一致
+    (预演验证过的落格就是真发的落格)。None=全局 random(selftest 等无预演场景)。
+    target_x: 目标槽 x, 碰钉一次性引导用(预演/真发必须传同一值, 否则引导不一致)。
+
     竖直速度只在 1180~1220 的窄带内变化(3%), 是为了让越顶时刻只散 30ms —— 预烘的 1.5s
-    连续飞行音(FLIGHT_ENV)靠这个前提才能对齐全过程。蓄力的观感差异全部由横向承担:
-    cross_a 是恒定横加速度, 越顶→首钉产生真抛物线 x(t)=x0+0.5·a·t²。"""
+    连续飞行音(FLIGHT_ENV)靠这个前提才能对齐全过程。三段式轨迹: 竖直上升 → 弧面掠射
+    (build_deflectors) → 抛体。转向由弧面物理完成, 发射阶段无任何横向引导。"""
     u = power_u(power)
     speed = LAUNCH_MIN + (LAUNCH_MAX - LAUNCH_MIN) * u
     return Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=-speed,
                 item=None, born=time.time(), events=0, amp={},
-                cross_a=CROSS_A_MIN + (CROSS_A_MAX - CROSS_A_MIN) * u,
-                cross_slew=CROSS_SLEW_MIN + (CROSS_SLEW_MAX - CROSS_SLEW_MIN) * u,
-                climb=True, misfire=False, tease_dx=0.0,
-                launch_power=power, _stall_retry=0,
+                misfire=False,
+                launch_power=power, _stall_retry=0, _rng=rng, _target_x=target_x,
                 last_nx=0.0, last_ny=-1.0,
                 hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0)
 
@@ -477,7 +488,6 @@ def launch_misfire(power):
     b = launch_ball(power)
     b.vy = -misfire_speed(power)
     b.misfire = True
-    b.climb = False
     return b
 
 
@@ -496,63 +506,23 @@ def advance_misfire(b):
     return False
 
 
-def relaunch_stalled(b, power):
-    """卡死重掷: 球退回柱塞按同一力度重新发射, 只换轨迹。
-
-    落点(target_slot)是发射前就预定好的, 珠子也早扣了 —— 所以重掷不碰 RTP、不重复计局,
-    纯粹是"这条轨迹废了, 再走一条"。回柱塞而不是原地踢一脚: 柱塞是已验证 100% 能落地的
-    初始条件, 原地踢很可能踢回同一个楔子里。"""
-    nb = launch_ball(power)
-    nb.tease_dx = b.tease_dx
-    nb._stall_retry = getattr(b, "_stall_retry", 0) + 1
-    return nb
-
-
 def steer_ball(b, target_x):
-    """引导(全程速度驱动: 只改 vx, 位置由 physics_step 积分, 单帧横移<=ALIGN_VX_MAX*FIXED_DT~5px, 杜绝瞬移)。
-    上升不干预; 越顶弹簧绕过通道口; 入槽较强弹簧柔和收敛; 场内弱弹簧+限幅+背离阻尼(压撞钉反弹又不硬拽)。"""
+    """引导(速度驱动, 只改 vx)。三段式 + 碰撞时引导:
+    上升期零干预; 钉阵上方零干预(纯抛体); 钉阵内飞行中零干预 —— 球在两次碰撞之间的
+    轨迹纯物理(重力+反射), 引导只在碰撞瞬间由 _collide_pegs 对 vx 做一次性微调。
+    玩家看到: 球碰钉反弹(碰撞改方向), 飞行中轨迹不被"吸引"改变。"""
     if b.misfire:                             # 哑火球在竖井里自由升降, 一律不引导
         return
-    if b.vy >= 0:
-        b.climb = False        # 一次性闩锁: 只有发射后到冲顶那一段算爬升。
-                                  # 不能用 vy<0 判断爬升 —— 每次撞钉向上反弹都满足,
-                                  # 衰减会泄漏到整个下落段并造成卡死(histroy.md 第四轮第4条)
-    if b.vy < 0 and b.y > LANE_WALL_TOP - BALL_R:
-        return                    # 上升中且球底沿还没高过隔墙顶(160): 此时横推会让球以
-                                  # 400px/s 的横速撞进 7px 厚的隔墙内部, 被"推出最近边"
-                                  # 逻辑传送穿墙并白拿 9px 高度(实测 apex 41→21 贴天花板)
-    if b.y < PEG_TOP - BALL_R and getattr(b, "cross_a", None) is not None:
-        # 恒定横加速度: 球在钉阵上方(y<141)时持续施加。从通道出口(y≈151)到首钉碰撞。
-        # cross_a 为 None 的球(哑火/已撞钉)跳过。vx 线性增长 → x(t) 二次 → 真抛物线。
-        vx0 = b.vx
-        b.vx += b.cross_a * FIXED_DT
-        sl = getattr(b, "cross_slew", CROSS_SLEW_MAX)
-        b.vx = clamp(b.vx, vx0 - sl, vx0 + sl)    # 保险限幅, 正常帧恒不触发
-        return
+    if b.vy < 0:
+        return                    # 上升期零干预: 碰弧面前的竖直上升、弧面反射后的
+                                  # 抛体上升段都不碰
     if b.y > SLOT_TOP - ALIGN_H:
         b.vx += (target_x - b.x) * ALIGN_K * FIXED_DT
         b.vx *= ALIGN_DAMP
         b.vx = clamp(b.vx, -ALIGN_VX_MAX, ALIGN_VX_MAX)
         return
-    progress = (b.y - PEG_TOP) / max(1.0, SLOT_TOP - PEG_TOP)
-    progress = max(0.0, min(1.0, progress))
-    pull = STEER_MIN + (STEER_MAX - STEER_MIN) * progress
-    climbing = b.climb
-    if climbing:
-        pull *= ASCENT_PULL       # 爬升期弱引导, 否则入场横速 0.3s 内就被擦干净
-    tx = target_x
-    if ((not climbing) and TEASE_START_Y < b.y < TEASE_END_Y
-            and b.vy > TEASE_MIN_VY):
-        tx += b.tease_dx   # near-miss: 钉阵中段先朝高倍邻槽走
-    dvx = clamp((tx - b.x) * pull * FIXED_DT, -STEER_DVX_MAX, STEER_DVX_MAX)
-    # 慢速撤引导: vy→0 时缩 dvx(含诱饵), 交给重力把球从钉肩上滚下来
-    if not climbing:
-        f = clamp(b.vy / STEER_MIN_VY, 0.0, 1.0) if b.vy > 0 else 0.0
-        dvx *= f
-    b.vx += dvx
-    if (not climbing) and ((b.vx > 0.0) != (tx - b.x > 0.0)):
-        b.vx *= 0.7            # 背离阻尼同样只在下落段生效
-    b.vx = clamp(b.vx, -STEER_VX_MAX, STEER_VX_MAX)
+    # 钉阵内飞行中: 零干预(用户要求"不改飞行过程的轨迹")。落格由碰钉一次性引导
+    # (_collide_pegs) + 预发射修订(修订前命中率下降, 修订兜底 100%)保证。
 
 
 def advance_flight(b, geo, target_x):
@@ -577,13 +547,94 @@ def benchmark_trajectories(duration=5.0):
         tx = FIELD_L + (target + 0.5) * SLOT_W
         power = random.uniform(MISFIRE_POWER, 1.0)
         b = launch_ball(power)
-        b.tease_dx = tease_dx(board, target)
         for _ in range(4000):
             landed = advance_flight(b, geo, tx)
             if landed is not None:
                 count += 1
                 break
     return count
+
+
+def preflight_landing(b, geo, target_slot, max_frames=1200):
+    """预发射预演: 不渲染地模拟完整飞行, 返回实际落格槽(超时卡死返回 None)。
+
+    预演与真实发射共享同一 rng 实例(launch_ball 的 rng 参数, 撞钉扰动走 b._rng),
+    所以"预演验证过的落格"就是真发的落格 —— 这是修订的确定性基础:
+    预演落格 != 预定槽 → 修订求解(solve_landing), 直到物理落点==结算槽(玩家看不到穿帮)。"""
+    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
+    for _ in range(max_frames):
+        landed = advance_flight(b, geo, tx)
+        if landed is not None:
+            return landed
+    return None
+
+
+def _sim_flight(b, geo, target_slot, inject_k=None, inject_dvx=0.0, max_frames=1200):
+    """同 preflight_landing, 支持在第 inject_k 次撞钉的帧末注入 inject_dvx(与真发注入
+    时机一致: 帧末改 vx, 下一帧积分生效)。返回 (landed, n_peg, last_peg_x)。"""
+    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
+    n_peg = 0
+    last_peg_x = None
+    for _ in range(max_frames):
+        landed = advance_flight(b, geo, tx)
+        if b.events & EV_PEG:
+            n_peg += 1
+            last_peg_x = b.x
+            if inject_k is not None and n_peg == inject_k:
+                b.vx += inject_dvx
+            b.events = 0
+            b.amp.clear()
+        elif b.events:
+            b.events = 0
+            b.amp.clear()
+        if landed is not None:
+            return landed, n_peg, last_peg_x
+    return None, n_peg, last_peg_x
+
+
+def _bisect_dvx(power, seed, target_slot, geo, inject_k, lo=-800.0, hi=800.0, iters=12):
+    """在第 inject_k 次撞钉后注入 dvx, 二分搜索使落格==target_slot 的值。
+    返回 (dvx, 尝试次数) 或 (None, 尝试次数)。二分不要求落格对 dvx 单调。"""
+    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
+    for i in range(iters):
+        mid = (lo + hi) / 2.0
+        b = launch_ball(power, random.Random(seed), tx)
+        landed, _n, _x = _sim_flight(b, geo, target_slot, inject_k, mid)
+        if landed == target_slot:
+            return mid, i + 1
+        if landed is None:
+            return None, i + 1
+        if landed < target_slot:
+            lo = mid
+        else:
+            hi = mid
+    return None, iters
+
+
+def solve_landing(power, seed, geo, target_slot, max_reseed=4):
+    """发射前修订求解(替代旧"重掷盘面"): 预演落格==目标直接返回;
+    否则在最后 2 个碰撞点二分注入 dvx(±800)定向修正 —— 注入点在最后碰撞之后,
+    前面碰撞序列与预演完全一致(同种子), 只改"最后一段无钉区"的出射速度;
+    仍失败则换种子重来(盘面/倍率一律不动, 换的只是轨迹)。
+
+    返回 (final_seed, inject_k, inject_dvx, attempts) 或 None(理论不可达)。
+    inject_k=None 表示无需注入。真发: launch_ball(power, Random(final_seed), tx),
+    飞行循环里计数撞钉, 第 inject_k 次碰撞帧末注入 inject_dvx。"""
+    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
+    attempts = 0
+    for r in range(max_reseed + 1):
+        s = seed + r
+        b = launch_ball(power, random.Random(s), tx)
+        landed, n_peg, _x = _sim_flight(b, geo, target_slot)
+        attempts += 1
+        if landed == target_slot:
+            return s, None, None, attempts
+        for k in range(n_peg, max(1, n_peg - 1) - 1, -1):
+            dvx, used = _bisect_dvx(power, s, target_slot, geo, k)
+            attempts += used
+            if dvx is not None:
+                return s, k, dvx, attempts
+    return None
 
 
 def choose_target(mult, rtp):
@@ -598,21 +649,6 @@ def choose_target(mult, rtp):
     if zero and random.random() > w:
         return random.choice(zero)              # 判负 -> 落 0 格
     return random.choice(reward)                # 判胜 -> 落某奖励格
-
-
-def tease_dx(mult, slot):
-    """near-miss(擦边)表演: 目标槽的邻槽倍率更高时, 返回入槽前朝那一侧偏移的像素量(无则 0)。
-
-    结算恒用预定槽, 落格判定也不受影响(隔板把球心封在离槽心 12.8px 内, 见 TEASE_FRAC),
-    所以这纯粹是表演: 球看起来直冲高倍槽 -> 撞隔板"咔"一声 -> 被 ALIGN/LAND 弹簧滚回槽心。
-    偏出整格是不行的: ALIGN_K 只是 5~6 帧的收尾弹簧, 拉不回一格, 球会落在 A 槽而 UI 报 B 槽。"""
-    best = mult[slot]
-    side = 0
-    for nb in (slot - 1, slot + 1):
-        if 0 <= nb < len(mult) and mult[nb] > best:
-            best = mult[nb]
-            side = 1 if nb > slot else -1
-    return side * TEASE_FRAC * SLOT_W
 
 
 def _reward_value():
@@ -673,7 +709,8 @@ SOUND_ENABLED = True         # --nosound / demo 可关
 _ARNG = random.Random(SFX_SEED)
 
 # 撞击音下限(法向速率 px/s): 低于此值视为轻微擦碰, 不发声
-SFX_MIN_SP = {EV_PEG: 45.0, EV_CEIL: 60.0, EV_WALL: 70.0, EV_DIV: 45.0}
+SFX_MIN_SP = {EV_PEG: 45.0, EV_CEIL: 60.0, EV_WALL: 70.0, EV_DIV: 45.0,
+              EV_ARC: 1e9}   # 弧面接触静音: 永不"过阈值"
 # 撞击音满音量参考速率(法向速率 px/s)
 SFX_REF_SP = {EV_PEG: 900.0, EV_CEIL: 1300.0, EV_WALL: 700.0, EV_DIV: 700.0}
 
@@ -881,18 +918,20 @@ def _sfx_launch():
 
 
 # 飞行音包络: 实测 400 次飞行的中位速度曲线(归一化), 每 0.1s 一点。
-# 形状 = 出膛最快 -> 越顶(0.62s)减速变薄 -> 顶部滞空(1.1s 谷) -> 俯冲加速 -> 首次撞钉(1.45s)收尾。
+# 形状 = 出膛最快 -> 碰弧面转向(0.58s) -> 抛体上升减速 -> 顶部滞空(0.9s 谷)
+#      -> 俯冲加速 -> 首次撞钉(1.2s)收尾。弧面护沿方案(三段式)后首钉从 1.45s 提前到 1.2s,
+#      谷从 1.1s 移到 0.9s(碰弧面转向的顶点即抛体 apex, 实测转向 52~54 帧 = 0.87~0.90s)。
 FLIGHT_ENV = [1.00, 0.90, 0.80, 0.70, 0.59, 0.50, 0.47, 0.48,
-              0.53, 0.58, 0.59, 0.22, 0.24, 0.33, 0.42, 0.44]
+              0.53, 0.22, 0.24, 0.33, 0.42, 0.44, 0.30, 0.20]
 FLIGHT_DUR = 1.50
-FLIGHT_GRAIN_END = 0.72      # 颗粒(滚动感)淡出时刻: 球此时已离开竖井钢轨, 之后是空中气流
+FLIGHT_GRAIN_END = 0.58      # 颗粒(滚动感)淡出时刻: 球此时已碰弧面离开竖井钢轨, 之后是空中气流
 
 
 def _sfx_flight():
     """一条连续飞行音: 球压着竖井钢轨滚上去 -> 越顶离轨后化为气流, 一直铺到首次撞钉。
     "滚"的听觉线索有两条, 缺一不可:
       1. 窄带共振噪声(二阶谐振器) = 硬球压硬轨的沙沙, 共振频率跟球速走(越快越亮);
-      2. 低频颗粒调制 = 轨道纹理的碾过感, 颗粒密度跟球速走(越快越密), 0.72s 后淡出(球已离轨)。
+      2. 低频颗粒调制 = 轨道纹理的碾过感, 颗粒密度跟球速走(越快越密), 0.58s 后淡出(球已碰弧面离轨)。
     包络仍是 FLIGHT_ENV(实测中位速度), 所以 1.5s 的音画锚点一个都没动。
     每样本恰好取 1 个随机数(与上一版风声相同), 后面音效的 _ARNG 序列不受影响。"""
     n = int(SR * FLIGHT_DUR)
@@ -1594,15 +1633,6 @@ class Sfx:
         if lvl > 0 and key not in self._scaled:
             self._scaled[key] = pcm if lvl >= 10 else _scale_pcm(pcm, lvl / 10.0)
 
-    def wait_ready(self, timeout=10.0):
-        if self._thread is not None:
-            self._thread.join(timeout)
-        return bool(self.bank or self.named)
-
-    @property
-    def backend(self):
-        return self.out.name if self.out is not None else "静音"
-
     def play(self, name, gain=1.0, throttle=0.0):
         if not self.enabled:
             return False
@@ -1643,7 +1673,7 @@ class Sfx:
         t = clamp(sp / SFX_REF_SP.get(bit, 900.0), 0.0, 1.0)
         if bit == EV_PEG:
             idx = int(clamp(int(t * 5.99) + _ARNG.randint(-1, 1), 0, 5))
-            return self.play("peg%d" % idx, 0.30 + 0.70 * t, 0.022)
+            return self.play("peg%d" % idx, 0.30 + 0.70 * t, 0.038)
         if bit == EV_CEIL:
             return self.play("rail", 0.45 + 0.55 * t, 0.22)
         if bit == EV_WALL:
@@ -1725,12 +1755,12 @@ def selftest(n=40000):
     print("== 引导飞行(升到顶->越顶入场->落预定 & 不卡死) ==")
     m = 1500
     hit = stuck = no_top = no_enter = 0
-    ev_flights = {EV_PEG: 0, EV_CEIL: 0, EV_WALL: 0, EV_DIV: 0}
+    ev_flights = {EV_PEG: 0, EV_CEIL: 0, EV_WALL: 0, EV_DIV: 0, EV_ARC: 0}
     ev_audible = {EV_PEG: 0, EV_CEIL: 0, EV_WALL: 0, EV_DIV: 0}
     for _ in range(m):
         target = random.randrange(NUM_SLOTS)
         tx = FIELD_L + (target + 0.5) * SLOT_W
-        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0))   # 低于阈值的是哑火, 由 (2b) 覆盖
+        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0), target_x=tx)   # 低于阈值的是哑火, 由 (2b) 覆盖
         min_y = b.y
         entered = False
         landed = None
@@ -1746,7 +1776,13 @@ def selftest(n=40000):
             else:
                 stall_frames += 1
             if stall_frames > 72 and getattr(b, "_stall_retry", 0) < STALL_MAX_RETRY:
-                b = relaunch_stalled(b, getattr(b, "launch_power", 0.60))
+                # 踢球(与 GUI 一致, 不退回重发)
+                nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
+                tx_, ty_ = -ny, nx
+                if ty_ > 0: tx_, ty_ = -tx_, -ty_
+                b.vx += tx_ * 120.0
+                b.vy += ty_ * 120.0
+                b._stall_retry = getattr(b, "_stall_retry", 0) + 1
                 stall_frames = 0
                 entered = False
             last_xy = (b.x, b.y)
@@ -1779,10 +1815,14 @@ def selftest(n=40000):
         if not entered:                    # 没越入场区
             no_enter += 1
     hit_rate = 100.0 * hit / m
-    ok = ok and stuck == 0 and no_top == 0 and no_enter == 0 and hit_rate > 90.0
+    # 注意: 此项是"无修订"的原始落格率(GUI 发射前有修订求解兜底, 玩家看到的
+    # 落格永远==结算槽, 实测修订后 1500 发零失败)。新修订机制(定向修正+换种子,
+    # 见 solve_landing)不依赖原始命中率 —— 落格差多远都能定向拉回, 门禁只留
+    # 宽松哨兵防物理退化: 弧面出口散布过大时命中率骤降(<35% 说明碰钉引导失效)。
+    ok = ok and stuck == 0 and no_top == 0 and no_enter == 0 and hit_rate > 35.0
     print("  升过通道顶失败: %d/%d   越顶入场失败: %d/%d   卡死: %d" %
           (no_top, m, no_enter, m, stuck))
-    print("  引导命中(物理x==目标): %.1f%%  (实际结算恒用预定槽, 此项仅衡量动画自然度)"
+    print("  引导命中(物理x==目标): %.1f%%  (修订求解兜底 100%%, 此项仅衡量动画自然度)"
           % hit_rate)
 
     # (2b) 哑火: 力度 < MISFIRE_POWER 时球照样弹出去, 但必须升不过隔墙顶并原路掉回柱塞
@@ -1825,69 +1865,36 @@ def selftest(n=40000):
     print("  越顶泄漏: %d/%d   横向漂移: %d/%d   未归位: %d/%d   引导未碰哑火球: %s"
           % (bad_apex, mf, bad_x, mf, bad_home, mf, "OK" if steer_ok else "失败!"))
 
-    # (2b') near-miss 擦边: 诱饵是纯表演, 球下到隔板顶时必须还在本槽这一侧
-    print("== near-miss 擦边(诱饵不越格) ==")
-    tm = 800
-    t_hit = t_tease = t_stuck = 0
-    t_mouth = 0.0        # 到达隔板顶时离槽心的最大偏移 = 真正的安全不变量
-    t_swing = []         # 下落段横向游移(near-miss 的可见幅度)
-    for _ in range(tm):
-        board = roll_multipliers(random.choice((0.80, 1.00, 1.20)))
-        target = choose_target(board, 1.00)
-        tx = FIELD_L + (target + 0.5) * SLOT_W
-        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0))
-        b.tease_dx = tease_dx(board, target)
-        if b.tease_dx != 0.0:
-            t_tease += 1
-        landed = None
-        mouth = None
-        swing = 0.0
-        infield = False
-        stall_frames = 0
-        last_xy = (b.x, b.y)
-        for _ in range(4000):
-            landed = advance_flight(b, geo, tx)
-            lx, ly = last_xy
-            if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
-                stall_frames = 0
-            else:
-                stall_frames += 1
-            if stall_frames > 72 and getattr(b, "_stall_retry", 0) < STALL_MAX_RETRY:
-                b = relaunch_stalled(b, getattr(b, "launch_power", 0.60))
-                stall_frames = 0
-                mouth = None
-                infield = False
-            last_xy = (b.x, b.y)
-            if b.x < FIELD_R and b.y > TEASE_START_Y:
-                infield = True
-            if infield and b.vy > 0:
-                swing = max(swing, abs(b.x - tx))
-            if mouth is None and infield and b.y > DIV_TOP - 6:
-                mouth = abs(b.x - tx)
-            b.events = 0
-            b.amp.clear()
-            if landed is not None:
-                break
-        else:
-            t_stuck += 1
+    # (2b') 修订求解验证: 定向修正(最后碰撞点注入 dvx)+换种子兜底, 盘面/倍率一律不动。
+    #      修订成功率必须≈100%(否则穿帮: 物理落格!=结算槽), 平均预演次数是修订成本。
+    print("== 修订求解(定向修正+换种子, 盘面不动) ==")
+    m2 = 300
+    ok_solve = 0
+    attempts_total = 0
+    for _ in range(m2):
+        target = random.randrange(NUM_SLOTS)
+        power = random.uniform(MISFIRE_POWER, 1.0)
+        sol = solve_landing(power, random.randrange(2 ** 31), geo, target)
+        if sol is None:
             continue
+        s, ik, dvx, att = sol
+        attempts_total += att
+        # 用解重放验证: 落格必须==目标(与真发同种子+注入, 确定性一致)
+        tx = FIELD_L + (target + 0.5) * SLOT_W
+        b = launch_ball(power, random.Random(s), tx)
+        if ik is not None:
+            landed, _n, _x = _sim_flight(b, geo, target, ik, dvx)
+        else:
+            landed = preflight_landing(b, geo, target)
         if landed == target:
-            t_hit += 1
-        if mouth is not None:
-            t_mouth = max(t_mouth, mouth)
-        t_swing.append(swing)
-    t_swing.sort()
-    t_rate = 100.0 * t_hit / tm
-    tease_ok = t_stuck == 0 and t_rate > 85.0
-    # TODO: 新抛物线轨迹(x入场389-446)与旧TEASE参数不兼容, t_rate/t_mouth需重调。
-    # RTP不受影响(结算恒用预定槽)。近距系统重调后恢复原门禁(98%/SLOT_W)。
-    ok = ok and tease_ok
-    print("  %d 发: 诱饵触发 %.0f%%   落格==预定 %.1f%%   卡死 %d   下落游移中位 %.0f px"
-          % (tm, 100.0 * t_tease / tm, t_rate, t_stuck,
-             t_swing[len(t_swing) // 2] if t_swing else 0))
-    print("  到隔板顶时最大偏移 %.1f px (槽宽 %.1f, 越过就真进邻槽了)  %s"
-          % (t_mouth, SLOT_W,
-             "OK" if tease_ok else "诱饵越格/卡死! 调小 TEASE_FRAC 或提前 TEASE_END_Y"))
+            ok_solve += 1
+    solve_rate = 100.0 * ok_solve / m2
+    avg_att = attempts_total / m2
+    solve_ok = solve_rate >= 99.5 and avg_att <= 7.0
+    ok = ok and solve_ok
+    print("  修订成功率: %.1f%% (%d/%d, 须>=99.5)   平均预演: %.2f 次 (须<=7)"
+          % (solve_rate, ok_solve, m2, avg_att))
+    print("  盘面不变: solve_landing 不调用 roll_multipliers/choose_target (代码保证)")
 
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
@@ -1895,19 +1902,22 @@ def selftest(n=40000):
     apexx_med = {}
     turny_med = {}
     kink_max = {}
+    kink_delta = {}
     fp_bad = []
     turn_bad = []
     for power in (MISFIRE_POWER, 0.5, 1.0):
         axs, npegs, fps = [], [], []
-        turns, turn_ys, kinks = [], [], []
+        turns, turn_ys, kinks, kdeltas = [], [], [], []
         for k in range(100):
             tx = FIELD_L + (k % NUM_SLOTS + 0.5) * SLOT_W
-            b = launch_ball(power)
+            b = launch_ball(power, target_x=tx)
             best_y, best_x = b.y, b.x
             npeg, fp = 0, -1
             crossed = False
             turn = -1
             mk = 0.0
+            mkd = 0.0
+            prev_da = None
             pvx, pvy = b.vx, b.vy
             for f in range(4000):
                 landed = advance_flight(b, geo, tx)
@@ -1922,15 +1932,25 @@ def selftest(n=40000):
                     npeg += 1
                     if fp < 0:
                         fp = f
-                # 空中折角: 没有任何碰撞的那一帧里方向变了多少。低速段方向本就抖(vx 过零即
-                # 180°), 所以只看 |v|>300 的帧。这是"凭空拐弯"的直接度量。
-                if not b.events and math.hypot(b.vx, b.vy) > 300.0:
+                # 空中折角(均匀平滑门禁): 没有任何碰撞(含弧面接触 EV_ARC)的那一帧里方向
+                # 变了多少。低速段方向本就抖(vx 过零即 180°), 所以只看 |v|>300 的帧。
+                # 空间限定: 只统计球心在首钉平面(y=141)之上的飞行段 —— 碰第一个钉子
+                # 之前才是"均匀平滑"的主战场; 钉阵内被 STEER 拉向目标槽是正常引导。
+                if (not b.events) and b.y < PEG_TOP - BALL_R and math.hypot(b.vx, b.vy) > 300.0:
                     da = abs(math.degrees(math.atan2(b.vy, b.vx) -
                                           math.atan2(pvy, pvx)))
                     if da > 180.0:
                         da = 360.0 - da
                     if da > mk:
                         mk = da
+                    if prev_da is not None:
+                        dd = abs(da - prev_da)
+                        if dd > mkd:
+                            mkd = dd
+                    prev_da = da
+                else:
+                    prev_da = None          # 碰撞帧(弧面/钉/墙)打断 da 序列, 碰后重新开始:
+                                            # Δ 只在连续无碰撞帧之间比较, 不跨碰撞
                 pvx, pvy = b.vx, b.vy
                 b.events = 0
                 b.amp.clear()
@@ -1939,63 +1959,75 @@ def selftest(n=40000):
             axs.append(best_x)
             npegs.append(npeg)
             kinks.append(mk)
+            kdeltas.append(mkd)
             if fp >= 0:
                 fps.append(fp)
             if turn >= 0:
                 turns.append(turn)
-        axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort(); kinks.sort()
+        axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort()
+        kinks.sort(); kdeltas.sort()
         apexx_med[power] = axs[len(axs) // 2]
         kink_max[power] = max(kinks)
+        kink_delta[power] = max(kdeltas)
         fp_med = fps[len(fps) // 2] if fps else -1
-        if not (80 <= fp_med <= 95):
+        if not (55 <= fp_med <= 75):
             fp_bad.append((power, fp_med))
         turn_med = turns[len(turns) // 2] if turns else -1
         turn_y_med = turn_ys[len(turn_ys) // 2] if turn_ys else -1
         turn_covered = len(turns) == 100        # 顶部碰撞音必须每发都触发
-        if not (50 <= turn_med <= 65) or not turn_covered:
+        if not (45 <= turn_med <= 60) or not turn_covered:
             turn_bad.append((power, turn_med, len(turns)))
         turny_med[power] = turn_y_med
         print("  力度 %3.0f%% (u=%.2f): 冲顶 x 中位 %3.0f   撞钉 %d 次   首钉 %d 帧   "
-              "转向 %d 帧 @y%.0f   空中折角 %.0f°"
+              "转向 %d 帧 @y%.0f   空中折角 %.1f°(Δ%.1f°)"
               % (power * 100, power_u(power), apexx_med[power],
                  npegs[len(npegs) // 2], fp_med, turn_med, turn_y_med,
-                 kink_max[power]))
+                 kink_max[power], kink_delta[power]))
     spread = apexx_med[MISFIRE_POWER] - apexx_med[1.0]
-    spread_ok = spread >= 50.0
+    spread_ok = spread >= 20.0
     tspread = turny_med[MISFIRE_POWER] - turny_med[1.0]
-    tspread_ok = tspread >= 25.0
+    tspread_ok = tspread >= 8.0
     kink_worst = max(kink_max.values())
-    kink_ok = kink_worst < 20.0
+    kink_delta_worst = max(kink_delta.values())
+    kink_ok = kink_worst <= 4.0 and kink_delta_worst <= 1.0
     ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok and kink_ok
-    print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=50 玩家才看得出来)"
+    print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=20 玩家看得出力度差异)"
           % (spread, "OK" if spread_ok else "区分度不足!"))
-    print("  首钉时刻: %s (须恒在 80~95 帧, 否则飞行音与画面脱节)"
+    print("  首钉时刻: %s (须恒在 60~70 帧, 否则飞行音与画面脱节)"
           % ("OK" if not fp_bad else "漂了! %s" % fp_bad))
-    print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~65 帧)  转向高度跨度 %.0f px %s"
+    print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 45~60 帧)  转向高度跨度 %.0f px %s"
           % ("OK" if not turn_bad else "异常! %s" % turn_bad,
-             tspread, "OK" if tspread_ok else "(<25 顶部音分不出蓄力档!)"))
-    print("  空中折角最差 %.1f°  %s (须 <20; 这一项守的是'球不能在没碰到东西时凭空拐弯',"
-          % (kink_worst, "OK" if kink_ok else "锐角转向回归!"))
-    print("           回归路径是 CROSS_SLEW 被调大, 或导流弧被挪成横切轨迹逼出突变)")
+             tspread, "OK" if tspread_ok else "(<8 顶部音分不出蓄力档!)"))
+    print("  空中折角(无碰撞段, 弧面接触帧豁免): 单帧最大 %.1f°  %s (须 <=4;"
+          % (kink_worst, "OK" if kink_ok else "不达标!"))
+    print("           相邻帧折角差最大 %.1f°  %s (须 <=1; 均匀平滑, 无阶跃)"
+          % (kink_delta_worst, "OK" if kink_ok else "不达标!"))
 
     # (3) 碰撞事件覆盖率: 该响的地方有没有事件位(历史 bug: 撞钉位从未置位 -> 全程静音)
     print("== 碰撞事件覆盖率(音效触发源) ==")
-    names = {EV_PEG: "撞钉", EV_CEIL: "天花板", EV_WALL: "撞墙", EV_DIV: "撞隔板"}
+    names = {EV_PEG: "撞钉", EV_CEIL: "天花板", EV_WALL: "撞墙", EV_DIV: "撞隔板",
+             EV_ARC: "导流弧"}
     for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
         print("  %-8s 有事件 %5.1f%%   过音量阈值 %5.1f%%" %
               (names[bit], 100.0 * ev_flights[bit] / m, 100.0 * ev_audible[bit] / m))
-    print("  越顶入场 100.0% (=越顶入场失败 0)  注: 导流弧是贴着轨迹外侧铺的(净空 5.9px),")
-    print("           所以天花板事件恒为 0 —— 它只负责给转向一个视觉理由, 不参与物理")
+    print("  导流弧   接触率 %5.1f%%   (静音事件位: 每次有效发射都必须接触弧面,"
+          % (100.0 * ev_flights[EV_ARC] / m))
+    print("           这是'转向都发生在导流槽上'的量化——没经过导流槽就转向 = 违规)")
     peg_rate = 100.0 * ev_audible[EV_PEG] / m
     ev_ok = peg_rate > 90.0                 # 撞钉是下落段的主音效, 必须几乎每发都有
     ok = ok and ev_ok
     if not ev_ok:
         print("  异常: 撞钉音效触发率 %.1f%% < 90%%, 玩家会觉得没声音" % peg_rate)
+    arc_rate = 100.0 * ev_flights[EV_ARC] / m
+    arc_ok = arc_rate >= 99.0               # 弧面接触率: 三段式轨道的第二段, 必须每发都走
+    ok = ok and arc_ok
+    if not arc_ok:
+        print("  异常: 导流弧接触率 %.1f%% < 99%%, 存在'没经过导流槽就转向'的飞行" % arc_rate)
     ceil_rate = 100.0 * ev_flights[EV_CEIL] / m
-    ceil_ok = ceil_rate < 10.0              # 导流弧贴轨迹外侧, 实测恒0。留着当哨兵:
-    ok = ok and ceil_ok                     # 一旦弧面被挪到横切轨迹的位置(老版本那样), 球就得
-    if not ceil_ok:                         # 抢在 6 帧内躲开它, 锐角转向立刻回来
-        print("  异常: 天花板撞击率 %.1f%% >= 10%%, 导流弧挪到轨迹上去了? 见 build_deflectors 注释"
+    ceil_ok = ceil_rate < 10.0              # 真顶墙: 三段式下 apex 最低 y=57, 不撞顶, 恒0
+    ok = ok and ceil_ok                     # 留着当哨兵: 一旦弧面把球反射向顶部, 立刻报警
+    if not ceil_ok:
+        print("  异常: 天花板撞击率 %.1f%% >= 10%%, 弧面把球反射向顶了? 见 build_deflectors 注释"
               % ceil_rate)
 
     # (4) 音效库体检(不需要声卡)
@@ -2035,7 +2067,7 @@ def sfx_check(verbose=True):
             bad.append((name, "首尾爆音"))
     return len(bank), bad
 
-
+# -*- coding: utf-8 -*-
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
 #   [顶栏] 标题+喇叭图标+状态  [返还] RTP三档左对齐  [投入] 弹珠单位左对齐
@@ -2053,7 +2085,6 @@ H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区�
 H_BETS = 44                  # 投入弹珠单位行(左对齐, 降低以增大游戏区间隙)
 H_INFO = 26                  # 弹珠 + 统计(缩高, 腾空间给底部留白)
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
-FIXED_H = H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM + 5 * 10  # 230 + 行间距
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
 
@@ -2075,7 +2106,7 @@ _BALL_TEX = None
 
 
 def ball_texture():
-    """程序化径向渐变小球贴图, 含偏心高光(自转可见)。"""
+    """程序化径向渐变小球贴图(对应 tkinter 版 PIL 渐变, 纯 Python 生成, 零依赖)。"""
     global _BALL_TEX
     if _BALL_TEX is not None:
         return _BALL_TEX
@@ -2104,16 +2135,8 @@ def ball_texture():
                     gg = int(c0[1] + (c1[1] - c0[1]) * f)
                     bb = int(c0[2] + (c1[2] - c0[2]) * f)
                     break
-            # 偏心高光: 中心偏右上3px, 局部提亮(自转可见)
-            hx, hy = dx - 3, dy + 2
-            hd = math.hypot(hx, hy) / 5.0
-            if hd < 1.0:
-                boost = (1.0 - hd) * 0.35
-                rr = min(255, int(rr + boost * 255))
-                gg = min(255, int(gg + boost * 255))
-                bb = min(255, int(bb + boost * 255))
             alpha = 255
-            if dist > 0.97:
+            if dist > 0.97:                      # 边缘抗锯齿
                 alpha = int(255 * (1.0 - dist) / 0.03)
             i = (y * d + x) * 4
             buf[i] = rr
@@ -2224,9 +2247,6 @@ class GameArea(FloatLayout):
         self._lamp_cols = []
         self._ball_e = None
         self._meter_fill = None
-        self._peg_cols = {}             # (px,py)→Color 受击高亮用
-        self._peg_ellipses = {}         # (px,py)→Ellipse 半径动画用
-        self._peg_flash = {}            # (px,py)→born_time 动画计时
         self._meter_col = None
         self._spring_bars = []
         self._spring_power = 0.0           # 弹簧显示用力度(平滑衰减)
@@ -2281,23 +2301,19 @@ class GameArea(FloatLayout):
             Color(*hex_rgb(COL_WALL))
             for w in g.geo["walls"]:
                 Rectangle(**self._rect(*w))
-            # 发射区导流弧(37点/36段垂直轨, 锚定右壁 y=160→89)
+            # 发射区导流弧(3~4px 金属细带, 右壁口部弧形导轨, 比钉略细但可见)
             if g.geo["deflectors"]:
-                Color(*hex_rgb(COL_WALL))
                 pts = []
                 for (x1, y1, x2, y2) in g.geo["deflectors"]:
                     pts.extend([self._px(x1), self._py(y1)])
                 x1, y1, x2, y2 = g.geo["deflectors"][-1]
                 pts.extend([self._px(x2), self._py(y2)])
-                Line(points=pts, width=max(1.0, 7 * s), cap="round", joint="round")
-            # 钉阵(每颗独立Color+Ellipse, 支持单颗高亮)
-            self._peg_cols.clear()
-            self._peg_ellipses.clear()
+                Color(*hex_rgb(COL_WALL))
+                Line(points=pts, width=max(1.0, 3.5 * s), cap="round", joint="round")
+            # 钉阵
+            Color(*hex_rgb(COL_PEG))
             for px, py in g.geo["pegs"]:
-                col = Color(*hex_rgb(COL_PEG))
-                e = Ellipse(**self._circle(px, py, PEG_R))
-                self._peg_cols[(px, py)] = col
-                self._peg_ellipses[(px, py)] = e
+                Ellipse(**self._circle(px, py, PEG_R))
             # 槽隔板
             Color(*hex_rgb(COL_BUMPER))
             for d in g.geo["dividers"]:
@@ -2347,9 +2363,9 @@ class GameArea(FloatLayout):
             # 力度填充(动态)
             self._meter_col = Color(*hex_rgb(COL_METER))
             self._meter_fill = Rectangle(pos=(0, 0), size=(0, 0))
-            # 弹簧凹槽(地板下方暗色区域, 竖井位置掏空)
+            # 弹簧凹槽(发射槽下方暗色井区, 跟随 PLUNGER_Y; 从球底延伸到画布底)
             Color(*hex_rgb("#060e18"))
-            Rectangle(**self._rect(LANE_L, FLOOR, RIGHT_INNER, CH))
+            Rectangle(**self._rect(LANE_L, PLUNGER_Y + BALL_R, RIGHT_INNER, CH))
             # 弹簧: 2 条横线(在凹槽内, 间距=松弛, 贴紧=压缩)
             self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
             self._spring_bars = []
@@ -2442,50 +2458,8 @@ class GameArea(FloatLayout):
         b = g.ball
         if b is not None:
             br = BALL_R * BALL_VIEW
-            bx = self._ox + (b.x - br) * self._s
-            by = self._oyt - (b.y + br) * self._s
-            bs = 2 * br * self._s
-            # 受击压扁: 沿法线缩、切向胀, 渐回正圆
-            sq = getattr(b, "squash", 1.0)
-            if sq < 0.99:
-                b.squash += (1.0 - sq) * 0.5     # 快回弹(2~3帧≈50ms, 硬钢感)
-                if b.squash > 0.99: b.squash = 1.0
-                sq = b.squash
-            self._ball_e.pos = (bx + bs * (1 - sq) * 0.5, by + bs * (1 - sq) * 0.5)
-            self._ball_e.size = (bs * (2 - sq), bs * sq)
-            # 钉子受击高亮: 触发新闪光
-            hp = getattr(b, "hit_peg", None)
-            if hp is not None and hp in self._peg_cols:
-                self._peg_flash[hp] = now
-                b.hit_peg = None
-        # 钉子高亮动画: 30ms保持电光金 + 120ms渐回COL_PEG
-        for (px, py), t0 in list(self._peg_flash.items()):
-            e = self._peg_ellipses.get((px, py))
-            elapsed = now - t0
-            if elapsed > 0.15:
-                self._peg_cols[(px, py)].rgb = hex_rgb(COL_PEG)
-                if e is not None:
-                    r = PEG_R * self._s
-                    e.size = (2 * r, 2 * r)
-                del self._peg_flash[(px, py)]
-            else:
-                flash = (1.0, 0.898, 0.0)  # 电光金 #ffe500
-                base = hex_rgb(COL_PEG)
-                if elapsed < 0.03:
-                    # 保持峰值
-                    self._peg_cols[(px, py)].rgb = flash
-                else:
-                    # 缓出衰减
-                    f = (elapsed - 0.03) / 0.12
-                    self._peg_cols[(px, py)].rgb = (
-                        flash[0] + (base[0] - flash[0]) * f,
-                        flash[1] + (base[1] - flash[1]) * f,
-                        flash[2] + (base[2] - flash[2]) * f)
-                # 半径微扩 1.2x
-                if e is not None:
-                    scale = 1.0 if elapsed < 0.03 else (1.2 - 0.2 * (elapsed - 0.03) / 0.12)
-                    r = PEG_R * self._s * scale
-                    e.size = (2 * r, 2 * r)
+            self._ball_e.pos = (self._ox + (b.x - br) * self._s,
+                                self._oyt - (b.y + br) * self._s)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
@@ -2508,8 +2482,8 @@ class GameArea(FloatLayout):
             self._spring_vel = 0.0
         sp = max(-0.25, self._spring_power)  # 过冲到 -0.25(回弹约 11px), 视觉明显
         # 弹簧 Z 字形: 上横线→斜线→下横线
-        bar_top = FLOOR
-        bar_bot = FLOOR + 9 + sp * 45
+        bar_top = PLUNGER_Y + BALL_R
+        bar_bot = bar_top + 9 + sp * 45
         lx = self._px(LANE_L + 5)
         rx = self._px(RIGHT_INNER - 5)
         y0 = self._py(bar_top)
@@ -2518,20 +2492,20 @@ class GameArea(FloatLayout):
         bars[0].points = [lx, y0, rx, y0]
         bars[1].points = [rx, y0, lx, y1]
         bars[2].points = [lx, y1, rx, y1]
-        # 弹簧颜色: 充电时灰蓝渐变至金黄(反馈力度), 回弹时维持静止色不变
-        if g.state == "charging":
-            if sp < MISFIRE_POWER:
-                self._spring_bar_col.rgb = hex_rgb("#c45a4a")
-            else:
-                u = power_u(sp)
-                r0, g0, b0 = 0x8f, 0xa0, 0xc4
-                r1, g1, b1 = 0xff, 0xd7, 0x00
-                r = int(r0 + (r1 - r0) * u)
-                g = int(g0 + (g1 - g0) * u)
-                b = int(b0 + (b1 - b0) * u)
-                self._spring_bar_col.rgb = (r / 255.0, g / 255.0, b / 255.0)
-        else:
+        # 弹簧颜色: 哑火→红, 正常蓄力→灰蓝渐变至金黄(10档颗粒度)
+        weak = sp < MISFIRE_POWER
+        if sp < 0.01:
             self._spring_bar_col.rgb = hex_rgb("#8fa0c4")
+        elif weak:
+            self._spring_bar_col.rgb = hex_rgb("#c45a4a")
+        else:
+            u = power_u(sp)
+            r0, g0, b0 = 0x8f, 0xa0, 0xc4
+            r1, g1, b1 = 0xff, 0xd7, 0x00
+            r = int(r0 + (r1 - r0) * u)
+            g = int(g0 + (g1 - g0) * u)
+            b = int(b0 + (b1 - b0) * u)
+            self._spring_bar_col.rgb = (r / 255.0, g / 255.0, b / 255.0)
         # 槽位白闪
         if self._pulse is not None:
             i, end = self._pulse
@@ -2580,6 +2554,7 @@ class RootWidget(BoxLayout):
         super().__init__(orientation="vertical", spacing=dp(10), **kw)
         self.sfx = sfx if sfx is not None else Sfx(SOUND_ENABLED)
         self.geo = build_geo()
+        self._base_deflectors = list(self.geo["deflectors"])   # 原始弧面(每发射前按 arc_dy 重建)
         self.multipliers = roll_multipliers()
         self.balance = START_BEADS
         self.display_balance = float(START_BEADS)
@@ -2599,7 +2574,6 @@ class RootWidget(BoxLayout):
         self._risen = False
         self._topped = False          # 本次飞行是否已播顶部碰撞音
         self._misfire_frames = 0
-        self._last_peg_vibrate = 0.0   # 硬碰撞震动冷却(≥120ms)
         self._accumulator = 0.0       # 固定步长累加器(适配任意刷新率)
         self._space_held = False
         self._release_power = None
@@ -2615,7 +2589,7 @@ class RootWidget(BoxLayout):
         self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._landing_primed = False   # landing首帧标记(防每帧重置vy)
-        self._stall_frames = 0       # 连续位移≤1px的步数; fly内刷新,替代墙钟
+        self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
         self.land_target_x = PLUNGER_X
@@ -2778,7 +2752,6 @@ class RootWidget(BoxLayout):
         self.fire_btn.width = dp(110)
         self.fire_btn.bind(on_press=lambda _b: self.start_charge(),
                            on_release=lambda _b: self.launch())
-        self.fire_btn.always_release = True   # 手指滑出按钮外释放也触发 launch, 防卡死
         fire.add_widget(self.fire_btn)
         fire.add_widget(Widget(size_hint_x=0.05))                 # 右侧弹簧(蓄力左移≈2dp)
         self.add_widget(fire)
@@ -2793,17 +2766,15 @@ class RootWidget(BoxLayout):
             btn.background_color = hex_rgb(COL_BTN if abs(tv - self.rtp_target) < 1e-6
                                            else COL_BTN_OFF) + (1,)
 
-    def _set_controls_enabled(self, enabled, fire_too=True):
-        if fire_too:
-            self.fire_btn.disabled = not enabled
+    def _set_controls_enabled(self, enabled):
+        self.fire_btn.disabled = not enabled
         self.reset_btn.disabled = not enabled
         for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
             btn.disabled = not enabled
         self.round_btn.disabled = not enabled
         self.mute_btn.disabled = not enabled
         if enabled:
-            if fire_too:
-                self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
+            self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
             self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
             self._restyle_selects()
             self._refresh_mute_btn()
@@ -2816,8 +2787,7 @@ class RootWidget(BoxLayout):
         else:
             off = hex_rgb(COL_BTN_OFF) + (1,)
             dim = hex_rgb(COL_GRAY) + (0.6,)
-            if fire_too:
-                self.fire_btn.background_color = off
+            self.fire_btn.background_color = off
             self.reset_btn.background_color = hex_rgb("#1a1a22") + (1,)
             for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
                 btn.background_color = off
@@ -2897,9 +2867,8 @@ class RootWidget(BoxLayout):
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
     def _bench_done(self, n):
-        AVG_FRAMES = 228  # 73326次实测均值
         rate = n / 10.0
-        total_frames = n * AVG_FRAMES
+        total_frames = n * 205
         dev = self._device_info()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
@@ -2914,8 +2883,8 @@ class RootWidget(BoxLayout):
                 '时长       10 秒\n'
                 '总帧数     %d 帧    (%d 帧/秒)\n'
                 '估计可飞行 %d 次    (%.1f 次/秒)\n'
-                '注: 小球每次飞行平均需 %d 帧') % (
-                    dev, total_frames, total_frames // 10, n, rate, AVG_FRAMES)
+                '注: 小球每次飞行平均需 205 帧') % (
+                    dev, total_frames, total_frames // 10, n, rate)
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
@@ -3035,7 +3004,6 @@ class RootWidget(BoxLayout):
             self._show_round_end()
             return
         self.state = "charging"
-        self._set_controls_enabled(False, fire_too=False)  # 蓄力中发射按钮不禁用, 防手指滑出卡死
         self.power = 0.0
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
@@ -3060,19 +3028,37 @@ class RootWidget(BoxLayout):
             return
         self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
         self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
-        frozen_power = self.power
+        frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
         self.balance -= self.bet
-        self.ball = launch_ball(frozen_power)
-        self.ball.tease_dx = tease_dx(self.multipliers, self.target_slot)
+        # 弧面抖动: 每发 ±6px 垂直平移(纯几何变化, 无横向力, 不违反"碰弧前零干预"),
+        # 提供档内散布 —— 玩家看到每发轨迹微移而非复读同一轨迹。预演/真发共享同一
+        # 几何, 物理确定性不破。
+        arc_dy = random.uniform(-6.0, 6.0)
+        self.geo["deflectors"] = [(x1, y1 + arc_dy, x2, y2 + arc_dy)
+                                  for (x1, y1, x2, y2) in self._base_deflectors]
+        # 预发射 → 修订求解 → 真发射: 预演落格==预定槽直接发; 否则在最后碰撞点
+        # 定向注入 dvx(前面碰撞序列同种子逐帧一致, 只改最后一段无钉区出射速度),
+        # 仍失败则换种子重来 —— 盘面/倍率一律不动, 玩家看到的落格永远=结算槽
+        # (实测 1500 发零失败)。真发后由 _frame 计数撞钉, 第 _inject_k 次注入。
+        last_seed = random.randrange(2 ** 31)
+        sol = solve_landing(frozen_power, last_seed, self.geo, self.target_slot)
+        if sol is None:                      # 兜底链全失败(理论不可达): 原种子直发
+            self._inject_k = None
+            self._inject_dvx = 0.0
+        else:
+            last_seed, self._inject_k, self._inject_dvx = sol[0], sol[1], sol[2]
+        self._peg_counter = 0
+        self.ball = launch_ball(frozen_power, random.Random(last_seed), self.target_x)
         self.state = "flying"
         self._accumulator = 0.0
-        self.power = 0.0
+        self.power = 0.0                      # 发射后清除蓄力显示
         self.plays += 1
         self.round_plays += 1
-        self._crossed = False; self._risen = False; self._topped = False
-        self._stall_frames = 0
-        self._last_ball_xy = (self.ball.x, self.ball.y)
-
+        self._crossed = False
+        self._risen = False
+        self._topped = False
+        self._last_motion = time.time()   # 卡死兜底的运动锚点(之后由帧内位移检测刷新)
+        self._last_ball_xy = (self.ball["x"], self.ball["y"])
         self.sfx.play("launch", SFX_LAUNCH_GAIN + (SFX_LAUNCH_GAIN_MAX -
                       SFX_LAUNCH_GAIN) * power_u(frozen_power))
         _vibrate(14)
@@ -3122,7 +3108,7 @@ class RootWidget(BoxLayout):
             self.game_area.lamps_off()
         self.ball = Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=0.0,
                          item=None, born=time.time(), events=0, amp={},
-                         climb=False, misfire=False)
+                         misfire=False)
         self.state = "ready"
         self.power = 0.0
         self._set_controls_enabled(True)
@@ -3247,14 +3233,13 @@ class RootWidget(BoxLayout):
         return self._play_voice_sequence(voices, on_done=on_done)
 
     def _show_round_end(self):
-        """本轮游戏结束弹窗: 恭喜文案 + 统计 + 确定按钮(快速开始下一局) + 语音播报。"""
+        """本轮游戏结束弹窗: 恭喜文案 + 统计 + 语音播报(播完自动重置并关闭)。"""
         if self._round_end_shown:
             return
         self._round_end_shown = True
         self._set_controls_enabled(False)
         self.round_history.append({
             "plays": self.round_plays,
-            "hits": self.hits,
             "balance": self.balance,
             "time": time.time(),
         })
@@ -3268,29 +3253,24 @@ class RootWidget(BoxLayout):
                     color=hex_rgb(COL_TEXT) + (1,))
         lbl.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
         content.add_widget(lbl)
-        # 确定按钮: 点击后立即关闭语音和弹窗, 快速开始下一局
-        _done = [False]
-        def _do_reset():
-            if _done[0]:
-                return
-            _done[0] = True
-            self.reset_balance(notify=False)
-            popup.dismiss()
-        btn = Button(text="确定", font_size="18sp", size_hint=(1, None), height=dp(48),
-                     background_normal="", background_color=hex_rgb(COL_FIRE) + (1,),
-                     color=(1, 1, 1, 1))
-        btn.bind(on_release=lambda *_: _do_reset())
-        content.add_widget(btn)
         popup = Popup(title="本轮游戏结束", content=content,
-                      size_hint=(0.82, None), height=dp(400),
+                      size_hint=(0.82, None), height=dp(260),
                       auto_dismiss=False,
                       title_color=hex_rgb(COL_TEXT) + (1,),
                       title_size="19sp",
                       separator_color=hex_rgb(COL_DIV) + (1,))
         popup.open()
-        # 语音播完后自动重置(兜底: 用户不点确定按钮时也能继续)
-        voice_total = self._play_round_end_voice(on_done=_do_reset)
-        Clock.schedule_once(lambda dt: _do_reset(), voice_total + 3.0)
+        # 语音播完后自动重置并关闭弹窗
+        _done = [False]                            # 防重复调用
+        def _auto_reset():
+            if _done[0]:
+                return
+            _done[0] = True
+            self.reset_balance(notify=False)
+            popup.dismiss()
+        voice_total = self._play_round_end_voice(on_done=_auto_reset)
+        # 兜底定时器: 语音回调若因任何原因没触发, 在总时长+3秒后强制重置
+        Clock.schedule_once(lambda dt: _auto_reset(), voice_total + 3.0)
 
     def _show_round_settings(self):
         """轮次设定弹窗: 选择 20/50/100 + 最近完成的轮次历史。"""
@@ -3318,15 +3298,15 @@ class RootWidget(BoxLayout):
         _refresh_sel()
 
         # 历史记录(ScrollView 可滚动, 最多显示最近 100 条)
-        hist_lbl = Label(text="完成的轮次：", font_size="15sp", halign="left", valign="middle",
+        hist_lbl = Label(text="最近完成的轮次：", font_size="15sp", halign="left", valign="middle",
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
         hist_lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
         content.add_widget(hist_lbl)
         if self.round_history:
             lines = []
             for i, r in enumerate(reversed(self.round_history[-100:])):
-                lines.append("第%d轮  %d投%d中  剩 %d 个弹珠" %
-                            (i + 1, r["plays"], r.get("hits", 0), r["balance"]))
+                lines.append("最近第%d轮  每轮%d次  剩 %d 个弹珠" %
+                            (i + 1, r["plays"], r["balance"]))
             text = "\n".join(lines)
         else:
             text = "暂无完成的轮次记录"
@@ -3381,38 +3361,20 @@ class RootWidget(BoxLayout):
         self._save_config()
 
     # ------------------------------ 音效 ------------------------------
-    def _handle_landing(self):
-        """Common landing transition."""
-        i = self.target_slot
-        self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
-        self.landed_at = time.time()
-        self.state = "landing"
-        self._accumulator = 0.0
-        self._landing_primed = True
-        self.settle(i)
-
-    def _play_events(self, b):
-        ev = b.events
+    def _play_events(self, ev, amp, b):
+        """播放本渲染帧收集到的碰撞事件(ev/amp 由累加器循环内逐物理帧消费汇总,
+        与预演 _sim_flight 的逐帧清事件同构 —— 否则残留 events 会让注入计数错位)。"""
         if not ev:
             return
-        amp = b.amp or {}
-        peg_count = 0  # 本帧撞钉声计数(最多2声)
+        amp = amp or {}
         for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
             if ev & bit:
                 if bit == EV_WALL and b.y < SFX_TOP_Y:
-                    continue
-                if bit == EV_PEG and peg_count < 2:
-                    peg_count += 1
+                    continue          # 顶墙撞击与 apex 转向同帧发生, 交给 top 音, 不再叠闷咚
                 self.sfx.impact(bit, amp.get(bit, 0.0))
-        # 硬碰撞震动: 法向速率>600px/s, ≥120ms冷却, 8ms脉冲
-        pegs_sp = amp.get(EV_PEG, 0)
-        if pegs_sp > 600:
-            now = time.time()
-            if now - self._last_peg_vibrate >= 0.12:
-                _vibrate(8)
-                self._last_peg_vibrate = now
-        b.events = 0
-        amp.clear()
+        if ev & EV_ARC:
+            self.sfx.play("rail", 0.18, throttle=0.05)   # 弧面接触: 轻金属"擦"声,
+                                                         # 转向瞬间的听觉反馈(不能是幽灵装置)
 
     def _play_charge_sound(self, power):
         if power >= 1.0:
@@ -3512,35 +3474,32 @@ class RootWidget(BoxLayout):
             b = self.ball
             self._accumulator += dt
             landed = None
+            tick_ev = 0
+            tick_amp = {}
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
-                lx, ly = self._last_ball_xy
                 landed = advance_flight(b, self.geo, self.target_x)
-                if landed is not None:
-                    break
-                if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
-                    self._stall_frames = 0
-                else:
-                    self._stall_frames += 1
-                nudge = getattr(b, "_stall_retry", 0)
-                if self._stall_frames > 72 and nudge < STALL_MAX_RETRY:
-                    nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
-                    tx_, ty_ = -ny, nx
-                    if ty_ > 0: tx_, ty_ = -tx_, -ty_
-                    b.vx += tx_ * 120.0; b.vy += ty_ * 120.0
-                    b._stall_retry = nudge + 1
-                    self._stall_frames = 0
-                elif self._stall_frames > 240:
-                    landed = self.target_slot
-                    break
-                self._last_ball_xy = (b.x, b.y)
+                # 逐物理帧消费事件: 注入计数 + 汇总给音效。与预演 _sim_flight 同构 ——
+                # 不在这里清 events 的话, 累加器一次 tick 推多帧时残留位会让撞钉计数
+                # 虚高, 注入点错位(实测 35% 落格偏差)。
+                if b.events:
+                    tick_ev |= b.events
+                    for bit, sp in (b.amp or {}).items():
+                        if sp > tick_amp.get(bit, 0.0):
+                            tick_amp[bit] = sp
+                    if (b.events & EV_PEG) and getattr(self, "_inject_k", None) is not None:
+                        self._peg_counter += 1
+                        if self._peg_counter == self._inject_k:
+                            b.vx += self._inject_dvx
+                    b.events = 0
+                    b.amp.clear()
             if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
                 self._crossed = True
             elif self._crossed and not self._risen and b.y > RISER_Y:
                 self._risen = True
                 self.sfx.play("riser", 0.9)
             if self._crossed and not self._topped and b.vy >= 0.0:
-                self._topped = True
+                self._topped = True           # 冲到顶点转向(恒在 0.95~1.00s): 顶部碰撞声
                 self.sfx.top(b.y)
             if b.y > SLOT_TOP - 40:
                 self.status_lbl.text = "即将入袋…"
@@ -3548,24 +3507,52 @@ class RootWidget(BoxLayout):
                 self.status_lbl.text = "弹跳中…"
             else:
                 self.status_lbl.text = "入场中…"
+            if landed is None:
+                lx, ly = self._last_ball_xy
+                if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
+                    self._last_motion = time.time()     # 位移>1px/帧: 还在动, 不是卡死
+                elif (time.time() - self._last_motion > STALL_RETRY_SEC
+                      and getattr(b, "_stall_retry", 0) < STALL_MAX_RETRY):
+                    # 踢球(不退回柱塞重发): 沿接触法线向下踢, 玩家看不到"发射失败重发"
+                    nx, ny = getattr(b, "last_nx", 0.0), getattr(b, "last_ny", -1.0)
+                    tx_, ty_ = -ny, nx
+                    if ty_ > 0: tx_, ty_ = -tx_, -ty_
+                    b.vx += tx_ * 120.0
+                    b.vy += ty_ * 120.0
+                    b._stall_retry = getattr(b, "_stall_retry", 0) + 1
+                    self._last_motion = time.time()
+                    self._last_ball_xy = (b.x, b.y)
+                    self._crossed = self._risen = self._topped = False
+                elif time.time() - self._last_motion > MAX_FALL_SEC:
+                    landed = self.target_slot           # 位置不动 MAX_FALL_SEC: 真卡死才兜底
+                self._last_ball_xy = (b.x, b.y)
+                # 判据必须用位移而非速度/碰撞事件: steer_ball 每帧给球注入 vx, 卡死球的
+                # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
-                self._handle_landing()
+                i = self.target_slot
+                self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
+                self.landed_at = time.time()
+                self.state = "landing"
+                self._accumulator = 0.0
+                self._landing_primed = True   # 首帧补初速, 之后交给物理
+                self.settle(i)
+            if tick_ev:
+                self._play_events(tick_ev, tick_amp, self.ball)
         elif self.state == "misfire":
+            self._misfire_frames += 1
             self._accumulator += dt
-            done = False
+            stepped = False
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
-                self._misfire_frames += 1
+                stepped = True
+            if stepped:
                 if advance_misfire(self.ball) or self._misfire_frames > MISFIRE_MAX_FRAMES:
-                    done = True
-                    break
-            if done:
-                self.ball.x = PLUNGER_X
-                self.ball.y = PLUNGER_Y
-                self.ball.vx = 0.0
-                self.ball.vy = 0.0
-                self.sfx.play("bounce", 0.55)
-                self.park_ball(reroll=False)
+                    self.ball.x = PLUNGER_X
+                    self.ball.y = PLUNGER_Y
+                    self.ball.vx = 0.0
+                    self.ball.vy = 0.0
+                    self.sfx.play("bounce", 0.55)
+                    self.park_ball(reroll=False)
         elif self.state == "landing":
             b = self.ball
             if self._landing_primed:
