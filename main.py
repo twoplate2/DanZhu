@@ -1940,9 +1940,11 @@ def selftest(n=40000):
     peg_ratios.sort()
     gap_med = row_gaps[len(row_gaps) // 2]
     ratio_med = peg_ratios[len(peg_ratios) // 2]
-    rhythm_ok = gap_med >= 0.18 and ratio_med <= 0.90
+    # 减速比门禁 0.90 太宽: VY_MIN=100 时 0.83 会漏过(实测教训)。0.22(当前)vs
+    # 0.83(保底100)差距大, 0.60 能防回归且留裕量。
+    rhythm_ok = gap_med >= 0.18 and ratio_med <= 0.60
     ok = ok and rhythm_ok
-    print("  行穿行 p50=%.2fs (须>=0.18)   碰钉减速比 p50=%.2f (须<=0.90, 碰钉减速)"
+    print("  行穿行 p50=%.2fs (须>=0.18)   碰钉减速比 p50=%.2f (须<=0.60, 碰钉明显减速)"
           % (gap_med, ratio_med))
 
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
