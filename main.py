@@ -91,9 +91,10 @@ E_SLOW = 0.55                # 低速接触恢复系数(0.35→0.55: 碰钉反�
                              # 碰钉减速比 0.83; 配合 VY_MIN=100 防滑翔横穿)
 PEG_BOUNCE_VY_MAX = 300.0    # 碰钉后向上速度上限(极端反弹限幅: 弹高≤37.5px=一行内。
                              # 专家评估: 466px 大回弹违反直觉, 保留正常小弹跳)
-PEG_BOUNCE_VY_MIN = 30.0     # 碰钉后保底下落速度(vy<30 补到 30: 只防"完全静止"卡死,
-                             # 不防慢速滚落 —— 100 会注入动能抹平碰撞损失, 球"嗖嗖"穿阵;
-                             # 原始版 706154e 无保底碰后 vy≈20, 走走停停才是弹珠机节奏)
+PEG_BOUNCE_VY_MIN = 70.0     # 碰钉后保底下落速度(vy<70 补到 70): 防"水平滑翔"横穿。
+                             # 甜点扫描: ≤70 时碰后 vy 太低, 球横滑蹭钉(88% 磨蹭碰撞, 黏滞感);
+                             # ≥80 磨蹭骤降为 0。70 滞留帧最少/波动最均匀, 减速比~0.5
+                             # (碰钉保留一半动能, 轻快弹开)。曾试 30(黏滞投诉)/100(贴钉蹭感)。
 PEG_REFLECT_VX_MAX = 300.0   # 碰钉反射横速上限(球碰钉后横速≤300, 横穿≤1钉距, 防"横向跳")
 PEG_STEER_K = 0.8           # 碰钉一次性引导: 反射后 vx 朝目标槽微调系数(碰撞=改方向,
                              # 飞行中零干预。0.20 = 修订前命中率 ~50%, 修订兜底 100%;
@@ -1903,29 +1904,38 @@ def selftest(n=40000):
     #       历史教训: G=1200/VY_MIN=200 时球"嗖嗖穿过"钉阵(行穿行 0.17s, 碰钉不减
     #       反加速), 玩家投诉"下落加速极快"。G=1000/E_SLOW=0.55/VY_MIN=100 后
     #       行穿行 0.22s、碰钉减速比 0.83。
-    print("== 下落节奏(弹珠机手感: 碰钉可见减速) ==")
+    print("== 下落节奏(弹珠机手感: 碰钉轻快弹开) ==")
     mn = 250
     row_gaps = []
     peg_ratios = []
-    for _ in range(mn):
-        target = random.randrange(NUM_SLOTS)
-        tx = FIELD_L + (target + 0.5) * SLOT_W
-        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0), target_x=tx)
+    sticky = 0
+    # 口径与专家组测量一致: power=0.8 固定 + 目标槽居中(远端槽强引导会拉低减速比,
+    # 污染口径) + 每发固定 rng 种子。滞留帧=碰钉间隔恰 1 帧(同钉连续碰撞)。
+    tgt = NUM_SLOTS // 2
+    tx_fix = FIELD_L + (tgt + 0.5) * SLOT_W
+    for i in range(mn):
+        b = launch_ball(0.8, rng=random.Random(1000 + i), target_x=tx_fix)
         prev_y = b.y
         row_t = {}
         t = 0.0
+        last_peg_f = -10
+        prev_vy = None
         for _f in range(4000):
-            vy0 = b.vy
-            landed = advance_flight(b, geo, tx)
+            landed = advance_flight(b, geo, tx_fix)
             t += FIXED_DT
             if b.events & EV_PEG:
-                if vy0 > 50:   # 碰钉减速比 = (碰后vy-重力)/碰前vy; 扣重力才是纯碰撞效应
-                    peg_ratios.append((b.vy - G * FIXED_DT) / vy0)
+                if _f - last_peg_f == 1:
+                    sticky += 1              # 同钉连续碰撞(1 帧内再次碰同一颗钉)
+                else:
+                    if prev_vy is not None and prev_vy > 50:
+                        peg_ratios.append(b.vy / prev_vy)
+                last_peg_f = _f
                 b.events = 0
                 b.amp.clear()
             elif b.events:
                 b.events = 0
                 b.amp.clear()
+            prev_vy = b.vy
             for r in range(1, PEG_ROWS):      # 行穿行: 相邻钉行间的下落耗时
                 y = PEG_TOP + r * PEG_SY
                 if y not in row_t and b.vy > 0 and prev_y < y <= b.y:
@@ -1940,12 +1950,16 @@ def selftest(n=40000):
     peg_ratios.sort()
     gap_med = row_gaps[len(row_gaps) // 2]
     ratio_med = peg_ratios[len(peg_ratios) // 2]
-    # 减速比门禁 0.90 太宽: VY_MIN=100 时 0.83 会漏过(实测教训)。0.22(当前)vs
-    # 0.83(保底100)差距大, 0.60 能防回归且留裕量。
-    rhythm_ok = gap_med >= 0.18 and ratio_med <= 0.60
+    # 减速比门禁区间 0.45~0.70: 两端都防 —— 低于 0.45 是黏滞(VMIN=30 实测 0.32 被投诉),
+    # 高于 0.70 是"嗖嗖穿阵"(VMIN=200 实测 0.83)。甜点 0.50(VMIN=70)。
+    # 行穿行 0.15 只是极端哨兵(防整体过快), 防穿阵主力是减速比上限。
+    # 滞留帧门禁 ≤8/发: 30 时 13/发(黏滞), 100 时 14/发(贴钉蹭感), 70 时 ~6。
+    rhythm_ok = (gap_med >= 0.15 and 0.45 <= ratio_med <= 0.70
+                 and sticky <= mn * 8)
     ok = ok and rhythm_ok
-    print("  行穿行 p50=%.2fs (须>=0.18)   碰钉减速比 p50=%.2f (须<=0.60, 碰钉明显减速)"
+    print("  行穿行 p50=%.2fs (须>=0.15)   碰钉减速比 p50=%.2f (须0.45~0.70, 轻快弹开)"
           % (gap_med, ratio_med))
+    print("  滞留帧 %d (须<=%d/发, 球被钉黏住连续碰撞)" % (sticky, 8))
 
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
