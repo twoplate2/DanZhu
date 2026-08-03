@@ -615,29 +615,36 @@ def _bisect_dvx(power, seed, target_slot, geo, inject_k, lo=-800.0, hi=800.0, it
     return None, iters
 
 
-def solve_landing(power, seed, geo, target_slot, max_reseed=4):
-    """发射前修订求解(替代旧"重掷盘面"): 预演落格==目标直接返回;
-    否则在最后 2 个碰撞点二分注入 dvx(±800)定向修正 —— 注入点在最后碰撞之后,
-    前面碰撞序列与预演完全一致(同种子), 只改"最后一段无钉区"的出射速度;
-    仍失败则换种子重来(盘面/倍率一律不动, 换的只是轨迹)。
+def solve_landing(power, seed, geo, target_slot, max_reseed=20):
+    """发射前修订求解: **零注入优先** —— 换种子(≤20)找"预演落格==目标"的纯物理轨迹,
+    玩家看到的球完全自然(无任何横向突变)。全部种子都不中(理论 ~1%)才用注入兜底:
+    最后碰撞点二分 dvx, **限幅 ±150**(策划组 90 分画像: 落格保证不依赖 >150 的注入)。
+    盘面/倍率一律不动, 换的只是轨迹。
 
-    返回 (final_seed, inject_k, inject_dvx, attempts) 或 None(理论不可达)。
-    inject_k=None 表示无需注入。真发: launch_ball(power, Random(final_seed), tx),
-    飞行循环里计数撞钉, 第 inject_k 次碰撞帧末注入 inject_dvx。"""
+    返回 (final_seed, inject_k, inject_dvx, attempts) 或 None(兜底链失败,
+    调用方应转物理落格结算, 绝不允许"物理落格≠结算槽"穿帮)。
+    inject_k=None 表示零注入。"""
     tx = FIELD_L + (target_slot + 0.5) * SLOT_W
     attempts = 0
-    for r in range(max_reseed + 1):
+    last_landed = None
+    for r in range(max_reseed):
         s = seed + r
         b = launch_ball(power, random.Random(s), tx)
-        landed, n_peg, _x = _sim_flight(b, geo, target_slot)
+        landed, _n, _x = _sim_flight(b, geo, target_slot)
         attempts += 1
         if landed == target_slot:
             return s, None, None, attempts
-        for k in range(n_peg, max(1, n_peg - 1) - 1, -1):
-            dvx, used = _bisect_dvx(power, s, target_slot, geo, k)
-            attempts += used
-            if dvx is not None:
-                return s, k, dvx, attempts
+        last_landed = landed
+    # 注入兜底(≤150): 最后一个种子, 最后 2 个碰撞点
+    s = seed + max_reseed - 1
+    b = launch_ball(power, random.Random(s), tx)
+    landed, n_peg, _x = _sim_flight(b, geo, target_slot)
+    for k in range(n_peg, max(1, n_peg - 1) - 1, -1):
+        dvx, used = _bisect_dvx(power, s, target_slot, geo, k,
+                                lo=-150.0, hi=150.0, iters=10)
+        attempts += used
+        if dvx is not None:
+            return s, k, dvx, attempts
     return None
 
 
@@ -1875,6 +1882,8 @@ def selftest(n=40000):
     m2 = 300
     ok_solve = 0
     attempts_total = 0
+    inject_n = 0
+    inject_big = 0
     for _ in range(m2):
         target = random.randrange(NUM_SLOTS)
         power = random.uniform(MISFIRE_POWER, 1.0)
@@ -1883,6 +1892,10 @@ def selftest(n=40000):
             continue
         s, ik, dvx, att = sol
         attempts_total += att
+        if ik is not None:
+            inject_n += 1
+            if abs(dvx) > 150:
+                inject_big += 1
         # 用解重放验证: 落格必须==目标(与真发同种子+注入, 确定性一致)
         tx = FIELD_L + (target + 0.5) * SLOT_W
         b = launch_ball(power, random.Random(s), tx)
@@ -1894,10 +1907,15 @@ def selftest(n=40000):
             ok_solve += 1
     solve_rate = 100.0 * ok_solve / m2
     avg_att = attempts_total / m2
-    solve_ok = solve_rate >= 99.5 and avg_att <= 7.0
+    inject_rate = 100.0 * inject_n / m2
+    # 零注入优先: 注入率≤5%(玩家不应看到"落袋前横向突变"), 注入量≤150
+    solve_ok = (solve_rate >= 99.5 and avg_att <= 7.0
+                and inject_rate <= 5.0 and inject_big == 0)
     ok = ok and solve_ok
     print("  修订成功率: %.1f%% (%d/%d, 须>=99.5)   平均预演: %.2f 次 (须<=7)"
           % (solve_rate, ok_solve, m2, avg_att))
+    print("  注入率: %.1f%% (须<=5, 零注入优先)   超量注入(>150): %d (须=0)"
+          % (inject_rate, inject_big))
     print("  盘面不变: solve_landing 不调用 roll_multipliers/choose_target (代码保证)")
 
     # (2b'') 下落节奏门禁: 弹珠机手感 —— 碰钉要有可见减速, 球在钉阵里慢慢滚落。
@@ -3107,11 +3125,13 @@ class RootWidget(BoxLayout):
         # (实测 1500 发零失败)。真发后由 _frame 计数撞钉, 第 _inject_k 次注入。
         last_seed = random.randrange(2 ** 31)
         sol = solve_landing(frozen_power, last_seed, self.geo, self.target_slot)
-        if sol is None:                      # 兜底链全失败(理论不可达): 原种子直发
-            self._inject_k = None
+        if sol is None:                      # 兜底链全失败(理论 <0.1%): 原种子直发,
+            self._inject_k = None            # 结算转物理落格(绝不穿帮)
             self._inject_dvx = 0.0
+            self._settle_physical = True
         else:
             last_seed, self._inject_k, self._inject_dvx = sol[0], sol[1], sol[2]
+            self._settle_physical = False
         self._peg_counter = 0
         self.ball = launch_ball(frozen_power, random.Random(last_seed), self.target_x)
         self.state = "flying"
@@ -3594,7 +3614,12 @@ class RootWidget(BoxLayout):
                 # 判据必须用位移而非速度/碰撞事件: steer_ball 每帧给球注入 vx, 卡死球的
                 # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
-                i = self.target_slot
+                if getattr(self, "_settle_physical", False):
+                    # 修订兜底链失败(理论 <0.1%): 物理落格结算, 杜绝穿帮
+                    i = max(0, min(NUM_SLOTS - 1,
+                                   int((b.x - FIELD_L) / SLOT_W)))
+                else:
+                    i = self.target_slot
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
                 self.landed_at = time.time()
                 self.state = "landing"
