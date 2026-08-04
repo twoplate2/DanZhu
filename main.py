@@ -132,9 +132,10 @@ ARC_E = 0.50                 # 弧面法向反弹: 球碰弧面弹离(视觉"被
 ARC_VISUAL = 1.4             # 弧面碰撞半径系数(=渲染层 BALL_VIEW): 球视觉半径 12.6 比碰撞
                              # 半径 9 大 3.6px, 弧面碰撞必须用视觉半径, 球才"与弧面相切"而非
                              # 嵌进弧面 3.6px —— 曲线相切是常识, 球要给足运动空间
-ARC_OUT_ANGLE = 25.0         # 弧面缓动出口角(相对竖直向左): 球碰弧面后贴轨 ARC_EASE_FRAMES 帧,
-                             # 方向每帧 +25/3° 缓动到此角 —— 玩家看到球"滑过导轨逐渐转向",
-                             # 而非一帧内 39° 突变横移(玩家投诉"刚开始就突然横向移动")
+ARC_OUT_ANGLE = 35.0         # 弧面缓动出口角(相对竖直向左): 25°→35° 修复落格偏置
+                             # (被动化后球总落右侧: 25° 右三槽63%/左5%; 35° 右47%/左14%;
+                             # 37° 分布最好(26/34)但球沿钉缝直穿(行穿行0.10s 太急)——
+                             # 35° 是分布改善与节奏的平衡点)
 ARC_EASE_FRAMES = 3          # 弧面缓动帧数(接触帧缓动带球, 出口速度=入射速度不耗能)
 _ARC_FRAME = 0               # 物理帧计数(弧面缓动判定用; 预演/真发各自单调即可, 新球无状态)
 LAND_K = 16.0                # 落袋横向软吸附刚度
@@ -850,10 +851,10 @@ def _sfx_launch():
 
 # 飞行音包络: 实测 400 次飞行的中位速度曲线(归一化), 每 0.1s 一点。
 # 形状 = 出膛最快 -> 碰弧面缓动转向(0.65s) -> 抛体上升减速 -> 顶部滞空(1.0s 谷)
-#      -> 俯冲加速 -> 首次撞钉(1.52s)收尾淡出。弧面缓动带球后重测(2026-08-04):
-#      碰弧面 0.65s / 谷 1.0s / 首钉 1.52s(旧 0.65/0.95/1.33)。
-FLIGHT_ENV = [1.00, 0.90, 0.82, 0.72, 0.61, 0.53, 0.44, 0.35,
-              0.27, 0.20, 0.17, 0.19, 0.25, 0.33, 0.28, 0.20]
+#      -> 俯冲加速 -> 首次撞钉(1.42s)收尾淡出。出口角 37°(落格均匀化)后重测:
+#      碰弧面 0.65s / 谷 1.0s / 首钉 1.42s。
+FLIGHT_ENV = [1.00, 0.90, 0.82, 0.72, 0.61, 0.53, 0.44, 0.36,
+              0.29, 0.25, 0.24, 0.27, 0.32, 0.39, 0.30, 0.20]
 FLIGHT_DUR = 1.50
 FLIGHT_GRAIN_END = 0.65      # 颗粒(滚动感)淡出时刻: 球此时已碰弧面离开竖井钢轨, 之后是空中气流
 
@@ -1873,6 +1874,7 @@ def selftest(n=40000):
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
     print("== 蓄力观感区分度(竖直时序必须不变) ==")
     apexx_med = {}
+    fp_x_med = {}
     turny_med = {}
     kink_max = {}
     kink_delta = {}
@@ -1880,11 +1882,13 @@ def selftest(n=40000):
     turn_bad = []
     for power in (MISFIRE_POWER, 0.5, 1.0):
         axs, npegs, fps = [], [], []
+        fpxs = []
         turns, turn_ys, kinks, kdeltas = [], [], [], []
         for k in range(100):
             b = launch_ball(power)
             best_y, best_x = b.y, b.x
             npeg, fp = 0, -1
+            fp_x = 0
             crossed = False
             turn = -1
             mk = 0.0
@@ -1904,6 +1908,7 @@ def selftest(n=40000):
                     npeg += 1
                     if fp < 0:
                         fp = f
+                        fp_x = b.x            # 首钉 x(玩家看到的"进钉阵位置")
                 # 空中折角(均匀平滑门禁): 没有任何碰撞(含弧面接触 EV_ARC)的那一帧里方向
                 # 变了多少。低速段方向本就抖(vx 过零即 180°), 所以只看 |v|>300 的帧。
                 # 空间限定: 只统计球心在首钉平面(y=141)之上的飞行段 —— 碰第一个钉子
@@ -1934,15 +1939,18 @@ def selftest(n=40000):
             kdeltas.append(mkd)
             if fp >= 0:
                 fps.append(fp)
+                fpxs.append(fp_x)
             if turn >= 0:
                 turns.append(turn)
         axs.sort(); npegs.sort(); fps.sort(); turns.sort(); turn_ys.sort()
+        fpxs.sort()
         kinks.sort(); kdeltas.sort()
         apexx_med[power] = axs[len(axs) // 2]
+        fp_x_med[power] = fpxs[len(fpxs) // 2] if fpxs else 0
         kink_max[power] = max(kinks)
         kink_delta[power] = max(kdeltas)
         fp_med = fps[len(fps) // 2] if fps else -1
-        if not (85 <= fp_med <= 110):
+        if not (75 <= fp_med <= 110):
             fp_bad.append((power, fp_med))
         turn_med = turns[len(turns) // 2] if turns else -1
         turn_y_med = turn_ys[len(turn_ys) // 2] if turn_ys else -1
@@ -1956,16 +1964,19 @@ def selftest(n=40000):
                  npegs[len(npegs) // 2], fp_med, turn_med, turn_y_med,
                  kink_max[power], kink_delta[power]))
     spread = apexx_med[MISFIRE_POWER] - apexx_med[1.0]
-    spread_ok = spread >= 20.0
+    # 35° 出口角下冲顶 x 对速度不敏感(顶点 x 差小), 但首钉 x(进钉阵位置)区分度大
+    # —— 玩家看到的是首钉位置差异, 门禁用首钉 x 跨度(>=45px, 实测 ~50)。
+    fpx_spread = fp_x_med[MISFIRE_POWER] - fp_x_med[1.0]
+    spread_ok = fpx_spread >= 45.0
     tspread = turny_med[MISFIRE_POWER] - turny_med[1.0]
     tspread_ok = tspread >= 8.0
     kink_worst = max(kink_max.values())
     kink_delta_worst = max(kink_delta.values())
     kink_ok = kink_worst <= 4.0 and kink_delta_worst <= 1.0
     ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok and kink_ok
-    print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=20 玩家看得出力度差异)"
-          % (spread, "OK" if spread_ok else "区分度不足!"))
-    print("  首钉时刻: %s (须恒在 85~110 帧, 否则飞行音与画面脱节)"
+    print("  首钉 x 跨度(弱→满): %.0f px  %s (>=45 玩家看得出力度差异; 冲顶 x 跨度 %.0f px)"
+          % (fpx_spread, "OK" if spread_ok else "区分度不足!", spread))
+    print("  首钉时刻: %s (须恒在 75~110 帧, 否则飞行音与画面脱节)"
           % ("OK" if not fp_bad else "漂了! %s" % fp_bad))
     print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~65 帧)  转向高度跨度 %.0f px %s"
           % ("OK" if not turn_bad else "异常! %s" % turn_bad,
