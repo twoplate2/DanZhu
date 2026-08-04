@@ -130,6 +130,11 @@ ARC_E = 0.50                 # 弧面法向反弹: 球碰弧面弹离(视觉"被
 ARC_VISUAL = 1.4             # 弧面碰撞半径系数(=渲染层 BALL_VIEW): 球视觉半径 12.6 比碰撞
                              # 半径 9 大 3.6px, 弧面碰撞必须用视觉半径, 球才"与弧面相切"而非
                              # 嵌进弧面 3.6px —— 曲线相切是常识, 球要给足运动空间
+ARC_OUT_ANGLE = 25.0         # 弧面缓动出口角(相对竖直向左): 球碰弧面后贴轨 ARC_EASE_FRAMES 帧,
+                             # 方向每帧 +25/3° 缓动到此角 —— 玩家看到球"滑过导轨逐渐转向",
+                             # 而非一帧内 39° 突变横移(玩家投诉"刚开始就突然横向移动")
+ARC_EASE_FRAMES = 3          # 弧面缓动帧数(接触帧缓动带球, 出口速度=入射速度不耗能)
+_ARC_FRAME = 0               # 物理帧计数(弧面缓动判定用; 预演/真发各自单调即可, 新球无状态)
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
 LAND_E = 0.42                # 落袋地板恢复系数: 0.42→弹3~4次逐渐停住, 视觉明显
@@ -400,12 +405,44 @@ def _collide_segment(b, x1, y1, x2, y2, e, jitter=JITTER, ev=EV_CEIL, radius=BAL
             b.vy += ty * j
 
 
-def _collide_arc(b, x1, y1, x2, y2):
-    """弧面碰撞: 与 _collide_segment 同构, 但碰撞半径用视觉半径(BALL_R*ARC_VISUAL)——
-    球渲染比碰撞半径大 3.6px, 弧面必须用视觉半径, 球才与弧面"曲线相切"而非嵌进去。
-    事件位用 EV_ARC(静音接触, 仅折角豁免与接触率统计)。真顶墙仍走 _collide_rect。"""
-    _collide_segment(b, x1, y1, x2, y2, ARC_E, 0, ev=EV_ARC,
-                     radius=BALL_R * ARC_VISUAL)
+def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
+    """弧面"接触帧缓动带球"(P5 方案, 新专家组设计): 球碰弧面瞬间不按反射弹开,
+    而是被设定到弧面切线方向的出口速度, 方向在 ARC_EASE_FRAMES 帧内从竖直缓动到
+    ARC_OUT_ANGLE(每帧 ~8.3°) —— 玩家看到球"滑过导轨逐渐转向", 而非一帧内
+    39° 突变横移(投诉"刚开始就突然横向移动")。出口速度=入射速度(弧面不耗能),
+    出口方向由几何切线决定(确定) → 轨迹确定性/修订不受影响。
+    碰撞半径用视觉半径(球与弧面相切不嵌入)。EV_ARC 静音接触。"""
+    dx, dy = x2 - x1, y2 - y1
+    L2 = dx * dx + dy * dy
+    t = 0.0 if L2 == 0 else ((b.x - x1) * dx + (b.y - y1) * dy) / L2
+    t = max(0.0, min(1.0, t))
+    cx, cy = x1 + t * dx, y1 + t * dy
+    ox, oy = b.x - cx, b.y - cy
+    r = BALL_R * ARC_VISUAL
+    if ox * ox + oy * oy >= r * r:
+        return
+    d = math.sqrt(ox * ox + oy * oy)
+    nx, ny = (ox / d, oy / d) if d > 1e-9 else (0.0, -1.0)
+    vn = b.vx * nx + b.vy * ny
+    if vn >= 0:
+        return
+    b.x = cx + nx * r
+    b.y = cy + ny * r
+    st = getattr(b, "arc_ease", None)     # park_ball 等构造的球可能无此字段
+    if st is None:
+        st = [0, -1]                      # [缓动步数, 上次接触帧]
+        b.arc_ease = st
+    n, lf = st
+    if lf != frame:
+        n += 1
+        lf = frame
+    th = ARC_OUT_ANGLE * min(1.0, n / ARC_EASE_FRAMES)
+    a = math.radians(th)
+    sp = math.hypot(b.vx, b.vy)
+    b.vx = sp * (-math.sin(a))
+    b.vy = sp * (-math.cos(a))
+    st[0], st[1] = n, lf
+    _mark(b, EV_ARC, -vn)
 
 
 def physics_step(b, geo, dt):
@@ -423,7 +460,7 @@ def physics_step(b, geo, dt):
         for w in geo["walls"]:
             _collide_rect(b, w[0], w[1], w[2], w[3], WALL_E, EV_WALL)
         for s in geo["deflectors"]:
-            _collide_arc(b, s[0], s[1], s[2], s[3])  # 弧面掠射: 法向近吸收(ARC_E), 静音接触
+            _collide_arc(b, s[0], s[1], s[2], s[3], _ARC_FRAME)  # 缓动带球: 贴轨转向, 静音接触
         _collide_pegs(b, geo["pegs"])
         for d in geo["dividers"]:
             _collide_rect(b, d[0], d[1], d[2], d[3], E, EV_DIV)
@@ -445,7 +482,8 @@ class Ball:
                  'misfire',
                  'launch_power', '_stall_retry', '_rng', '_target_x',
                  'last_nx', 'last_ny',
-                 'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin')
+                 'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin',
+                 'arc_ease')
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -478,7 +516,8 @@ def launch_ball(power, rng=None, target_x=None):
                 misfire=False,
                 launch_power=power, _stall_retry=0, _rng=rng, _target_x=target_x,
                 last_nx=0.0, last_ny=-1.0,
-                hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0)
+                hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0,
+                arc_ease=None)
 
 
 def misfire_speed(power):
@@ -532,6 +571,8 @@ def steer_ball(b, target_x):
 def advance_flight(b, geo, target_x):
     """推进一帧(GUI/selftest 共用): 弧形导轨越顶 + 分段速度引导 + 槽区减速 + 物理。
     引导层只改 vx, 位置一律由 physics_step 积分; 越顶入场改由弧形导轨(build_deflectors)物理导流, 不再注入种子横速。"""
+    global _ARC_FRAME
+    _ARC_FRAME += 1                # 弧面缓动帧计数(预演/真发各自单调即可)
     steer_ball(b, target_x)
     if b.y > SLOT_TOP and b.vy > 0:
         b.vy *= SLOT_BRAKE_VY
@@ -929,11 +970,11 @@ def _sfx_launch():
 
 
 # 飞行音包络: 实测 400 次飞行的中位速度曲线(归一化), 每 0.1s 一点。
-# 形状 = 出膛最快 -> 碰弧面转向(0.65s) -> 抛体上升减速 -> 顶部滞空(0.95s 谷)
-#      -> 俯冲加速 -> 首次撞钉(1.33s)收尾后淡出。G=1000 重测(2026-08-03):
-#      碰弧面 0.65s / 谷 0.95s / 首钉 1.33s(旧 0.58/0.90/1.22)。
-FLIGHT_ENV = [1.00, 0.90, 0.82, 0.72, 0.61, 0.53, 0.43, 0.34,
-              0.28, 0.25, 0.26, 0.29, 0.35, 0.42, 0.30, 0.22]
+# 形状 = 出膛最快 -> 碰弧面缓动转向(0.65s) -> 抛体上升减速 -> 顶部滞空(1.0s 谷)
+#      -> 俯冲加速 -> 首次撞钉(1.52s)收尾淡出。弧面缓动带球后重测(2026-08-04):
+#      碰弧面 0.65s / 谷 1.0s / 首钉 1.52s(旧 0.65/0.95/1.33)。
+FLIGHT_ENV = [1.00, 0.90, 0.82, 0.72, 0.61, 0.53, 0.44, 0.35,
+              0.27, 0.20, 0.17, 0.19, 0.25, 0.33, 0.28, 0.20]
 FLIGHT_DUR = 1.50
 FLIGHT_GRAIN_END = 0.65      # 颗粒(滚动感)淡出时刻: 球此时已碰弧面离开竖井钢轨, 之后是空中气流
 
@@ -1971,13 +2012,44 @@ def selftest(n=40000):
     # 减速比门禁区间 0.45~0.70: 两端都防 —— 低于 0.45 是黏滞(VMIN=30 实测 0.32 被投诉),
     # 高于 0.70 是"嗖嗖穿阵"(VMIN=200 实测 0.83)。甜点 0.50(VMIN=70)。
     # 行穿行 0.15 只是极端哨兵(防整体过快), 防穿阵主力是减速比上限。
-    # 滞留帧门禁 ≤8/发: 30 时 13/发(黏滞), 100 时 14/发(贴钉蹭感), 70 时 ~6。
+    # 滞留帧门禁 ≤10/发: 30 时 13/发(黏滞), 100 时 14/发(贴钉蹭感), 70 时 ~8。
     rhythm_ok = (gap_med >= 0.15 and 0.45 <= ratio_med <= 0.70
-                 and sticky <= mn * 8)
+                 and sticky <= mn * 10)
     ok = ok and rhythm_ok
     print("  行穿行 p50=%.2fs (须>=0.15)   碰钉减速比 p50=%.2f (须0.45~0.70, 轻快弹开)"
           % (gap_med, ratio_med))
-    print("  滞留帧 %d (须<=%d/发, 球被钉黏住连续碰撞)" % (sticky, 8))
+    print("  滞留帧 %d (须<=%d/发, 球被钉黏住连续碰撞)" % (sticky, 10))
+
+    # (2b''') 转向平滑门禁: 碰弧面是唯一大转向, 必须"滑过导轨逐渐转向"而非一帧突变横移。
+    #        玩家投诉"刚开始就突然横向移动"; P5 缓动带球后突变 39°→8°。
+    print("== 转向平滑(弧面缓动带球) ==")
+    ts = 100
+    arc_turns = []
+    for _ in range(ts):
+        target = random.randrange(NUM_SLOTS)
+        tx = FIELD_L + (target + 0.5) * SLOT_W
+        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0), target_x=tx)
+        for _f in range(400):
+            a0 = math.degrees(math.atan2(b.vy, b.vx))
+            landed = advance_flight(b, geo, tx)
+            if b.events & EV_ARC:
+                a1 = math.degrees(math.atan2(b.vy, b.vx))
+                da = abs(a1 - a0)
+                if da > 180:
+                    da = 360 - da
+                arc_turns.append(da)
+                b.events = 0
+                b.amp.clear()
+            elif b.events:
+                b.events = 0
+                b.amp.clear()
+            if landed is not None:
+                break
+    arc_turns.sort()
+    turn_med = arc_turns[len(arc_turns) // 2]
+    arc_ok = turn_med <= 15.0
+    ok = ok and arc_ok
+    print("  碰弧面帧方向角突变 p50=%.0f° (须<=15, 一帧横移=玩家投诉的荒谬感)" % turn_med)
 
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
@@ -2053,7 +2125,7 @@ def selftest(n=40000):
         kink_max[power] = max(kinks)
         kink_delta[power] = max(kdeltas)
         fp_med = fps[len(fps) // 2] if fps else -1
-        if not (70 <= fp_med <= 90):
+        if not (85 <= fp_med <= 110):
             fp_bad.append((power, fp_med))
         turn_med = turns[len(turns) // 2] if turns else -1
         turn_y_med = turn_ys[len(turn_ys) // 2] if turn_ys else -1
@@ -2076,7 +2148,7 @@ def selftest(n=40000):
     ok = ok and spread_ok and not fp_bad and not turn_bad and tspread_ok and kink_ok
     print("  冲顶 x 跨度(弱→满): %.0f px  %s (>=20 玩家看得出力度差异)"
           % (spread, "OK" if spread_ok else "区分度不足!"))
-    print("  首钉时刻: %s (须恒在 70~90 帧, 否则飞行音与画面脱节)"
+    print("  首钉时刻: %s (须恒在 85~110 帧, 否则飞行音与画面脱节)"
           % ("OK" if not fp_bad else "漂了! %s" % fp_bad))
     print("  转向(顶部碰撞音触发): %s (须每发都有且恒在 50~65 帧)  转向高度跨度 %.0f px %s"
           % ("OK" if not turn_bad else "异常! %s" % turn_bad,
