@@ -95,9 +95,7 @@ PEG_BOUNCE_VY_MIN = 70.0     # 碰钉后保底下落速度(vy<70 补到 70): 防
                              # ≥80 磨蹭骤降为 0。70 滞留帧最少/波动最均匀, 减速比~0.5
                              # (碰钉保留一半动能, 轻快弹开)。曾试 30(黏滞投诉)/100(贴钉蹭感)。
 PEG_REFLECT_VX_MAX = 300.0   # 碰钉反射横速上限(球碰钉后横速≤300, 横穿≤1钉距, 防"横向跳")
-PEG_STEER_K = 0.8           # 碰钉一次性引导: 反射后 vx 朝目标槽微调系数(碰撞=改方向,
-                             # 飞行中零干预。1.2 时碰撞观感恶化(黏滞17%), 0.8 平衡)
-PEG_STEER_MAX = 200.0        # 碰钉引导单次修正上限
+PEG_STEER_MAX = 200.0        # (保留常量, 引导已删, 供 570 冲刺等参考)
 PEG_MIN_ESCAPE = 150.0       # 碰钉后最小逃逸速度(总速低于此值整体放大): 防"机关枪"
                              # 密集碰撞(2帧一碰)与同钉黏滞(观众裁决 P0); 顺带消除失速
                              # (ratio<0.3 的"碰后几乎停住")
@@ -356,19 +354,9 @@ def _collide_pegs(b, pegs):
                     if b.vy < 0:
                         b.vy = 0.0              # 逃逸不产生向上(禁止向上语义)
                 if py == 570:                    # 隔板钉(末段): 横向刹住 + 垂直冲刺。
-                    b.vx *= 0.5                  # 必须在引导**之前**(砍反射后速度,
-                    if b.vy < 200.0:             # 引导 dvx 全量保留 → 修订命中率不掉)
+                    b.vx *= 0.5                  # 牺牲"碰570钉弹开"多样性, 换末段干净
+                    if b.vy < 200.0:             # (观众否决 40~240px 弹开横移);
                         b.vy = 200.0             # vy 保底 200 快速离开钉面防贴钉黏滞
-                if py != 570:                    # 隔板钉(570)不参与引导: 冲刺后落格由
-                    tx = getattr(b, "_target_x", None)  # 碰前位置决定, 引导在更早碰撞
-                    if tx is not None:           # 生效(带球到目标附近); 570 钉上引导
-                        dvx = (tx - b.x) * PEG_STEER_K  # 与冲刺打架会重引入末段横移
-                        b.vx += clamp(dvx, -PEG_STEER_MAX, PEG_STEER_MAX)
-                        sp2 = math.hypot(b.vx, b.vy)
-                        if sp2 > 1e-6 and sp2 > sp_after:
-                            f = sp_after / sp2
-                            b.vx *= f
-                            b.vy *= f
                 _mark(b, EV_PEG, hit)
                 b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
                 b.hit_peg = (px, py)                   # 被撞钉子坐标(高亮用)
@@ -508,7 +496,7 @@ class Ball:
     保留 __getitem__/__setitem__/get 兼容旧 b.x 语法, 同时支持 b.x 直接访问。"""
     __slots__ = ('x', 'y', 'vx', 'vy', 'item', 'born', 'events', 'amp',
                  'misfire',
-                 'launch_power', '_stall_retry', '_rng', '_target_x',
+                 'launch_power', '_stall_retry', '_rng',
                  'last_nx', 'last_ny',
                  'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin',
                  'arc_ease')
@@ -527,14 +515,13 @@ class Ball:
         return getattr(self, key, default)
 
 
-def launch_ball(power, rng=None, target_x=None):
+def launch_ball(power, rng=None):
     """按蓄力比例 power 生成一颗向上发射的球(位于弹簧柱塞处)。
 
-    rng: 撞钉扰动的随机流。预发射预演与真实发射共享同一 rng 实例 → 逐帧确定性一致
-    (预演验证过的落格就是真发的落格)。None=全局 random(selftest 等无预演场景)。
-    target_x: 目标槽 x, 碰钉一次性引导用(预演/真发必须传同一值, 否则引导不一致)。
+    rng: 撞钉扰动的随机流(None=全局 random)。球完全被动:
+    竖直上升 → 碰弧面(缓动带球) → 抛体穿钉阵 → 自然落袋。无任何引导/预定。
 
-    竖直速度只在 1180~1220 的窄带内变化(3%), 是为了让越顶时刻只散 30ms —— 预烘的 1.5s
+    竖直速度只在 1077~1114 的窄带内变化(3%), 是为了让越顶时刻只散 30ms —— 预烘的 1.5s
     连续飞行音(FLIGHT_ENV)靠这个前提才能对齐全过程。三段式轨迹: 竖直上升 → 弧面掠射
     (build_deflectors) → 抛体。转向由弧面物理完成, 发射阶段无任何横向引导。"""
     u = power_u(power)
@@ -542,7 +529,7 @@ def launch_ball(power, rng=None, target_x=None):
     return Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=-speed,
                 item=None, born=time.time(), events=0, amp={},
                 misfire=False,
-                launch_power=power, _stall_retry=0, _rng=rng, _target_x=target_x,
+                launch_power=power, _stall_retry=0, _rng=rng,
                 last_nx=0.0, last_ny=-1.0,
                 hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0,
                 arc_ease=None)
@@ -577,28 +564,11 @@ def advance_misfire(b):
     return False
 
 
-def steer_ball(b, target_x):
-    """引导(速度驱动, 只改 vx)。三段式 + 碰撞时引导:
-    上升期零干预; 钉阵上方零干预(纯抛体); 钉阵内飞行中零干预 —— 球在两次碰撞之间的
-    轨迹纯物理(重力+反射), 引导只在碰撞瞬间由 _collide_pegs 对 vx 做一次性微调。
-    玩家看到: 球碰钉反弹(碰撞改方向), 飞行中轨迹不被"吸引"改变。
-    2026-08-04 观众裁决: 删除底部 ALIGN 逐帧弹簧(它违反零干预, 并在最后 46px
-    把球横向吸进槽 = "落袋前突然横移" 100% 命中)。末段零干预, 落格靠修订兜底。"""
-    if b.misfire:                             # 哑火球在竖井里自由升降, 一律不引导
-        return
-    if b.vy < 0:
-        return                    # 上升期零干预: 碰弧面前的竖直上升、弧面反射后的
-                                  # 抛体上升段都不碰
-    # 飞行中(含底部无钉区): 零干预。落格由碰钉一次性引导(_collide_pegs)
-    # + 预发射修订(solve_landing 换种子)保证。
-
-
-def advance_flight(b, geo, target_x):
-    """推进一帧(GUI/selftest 共用): 弧形导轨越顶 + 分段速度引导 + 槽区减速 + 物理。
-    引导层只改 vx, 位置一律由 physics_step 积分; 越顶入场改由弧形导轨(build_deflectors)物理导流, 不再注入种子横速。"""
+def advance_flight(b, geo):
+    """推进一帧(GUI/selftest 共用): 弧形导轨越顶 + 槽区减速 + 物理。
+    球完全被动: 纯重力+碰撞, 无任何引导/干预。"""
     global _ARC_FRAME
-    _ARC_FRAME += 1                # 弧面缓动帧计数(预演/真发各自单调即可)
-    steer_ball(b, target_x)
+    _ARC_FRAME += 1                # 弧面缓动帧计数
     if b.y > SLOT_TOP and b.vy > 0:
         b.vy *= SLOT_BRAKE_VY
         b.vx *= SLOT_BRAKE_VX
@@ -612,150 +582,14 @@ def benchmark_trajectories(duration=5.0):
     count = 0
     t0 = time.time()
     while time.time() - t0 < duration:
-        board = roll_multipliers(random.choice((0.80, 1.00, 1.20)))
-        target = choose_target(board, 1.00)
-        tx = FIELD_L + (target + 0.5) * SLOT_W
         power = random.uniform(MISFIRE_POWER, 1.0)
         b = launch_ball(power)
         for _ in range(4000):
-            landed = advance_flight(b, geo, tx)
+            landed = advance_flight(b, geo)
             if landed is not None:
                 count += 1
                 break
     return count
-
-
-def preflight_landing(b, geo, target_slot, max_frames=1200):
-    """预发射预演: 不渲染地模拟完整飞行, 返回实际落格槽(超时卡死返回 None)。
-
-    预演与真实发射共享同一 rng 实例(launch_ball 的 rng 参数, 撞钉扰动走 b._rng),
-    所以"预演验证过的落格"就是真发的落格 —— 这是修订的确定性基础:
-    预演落格 != 预定槽 → 修订求解(solve_landing), 直到物理落点==结算槽(玩家看不到穿帮)。"""
-    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
-    for _ in range(max_frames):
-        landed = advance_flight(b, geo, tx)
-        if landed is not None:
-            return landed
-    return None
-
-
-def _sim_flight(b, geo, target_slot, inject_k=None, inject_dvx=0.0, max_frames=1200):
-    """同 preflight_landing, 支持在第 inject_k 次撞钉的帧末注入 inject_dvx(与真发注入
-    时机一致: 帧末改 vx, 下一帧积分生效)。返回 (landed, n_peg, last_peg_x)。"""
-    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
-    n_peg = 0
-    last_peg_x = None
-    for _ in range(max_frames):
-        landed = advance_flight(b, geo, tx)
-        if b.events & EV_PEG:
-            n_peg += 1
-            last_peg_x = b.x
-            if inject_k is not None and n_peg == inject_k:
-                b.vx += inject_dvx
-            b.events = 0
-            b.amp.clear()
-        elif b.events:
-            b.events = 0
-            b.amp.clear()
-        if landed is not None:
-            return landed, n_peg, last_peg_x
-    return None, n_peg, last_peg_x
-
-
-def _bisect_dvx(power, seed, target_slot, geo, inject_k, lo=-800.0, hi=800.0, iters=12):
-    """在第 inject_k 次撞钉后注入 dvx, 二分搜索使落格==target_slot 的值。
-    返回 (dvx, 尝试次数) 或 (None, 尝试次数)。二分不要求落格对 dvx 单调。"""
-    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
-    for i in range(iters):
-        mid = (lo + hi) / 2.0
-        b = launch_ball(power, random.Random(seed), tx)
-        landed, _n, _x = _sim_flight(b, geo, target_slot, inject_k, mid)
-        if landed == target_slot:
-            return mid, i + 1
-        if landed is None:
-            return None, i + 1
-        if landed < target_slot:
-            lo = mid
-        else:
-            hi = mid
-    return None, iters
-
-
-def solve_landing(power, seed, geo, target_slot, max_reseed=40):
-    """发射前修订求解: **零注入优先** —— 换种子(≤40)找"预演落格==目标"的纯物理轨迹,
-    玩家看到的球完全自然(无任何横向突变)。全部种子都不中(理论 <1%)才用注入兜底:
-    最后 3 个碰撞点二分 dvx, **限幅 ±150**(策划组 90 分画像: 落格保证不依赖 >150 的注入)。
-    盘面/倍率一律不动, 换的只是轨迹。
-
-    返回 (final_seed, inject_k, inject_dvx, attempts) 或 None(兜底链失败,
-    调用方应转物理落格结算, 绝不允许"物理落格≠结算槽"穿帮)。
-    inject_k=None 表示零注入。"""
-    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
-    attempts = 0
-    for r in range(max_reseed):
-        s = seed + r
-        b = launch_ball(power, random.Random(s), tx)
-        landed, _n, _x = _sim_flight(b, geo, target_slot)
-        attempts += 1
-        if landed == target_slot:
-            return s, None, None, attempts
-    # 注入兜底(≤150): 最后一个种子, 最后 3 个碰撞点(从倒数第 2 个起 —— 排除最后一次
-    # 碰撞: 若那是 570 隔板钉, 注入 dvx 会全量保留造成末段横移; 在 570 钉前的碰撞
-    # 注入, 改变球到 570 钉的位置, 冲刺后直落 —— 落格可控且末段干净)
-    s = seed + max_reseed - 1
-    b = launch_ball(power, random.Random(s), tx)
-    landed, n_peg, _x = _sim_flight(b, geo, target_slot)
-    for k in range(n_peg - 1, max(1, n_peg - 3) - 1, -1):
-        dvx, used = _bisect_dvx(power, s, target_slot, geo, k,
-                                lo=-100.0, hi=100.0, iters=10)
-        attempts += used
-        if dvx is not None and _inject_last46_ok(power, s, geo, target_slot,
-                                                 k, dvx):
-            return s, k, dvx, attempts
-    return None
-
-
-def _inject_last46_ok(power, seed, geo, target_slot, inject_k, dvx,
-                      max_shift=20.0):
-    """注入解观感门禁(观众裁决 P0): 注入后"末 46px 窗口"横向位移必须 ≤max_shift
-    (0.4 槽宽) —— 否则是"落袋区横向硬推"(观众实测 53~101px, 机制级缺陷)。
-    不满足的注入解直接弃用(宁缺毋滥, 走物理结算兜底)。"""
-    tx = FIELD_L + (target_slot + 0.5) * SLOT_W
-    b = launch_ball(power, random.Random(seed), tx)
-    peg = 0
-    x_at_570 = None
-    prev_y = b.y
-    for _f in range(1200):
-        landed = advance_flight(b, geo, tx)
-        if b.events & EV_PEG:
-            peg += 1
-            if peg == inject_k:
-                b.vx += dvx
-            b.events = 0
-            b.amp.clear()
-        elif b.events:
-            b.events = 0
-            b.amp.clear()
-        if x_at_570 is None and b.vy > 0 and prev_y < 570 <= b.y:
-            x_at_570 = b.x
-        prev_y = b.y
-        if landed is not None:
-            return x_at_570 is not None and abs(b.x - x_at_570) <= max_shift
-    return False
-
-
-def choose_target(mult, rtp):
-    """发射前预定落点槽, 使 RTP 精确 = rtp。
-    命中奖励概率 w = min(1, rtp / 奖励格均值) -> E[目标倍率] = w x 均值 = rtp。"""
-    reward = [i for i, m in enumerate(mult) if m > 0]
-    zero = [i for i, m in enumerate(mult) if m == 0]
-    if not reward:
-        return random.randrange(len(mult))
-    mean_r = sum(mult[i] for i in reward) / len(reward)
-    w = min(1.0, rtp / mean_r)
-    if zero and random.random() > w:
-        return random.choice(zero)              # 判负 -> 落 0 格
-    return random.choice(reward)                # 判胜 -> 落某奖励格
 
 
 def _reward_value():
@@ -773,24 +607,14 @@ def _reward_value():
 
 
 def roll_multipliers(rtp=0.80):
-    """每格独立: 大概率为 0; 有奖励则最小 x2, 越大越稀有(偶有 10/20)。
-    保底非零格数随档位提升(80%->2 / 100%->4 / 120%->6)让盘面有回本希望;
-    并留至少 2 个零格(choose_target 需零格才能精确控 RTP)。真实 RTP 由 choose_target 决定, 与本函数(仅展示盘面)无关。"""
+    """每格独立: 概率 q=rtp/REWARD_EV 非零, 非零取 _reward_value(E≈3.35)。
+    均匀落格下 E[赔付] = q×3.35 = rtp —— 数学期望精确, 无需 choose_target 修正
+    (彻底被动方案: 球落格随机, 结算用物理落格, RTP 靠盘面期望)。"""
     q = rtp / REWARD_EV
     mult = [0] * NUM_SLOTS
     for i in range(NUM_SLOTS):
         if random.random() < q:
             mult[i] = _reward_value()
-    min_reward = max(1, min(NUM_SLOTS - 2, int(round(rtp * 10)) - 6))  # 80->2/100->4/120->6
-    max_reward = NUM_SLOTS - 2                        # 至少留 2 个零格(choose_target 需零格才能精确控 RTP)
-    rewards = [i for i in range(NUM_SLOTS) if mult[i] > 0]
-    zeros = [i for i in range(NUM_SLOTS) if mult[i] == 0]
-    if len(rewards) < min_reward:
-        for i in random.sample(zeros, min_reward - len(rewards)):
-            mult[i] = _reward_value()
-    elif len(rewards) > max_reward:
-        for i in random.sample(rewards, len(rewards) - max_reward):
-            mult[i] = 0
     return mult
 
 # =============================================================================
@@ -1845,29 +1669,26 @@ def selftest(n=40000):
     geo = build_geo()
     ok = True
 
-    # (1) 落点预定的 RTP 精确性(不依赖物理, 快)
-    print("== 返还率精确性(预定落点) ==")
+    # (1) 盘面 RTP 期望: 均匀落格下 E[赔付]=档位(彻底被动, 无 choose_target 修正)
+    print("== 返还率精确性(均匀落格盘面期望) ==")
     for rtp in (0.80, 1.00, 1.20):
         tot = 0.0
         for _ in range(n):
             board = roll_multipliers(rtp)
-            t = choose_target(board, rtp)
-            tot += board[t]
+            tot += board[random.randrange(NUM_SLOTS)]
         realized = tot / n
         good = abs(realized - rtp) < 0.05
         ok = ok and good
         print("  档位 %.2f -> 实测 RTP %.3f  %s" % (rtp, realized, "OK" if good else "偏差!"))
 
-    # (2) 引导飞行: 升过通道顶(apex) -> 越入场区 -> 落到预定槽, 且不卡死
-    print("== 引导飞行(升到顶->越顶入场->落预定 & 不卡死) ==")
+    # (2) 被动飞行: 升过通道顶(apex) -> 越入场区 -> 落袋, 且不卡死
+    print("== 被动飞行(升到顶->越顶入场->落袋 & 不卡死) ==")
     m = 1500
-    hit = stuck = no_top = no_enter = 0
+    stuck = no_top = no_enter = 0
     ev_flights = {EV_PEG: 0, EV_CEIL: 0, EV_WALL: 0, EV_DIV: 0, EV_ARC: 0}
     ev_audible = {EV_PEG: 0, EV_CEIL: 0, EV_WALL: 0, EV_DIV: 0}
     for _ in range(m):
-        target = random.randrange(NUM_SLOTS)
-        tx = FIELD_L + (target + 0.5) * SLOT_W
-        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0), target_x=tx)   # 低于阈值的是哑火, 由 (2b) 覆盖
+        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0))   # 低于阈值的是哑火, 由 (2b) 覆盖
         min_y = b.y
         entered = False
         landed = None
@@ -1876,7 +1697,7 @@ def selftest(n=40000):
         stall_frames = 0
         last_xy = (b.x, b.y)
         for _ in range(4000):
-            landed = advance_flight(b, geo, tx)
+            landed = advance_flight(b, geo)
             lx, ly = last_xy
             if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
                 stall_frames = 0
@@ -1905,9 +1726,6 @@ def selftest(n=40000):
             if b.x < FIELD_R:
                 entered = True
             if landed is not None:
-                actual = max(0, min(NUM_SLOTS - 1, int((b.x - FIELD_L) / SLOT_W)))
-                if actual == target:
-                    hit += 1
                 break
         else:
             stuck += 1
@@ -1921,16 +1739,9 @@ def selftest(n=40000):
             no_top += 1
         if not entered:                    # 没越入场区
             no_enter += 1
-    hit_rate = 100.0 * hit / m
-    # 注意: 此项是"无修订"的原始落格率(GUI 发射前有修订求解兜底, 玩家看到的
-    # 落格永远==结算槽, 实测修订后 1500 发零失败)。新修订机制(定向修正+换种子,
-    # 见 solve_landing)不依赖原始命中率 —— 落格差多远都能定向拉回, 门禁只留
-    # 宽松哨兵防物理退化: 弧面出口散布过大时命中率骤降(<35% 说明碰钉引导失效)。
-    ok = ok and stuck == 0 and no_top == 0 and no_enter == 0 and hit_rate > 15.0
+    ok = ok and stuck == 0 and no_top == 0 and no_enter == 0
     print("  升过通道顶失败: %d/%d   越顶入场失败: %d/%d   卡死: %d" %
           (no_top, m, no_enter, m, stuck))
-    print("  引导命中(物理x==目标): %.1f%%  (修订求解兜底 100%%, 此项仅衡量动画自然度)"
-          % hit_rate)
 
     # (2b) 哑火: 力度 < MISFIRE_POWER 时球照样弹出去, 但必须升不过隔墙顶并原路掉回柱塞
     print("== 哑火(发射了但升不过隔墙顶) ==")
@@ -1961,62 +1772,15 @@ def selftest(n=40000):
             bad_x += 1
         if not (home and b.y == PLUNGER_Y and b.vy == 0.0):
             bad_home += 1
-    probe = Ball(x=PLUNGER_X, y=400.0, vx=0.0, vy=300.0, misfire=True)
-    steer_ball(probe, FIELD_L + 100.0)       # 回归守卫: 引导层绝不能碰哑火球
-    steer_ok = probe["vx"] == 0.0
-    mf_ok = (bad_apex == 0 and bad_x == 0 and bad_home == 0 and steer_ok
+    mf_ok = (bad_apex == 0 and bad_x == 0 and bad_home == 0
              and frames_max <= MISFIRE_MAX_FRAMES)
     ok = ok and mf_ok
     print("  apex y 区间 %.0f~%.0f (隔墙顶 %d, 越过即失败)   最长归位 %d/%d 帧"
           % (apex_hi_y, apex_lo_y, LANE_WALL_TOP, frames_max, MISFIRE_MAX_FRAMES))
-    print("  越顶泄漏: %d/%d   横向漂移: %d/%d   未归位: %d/%d   引导未碰哑火球: %s"
-          % (bad_apex, mf, bad_x, mf, bad_home, mf, "OK" if steer_ok else "失败!"))
+    print("  越顶泄漏: %d/%d   横向漂移: %d/%d   未归位: %d/%d"
+          % (bad_apex, mf, bad_x, mf, bad_home, mf))
 
-    # (2b') 修订求解验证: 定向修正(最后碰撞点注入 dvx)+换种子兜底, 盘面/倍率一律不动。
-    #      修订成功率必须≈100%(否则穿帮: 物理落格!=结算槽), 平均预演次数是修订成本。
-    print("== 修订求解(定向修正+换种子, 盘面不动) ==")
-    m2 = 300
-    ok_solve = 0
-    attempts_total = 0
-    inject_n = 0
-    inject_big = 0
-    for _ in range(m2):
-        target = random.randrange(NUM_SLOTS)
-        power = random.uniform(MISFIRE_POWER, 1.0)
-        sol = solve_landing(power, random.randrange(2 ** 31), geo, target)
-        if sol is None:
-            continue
-        s, ik, dvx, att = sol
-        attempts_total += att
-        if ik is not None:
-            inject_n += 1
-            if abs(dvx) > 150:
-                inject_big += 1
-        # 用解重放验证: 落格必须==目标(与真发同种子+注入, 确定性一致)
-        tx = FIELD_L + (target + 0.5) * SLOT_W
-        b = launch_ball(power, random.Random(s), tx)
-        if ik is not None:
-            landed, _n, _x = _sim_flight(b, geo, target, ik, dvx)
-        else:
-            landed = preflight_landing(b, geo, target)
-        if landed == target:
-            ok_solve += 1
-    solve_rate = 100.0 * ok_solve / m2
-    avg_att = attempts_total / m2
-    inject_rate = 100.0 * inject_n / m2
-    # 零注入优先: 注入率≤10%(用户批准小注入≤100为常态, 视觉是碰钉自然转向), 注入量≤150。
-    # 修订成功率≥85%(零干预下均匀落格命中率~6%, 40种子+注入位移门禁后的实际值);
-    # 剩余走物理落格结算(结算槽=落格, 零穿帮恒成立, RTP 微偏可接受)。
-    solve_ok = (solve_rate >= 85.0 and avg_att <= 9.0
-                and inject_rate <= 10.0 and inject_big == 0)
-    ok = ok and solve_ok
-    print("  修订成功率: %.1f%% (%d/%d, 须>=85, 其余物理结算零穿帮)   平均预演: %.2f 次 (须<=9)"
-          % (solve_rate, ok_solve, m2, avg_att))
-    print("  注入率: %.1f%% (须<=10, 小注入≤100为常态)   超量注入(>150): %d (须=0)"
-          % (inject_rate, inject_big))
-    print("  盘面不变: solve_landing 不调用 roll_multipliers/choose_target (代码保证)")
-
-    # (2b'') 下落节奏门禁: 弹珠机手感 —— 碰钉要有可见减速, 球在钉阵里慢慢滚落。
+    # (2b') 下落节奏门禁: 弹珠机手感 —— 碰钉要有可见减速, 球在钉阵里慢慢滚落。
     #       历史教训: G=1200/VY_MIN=200 时球"嗖嗖穿过"钉阵(行穿行 0.17s, 碰钉不减
     #       反加速), 玩家投诉"下落加速极快"。G=1000/E_SLOW=0.55/VY_MIN=100 后
     #       行穿行 0.22s、碰钉减速比 0.83。
@@ -2025,12 +1789,10 @@ def selftest(n=40000):
     row_gaps = []
     peg_ratios = []
     sticky = 0
-    # 口径与专家组测量一致: power=0.8 固定 + 目标槽居中(远端槽强引导会拉低减速比,
-    # 污染口径) + 每发固定 rng 种子。滞留帧=碰钉间隔恰 1 帧(同钉连续碰撞)。
-    tgt = NUM_SLOTS // 2
-    tx_fix = FIELD_L + (tgt + 0.5) * SLOT_W
+    # 口径与专家组测量一致: power=0.8 固定 + 每发固定 rng 种子。
+    # 滞留帧=碰钉间隔恰 1 帧(同钉连续碰撞)。
     for i in range(mn):
-        b = launch_ball(0.8, rng=random.Random(1000 + i), target_x=tx_fix)
+        b = launch_ball(0.8, rng=random.Random(1000 + i))
         prev_y = b.y
         row_t = {}
         t = 0.0
@@ -2038,7 +1800,7 @@ def selftest(n=40000):
         prev_sp = None
         for _f in range(4000):
             sp0 = math.hypot(b.vx, b.vy)
-            landed = advance_flight(b, geo, tx_fix)
+            landed = advance_flight(b, geo)
             t += FIXED_DT
             if b.events & EV_PEG:
                 if _f - last_peg_f == 1:
@@ -2084,12 +1846,10 @@ def selftest(n=40000):
     ts = 100
     arc_turns = []
     for _ in range(ts):
-        target = random.randrange(NUM_SLOTS)
-        tx = FIELD_L + (target + 0.5) * SLOT_W
-        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0), target_x=tx)
+        b = launch_ball(random.uniform(MISFIRE_POWER, 1.0))
         for _f in range(400):
             a0 = math.degrees(math.atan2(b.vy, b.vx))
-            landed = advance_flight(b, geo, tx)
+            landed = advance_flight(b, geo)
             if b.events & EV_ARC:
                 a1 = math.degrees(math.atan2(b.vy, b.vx))
                 da = abs(a1 - a0)
@@ -2122,8 +1882,7 @@ def selftest(n=40000):
         axs, npegs, fps = [], [], []
         turns, turn_ys, kinks, kdeltas = [], [], [], []
         for k in range(100):
-            tx = FIELD_L + (k % NUM_SLOTS + 0.5) * SLOT_W
-            b = launch_ball(power, target_x=tx)
+            b = launch_ball(power)
             best_y, best_x = b.y, b.x
             npeg, fp = 0, -1
             crossed = False
@@ -2133,7 +1892,7 @@ def selftest(n=40000):
             prev_da = None
             pvx, pvy = b.vx, b.vy
             for f in range(4000):
-                landed = advance_flight(b, geo, tx)
+                landed = advance_flight(b, geo)
                 if b.y < best_y:
                     best_y, best_x = b.y, b.x
                 if not crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
@@ -3239,31 +2998,14 @@ class RootWidget(BoxLayout):
             self._set_controls_enabled(False)
             self.status_lbl.text = "力度不足,未扣弹珠"
             return
-        self.target_slot = choose_target(self.multipliers, self.rtp_target)  # 发射前预定落点
-        self.target_x = FIELD_L + (self.target_slot + 0.5) * SLOT_W
         frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
         self.balance -= self.bet
-        # 弧面抖动: 每发 ±6px 垂直平移(纯几何变化, 无横向力, 不违反"碰弧前零干预"),
-        # 提供档内散布 —— 玩家看到每发轨迹微移而非复读同一轨迹。预演/真发共享同一
-        # 几何, 物理确定性不破。
+        # 弧面抖动: 每发 ±6px 垂直平移(档内散布)。球完全被动下落:
+        # 无预定槽、无预演、无修订 —— 结算用物理落格, RTP 靠盘面期望。
         arc_dy = random.uniform(-6.0, 6.0)
         self.geo["deflectors"] = [(x1, y1 + arc_dy, x2, y2 + arc_dy)
                                   for (x1, y1, x2, y2) in self._base_deflectors]
-        # 预发射 → 修订求解 → 真发射: 预演落格==预定槽直接发; 否则在最后碰撞点
-        # 定向注入 dvx(前面碰撞序列同种子逐帧一致, 只改最后一段无钉区出射速度),
-        # 仍失败则换种子重来 —— 盘面/倍率一律不动, 玩家看到的落格永远=结算槽
-        # (实测 1500 发零失败)。真发后由 _frame 计数撞钉, 第 _inject_k 次注入。
-        last_seed = random.randrange(2 ** 31)
-        sol = solve_landing(frozen_power, last_seed, self.geo, self.target_slot)
-        if sol is None:                      # 兜底链全失败(理论 <0.1%): 原种子直发,
-            self._inject_k = None            # 结算转物理落格(绝不穿帮)
-            self._inject_dvx = 0.0
-            self._settle_physical = True
-        else:
-            last_seed, self._inject_k, self._inject_dvx = sol[0], sol[1], sol[2]
-            self._settle_physical = False
-        self._peg_counter = 0
-        self.ball = launch_ball(frozen_power, random.Random(last_seed), self.target_x)
+        self.ball = launch_ball(frozen_power)
         self.state = "flying"
         self._accumulator = 0.0
         self.power = 0.0                      # 发射后清除蓄力显示
@@ -3693,19 +3435,13 @@ class RootWidget(BoxLayout):
             tick_amp = {}
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
-                landed = advance_flight(b, self.geo, self.target_x)
-                # 逐物理帧消费事件: 注入计数 + 汇总给音效。与预演 _sim_flight 同构 ——
-                # 不在这里清 events 的话, 累加器一次 tick 推多帧时残留位会让撞钉计数
-                # 虚高, 注入点错位(实测 35% 落格偏差)。
+                landed = advance_flight(b, self.geo)
+                # 逐物理帧消费事件: 汇总给音效(残留位会让撞钉计数虚高, 实测 35% 偏差)
                 if b.events:
                     tick_ev |= b.events
                     for bit, sp in (b.amp or {}).items():
                         if sp > tick_amp.get(bit, 0.0):
                             tick_amp[bit] = sp
-                    if (b.events & EV_PEG) and getattr(self, "_inject_k", None) is not None:
-                        self._peg_counter += 1
-                        if self._peg_counter == self._inject_k:
-                            b.vx += self._inject_dvx
                     b.events = 0
                     b.amp.clear()
             if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
@@ -3739,17 +3475,14 @@ class RootWidget(BoxLayout):
                     self._last_ball_xy = (b.x, b.y)
                     self._crossed = self._risen = self._topped = False
                 elif time.time() - self._last_motion > MAX_FALL_SEC:
-                    landed = self.target_slot           # 位置不动 MAX_FALL_SEC: 真卡死才兜底
+                    landed = max(0, min(NUM_SLOTS - 1,      # 真卡死兜底: 物理槽
+                                        int((b.x - FIELD_L) / SLOT_W)))
                 self._last_ball_xy = (b.x, b.y)
-                # 判据必须用位移而非速度/碰撞事件: steer_ball 每帧给球注入 vx, 卡死球的
+                # 判据必须用位移而非速度/碰撞事件: 卡死球的
                 # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
-                if getattr(self, "_settle_physical", False):
-                    # 修订兜底链失败(理论 <0.1%): 物理落格结算, 杜绝穿帮
-                    i = max(0, min(NUM_SLOTS - 1,
-                                   int((b.x - FIELD_L) / SLOT_W)))
-                else:
-                    i = self.target_slot
+                i = max(0, min(NUM_SLOTS - 1,              # 物理落格结算(球落到哪算哪)
+                               int((b.x - FIELD_L) / SLOT_W)))
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
                 self.landed_at = time.time()
                 self.state = "landing"
