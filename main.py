@@ -109,9 +109,9 @@ PEG_FRICTION = 0.95          # 碰钉切向摩擦(0.90→0.95: 物理专家组, 
                              # 降到0.95只损5%保留弹开, 累计0.95^10≈0.60 不贴钉滑行)。经典版无摩擦
 PEG_FRICTION_VY = 0.97       # 法向摩擦(比 vx 轻: 摩擦乘反射后的 vy 直接杀回弹, 0.97 只损3%
                              # 保留弹起, 又防垂直分量越碰越快失控)
-PEG_GLANCE_UP = 60.0         # 掠射向上保证(侧碰反射后若仍向下, 给 -60 向上 vy, 弹高~2px):
-                             # 增加"小概率弹起"频率(用户定稿), 模拟球沿钉面弹起而非滑落。
-                             # 幅度有界不凭空反物理, 可调可关
+PEG_GLANCE_UP = 150.0        # 掠射向上保证(侧碰反射后若仍向下, 给 -150 向上 vy, 弹高~11px):
+                             # 增加"回弹频率"(用户"碰一下就弹"), 每发向上 11.8 次/69%碰撞, 球离钉果断。
+                             # 幅度有界(弹高11px + 顶击40%≥10px → 可见弹开), 不凭空反物理, 可调可关
 PEG_SPRINT = True            # 570 隔板钉冲刺开关(末段横向刹住+垂直冲刺): False=经典自由弹跳
 E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
@@ -1701,7 +1701,7 @@ def selftest(n=40000):
 
     # (1) 盘面 RTP 期望: 均匀落格下 E[赔付]=档位(彻底被动, 无 choose_target 修正)
     print("== 返还率精确性(均匀落格盘面期望) ==")
-    for rtp in (0.80, 1.00, 1.20):
+    for rtp in (0.80, 1.00, 1.20, 1.50):
         tot = 0.0
         for _ in range(n):
             board = roll_multipliers(rtp)
@@ -2706,19 +2706,18 @@ class RootWidget(BoxLayout):
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
-                        padding=[dp(24), dp(4)], spacing=dp(5))
+                        padding=[dp(16), dp(4)], spacing=dp(4))
         self._row_rtp = rtp
-        self._rtp_title_lbl = self._mk_label("期望返还比例：", "14sp", COL_TEXT, "left", False,
-                                      size_hint_x=None, width=dp(115))
+        self._rtp_title_lbl = self._mk_label("返还：", "14sp", COL_TEXT, "left", False,
+                                      size_hint_x=None, width=dp(56))
         rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
-        for label, val in (("80%", 0.80), ("100%", 1.00), ("120%", 1.20)):
+        for label, val in (("80%", 0.80), ("100%", 1.00), ("120%", 1.20), ("150%", 1.50)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
-            b.size_hint_x = None
-            b.width = dp(68)
+            b.size_hint_x = 1.0          # flex 平分剩余宽度, 4档自适应不溢出(手机360dp)
+            b.size_hint_y = 1.0
             self.rtp_btns[val] = b
             rtp.add_widget(b)
-        rtp.add_widget(Widget())   # 右侧留空
         self.add_widget(rtp)
         # 投入行: 投入弹珠单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
