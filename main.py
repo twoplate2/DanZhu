@@ -86,13 +86,13 @@ RISER_Y = PEG_TOP + (PEG_ROWS - 1) * PEG_SY + BALL_R + PEG_R   # 495: 无钉区�
 G = 1000.0                   # 重力 px/s^2(1200→1000: 恢复弹珠机节奏 —— 碰钉有可见
                              # 减速反弹, 行穿行 ~0.22s; 曾 1200 加速下落被玩家评为"嗖嗖穿过")
 E = 0.20                     # 钉子弹性(低: 接近自由落体)
-E_FAST = 0.20                # 高速撞击恢复系数(e(v)低速高弹/高速粘)
-E_SLOW = 0.45                # 低速接触恢复系数
-PEG_BOUNCE_VY_MAX = 150.0      # 碰钉后向上速度上限(弹起限幅): 弹高 v²/2G=11px≤一行钉距55px。
-                             # 档位扫描: 0=0%回弹感+蹭钉31次/发+分布偏右; 100/150/200/250 均100%
-                             # 回弹感, 150 与更高档分布几乎相同(槽分布均衡), 150 弹高最小
-                             # 黏滞风险有界。d1.md 方案A甜点。0 时代"球总往右掉"的根因之一
-                             # (禁止向上→球只能右侧滑落)。
+E_FAST = 0.40                # 高速撞击恢复系数(0.32→0.40: 用户实测弹高仍太低, 提到激进档。
+                             # 实测 E_SLOW0.70+E_FAST0.40: ≥20px发占比62%, max35px<一行, 横跳0卡死0)
+E_SLOW = 0.70                # 低速接触恢复系数(0.60→0.70: 用户实测弹高太低, 提到激进档,
+                             # 低速更弹; 实测≥20px发62%, 仍在物理合理范围)
+PEG_BOUNCE_VY_MAX = 300.0      # 碰钉后向上速度上限(弹起限幅): 弹高 v²/2G=45px 上限,
+                             # ≥20px 玩家肉眼可见(球视觉半径12.6)。物理专家组共识: 目标弹高
+                             # 20~45px, 300 上限给"几十px"留余量。放开E后 150 会成死硬顶, 须同步放开。
 PEG_BOUNCE_VY_MIN = 70.0     # 碰钉后保底下落速度(vy<70 补到 70): 防"水平滑翔"横穿。
                              # 甜点扫描: ≤70 时碰后 vy 太低, 球横滑蹭钉(88% 磨蹭碰撞, 黏滞感);
                              # ≥80 磨蹭骤降为 0。70 滞留帧最少/波动最均匀, 减速比~0.5
@@ -105,9 +105,13 @@ PEG_MIN_ESCAPE = 150.0       # 碰钉后最小逃逸速度(总速低于此值整
 PEG_KEEP_VY = 0.35           # 比例保底系数: 碰后 vy 至少保留碰前 35%(防失速,
                              # 但不过强 —— 0.5 时碰钉总速保留 78% 像穿阵; 0.35 目标
                              # 减速比 0.55~0.65)
-PEG_FRICTION = 0.90          # 碰钉切向摩擦(0.87→0.90: 保留更多横向能量, 球碰完仍弹得开;
-                             # 扫描: 0.90 分布更均衡、碰钉 31→10 次/发。1.0=无摩擦)。经典版无摩擦,
-                             # 能量损失走法向 e(v) 反弹(碰一次损失33%动能), 而非切向阻尼
+PEG_FRICTION = 0.95          # 碰钉切向摩擦(0.90→0.95: 物理专家组, 摩擦乘反射后的vy直接杀回弹,
+                             # 降到0.95只损5%保留弹开, 累计0.95^10≈0.60 不贴钉滑行)。经典版无摩擦
+PEG_FRICTION_VY = 0.97       # 法向摩擦(比 vx 轻: 摩擦乘反射后的 vy 直接杀回弹, 0.97 只损3%
+                             # 保留弹起, 又防垂直分量越碰越快失控)
+PEG_GLANCE_UP = 60.0         # 掠射向上保证(侧碰反射后若仍向下, 给 -60 向上 vy, 弹高~2px):
+                             # 增加"小概率弹起"频率(用户定稿), 模拟球沿钉面弹起而非滑落。
+                             # 幅度有界不凭空反物理, 可调可关
 PEG_SPRINT = True            # 570 隔板钉冲刺开关(末段横向刹住+垂直冲刺): False=经典自由弹跳
 E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
@@ -149,6 +153,9 @@ LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
 LAND_E = 0.42                # 落袋地板恢复系数: 0.42→弹3~4次逐渐停住, 视觉明显
 LAND_BOUNCE_MIN_VY = 220.0   # 落地最低初速: 低于此值就补到这么多, 保证每次都有可见回弹
+LAND_BOUNCE_MAX_VY = 220.0   # 落地回弹vy上限(删SLOT_BRAKE后替代防穿帮): 反弹apex≤24px,
+                             # 球顶恰=隔板顶DIV_TOP=606不越板。刹车的唯一合法用途(限冲击防弹飞)
+                             # 该用一次性冲击上限实现, 而非全程每帧减速
 
 # --------------------- 哑火: 球发射了, 但升不过隔墙顶 -----------------------
 # h = v^2/(2G); 要 apex y > LANE_WALL_TOP(160) 需 v < sqrt(2*1000*477) ≈ 977
@@ -171,8 +178,6 @@ STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就�
                              # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
 STALL_MAX_RETRY = 10          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
-SLOT_BRAKE_VY = 0.65         # 槽区可见减速(竖直)
-SLOT_BRAKE_VX = 0.5          # 槽区可见减速(水平)
 REWARD_EV = 3.35             # _reward_value 的期望; RTP ≈ 非零格概率 x REWARD_EV
 
 # ------------------- 碰撞事件位(物理层 -> GUI 音效层) ----------------------
@@ -215,8 +220,10 @@ def build_pegs():
             xs = [FIELD_L + (i + 0.5) * PEG_SX for i in range(NUM_SLOTS)]
         else:
             xs = [FIELD_L + i * PEG_SX for i in range(1, NUM_SLOTS)]
-            xs.insert(0, FIELD_L)              # 左墙钉(半颗埋进墙里, 消除左侧死走廊)
-            xs.append(FIELD_R)                  # 右墙钉(消除右侧死走廊)
+            # 贴墙钉: 圆心移进场区(钉缘距墙 ~3px), 不再嵌进墙 —— 修复"钉墙视觉融合"(用户报告 bug)。
+            # 保留贴墙碰撞(消除死走廊), 但钉子在墙外完全可见。
+            xs.insert(0, FIELD_L + PEG_R + 3)     # 左墙钉: 圆心=21, 钉缘=15, 距左墙内沿(12) 3px
+            xs.append(FIELD_R - PEG_R - 3)         # 右墙钉: 圆心=450, 钉缘=456, 距隔墙内沿(466) 10px
         rows.append([(x, y) for x in xs])
     # 隔板上方钉：y=570，每个隔板正上方一颗(甜点位: 把悬念推到最后一刻)
     div_pegs = []
@@ -332,7 +339,10 @@ def _collide_pegs(b, pegs):
                 sp_pre = math.hypot(b.vx, b.vy)      # 碰前总速(能量硬约束用)
                 # e(v): 低速弹得高(逃逸卡死), 高速粘(保持节奏)
                 E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
-                # 法线扰动(模拟表面粗糙度): 先扰动法线, 再反射一次
+                E_eff *= rng.uniform(0.92, 1.08)   # 反弹高度 ±8% 随机(用户定稿: 每个反弹略不同, 更真实)
+                # 法线扰动(模拟表面粗糙度): 幅度 0.04/±0.15。注意: 曾试加大到 0.08/±0.25
+                # 想增加回弹, 但副作用是侧碰反射横向分量被放大 → "凭空横向移动"(用户报告 bug)。
+                # 横向稳定性优先, 回弹靠 E_eff 提升, 不靠放大法线扰动。
                 g = rng.gauss(0, 0.04)
                 g = clamp(g, -0.15, 0.15)
                 tx_, ty_ = -ny, nx                   # 切向
@@ -341,6 +351,11 @@ def _collide_pegs(b, pegs):
                 nrm = math.hypot(njx, njy)
                 njx /= nrm; njy /= nrm
                 hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
+                # 掠射向上保证(用户"增加小概率事件概率"): 侧碰(法线接近水平)反射后若球仍向下
+                # 且无向上分量, 给一个小的向上 vy —— 模拟真实弹珠球沿钉面"弹起"而非"滑落"。
+                # 幅度有界(PEG_GLANCE_UP=60, 弹高≈2px 起步, 多次掠射累积成可见), 不凭空反物理。
+                if b.vy >= 0 and abs(nx) > abs(ny) and b.vy < PEG_GLANCE_UP:
+                    b.vy = -PEG_GLANCE_UP
                 # 回弹限幅(QA 对照实验定稿): 允许向上弹起(回弹感), 150 限幅弹高≤11px≤一行
                 # 钉距 + PEG_BOUNCE_VY_MIN=70 比例保底已防黏滞(QA 实测去守卫后滞留帧
                 # 2.2/发 < 留守卫 4.1/发, 卡死仍 0; 历史黏滞的根因是弹高无上限反复碰同钉)。
@@ -356,20 +371,24 @@ def _collide_pegs(b, pegs):
                 sp_after = math.hypot(b.vx, b.vy)
                 vn_after = b.vx * nx + b.vy * ny
                 if vn_after < PEG_MIN_ESCAPE and abs(nx) > abs(ny):
-                    # 最小逃逸: 只对侧向碰撞补横向离开速度(球被反复侧推=机关枪)。
-                    # 碰下方钉(法线朝上)不补 —— 球靠 vy 比例保底下落离开, 补法线
-                    # 会把 vy 拉负(球弹起回落反复碰钉)。
-                    b.vx += (PEG_MIN_ESCAPE - vn_after) * nx
-                    b.vy += (PEG_MIN_ESCAPE - vn_after) * ny
-                    if b.vy < 0:
-                        b.vy = 0.0              # 逃逸不产生向上(禁止向上语义)
+                    # 最小逃逸(物理专家组修订): 只对侧向碰撞补横向离开速度(防机关枪),
+                    # 但不再补法向、不再把向上清零 —— 侧碰保留反射产生的自然向上分量
+                    # (这是让肩击也能弹起的承重改法, 原 if b.vy<0: b.vy=0 按次数是最大消弹器)。
+                    # 注意: 逃逸必须不产生"凭空横向移动" —— 补速有界(≤PEG_REFLECT_VX_MAX)。
+                    if vn_after > 0:
+                        ev = (PEG_MIN_ESCAPE - vn_after)
+                        b.vx += ev * nx
+                        b.vy += ev * ny
+                        if abs(b.vx) > PEG_REFLECT_VX_MAX:   # 逃逸后重新限幅(防横向顶穿)
+                            b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)
                 if PEG_SPRINT and py == 570:    # 隔板钉(末段): 软化冲刺 —— 保留 vy 下限
                     b.vx *= 0.7                  # 防贴钉+落袋干净, 但不再把横速刹死:
                     if b.vy < 160.0:             # 0.5→0.7 保留末段横向多样性(末段决策迟到,
                         b.vy = 160.0             # 悬念落在玩家盯最紧的落袋区)。观众否决的
                                                   # 40~240px 弹开横移由 ALIGN 收尾弹簧兜底
-                b.vx *= PEG_FRICTION            # 碰钉摩擦(借鉴经典版): 碰完明显减速,
-                b.vy *= PEG_FRICTION            # 速度不越来越快
+                b.vx *= PEG_FRICTION            # 碰钉摩擦(物理专家组): 摩擦乘反射后的 vy 直接杀
+                b.vy *= PEG_FRICTION_VY          # 回弹, vx 用 0.95 防贴钉滑行, vy 用 0.97 少砍
+                                                  # 法向(保留弹起), 避免垂直分量失控
                 _mark(b, EV_PEG, hit)
                 b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
                 b.hit_peg = (px, py)                   # 被撞钉子坐标(高亮用)
@@ -578,13 +597,11 @@ def advance_misfire(b):
 
 
 def advance_flight(b, geo):
-    """推进一帧(GUI/selftest 共用): 弧形导轨越顶 + 槽区减速 + 物理。
-    球完全被动: 纯重力+碰撞, 无任何引导/干预。"""
+    """推进一帧(GUI/selftest 共用): 弧形导轨越顶 + 物理。
+    球完全被动: 纯重力+碰撞, 无任何引导/干预。落袋不减速(删 SLOT_BRAKE:
+    球自然重力加速入袋, 撞击槽底后靠回弹强调槽位 —— 用户定稿)。"""
     global _ARC_FRAME
     _ARC_FRAME += 1                # 弧面缓动帧计数
-    if b.y > SLOT_TOP and b.vy > 0:
-        b.vy *= SLOT_BRAKE_VY
-        b.vx *= SLOT_BRAKE_VX
     return physics_step(b, geo, FIXED_DT)
 
 
@@ -2594,6 +2611,8 @@ class RootWidget(BoxLayout):
         self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._landing_primed = False   # landing首帧标记(防每帧重置vy)
+        self._settle_slot = 0          # 本发物理落格槽(结算延迟到回弹落定后)
+        self._settled = False          # 本发是否已结算(防重复)
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
@@ -3038,6 +3057,7 @@ class RootWidget(BoxLayout):
         self.geo["deflectors"] = [(x1, y1 + arc_dy, x2, y2 + arc_dy)
                                   for (x1, y1, x2, y2) in self._base_deflectors]
         self.ball = launch_ball(frozen_power)
+        self._settled = False                 # 新发射重置结算标记(结算延迟到回弹后)
         self.state = "flying"
         self._accumulator = 0.0
         self.power = 0.0                      # 发射后清除蓄力显示
@@ -3516,11 +3536,12 @@ class RootWidget(BoxLayout):
                 i = max(0, min(NUM_SLOTS - 1,              # 物理落格结算(球落到哪算哪)
                                int((b.x - FIELD_L) / SLOT_W)))
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
+                self._settle_slot = i              # 记录落格槽, 结算延迟到回弹落定后(用户定稿)
                 self.landed_at = time.time()
                 self.state = "landing"
                 self._accumulator = 0.0
                 self._landing_primed = True   # 首帧补初速, 之后交给物理
-                self.settle(i)
+                # 不立即 settle: 先做落地回弹展示(回弹→停留→再结算), 结算槽=物理落格槽零穿帮
             if tick_ev:
                 self._play_events(tick_ev, tick_amp, self.ball)
         elif self.state == "misfire":
@@ -3560,18 +3581,26 @@ class RootWidget(BoxLayout):
                         if b.vy > 60.0:
                             self.sfx.play("bounce", clamp(b.vy / 500.0, 0.3, 1.0), 0.05)
                         b.vy = -b.vy * LAND_E * random.uniform(0.92, 1.08)
+                        if b.vy < -LAND_BOUNCE_MAX_VY:     # 回弹vy上限(删刹车后防弹越隔板)
+                            b.vy = -LAND_BOUNCE_MAX_VY
             if (abs(b.x - self.land_target_x) < SLOT_W * 0.45 and abs(b.vy) < 10.0
                     and b.y >= floor_y - 0.5):
                 b.vx = 0.0
                 b.vy = 0.0
                 self.state = "landed"
                 self.landed_at = time.time()
+                if not self._settled:          # 回弹落定后结算(用户定稿: 先回弹强调槽位, 再弹结算)
+                    self._settled = True
+                    self.settle(self._settle_slot)
             elif time.time() - self.landed_at >= 0.5:
                 b.y = floor_y
                 b.vx = 0.0
                 b.vy = 0.0
                 self.state = "landed"
                 self.landed_at = time.time()
+                if not self._settled:          # 超时兜底也结算(防永不落定)
+                    self._settled = True
+                    self.settle(self._settle_slot)
         elif self.state == "landed":
             if time.time() - self.landed_at >= self._land_hold:
                 self.park_ball()
