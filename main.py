@@ -329,7 +329,6 @@ def _collide_pegs(b, pegs):
             vn = -(b.vx * nx + b.vy * ny)           # 法向接近速率
             if vn > 0:                               # 真反弹才处理
                 vy_pre = b.vy                        # 碰前 vy(比例保底用)
-                sp_pre = math.hypot(b.vx, b.vy)      # 碰前总速(能量硬约束用)
                 # e(v): 低速弹得高(逃逸卡死), 高速粘(保持节奏)
                 E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
                 E_eff *= rng.uniform(0.92, 1.08)   # 反弹高度 ±8% 随机(用户定稿: 每个反弹略不同, 更真实)
@@ -361,7 +360,6 @@ def _collide_pegs(b, pegs):
                 if abs(b.vx) > PEG_REFLECT_VX_MAX:   # 碰钉反射横速限幅: 球碰钉后横向速度
                     b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)  # 受限, 横穿距离
                                                     # ≤1 钉距, 消除"横向跳"(真实弹珠机球不会横向滑翔)
-                sp_after = math.hypot(b.vx, b.vy)
                 vn_after = b.vx * nx + b.vy * ny
                 if vn_after < PEG_MIN_ESCAPE and abs(nx) > abs(ny):
                     # 最小逃逸(物理专家组修订): 只对侧向碰撞补横向离开速度(防机关枪),
@@ -1714,8 +1712,8 @@ def selftest(n=40000):
             ev = b.events
             if ev:                             # 模拟 GUI: 每帧读事件位后清零
                 seen |= ev
-                for bit, sp in b.amp.items():
-                    if sp >= SFX_MIN_SP[bit]:
+                for bit, spd in b.amp.items():   # spd=振幅(改名避免shadow kivy sp单位)
+                    if spd >= SFX_MIN_SP[bit]:
                         loud |= bit
                 b.events = 0
                 b.amp.clear()
@@ -3457,9 +3455,9 @@ class RootWidget(BoxLayout):
                 # 逐物理帧消费事件: 汇总给音效(残留位会让撞钉计数虚高, 实测 35% 偏差)
                 if b.events:
                     tick_ev |= b.events
-                    for bit, sp in (b.amp or {}).items():
-                        if sp > tick_amp.get(bit, 0.0):
-                            tick_amp[bit] = sp
+                    for bit, spd in (b.amp or {}).items():   # spd=振幅(改名避免shadow kivy sp单位)
+                        if spd > tick_amp.get(bit, 0.0):
+                            tick_amp[bit] = spd
                     b.events = 0
                     b.amp.clear()
             if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
