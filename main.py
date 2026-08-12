@@ -98,7 +98,6 @@ PEG_BOUNCE_VY_MIN = 70.0     # 碰钉后保底下落速度(vy<70 补到 70): 防
                              # ≥80 磨蹭骤降为 0。70 滞留帧最少/波动最均匀, 减速比~0.5
                              # (碰钉保留一半动能, 轻快弹开)。曾试 30(黏滞投诉)/100(贴钉蹭感)。
 PEG_REFLECT_VX_MAX = 300.0   # 碰钉反射横速上限(球碰钉后横速≤300, 横穿≤1钉距, 防"横向跳")
-PEG_STEER_MAX = 200.0        # (保留常量, 引导已删, 供 570 冲刺等参考)
 PEG_MIN_ESCAPE = 150.0       # 碰钉后最小逃逸速度(总速低于此值整体放大): 防"机关枪"
                              # 密集碰撞(2帧一碰)与同钉黏滞(观众裁决 P0); 顺带消除失速
                              # (ratio<0.3 的"碰后几乎停住")
@@ -124,12 +123,6 @@ JITTER = 6.0                 # 撞钉切向随机扰动(大幅降低: 防方向�
 LAUNCH_MIN = 1077.0          # 最小发射(随 G=1000 回调, apex≈57 不撞顶)
 LAUNCH_MAX = 1114.0          # 满蓄力发射(apex≈17, 不撞顶)
 CHARGE_RATE = 0.9            # 蓄力速度(每秒充满比例)
-ALIGN_H = 80.0               # 对齐窗口(最后排钉之下的无钉区)。50→80: 原来只有 2.5 帧作用时间,
-                             # 被钉子弹飞的球来不及收回来。上限是 SLOT_TOP-RISER_Y=121(再大就
-                             # 伸进钉阵, 弹簧会在有钉区跟碰撞打架); 实测 80 最好, 110 反而变差
-                             # (窗口太长, ALIGN_DAMP 收不住, 过冲)。跨 12 种子 x 800 发:
-                             # 越格(球到隔板顶时已在邻槽) 5→2 例。
-ALIGN_K = 60.0               # 入槽横向弹簧(增强: 高速下落需要更强收尾)
 ALIGN_DAMP = 0.86            # 入槽横向阻尼(临界附近防过冲)
 ALIGN_VX_MAX = 800.0         # 横速硬上限(提高: 匹配高速下落)
 # 转向机构已改为弧面物理导流(build_deflectors): 球碰弧面前纯竖直上升(零干预),
@@ -425,32 +418,6 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
         hit = _reflect(b, nx, ny, e)
         if ev and hit > 0.0:
             _mark(b, ev, hit)
-
-
-def _collide_segment(b, x1, y1, x2, y2, e, jitter=JITTER, ev=EV_CEIL, radius=BALL_R):
-    dx, dy = x2 - x1, y2 - y1
-    L2 = dx * dx + dy * dy
-    t = 0.0 if L2 == 0 else ((b.x - x1) * dx + (b.y - y1) * dy) / L2
-    t = max(0.0, min(1.0, t))
-    cx, cy = x1 + t * dx, y1 + t * dy
-    ox, oy = b.x - cx, b.y - cy
-    d2 = ox * ox + oy * oy
-    if d2 < radius * radius:
-        d = math.sqrt(d2)
-        if d > 1e-9:
-            nx, ny = ox / d, oy / d
-        else:
-            nx, ny = 0.0, -1.0
-        b.x = cx + nx * radius
-        b.y = cy + ny * radius
-        hit = _reflect(b, nx, ny, e)
-        if ev and hit > 0.0:
-            _mark(b, ev, hit)
-        if jitter:                          # 切向扰动(导轨传0=平滑滑行不散射)
-            tx, ty = -ny, nx
-            j = random.uniform(-jitter, jitter)
-            b.vx += tx * j
-            b.vy += ty * j
 
 
 def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
