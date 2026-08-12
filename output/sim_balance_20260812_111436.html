@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8">
+<title>弹珠机余额模拟报告 — 4000局/档</title>
+<style>
+  body{font-family:'Segoe UI',微软雅黑,sans-serif;background:#0e1524;color:#e8eefc;margin:24px}
+  h1{color:#f0b000} h2{color:#39d98a;margin-top:28px} h3{color:#7fb0ff;margin:8px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}
+  .card{background:#15223c;border-radius:10px;padding:16px}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  td,th{padding:4px 8px;border-bottom:1px solid #2b436e;text-align:right}
+  th{color:#8fa0c4;font-weight:normal} td:first-child,th:first-child{text-align:left}
+  .num{color:#39d98a} .meta{color:#8fa0c4;font-size:13px}
+  canvas{width:100%;height:180px;margin-top:8px}
+</style></head><body>
+<h1>弹珠机余额模拟报告</h1>
+<p class="meta">headless 自动运行 · 落格=实测物理分布<br>
+起始 <b>1000</b> 珠 · 每发投 <b>50</b> 珠 · 每档 <b>4000</b> 局 · 固定玩 <b>500</b> 发</p>
+
+<h2>关键指标对比</h2>
+<table>
+  <tr><th>档位</th><th>破产率</th><th>存续率</th><th>破产前发数</th><th>终局P10</th><th>终局P50</th><th>终局P90</th><th>终局max</th><th>净赚均值</th></tr>
+  
+    <tr>
+      <td>80%</td>
+      <td>99.0%</td>
+      <td>1.0%</td>
+      <td>66</td>
+      <td>0</td><td>0</td><td>0</td><td>3850</td>
+      <td>-983</td>
+    </tr>
+    <tr>
+      <td>100%</td>
+      <td>67.9%</td>
+      <td>32.1%</td>
+      <td>108</td>
+      <td>0</td><td>0</td><td>3800</td><td>10200</td>
+      <td>-10</td>
+    </tr>
+    <tr>
+      <td>120%</td>
+      <td>14.5%</td>
+      <td>85.5%</td>
+      <td>83</td>
+      <td>0</td><td>5700</td><td>9300</td><td>17300</td>
+      <td>+4459</td>
+    </tr>
+    <tr>
+      <td>150%</td>
+      <td>0.3%</td>
+      <td>99.7%</td>
+      <td>53</td>
+      <td>9750</td><td>13350</td><td>17150</td><td>24400</td>
+      <td>+12380</td>
+    </tr>
+</table>
+
+<h2>终局余额分布</h2>
+<div class="grid">
+  <div class="card">
+    <h3>档位 80%</h3>
+    <table class="mini">
+      <tr><td>破产率</td><td class="num">99.0%</td></tr>
+      <tr><td>存续率(玩满500发)</td><td class="num">1.0%</td></tr>
+      <tr><td>破产前发数 中位</td><td class="num">66 发</td></tr>
+      <tr><td>终局余额 中位</td><td class="num">0</td></tr>
+      <tr><td>终局余额 P90</td><td class="num">0</td></tr>
+      <tr><td>净赚 中位</td><td class="num">-1000</td></tr>
+      <tr><td>净赚 均值</td><td class="num">-983</td></tr>
+    </table>
+    <canvas id="h_80p" width="420" height="180"></canvas>
+  </div>
+  <div class="card">
+    <h3>档位 100%</h3>
+    <table class="mini">
+      <tr><td>破产率</td><td class="num">67.9%</td></tr>
+      <tr><td>存续率(玩满500发)</td><td class="num">32.1%</td></tr>
+      <tr><td>破产前发数 中位</td><td class="num">108 发</td></tr>
+      <tr><td>终局余额 中位</td><td class="num">0</td></tr>
+      <tr><td>终局余额 P90</td><td class="num">3800</td></tr>
+      <tr><td>净赚 中位</td><td class="num">-1000</td></tr>
+      <tr><td>净赚 均值</td><td class="num">-10</td></tr>
+    </table>
+    <canvas id="h_100p" width="420" height="180"></canvas>
+  </div>
+  <div class="card">
+    <h3>档位 120%</h3>
+    <table class="mini">
+      <tr><td>破产率</td><td class="num">14.5%</td></tr>
+      <tr><td>存续率(玩满500发)</td><td class="num">85.5%</td></tr>
+      <tr><td>破产前发数 中位</td><td class="num">83 发</td></tr>
+      <tr><td>终局余额 中位</td><td class="num">5700</td></tr>
+      <tr><td>终局余额 P90</td><td class="num">9300</td></tr>
+      <tr><td>净赚 中位</td><td class="num">+4700</td></tr>
+      <tr><td>净赚 均值</td><td class="num">+4459</td></tr>
+    </table>
+    <canvas id="h_120p" width="420" height="180"></canvas>
+  </div>
+  <div class="card">
+    <h3>档位 150%</h3>
+    <table class="mini">
+      <tr><td>破产率</td><td class="num">0.3%</td></tr>
+      <tr><td>存续率(玩满500发)</td><td class="num">99.7%</td></tr>
+      <tr><td>破产前发数 中位</td><td class="num">53 发</td></tr>
+      <tr><td>终局余额 中位</td><td class="num">13350</td></tr>
+      <tr><td>终局余额 P90</td><td class="num">17150</td></tr>
+      <tr><td>净赚 中位</td><td class="num">+12350</td></tr>
+      <tr><td>净赚 均值</td><td class="num">+12380</td></tr>
+    </table>
+    <canvas id="h_150p" width="420" height="180"></canvas>
+  </div></div>
+
+<h2>余额轨迹样例(每档 3 局)</h2>
+<div class="grid" id="trails"></div>
+<script>
+  (function(){
+    var c=document.getElementById('h_80p'),x=c.getContext('2d');
+    c.width=420;c.height=180;x.fillStyle='#15223c';x.fillRect(0,0,420,180);
+    var edges=[0.0, 1.7, 2.8, 4.7, 7.9, 13.2, 22.1, 37.0, 62.1, 104.0, 174.2, 291.8, 488.9, 819.0, 1372.1, 2298.7, 3850],counts=[3961, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 3, 6, 5, 9, 15];
+    var maxC=Math.max(...counts,1),n=edges.length;
+    x.fillStyle='#3d8bfd';
+    for(var i=0;i<n-1;i++){
+      var w=420/n,hh=counts[i]/maxC*150;
+      x.fillRect(i*w+1,175-hh,w-2,hh);
+    }
+    x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('余额 →',350,168);x.fillText('0',4,170);
+    x.fillText(edges[n-1],420-60,168);
+  })();
+
+  (function(){
+    var c=document.getElementById('h_100p'),x=c.getContext('2d');
+    c.width=420;c.height=180;x.fillStyle='#15223c';x.fillRect(0,0,420,180);
+    var edges=[0.0, 1.8, 3.2, 5.6, 10.0, 17.9, 31.9, 56.7, 101.0, 179.8, 320.2, 570.1, 1015.0, 1807.3, 3217.8, 5729.3, 10200],counts=[2716, 0, 0, 0, 0, 0, 4, 9, 5, 6, 31, 66, 223, 408, 427, 105];
+    var maxC=Math.max(...counts,1),n=edges.length;
+    x.fillStyle='#3d8bfd';
+    for(var i=0;i<n-1;i++){
+      var w=420/n,hh=counts[i]/maxC*150;
+      x.fillRect(i*w+1,175-hh,w-2,hh);
+    }
+    x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('余额 →',350,168);x.fillText('0',4,170);
+    x.fillText(edges[n-1],420-60,168);
+  })();
+
+  (function(){
+    var c=document.getElementById('h_120p'),x=c.getContext('2d');
+    c.width=420;c.height=180;x.fillStyle='#15223c';x.fillRect(0,0,420,180);
+    var edges=[0.0, 1.8, 3.4, 6.2, 11.5, 21.1, 38.8, 71.5, 131.5, 242.1, 445.4, 819.7, 1508.5, 2776.1, 5108.7, 9401.4, 17300],counts=[580, 0, 0, 0, 0, 0, 0, 1, 2, 0, 8, 31, 164, 890, 1954, 370];
+    var maxC=Math.max(...counts,1),n=edges.length;
+    x.fillStyle='#3d8bfd';
+    for(var i=0;i<n-1;i++){
+      var w=420/n,hh=counts[i]/maxC*150;
+      x.fillRect(i*w+1,175-hh,w-2,hh);
+    }
+    x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('余额 →',350,168);x.fillText('0',4,170);
+    x.fillText(edges[n-1],420-60,168);
+  })();
+
+  (function(){
+    var c=document.getElementById('h_150p'),x=c.getContext('2d');
+    c.width=420;c.height=180;x.fillStyle='#15223c';x.fillRect(0,0,420,180);
+    var edges=[0.0, 1.9, 3.5, 6.6, 12.5, 23.5, 44.2, 83.1, 156.2, 293.7, 552.2, 1038.3, 1952.3, 3670.9, 6902.1, 12977.6, 24400],counts=[13, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 28, 1769, 2190];
+    var maxC=Math.max(...counts,1),n=edges.length;
+    x.fillStyle='#3d8bfd';
+    for(var i=0;i<n-1;i++){
+      var w=420/n,hh=counts[i]/maxC*150;
+      x.fillRect(i*w+1,175-hh,w-2,hh);
+    }
+    x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('余额 →',350,168);x.fillText('0',4,170);
+    x.fillText(edges[n-1],420-60,168);
+  })();
+
+  (function(){
+    var grid=document.getElementById('trails');
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#39d98a';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120],ys=[1000, 850, 1000, 1150, 650, 750, 1150, 750, 1600, 1350, 1050, 850, 450],maxx=120,maxy=1600;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('80% 样例1',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#7fb0ff';x.beginPath();
+    var xs=[0, 10, 20, 30, 40],ys=[1000, 700, 850, 550, 50],maxx=40,maxy=1000;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('80% 样例2',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#ffd451';x.beginPath();
+    var xs=[0, 10, 20, 30],ys=[1000, 1050, 950, 450],maxx=30,maxy=1050;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('80% 样例3',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#39d98a';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300, 310, 320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500],ys=[1000, 1350, 1550, 1650, 1750, 2850, 2850, 2550, 2150, 2050, 2200, 2100, 1950, 1600, 1750, 1500, 1300, 2050, 2000, 1700, 1500, 1100, 1050, 1000, 750, 600, 650, 750, 650, 600, 900, 750, 450, 150, 1250, 1850, 2800, 3000, 2800, 2500, 2600, 2300, 3050, 3050, 3700, 3600, 3800, 3450, 3300, 3250, 3000],maxx=500,maxy=3800;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('100% 样例1',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#7fb0ff';x.beginPath();
+    var xs=[0, 10, 20, 30],ys=[1000, 600, 300, 300],maxx=30,maxy=1000;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('100% 样例2',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#ffd451';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300, 310, 320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500],ys=[1000, 750, 800, 1050, 1150, 1150, 850, 650, 1400, 1600, 1700, 1700, 1300, 1300, 800, 900, 800, 750, 700, 1450, 1100, 900, 1350, 1350, 1450, 1550, 1500, 1650, 1350, 1500, 1600, 2100, 2300, 2300, 1900, 1550, 1450, 1250, 1750, 2200, 2200, 2350, 2250, 2150, 1900, 1500, 1950, 1600, 1800, 2300, 2750],maxx=500,maxy=2750;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('100% 样例3',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#39d98a';x.beginPath();
+    var xs=[0, 10, 20],ys=[1000, 600, 300],maxx=20,maxy=1000;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('120% 样例1',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#7fb0ff';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300, 310, 320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500],ys=[1000, 1350, 1200, 1350, 1300, 1250, 1250, 1000, 1650, 1650, 1800, 2000, 2200, 2050, 2100, 1600, 1550, 1550, 2050, 1950, 2250, 2350, 2250, 2750, 3550, 3850, 3850, 3650, 3150, 3050, 2750, 2450, 3450, 3150, 4200, 4000, 3800, 3800, 4100, 4500, 4750, 5300, 5800, 6000, 6000, 5750, 5650, 6500, 7050, 7150, 8100],maxx=500,maxy=8100;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('120% 样例2',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#ffd451';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300, 310, 320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500],ys=[1000, 950, 1250, 1550, 1750, 1450, 2450, 2200, 2000, 2300, 2500, 3050, 3150, 3250, 3000, 2700, 2750, 2350, 2450, 2200, 2450, 2200, 2050, 2000, 2900, 3000, 3750, 4000, 3850, 3600, 3750, 4300, 4300, 4650, 4500, 4850, 5750, 5450, 6200, 6400, 6400, 6200, 5850, 5750, 5900, 5900, 5900, 6200, 5900, 6050, 6400],maxx=500,maxy=6400;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('120% 样例3',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#39d98a';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300, 310, 320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500],ys=[1000, 800, 1600, 1550, 1950, 1900, 2400, 2300, 4000, 4200, 4700, 5150, 5850, 5850, 6200, 6700, 7000, 7200, 7450, 7750, 7750, 7700, 7850, 8150, 8000, 8350, 8650, 8650, 8500, 8500, 9250, 9900, 10100, 10350, 10450, 10550, 10750, 10550, 11450, 11750, 11800, 13000, 13200, 13550, 14150, 14150, 14100, 15000, 15300, 15100, 15300],maxx=500,maxy=15300;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('150% 样例1',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#7fb0ff';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300, 310, 320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500],ys=[1000, 1200, 1500, 1550, 1300, 1150, 1550, 1550, 1850, 1600, 1450, 1550, 1500, 2000, 2250, 2600, 2550, 2550, 2550, 2350, 2450, 2400, 2400, 2800, 3750, 3800, 5100, 5300, 5700, 6250, 6000, 6350, 6350, 6100, 6050, 5950, 6250, 7200, 7950, 8250, 8100, 9450, 9150, 9400, 9650, 10650, 10350, 10450, 10850, 11700, 11900],maxx=500,maxy=11900;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('150% 样例2',6,14);
+    
+
+    var d=document.createElement('canvas');d.width=420;d.height=160;
+    d.style.height='160px';grid.appendChild(d);
+    var x=d.getContext('2d');x.fillStyle='#15223c';x.fillRect(0,0,420,160);
+    x.strokeStyle='#ffd451';x.beginPath();
+    var xs=[0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160, 170, 180, 190, 200, 210, 220, 230, 240, 250, 260, 270, 280, 290, 300, 310, 320, 330, 340, 350, 360, 370, 380, 390, 400, 410, 420, 430, 440, 450, 460, 470, 480, 490, 500],ys=[1000, 1750, 1900, 2150, 1900, 2700, 4450, 4500, 4950, 5000, 5350, 5600, 5850, 6000, 5800, 6900, 7000, 7400, 7500, 7850, 7650, 8100, 8200, 8300, 8800, 8550, 8600, 9000, 9100, 8950, 9550, 9700, 9700, 9750, 9850, 10050, 10150, 10750, 10800, 11100, 11750, 11750, 12000, 12450, 12500, 13000, 13250, 14950, 15700, 15400, 15550],maxx=500,maxy=15700;
+    for(var i=0;i<xs.length;i++){
+      var px=xs[i]/maxx*420,py=160-ys[i]/maxy*150;
+      if(i==0)x.moveTo(px,py);else x.lineTo(px,py);
+    }
+    x.stroke();x.fillStyle='#e8eefc';x.font='11px sans-serif';
+    x.fillText('150% 样例3',6,14);
+    
+  })();</script>
+</body></html>
