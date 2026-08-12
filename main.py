@@ -75,6 +75,12 @@ PEG_ROWS = 7                 # 行数(再减: 更少碰撞)
 PEG_R = 6                    # 钉子半径
 BALL_R = 9                   # 小球半径
 PEG_SX = FIELD_W / NUM_SLOTS # 钉子水平间距(交错均匀网格)
+# 深部奇数行右移(治"穿隙"): 球从 24.3° 对角通道直漏不碰钉。只挪深部(r>=PEG_DEEP_MIN_ROW)
+# 的奇数行、往右移 PEG_DEEP_SHIFT 列宽 → 通道错开, 穿隙 ~9%→4%; 浅部奇数行不动 → 保住
+# 首钉力度区分度(selftest 首钉跨度门禁 49px≥45, 无需改门禁)。贴墙钉固定不随移。
+# 实测(1000发/态): 穿隙 9.1%→3.9%, 同钉滞留 max 104→43, 力度区分度 49 保持, 卡死0。
+PEG_DEEP_SHIFT = 0.30
+PEG_DEEP_MIN_ROW = 3
 
 LANE_WALL_TOP = 160          # 通道隔墙顶部(进一步降低: 更宽敞的入场窗口)
 PLUNGER_X = (LANE_L + RIGHT_INNER) / 2.0
@@ -90,9 +96,10 @@ E_FAST = 0.40                # 高速撞击恢复系数(0.32→0.40: 用户实�
                              # 实测 E_SLOW0.70+E_FAST0.40: ≥20px发占比62%, max35px<一行, 横跳0卡死0)
 E_SLOW = 0.70                # 低速接触恢复系数(0.60→0.70: 用户实测弹高太低, 提到激进档,
                              # 低速更弹; 实测≥20px发62%, 仍在物理合理范围)
-PEG_BOUNCE_VY_MAX = 300.0      # 碰钉后向上速度上限(弹起限幅): 弹高 v²/2G=45px 上限,
-                             # ≥20px 玩家肉眼可见(球视觉半径12.6)。物理专家组共识: 目标弹高
-                             # 20~45px, 300 上限给"几十px"留余量。放开E后 150 会成死硬顶, 须同步放开。
+PEG_BOUNCE_VY_MAX = 280.0      # 碰钉后向上速度上限(弹起限幅): 弹高 v²/2G≈39px, 球顶≈48px<行距55,
+                             # 保证球弹跳后不会回到上层钉子高度(用户明确要求: 不能弹回上层)。
+                             # 300 上限时实测球心最大弹高56px/球顶65px越上层(观感"白下行程")。
+                             # 降到280: 弹高尾部收敛到~40px, 回弹可见性(≥10px)不受影响(多数碰撞vy<280)。
 PEG_BOUNCE_VY_MIN = 70.0     # 碰钉后保底下落速度(vy<70 补到 70): 防"水平滑翔"横穿。
                              # 甜点扫描: ≤70 时碰后 vy 太低, 球横滑蹭钉(88% 磨蹭碰撞, 黏滞感);
                              # ≥80 磨蹭骤降为 0。70 滞留帧最少/波动最均匀, 减速比~0.5
@@ -111,6 +118,9 @@ PEG_FRICTION_VY = 0.97       # 法向摩擦(比 vx 轻: 摩擦乘反射后的 vy
 PEG_GLANCE_UP = 150.0        # 掠射向上保证(侧碰反射后若仍向下, 给 -150 向上 vy, 弹高~11px):
                              # 增加"回弹频率"(用户"碰一下就弹"), 每发向上 11.8 次/69%碰撞, 球离钉果断。
                              # 幅度有界(弹高11px + 顶击40%≥10px → 可见弹开), 不凭空反物理, 可调可关
+PEG_CROWN_ESCAPE = 60.0      # 改法A crown: 顶冠再访时给球的最小横向逃逸速度(沿原 vx 方向)。
+                             # 治"球冻在钉顶原地微弹": 给一点横向力让它滚开。软化版: vx==0 不硬给,
+                             # 方向沿入射 vx 符号(有物理依据), 避免"凭空横向移动/看不见的手"。
 PEG_SPRINT = True            # 570 隔板钉冲刺开关(末段横向刹住+垂直冲刺): False=经典自由弹跳
 E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
@@ -212,9 +222,13 @@ def build_pegs():
         if r % 2 == 0:
             xs = [FIELD_L + (i + 0.5) * PEG_SX for i in range(NUM_SLOTS)]
         else:
-            xs = [FIELD_L + i * PEG_SX for i in range(1, NUM_SLOTS)]
+            off = PEG_DEEP_SHIFT * PEG_SX if r >= PEG_DEEP_MIN_ROW else 0.0
+            # 最右钉(i=NUM_SLOTS-1)不偏移: 右移会把它推近右墙钉(x=450), 形成 <30px
+            # 夹缝卡球(球需同时避开两钉 30px)。最右钉保持原位, 其余钉照常右移错开通道。
+            xs = [FIELD_L + i * PEG_SX + off for i in range(1, NUM_SLOTS - 1)]
+            xs.append(FIELD_L + (NUM_SLOTS - 1) * PEG_SX)
             # 贴墙钉: 圆心移进场区(钉缘距墙 ~3px), 不再嵌进墙 —— 修复"钉墙视觉融合"(用户报告 bug)。
-            # 保留贴墙碰撞(消除死走廊), 但钉子在墙外完全可见。
+            # 保留贴墙碰撞(消除死走廊), 但钉子在墙外完全可见。贴墙钉固定, 不随深部偏移。
             xs.insert(0, FIELD_L + PEG_R + 3)     # 左墙钉: 圆心=21, 钉缘=15, 距左墙内沿(12) 3px
             xs.append(FIELD_R - PEG_R - 3)         # 右墙钉: 圆心=450, 钉缘=456, 距隔墙内沿(466) 10px
         rows.append([(x, y) for x in xs])
@@ -343,11 +357,21 @@ def _collide_pegs(b, pegs):
                 nrm = math.hypot(njx, njy)
                 njx /= nrm; njy /= nrm
                 hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
+                # 改法A crown: 同钉再访检测 —— 本颗钉是否与上次碰撞的是同一颗(治"同一颗钉反复碰")
+                rehit = (b.hit_peg == (px, py))
                 # 掠射向上保证(用户"增加小概率事件概率"): 侧碰(法线接近水平)反射后若球仍向下
                 # 且无向上分量, 给一个小的向上 vy —— 模拟真实弹珠球沿钉面"弹起"而非"滑落"。
                 # 幅度有界(PEG_GLANCE_UP=60, 弹高≈2px 起步, 多次掠射累积成可见), 不凭空反物理。
-                if b.vy >= 0 and abs(nx) > abs(ny) and b.vy < PEG_GLANCE_UP:
+                # crown: 同钉再访时不再注入(斩断"侧碰-垂直弹-落回同钉"环)
+                if (not rehit) and b.vy >= 0 and abs(nx) > abs(ny) and b.vy < PEG_GLANCE_UP:
                     b.vy = -PEG_GLANCE_UP
+                # crown: 顶冠再访强制分离(治"球冻在钉顶原地微弹")——vy 抬到≥70 向下离开,
+                # vx 沿原方向抬到 ±PEG_CROWN_ESCAPE 给横向逃逸(软化: vx==0 不硬给, 避免"看不见的手")
+                if rehit and abs(ny) >= abs(nx):
+                    if b.vy < PEG_BOUNCE_VY_MIN:
+                        b.vy = PEG_BOUNCE_VY_MIN
+                    if b.vx != 0:
+                        b.vx = math.copysign(max(abs(b.vx), PEG_CROWN_ESCAPE), b.vx)
                 # 回弹限幅(QA 对照实验定稿): 允许向上弹起(回弹感), 150 限幅弹高≤11px≤一行
                 # 钉距 + PEG_BOUNCE_VY_MIN=70 比例保底已防黏滞(QA 实测去守卫后滞留帧
                 # 2.2/发 < 留守卫 4.1/发, 卡死仍 0; 历史黏滞的根因是弹高无上限反复碰同钉)。
