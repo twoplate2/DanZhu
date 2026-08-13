@@ -1699,7 +1699,7 @@ def selftest(n=40000):
 
     # (1) 盘面 RTP 期望: 均匀落格下 E[赔付]=档位(彻底被动, 无 choose_target 修正)
     print("== 返还率精确性(均匀落格盘面期望) ==")
-    for rtp in (0.80, 1.00, 1.20, 1.50):
+    for rtp in (0.80, 1.00, 1.20, 2.00):
         tot = 0.0
         for _ in range(n):
             board = roll_multipliers(rtp)
@@ -2727,9 +2727,10 @@ class RootWidget(BoxLayout):
                                       size_hint_x=None, width=dp(56))
         rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
-        for label, val in (("80%", 0.80), ("100%", 1.00), ("120%", 1.20), ("150%", 1.50)):
+        for label, val in (("80%", 0.80), ("100%", 1.00), ("120%", 1.20), ("200%", 2.00)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
-            b.size_hint_x = 1.0          # flex 平分剩余宽度, 4档自适应不溢出(手机360dp)
+            b.size_hint_x = None          # 固定宽, 与"每次投入弹珠"按钮(56dp)一致
+            b.width = dp(56)
             b.size_hint_y = 1.0
             self.rtp_btns[val] = b
             rtp.add_widget(b)
@@ -3190,7 +3191,7 @@ class RootWidget(BoxLayout):
                     self.sound_mode = cfg["sound_mode"]
                 if isinstance(cfg.get("max_plays"), int) and cfg["max_plays"] in (20, 50, 100):
                     self.max_plays = cfg["max_plays"]
-                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.00, 1.20, 1.50):
+                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.00, 1.20, 2.00):
                     self.rtp_target = float(cfg["rtp_target"])
                 if isinstance(cfg.get("bet"), int) and cfg["bet"] in PRESETS:
                     self.bet = cfg["bet"]
