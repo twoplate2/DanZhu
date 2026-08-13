@@ -2941,7 +2941,7 @@ class RootWidget(BoxLayout):
             self._auto_evt = None
         dts = self._frame_times or [1.0 / 60.0]
         self._render_fps = 1.0 / (sum(dts) / len(dts))
-        self._render_worst = max(dts) * 1000.0
+        self._render_min_fps = 1.0 / max(dts)   # 最低帧(最差一帧)的 FPS
         threading.Thread(target=self._run_benchmark, daemon=True).start()
 
     def _run_benchmark(self):
@@ -2971,7 +2971,7 @@ class RootWidget(BoxLayout):
         phys_fps = sorted(fps_list)[len(fps_list) // 2]   # 物理吞吐中位数
         avg_frames = frames / max(1, flights)
         render_fps = getattr(self, "_render_fps", 0.0)
-        render_worst = getattr(self, "_render_worst", 0.0)
+        render_min_fps = getattr(self, "_render_min_fps", 0.0)
         dev = self._device_info()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
@@ -2979,16 +2979,15 @@ class RootWidget(BoxLayout):
                           size_hint_y=None, height=dp(28))
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
-        sub_lbl = Label(text='使用单核心 Python 物理运算', font_size='13sp', halign='center',
+        sub_lbl = Label(text='渲染采样 5s + 物理 5×0.7s 取中位 · 总约 9s', font_size='13sp', halign='center',
                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         content.add_widget(sub_lbl)
         data = ('%s\n'
-                '渲染帧率   %.1f FPS (最差一帧 %.0f ms)\n'
+                '渲染帧率   %.1f FPS (最低帧 %.1f FPS)\n'
                 '物理吞吐   %d 帧/秒 (中位)\n'
                 '模拟飞行   %d 次\n'
-                '每发平均   %.0f 帧 (实测)\n'
-                '测试时长   约 9 秒') % (
-                    dev, render_fps, render_worst, int(phys_fps), flights, avg_frames)
+                '每发平均   %.0f 帧 (实测)') % (
+                    dev, render_fps, render_min_fps, int(phys_fps), flights, avg_frames)
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
