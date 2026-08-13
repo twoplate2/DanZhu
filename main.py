@@ -2726,14 +2726,6 @@ class RootWidget(BoxLayout):
         Window.bind(on_touch_down=self._on_title_touch_down,
                     on_touch_up=self._on_title_touch_up)
         self._bench_running = False
-        self._bench_overlay_shown = False
-        # 跑分覆盖层(第2轮物理benchmark时: 全屏置灰 + 居中大字), canvas.after 渲染在最上层
-        with self.canvas.after:
-            self._bench_dim_col = Color(0.05, 0.06, 0.09, 0.0)
-            self._bench_dim_rect = Rectangle(pos=(0, 0), size=(0, 0))
-            self._bench_text_col = Color(1, 1, 1, 0.0)
-            self._bench_text_rect = Rectangle(texture=None)
-        self.bind(size=self._relayout_bench_overlay, pos=self._relayout_bench_overlay)
         Clock.schedule_interval(self._frame, FIXED_DT)
 
     def _fit_width(self):
@@ -2961,34 +2953,6 @@ class RootWidget(BoxLayout):
     def _on_title_touch_up(self, win, touch):
         self._bench_start = 0.0
 
-    def _show_bench_overlay(self):
-        """第2轮物理 benchmark 期间: 全屏置灰 + 居中大字"测试设备性能中"。"""
-        if self._bench_text_rect.texture is None:
-            cl = CoreLabel(text="测试设备性能中", font_size=sp(30), font_name="Roboto", bold=True)
-            cl.refresh()
-            self._bench_text_rect.texture = cl.texture
-        self._bench_overlay_shown = True
-        self._bench_dim_col.rgba = (0.05, 0.06, 0.09, 0.72)
-        self._relayout_bench_overlay()
-
-    def _relayout_bench_overlay(self, *_):
-        if not getattr(self, "_bench_overlay_shown", False):
-            return
-        self._bench_dim_rect.pos = (0, 0)
-        self._bench_dim_rect.size = self.size
-        tex = self._bench_text_rect.texture
-        if tex is not None:
-            self._bench_text_col.rgba = (1, 1, 1, 1)
-            self._bench_text_rect.pos = (self.center_x - tex.width / 2.0,
-                                         self.center_y - tex.height / 2.0)
-            self._bench_text_rect.size = tex.size
-
-    def _hide_bench_overlay(self):
-        self._bench_overlay_shown = False
-        self._bench_dim_col.rgba = (0, 0, 0, 0)
-        self._bench_dim_rect.size = (0, 0)
-        self._bench_text_col.rgba = (1, 1, 1, 0)
-
     def _check_title_hold(self):
         t = getattr(self, "_bench_start", 0)
         if t > 0 and not self._bench_triggered and time.time() - t >= 3.0:
@@ -3040,7 +3004,7 @@ class RootWidget(BoxLayout):
     def _wait_idle_then_bench(self, dt=0):
         """等球落地(主线程空闲)再启动物理 benchmark, 避免抢 CPU 干扰结果。"""
         if self.state == "ready":
-            self._show_bench_overlay()   # 第2轮开始: 全屏置灰 + "测试设备性能中"
+            self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=6.0)
             threading.Thread(target=self._run_benchmark, daemon=True).start()
         else:
             Clock.schedule_once(self._wait_idle_then_bench, 0.5)
@@ -3069,7 +3033,6 @@ class RootWidget(BoxLayout):
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
     def _bench_done(self, flights, frames, fps_list):
-        self._hide_bench_overlay()   # 第2轮结束: 恢复界面
         phys_fps = sorted(fps_list)[len(fps_list) // 2]   # 物理吞吐中位数
         avg_frames = frames / max(1, flights)
         cost_ms = avg_frames / phys_fps * 1000.0 if phys_fps > 0 else 0.0  # 每发纯物理耗时
