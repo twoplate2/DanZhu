@@ -2801,7 +2801,7 @@ class RootWidget(BoxLayout):
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
-                        padding=[dp(16), dp(4)], spacing=dp(4))
+                        padding=[dp(24), dp(4)], spacing=dp(5))
         self._row_rtp = rtp
         self._rtp_title_lbl = self._mk_label("期望返还比例：", "14sp", COL_TEXT, "left", False,
                                       size_hint_x=None, width=dp(115))
@@ -2809,11 +2809,12 @@ class RootWidget(BoxLayout):
         self.rtp_btns = {}
         for label, val in (("80%", 0.80), ("120%", 1.20), ("200%", 2.00), ("300%", 3.00)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
-            b.size_hint_x = None          # 固定宽(4档, 适配115标签)
-            b.width = dp(48)
+            b.size_hint_x = None
+            b.width = dp(56)
             b.size_hint_y = 1.0
             self.rtp_btns[val] = b
             rtp.add_widget(b)
+        rtp.add_widget(Widget())   # 右侧留空(和投入弹珠行一致)
         self.add_widget(rtp)
         # 投入行: 投入弹珠单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
@@ -3045,10 +3046,10 @@ class RootWidget(BoxLayout):
         content.add_widget(title_lbl)
         data = ('%s\n'
                 '物理吞吐   %d 帧/秒\n'
-                '每发平均   %.0f 帧 ≈ %.0f ms\n'
+                '单发耗时   %.0f ms\n'
                 '平均帧率： %.1f\n'
                 '1%%Low帧率：%.1f') % (
-                    dev, int(phys_fps), avg_frames, cost_ms, render_fps, render_1low)
+                    dev, int(phys_fps), cost_ms, render_fps, render_1low)
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
@@ -3603,7 +3604,7 @@ class RootWidget(BoxLayout):
         self._rtp_title_lbl.width  = dp(115) * us
         self._bet_title_lbl.width  = dp(115) * us
         for b in self.rtp_btns.values():
-            b.width = dp(68) * us
+            b.width = dp(56) * us
         for b in self.bet_btns.values():
             b.width = dp(56) * us
 
