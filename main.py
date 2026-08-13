@@ -2962,18 +2962,24 @@ class RootWidget(BoxLayout):
     def _show_bench_dim(self):
         self._bench_dim_shown = True
         self._bench_dim_col.rgba = (0.05, 0.06, 0.09, 0.72)
-        self._bench_dim_rect.pos = (0, 0)
-        self._bench_dim_rect.size = self.size
+        self._relayout_bench_dim()
 
     def _relayout_bench_dim(self, *_):
         if getattr(self, "_bench_dim_shown", False):
-            self._bench_dim_rect.pos = (0, 0)
-            self._bench_dim_rect.size = self.size
+            # 盖全屏: RootWidget 在平板是 AnchorLayout 居中, self.size 只是内容列
+            self._bench_dim_rect.pos = (-self.x, -self.y)
+            self._bench_dim_rect.size = Window.size
 
     def _hide_bench_dim(self):
         self._bench_dim_shown = False
         self._bench_dim_col.rgba = (0, 0, 0, 0)
         self._bench_dim_rect.size = (0, 0)
+
+    def _bench_toast_tick(self, dt):
+        for e in self.game_area._effects:
+            if e["kind"] == "toast":
+                return   # 还有 toast 存活, 不重复弹
+        self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
 
     def _check_title_hold(self):
         t = getattr(self, "_bench_start", 0)
@@ -2984,7 +2990,8 @@ class RootWidget(BoxLayout):
             self.status_lbl.text = "性能测试中…"
             self._set_controls_enabled(False)
             self._show_bench_dim()   # 第1阶段就开始: 全屏置灰
-            self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=8.0)
+            self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
+            self._bench_toast_evt = Clock.schedule_interval(self._bench_toast_tick, 0.5)
             self._start_benchmark()
 
     def _start_benchmark(self):
@@ -3056,6 +3063,9 @@ class RootWidget(BoxLayout):
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
     def _bench_done(self, flights, frames, fps_list):
+        if getattr(self, "_bench_toast_evt", None):
+            self._bench_toast_evt.cancel()
+            self._bench_toast_evt = None
         self._hide_bench_dim()   # 第2轮结束: 恢复界面
         phys_fps = sorted(fps_list)[len(fps_list) // 2]   # 物理吞吐中位数
         avg_frames = frames / max(1, flights)
