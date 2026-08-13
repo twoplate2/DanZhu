@@ -21,7 +21,7 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.text import LabelBase, Label as CoreLabel
 from kivy.core.window import Window
-from kivy.graphics import Color, Rectangle, Line, Ellipse, RoundedRectangle
+from kivy.graphics import Color, Rectangle, Line, Ellipse, RoundedRectangle, PushMatrix, PopMatrix, Rotate
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
 from kivy.uix.anchorlayout import AnchorLayout
@@ -96,6 +96,7 @@ E_FAST = 0.40                # 高速撞击恢复系数(0.32→0.40: 用户实�
                              # 实测 E_SLOW0.70+E_FAST0.40: ≥20px发占比62%, max35px<一行, 横跳0卡死0)
 E_SLOW = 0.70                # 低速接触恢复系数(0.60→0.70: 用户实测弹高太低, 提到激进档,
                              # 低速更弹; 实测≥20px发62%, 仍在物理合理范围)
+E_SIDE = 0.20                # 侧碰恢复系数(横滑治本: 侧碰擦面滑下不弹, 回弹感搬到冠碰; 0.20平衡机关枪)
 PEG_BOUNCE_VY_MAX = 280.0      # 碰钉后向上速度上限(弹起限幅): 弹高 v²/2G≈39px, 球顶≈48px<行距55,
                              # 保证球弹跳后不会回到上层钉子高度(用户明确要求: 不能弹回上层)。
                              # 300 上限时实测球心最大弹高56px/球顶65px越上层(观感"白下行程")。
@@ -156,7 +157,7 @@ ARC_EJECT_ANGLE = 12.0       # 出口角随机 ±12°(治"满力度首钉单一"
 ARC_EJECT_SPEED = (0.7, 1.0) # [已废弃→非线性增幅] 出口力度 ×0.7~1.0
 ARC_EJECT_BOOST = 0.2        # 电磁弹射器非线性增幅: 满力度出口 ×(1+BOOST), 弱力度几乎不增(保力度区分)
 ARC_EJECT_POW = 2.0          # 增幅非线性指数: 增幅 ∝ launch_power^POW(力度越小增幅越小)
-CEIL_TILT = 5.0              # 天花板反射偏左角(°): 入射角≠反射角的轻微偏差, 满蓄力首钉更左(非镜面反射, 能量守恒)
+CEIL_VX_KEEP = 1.2           # 天花板反射横向保留系数: 撞天花板后 vx×1.2(入射角≠反射角), 满蓄力首钉更左(vy不变, 下落不拖)
 _ARC_FRAME = 0               # 物理帧计数(弧面缓动判定用; 预演/真发各自单调即可, 新球无状态)
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
@@ -350,7 +351,10 @@ def _collide_pegs(b, pegs):
             if vn > 0:                               # 真反弹才处理
                 vy_pre = b.vy                        # 碰前 vy(比例保底用)
                 # e(v): 低速弹得高(逃逸卡死), 高速粘(保持节奏)
-                E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
+                if abs(nx) > abs(ny):
+                    E_eff = E_SIDE                  # 侧碰低弹: 擦面滑下不弹(治横滑), 回弹感搬到冠碰
+                else:
+                    E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
                 E_eff *= rng.uniform(0.92, 1.08)   # 反弹高度 ±8% 随机(用户定稿: 每个反弹略不同, 更真实)
                 # 法线扰动(模拟表面粗糙度): 幅度 0.04/±0.15。注意: 曾试加大到 0.08/±0.25
                 # 想增加回弹, 但副作用是侧碰反射横向分量被放大 → "凭空横向移动"(用户报告 bug)。
@@ -365,12 +369,7 @@ def _collide_pegs(b, pegs):
                 hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
                 # 改法A crown: 同钉再访检测 —— 本颗钉是否与上次碰撞的是同一颗(治"同一颗钉反复碰")
                 rehit = (b.hit_peg == (px, py))
-                # 掠射向上保证(用户"增加小概率事件概率"): 侧碰(法线接近水平)反射后若球仍向下
-                # 且无向上分量, 给一个小的向上 vy —— 模拟真实弹珠球沿钉面"弹起"而非"滑落"。
-                # 幅度有界(PEG_GLANCE_UP=150, 弹高≈11px 起步, 多次掠射累积成可见), 不凭空反物理。
-                # crown: 同钉再访时不再注入(斩断"侧碰-垂直弹-落回同钉"环)
-                if (not rehit) and b.vy >= 0 and abs(nx) > abs(ny) and b.vy < PEG_GLANCE_UP:
-                    b.vy = -PEG_GLANCE_UP
+                # [已删侧碰 GLANCE_UP] 侧碰不再被向上踢(那是"横滑"的发动机), 回弹感搬到冠碰(顶击)
                 # crown: 顶冠再访强制分离(治"球冻在钉顶原地微弹")——vy 抬到≥70 向下离开,
                 # vx 沿原方向抬到 ±PEG_CROWN_ESCAPE 给横向逃逸(软化: vx==0 不硬给, 避免"看不见的手")
                 if rehit and abs(ny) >= abs(nx):
@@ -390,18 +389,9 @@ def _collide_pegs(b, pegs):
                 if abs(b.vx) > PEG_REFLECT_VX_MAX:   # 碰钉反射横速限幅: 球碰钉后横向速度
                     b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)  # 受限, 横穿距离
                                                     # ≤1 钉距, 消除"横向跳"(真实弹珠机球不会横向滑翔)
-                vn_after = b.vx * nx + b.vy * ny
-                if vn_after < PEG_MIN_ESCAPE and abs(nx) > abs(ny):
-                    # 最小逃逸(物理专家组修订): 只对侧向碰撞补横向离开速度(防机关枪),
-                    # 但不再补法向、不再把向上清零 —— 侧碰保留反射产生的自然向上分量
-                    # (这是让肩击也能弹起的承重改法, 原 if b.vy<0: b.vy=0 按次数是最大消弹器)。
-                    # 注意: 逃逸必须不产生"凭空横向移动" —— 补速有界(≤PEG_REFLECT_VX_MAX)。
-                    if vn_after > 0:
-                        ev = (PEG_MIN_ESCAPE - vn_after)
-                        b.vx += ev * nx
-                        b.vy += ev * ny
-                        if abs(b.vx) > PEG_REFLECT_VX_MAX:   # 逃逸后重新限幅(防横向顶穿)
-                            b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)
+                if abs(nx) > abs(ny) and b.vy >= 0 and b.vy < PEG_MIN_ESCAPE:
+                    # 逃逸顺导(治横滑): 侧碰后沿重力向下补速, 不再沿法线横向推(撤掉"凭空横向移动"源)
+                    b.vy = PEG_MIN_ESCAPE
                 if PEG_SPRINT and py == 570:    # 隔板钉(末段): 软化冲刺 —— 保留 vy 下限
                     b.vx *= 0.7                  # 防贴钉+落袋干净, 但不再把横速刹死:
                     if 0.0 <= b.vy < 160.0:      # 0.5→0.7 保留末段横向多样性(末段决策迟到,
@@ -446,11 +436,8 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
         b.y = cy + ny * BALL_R
         hit = _reflect(b, nx, ny, e)
         if ev == EV_WALL and ry1 == 0 and ry2 == WALL and hit > 0.0:
-            # 天花板非镜面反射(轻微倾斜): 速度大小不变, 方向偏左 CEIL_TILT°(满蓄力首钉更左)
-            sp = math.hypot(b.vx, b.vy)
-            ang = math.atan2(b.vy, b.vx) + math.radians(CEIL_TILT)
-            b.vx = sp * math.cos(ang)
-            b.vy = sp * math.sin(ang)
+            # 天花板非镜面反射(轻微倾斜): vx×CEIL_VX_KEEP(入射角≠反射角), vy不变(下落不拖)
+            b.vx *= CEIL_VX_KEEP
         if ev and hit > 0.0:
             _mark(b, ev, hit)
 
@@ -2167,6 +2154,17 @@ def ball_texture():
             buf[i + 1] = gg
             buf[i + 2] = bb
             buf[i + 3] = alpha
+    # 左上高光(让球旋转可见): 叠一个半透明白斑, 否则纯径向渐变转了也看不出
+    hx, hy, hr = 0.32 * d, 0.32 * d, 0.30 * d
+    for y in range(d):
+        for x in range(d):
+            hd = math.hypot(x - hx, y - hy)
+            if hd < hr:
+                a = int((1.0 - hd / hr) * 170)
+                i = (y * d + x) * 4
+                buf[i] = min(255, buf[i] + a)
+                buf[i + 1] = min(255, buf[i + 1] + a)
+                buf[i + 2] = min(255, buf[i + 2] + a)
     tex = Texture.create(size=(d, d), colorfmt="rgba")
     tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
     tex.mag_filter = "linear"
@@ -2399,9 +2397,12 @@ class GameArea(FloatLayout):
                          cap="round"))
             # 球(动态, 程序化渐变贴图; 视觉 BALL_VIEW 倍放大, 碰撞半径不变)
             Color(1, 1, 1)
+            self._ball_push = PushMatrix()
+            self._ball_rot = Rotate(angle=0.0, origin=(0, 0))
             self._ball_e = Rectangle(texture=ball_texture(), pos=(0, 0),
                                      size=(2 * BALL_R * BALL_VIEW * s,
                                            2 * BALL_R * BALL_VIEW * s))
+            self._ball_pop = PopMatrix()
         self.tick_draw()
 
     # ------------------------------ 特效 ------------------------------
@@ -2493,6 +2494,9 @@ class GameArea(FloatLayout):
             self._ball_e.pos = (self._ox + (b.x - br) * self._s + bs * (1 - sq) * 0.5,
                                 self._oyt - (b.y + br) * self._s + bs * (1 - sq) * 0.5)
             self._ball_e.size = (bs * (2 - sq), bs * sq)
+            # 球自转(让横滑看起来是"滚动"而非"悬浮"): spin 是碰钉切向速度积分, 之前算了没画
+            self._ball_rot.angle = math.degrees(getattr(b, "spin", 0.0) % (2.0 * math.pi))
+            self._ball_rot.origin = (self._ox + b.x * self._s, self._oyt - b.y * self._s)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
