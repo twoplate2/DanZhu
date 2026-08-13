@@ -603,21 +603,39 @@ def advance_flight(b, geo):
     return physics_step(b, geo, FIXED_DT)
 
 
-def benchmark_trajectories(duration=5.0):
-    """性能测试: duration 秒内能模拟多少次完整飞行(发射→落地)。
-    纯 CPU 测试, 不涉及渲染/音效, PC 和移动端通用。"""
+def benchmark_trajectories(duration=0.7, runs=5):
+    """性能测试: 每次固定 duration 秒(短, 不触发 CPU 降频), 数帧数, 跑 runs 次取中位。
+    返回 (total_flights, total_frames, fps_list) 实测值, 不反推。
+    固定种子可复现。固定短时长(而非固定次数)设备无关: PC/手机都 <1s, 不触发 turbo 降频。"""
     geo = build_geo()
-    count = 0
-    t0 = time.time()
-    while time.time() - t0 < duration:
-        power = random.uniform(MISFIRE_POWER, 1.0)
-        b = launch_ball(power)
-        for _ in range(4000):
-            landed = advance_flight(b, geo)
-            if landed is not None:
-                count += 1
-                break
-    return count
+    rng = random.Random(12345)   # 固定种子, 不碰全局 random(结果可复现)
+
+    def _run_once():
+        flights = 0
+        frames = 0
+        t0 = time.time()
+        while time.time() - t0 < duration:
+            power = rng.uniform(MISFIRE_POWER, 1.0)
+            b = launch_ball(power, rng=rng)
+            for _ in range(4000):
+                landed = advance_flight(b, geo)
+                frames += 1
+                if landed is not None:
+                    flights += 1
+                    break
+        return flights, frames
+
+    _run_once()   # 预热一次(让 CPU 升频/Python 热身), 不计数
+
+    fps_list = []
+    total_flights = 0
+    total_frames = 0
+    for _ in range(runs):
+        flights, frames = _run_once()
+        fps_list.append(frames / duration)
+        total_flights += flights
+        total_frames += frames
+    return total_flights, total_frames, fps_list
 
 
 def _reward_value():
@@ -2154,17 +2172,33 @@ def ball_texture():
             buf[i + 1] = gg
             buf[i + 2] = bb
             buf[i + 3] = alpha
-    # 左上高光(让球旋转可见): 叠一个半透明白斑, 否则纯径向渐变转了也看不出
-    hx, hy, hr = 0.32 * d, 0.32 * d, 0.30 * d
+    # 猫眼色带(旋转可见): 焦糖色眼睛形带, 深色带形成明暗对比
+    # 1) 猫眼色带(焦糖, 眼睛形, 偏离圆心): 深色带形成明暗对比, 旋转可见
+    ba = math.radians(-32.0)
+    off = 0.08 * d                # 中心线偏离圆心(偏右下, 与左上高光错开)
+    band_w = 0.11 * d             # 中部半宽
+    band_c = (178, 108, 22)       # 焦糖色
+    strength = 0.50               # 最大混入强度(变暗五成)
+    cos_a, sin_a = math.cos(ba), math.sin(ba)
     for y in range(d):
         for x in range(d):
-            hd = math.hypot(x - hx, y - hy)
-            if hd < hr:
-                a = int((1.0 - hd / hr) * 170)
-                i = (y * d + x) * 4
-                buf[i] = min(255, buf[i] + a)
-                buf[i + 1] = min(255, buf[i + 1] + a)
-                buf[i + 2] = min(255, buf[i + 2] + a)
+            i = (y * d + x) * 4
+            if buf[i + 3] == 0:   # 跳过透明像素, 防边缘渗色
+                continue
+            dx = x - r
+            dy = y - r
+            s = dx * cos_a + dy * sin_a          # 沿带方向(-r..r)
+            v = -dx * sin_a + dy * cos_a         # 垂直带方向
+            if abs(s) < r:
+                wmax = band_w * math.sqrt(1.0 - (s / r) ** 2)   # 眼睛形: 中间宽两端尖
+                dv = abs(v - off)
+                if dv < wmax:
+                    t = dv / wmax
+                    w = (1.0 - t * t) ** 2 * strength
+                    buf[i] = int(buf[i] + (band_c[0] - buf[i]) * w)
+                    buf[i + 1] = int(buf[i + 1] + (band_c[1] - buf[i + 1]) * w)
+                    buf[i + 2] = int(buf[i + 2] + (band_c[2] - buf[i + 2]) * w)
+    # [高光已删] 用户要求去掉高光, 只保留焦糖色带(球身径向渐变已够立体)
     tex = Texture.create(size=(d, d), colorfmt="rgba")
     tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
     tex.mag_filter = "linear"
@@ -2883,8 +2917,8 @@ class RootWidget(BoxLayout):
             threading.Thread(target=self._run_benchmark, daemon=True).start()
 
     def _run_benchmark(self):
-        n = benchmark_trajectories(10.0)
-        Clock.schedule_once(lambda dt: self._bench_done(n), 0)
+        flights, frames, fps_list = benchmark_trajectories()
+        Clock.schedule_once(lambda dt: self._bench_done(flights, frames, fps_list), 0)
 
     def _device_info(self):
         if platform == 'android':
@@ -2905,9 +2939,9 @@ class RootWidget(BoxLayout):
         import platform as pf
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
-    def _bench_done(self, n):
-        rate = n / 10.0
-        total_frames = n * 205
+    def _bench_done(self, flights, frames, fps_list):
+        phys_fps = sorted(fps_list)[len(fps_list) // 2]   # 物理吞吐中位数
+        avg_frames = frames / max(1, flights)
         dev = self._device_info()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
@@ -2919,11 +2953,10 @@ class RootWidget(BoxLayout):
                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         content.add_widget(sub_lbl)
         data = ('%s\n'
-                '时长       10 秒\n'
-                '总帧数     %d 帧    (%d 帧/秒)\n'
-                '估计可飞行 %d 次    (%.1f 次/秒)\n'
-                '注: 小球每次飞行平均需 205 帧') % (
-                    dev, total_frames, total_frames // 10, n, rate)
+                '物理吞吐   %d 帧/秒 (中位)\n'
+                '模拟飞行   %d 次\n'
+                '每发平均   %.0f 帧 (实测)') % (
+                    dev, int(phys_fps), flights, avg_frames)
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
