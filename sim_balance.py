@@ -23,8 +23,8 @@ MAX_PLAYS = 500                  # 固定玩这么多发(统一口径: 所有档
                                  # 中途余额<50 判破产提前停)。不受"跑到破产"截断影响,
                                  # 高收益档也不会因无限增长拖慢。
 
-RTP_LEVELS = [0.80, 1.00, 1.20, 2.00]
-RTP_LABEL = {0.80: "80%", 1.00: "100%", 1.20: "120%", 2.00: "200%"}
+RTP_LEVELS = [0.80, 1.20, 2.00, 3.00]
+RTP_LABEL = {0.80: "80%", 1.20: "120%", 2.00: "200%", 3.00: "300%"}
 
 
 _SLOT_DIST_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "slot_dist.json")
@@ -434,7 +434,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--headless", action="store_true", help="无界面跑默认档位")
     ap.add_argument("--runs", type=int, default=5000, help="每档局数")
-    ap.add_argument("--rtp", default="0.8,1.0,1.2,2.0", help="档位列表")
+    ap.add_argument("--rtp", default="0.8,1.2,2.0,3.0", help="档位列表")
     args = ap.parse_args()
     if args.headless:
         levels = [float(x) for x in args.rtp.split(",")]

@@ -11,7 +11,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav
 
-version = 0.4.0
+version = 0.5.0
 
 requirements = python3,kivy==2.3.0,pyjnius
 

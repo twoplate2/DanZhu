@@ -403,7 +403,8 @@ def _collide_pegs(b, pegs):
                                                   # 法向(保留弹起), 避免垂直分量失控
                 _mark(b, EV_PEG, hit)
                 b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
-                b.hit_peg = (px, py)                   # 被撞钉子坐标(高亮用)
+                b.hit_peg = (px, py)                   # 被撞钉子坐标(物理"同钉再访"判断用)
+                b.peg_flash = (px, py)                 # 被撞钉子坐标(渲染高亮用, 每次碰撞都置)
                 b.squash = 1.0 - 0.05 * clamp(vn / E_VREF, 0.0, 1.0)  # 压扁(高速5%,掠射≈0%)
                 b.squash_nx = njx; b.squash_ny = njy
                 b.spin += (b.vx * njy - b.vy * njx) * 0.02  # 自转积分
@@ -529,7 +530,7 @@ class Ball:
                  'launch_power', '_stall_retry', '_rng',
                  'last_nx', 'last_ny',
                  'hit_peg', 'squash', 'squash_nx', 'squash_ny', 'spin',
-                 'arc_ease')
+                 'arc_ease', 'peg_flash')
 
     def __init__(self, **kwargs):
         for k, v in kwargs.items():
@@ -562,7 +563,7 @@ def launch_ball(power, rng=None):
                 launch_power=power, _stall_retry=0, _rng=rng,
                 last_nx=0.0, last_ny=-1.0,
                 hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0,
-                arc_ease=None)
+                arc_ease=None, peg_flash=None)
 
 
 def misfire_speed(power):
@@ -670,7 +671,7 @@ SR = 22050                   # 采样率
 SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数)
 SFX_MASTER = 1.0             # 总音量 (0~1), 手机喇叭需要满幅
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
-SFX_RESULT_LEAD = 0.13       # 结果音(中奖/未中)前置静音: 让入袋声先落地
+SFX_RESULT_LEAD = 0.18       # 结果音(中奖/未中)前置静音: 让入袋声先落地 + 放大揭晓前定格
 SFX_LAUNCH_GAIN = 0.60       # 发射音基准音量(=玩家点名要的"哑火那一声"的听感档位)
 SFX_LAUNCH_GAIN_MAX = 0.80   # 满蓄力上限。曾经的 0.75~1.0 被评价为"像大炮发射, 太夸张",
                              # 所以顶不能再摸到 1.0(launch 是全库最响的非中奖音, rms .146);
@@ -980,41 +981,46 @@ def _sfx_charge_full():
 
 
 def _sfx_pocket():
-    """入袋确认: 闷响 + 一声轻脆(球回弹停稳坐进槽底时播, 非首次碰底)。"""
-    b = _buf(0.20)
-    _add_partials(b, 0.0, 138.0, [(1.00, 1.00, 0.055), (2.10, 0.28, 0.020)])
-    _add_noise(b, 0.0, 0.012, 0.40, 0.006, 0.20)
-    _add_partials(b, 0.004, 330.0, [(1.00, 0.35, 0.018)])
-    return _pack(b, 0.72)
+    """入袋确认: 深长闷响 + 金属锁扣"咔哒"(球坐进槽底卡住; 复用撞钉 tink 的非谐词汇)。"""
+    b = _buf(0.24)
+    _add_partials(b, 0.0, 120.0, [(1.00, 1.00, 0.085), (2.03, 0.25, 0.028)])
+    _add_noise(b, 0.0, 0.010, 0.30, 0.008, 0.15)            # 闷噪声: "沉进去"不是"撞"
+    _add_partials(b, 0.006, 1480.0, [                        # 金属锁扣(非谐=tink 同款"叮")
+        (1.00, 0.30, 0.010),
+        (2.01, 0.18, 0.006),
+        (3.42, 0.09, 0.004),
+    ])
+    _add_noise(b, 0.006, 0.003, 0.18, 0.0012, 0.75)         # 锁扣的清脆瞬态
+    return _pack(b, 0.74)
 
 
 def _sfx_bounce():
-    """落地弹跳(入袋后弹一两下)。"""
-    b = _buf(0.12)
-    _add_partials(b, 0.0, 172.0, [(1.00, 1.00, 0.032), (2.20, 0.22, 0.012)])
-    _add_noise(b, 0.0, 0.006, 0.28, 0.003, 0.22)
-    return _pack(b, 0.52)
+    """落地弹跳: 钢珠撞槽底, 短亮带金属"叮"瞬态(逐跳渐弱在播放层按 vy 做)。"""
+    b = _buf(0.11)
+    _add_partials(b, 0.0, 180.0, [(1.00, 1.00, 0.026), (2.05, 0.30, 0.011)])
+    _add_partials(b, 0.0, 3200.0, [(1.00, 0.18, 0.008)])    # 金属"叮"(非谐高频, 钢珠指纹)
+    _add_noise(b, 0.0, 0.005, 0.30, 0.0022, 0.45)           # 亮噪声攻击瞬态
+    return _pack(b, 0.50)
 
 
 def _sfx_riser():
-    """入袋前紧张感上滑: 球穿出最后一排钉、进入无钉区(y>495)时响, 铺垫后续的入袋确认(pocket)。
-    钉声刚停 -> 上滑 -> "咚", 制造"要落袋了"的期待。
-    包络从零渐强(而非全程等响), 既是"riser"该有的形状, 也压住持续正弦的平均能量。"""
-    n = int(SR * 0.26)
+    """入袋前铺垫: 球穿出最后一排钉进入无钉区(y>495)时响。
+    下行滑音(球在下落, 上滑是"起飞"语法会违和), 尾音落到 140Hz 正好接进落地 thud。"""
+    n = int(SR * 0.16)
     b = [0.0] * n
     ph = 0.0
     for i in range(n):
         t = i / (n - 1.0)
-        f = 300.0 + 480.0 * (t ** 1.4)               # 300 -> 780Hz
+        f = 520.0 - 380.0 * (t ** 1.5)               # 520 -> 140Hz 下行(前段慢后段快坠)
         ph += math.tau * f / SR
-        env = t ** 2.0
-        b[i] = (math.sin(ph) + 0.22 * math.sin(3.0 * ph)) * env
+        env = t ** 1.5                                # 渐强
+        b[i] = (math.sin(ph) + 0.15 * math.sin(2.03 * ph)) * env
     z = 0.0                                          # 一层很轻的气声托底
     for i in range(n):
         t = i / (n - 1.0)
-        z += 0.35 * (_ARNG.uniform(-1.0, 1.0) - z)
-        b[i] += 0.16 * z * (t ** 2.0)
-    return _pack(b, 0.47, fi=0.004, fo=0.020)
+        z += 0.5 * (_ARNG.uniform(-1.0, 1.0) - z)
+        b[i] += 0.12 * z * (t ** 2.0)
+    return _pack(b, 0.40, fi=0.003, fo=0.015)
 
 
 WIN_TIERS = [
@@ -1717,7 +1723,7 @@ def selftest(n=40000):
 
     # (1) 盘面 RTP 期望: 均匀落格下 E[赔付]=档位(彻底被动, 无 choose_target 修正)
     print("== 返还率精确性(均匀落格盘面期望) ==")
-    for rtp in (0.80, 1.00, 1.20, 2.00):
+    for rtp in (0.80, 1.20, 2.00, 3.00):
         tot = 0.0
         for _ in range(n):
             board = roll_multipliers(rtp)
@@ -2301,6 +2307,9 @@ class GameArea(FloatLayout):
         self._oyt = 0.0
         self._slot_cols = []
         self._lamp_cols = []
+        self._peg_cols = {}            # (px,py)→Color 钉子受击高亮
+        self._peg_ellipses = {}        # (px,py)→Ellipse 钉子半径形变
+        self._peg_flash = {}           # (px,py)→born_time 动画计时
         self._ball_e = None
         self._meter_fill = None
         self._meter_col = None
@@ -2366,10 +2375,14 @@ class GameArea(FloatLayout):
                 pts.extend([self._px(x2), self._py(y2)])
                 Color(*hex_rgb(COL_WALL))
                 Line(points=pts, width=max(1.0, 3.5 * s), cap="round", joint="round")
-            # 钉阵
-            Color(*hex_rgb(COL_PEG))
+            # 钉阵(每颗独立 Color+Ellipse, 支持单颗受击高亮/形变)
+            self._peg_cols.clear()
+            self._peg_ellipses.clear()
             for px, py in g.geo["pegs"]:
-                Ellipse(**self._circle(px, py, PEG_R))
+                col = Color(*hex_rgb(COL_PEG))
+                e = Ellipse(**self._circle(px, py, PEG_R))
+                self._peg_cols[(px, py)] = col
+                self._peg_ellipses[(px, py)] = e
             # 槽隔板
             Color(*hex_rgb(COL_BUMPER))
             for d in g.geo["dividers"]:
@@ -2531,6 +2544,39 @@ class GameArea(FloatLayout):
             # 球自转(让横滑看起来是"滚动"而非"悬浮"): spin 是碰钉切向速度积分, 之前算了没画
             self._ball_rot.angle = math.degrees(getattr(b, "spin", 0.0) % (2.0 * math.pi))
             self._ball_rot.origin = (self._ox + b.x * self._s, self._oyt - b.y * self._s)
+            # 钉子受击高亮: 消费物理层 peg_flash 信号(每次碰撞都置, 此处清空)
+            pf = getattr(b, "peg_flash", None)
+            if pf is not None and pf in self._peg_cols:
+                self._peg_flash[pf] = now
+                b.peg_flash = None
+        # 钉子高亮动画: 60ms 电光金 + 240ms 渐回原色 + 半径微扩 1.2x(经典版 30+120 太短, 加长一倍)
+        for (px, py), t0 in list(self._peg_flash.items()):
+            col = self._peg_cols.get((px, py))
+            e = self._peg_ellipses.get((px, py))
+            if col is None:
+                del self._peg_flash[(px, py)]
+                continue
+            elapsed = now - t0
+            if elapsed > 0.30:
+                col.rgb = hex_rgb(COL_PEG)
+                if e is not None:
+                    r = PEG_R * self._s
+                    e.size = (2 * r, 2 * r)
+                del self._peg_flash[(px, py)]
+            else:
+                flash = (1.0, 0.898, 0.0)     # 电光金 #ffe500
+                base = hex_rgb(COL_PEG)
+                if elapsed < 0.06:
+                    col.rgb = flash
+                else:
+                    f = (elapsed - 0.06) / 0.24
+                    col.rgb = (flash[0] + (base[0] - flash[0]) * f,
+                               flash[1] + (base[1] - flash[1]) * f,
+                               flash[2] + (base[2] - flash[2]) * f)
+                scale = 1.0 if elapsed < 0.06 else (1.2 - 0.2 * (elapsed - 0.06) / 0.24)
+                if e is not None:
+                    r = PEG_R * self._s * scale
+                    e.size = (2 * r, 2 * r)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
@@ -2757,14 +2803,14 @@ class RootWidget(BoxLayout):
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
                         padding=[dp(16), dp(4)], spacing=dp(4))
         self._row_rtp = rtp
-        self._rtp_title_lbl = self._mk_label("返还：", "14sp", COL_TEXT, "left", False,
-                                      size_hint_x=None, width=dp(56))
+        self._rtp_title_lbl = self._mk_label("期望返还比例：", "14sp", COL_TEXT, "left", False,
+                                      size_hint_x=None, width=dp(115))
         rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
-        for label, val in (("80%", 0.80), ("100%", 1.00), ("120%", 1.20), ("200%", 2.00)):
+        for label, val in (("80%", 0.80), ("120%", 1.20), ("200%", 2.00), ("300%", 3.00)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
-            b.size_hint_x = None          # 固定宽, 与"每次投入弹珠"按钮(56dp)一致
-            b.width = dp(56)
+            b.size_hint_x = None          # 固定宽(4档, 适配115标签)
+            b.width = dp(48)
             b.size_hint_y = 1.0
             self.rtp_btns[val] = b
             rtp.add_widget(b)
@@ -3000,7 +3046,8 @@ class RootWidget(BoxLayout):
         data = ('%s\n'
                 '物理吞吐   %d 帧/秒\n'
                 '每发平均   %.0f 帧 ≈ %.0f ms\n'
-                '真实屏幕   %.1f FPS · 1%% low %.1f FPS') % (
+                '平均帧率： %.1f\n'
+                '1%%Low帧率：%.1f') % (
                     dev, int(phys_fps), avg_frames, cost_ms, render_fps, render_1low)
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
@@ -3269,7 +3316,7 @@ class RootWidget(BoxLayout):
                     self.sound_mode = cfg["sound_mode"]
                 if isinstance(cfg.get("max_plays"), int) and cfg["max_plays"] in (20, 50, 100):
                     self.max_plays = cfg["max_plays"]
-                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.00, 1.20, 2.00):
+                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.20, 2.00, 3.00):
                     self.rtp_target = float(cfg["rtp_target"])
                 if isinstance(cfg.get("bet"), int) and cfg["bet"] in PRESETS:
                     self.bet = cfg["bet"]
