@@ -2917,18 +2917,23 @@ class RootWidget(BoxLayout):
             self._start_benchmark()
 
     def _start_benchmark(self):
-        """阶段1: 渲染采样(主线程自动发球, 测真实帧率), 5秒后切阶段2物理吞吐。"""
+        """阶段1: 渲染采样(主线程自动发球≥5发, 测真实掉帧率), 发满后切阶段2物理吞吐。"""
         self._frame_times = []
         self._sample_evt = Clock.schedule_interval(self._on_sample_frame, 0)
-        self._auto_evt = Clock.schedule_interval(self._auto_launch_tick, 2.0)
-        Clock.schedule_once(self._finish_render_sample, 5.0)
+        self._launch_count = 0
+        self._target_launches = 3
+        self._auto_evt = Clock.schedule_interval(self._auto_launch_tick, 0.5)
 
     def _on_sample_frame(self, dt):
         self._frame_times.append(dt)
 
     def _auto_launch_tick(self, dt):
+        if self._launch_count >= self._target_launches:
+            self._finish_render_sample(0)
+            return
         if self.state == "ready":
             self.start_charge()
+            self._launch_count += 1
             Clock.schedule_once(lambda _: (setattr(self, "power", 0.8), self.launch()), 0.1)
 
     def _finish_render_sample(self, dt):
@@ -2940,8 +2945,10 @@ class RootWidget(BoxLayout):
             self._auto_evt.cancel()
             self._auto_evt = None
         dts = self._frame_times or [1.0 / 60.0]
-        self._render_fps = 1.0 / (sum(dts) / len(dts))
-        self._render_min_fps = 1.0 / max(dts)   # 最低帧(最差一帧)的 FPS
+        normal = sorted(dts)[len(dts) // 2]          # 正常帧时间(中位数, vsync 下约 1/刷新率)
+        self._render_avg_fps = 1.0 / (sum(dts) / len(dts))
+        self._render_jank = 100.0 * sum(1 for d in dts if d > normal * 1.5) / len(dts)  # 掉帧率%
+        self._render_worst_ms = max(dts) * 1000.0    # 最长一帧 ms
         threading.Thread(target=self._run_benchmark, daemon=True).start()
 
     def _run_benchmark(self):
@@ -2970,8 +2977,9 @@ class RootWidget(BoxLayout):
     def _bench_done(self, flights, frames, fps_list):
         phys_fps = sorted(fps_list)[len(fps_list) // 2]   # 物理吞吐中位数
         avg_frames = frames / max(1, flights)
-        render_fps = getattr(self, "_render_fps", 0.0)
-        render_min_fps = getattr(self, "_render_min_fps", 0.0)
+        render_avg_fps = getattr(self, "_render_avg_fps", 0.0)
+        render_jank = getattr(self, "_render_jank", 0.0)
+        render_worst_ms = getattr(self, "_render_worst_ms", 0.0)
         dev = self._device_info()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
@@ -2979,15 +2987,15 @@ class RootWidget(BoxLayout):
                           size_hint_y=None, height=dp(28))
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
-        sub_lbl = Label(text='渲染采样 5s + 物理 5×0.7s 取中位 · 总约 9s', font_size='13sp', halign='center',
+        sub_lbl = Label(text='渲染采样 3 发 + 物理 5×0.7s 取中位 · 总约 16s', font_size='13sp', halign='center',
                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         content.add_widget(sub_lbl)
         data = ('%s\n'
-                '渲染帧率   %.1f FPS (最低帧 %.1f FPS)\n'
-                '物理吞吐   %d 帧/秒 (中位)\n'
-                '模拟飞行   %d 次\n'
-                '每发平均   %.0f 帧 (实测)') % (
-                    dev, render_fps, render_min_fps, int(phys_fps), flights, avg_frames)
+                '日常渲染  %.1f FPS · 掉帧率 %.1f%% · 最长一帧 %.0f ms (单球非压力)\n'
+                '物理吞吐  %d 帧/秒 (中位, 满负荷)\n'
+                '模拟飞行  %d 次\n'
+                '每发平均  %.0f 帧 (实测)') % (
+                    dev, render_avg_fps, render_jank, render_worst_ms, int(phys_fps), flights, avg_frames)
         data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
