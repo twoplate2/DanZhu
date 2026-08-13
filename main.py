@@ -105,7 +105,7 @@ PEG_BOUNCE_VY_MIN = 70.0     # 碰钉后保底下落速度(vy<70 补到 70): 防
                              # ≥80 磨蹭骤降为 0。70 滞留帧最少/波动最均匀, 减速比~0.5
                              # (碰钉保留一半动能, 轻快弹开)。曾试 30(黏滞投诉)/100(贴钉蹭感)。
 PEG_REFLECT_VX_MAX = 300.0   # 碰钉反射横速上限(球碰钉后横速≤300, 横穿≤1钉距, 防"横向跳")
-PEG_MIN_ESCAPE = 150.0       # 碰钉后最小逃逸速度(总速低于此值整体放大): 防"机关枪"
+PEG_MIN_ESCAPE = 150.0       # 碰钉后最小逃逸速度(侧向碰撞离开速度不足时沿法线补到150): 防"机关枪"
                              # 密集碰撞(2帧一碰)与同钉黏滞(观众裁决 P0); 顺带消除失速
                              # (ratio<0.3 的"碰后几乎停住")
 PEG_KEEP_VY = 0.35           # 比例保底系数: 碰后 vy 至少保留碰前 35%(防失速,
@@ -139,7 +139,7 @@ ALIGN_VX_MAX = 800.0         # 横速硬上限(提高: 匹配高速下落)
 # 碰弧面后由弧面掠射反射改变方向, 之后靠碰钉一次性引导(PEG_STEER_K)+入槽 ALIGN
 # 收尾。曾经的三代横向引导(弹簧-阻尼 CROSS_K / 恒定加速度 CROSS_A)全部移除——
 # 无碰撞段的任何水平力都会造成"没经过导流槽就转向"的违和感。
-ARC_E = 0.50                 # 弧面法向反弹: 球碰弧面弹离(视觉"被柔和推开"而非硬撞)。
+ARC_E = 0.50                 # [死代码] 弧面法向反弹: 物理层已不用(电磁弹射器 ARC_EJECT_* 取代), 仅历史残留
                              # 曾试 0.2~0.4 想实现"沿弧面滑行": 弱档抖动(碰-弹-再碰),
                              # 中/满档出口散布 80px+ 且首钉出包络——滑行在此空间物理上不可行,
                              # 反弹系数必须 ≥0.5 出口才确定(首钉 390/350/301 单调稳定)。
@@ -151,6 +151,9 @@ ARC_OUT_ANGLE = 35.0         # 弧面缓动出口角(相对竖直向左): 25°�
                              # 37° 分布最好(26/34)但球沿钉缝直穿(行穿行0.10s 太急)——
                              # 35° 是分布改善与节奏的平衡点)
 ARC_EASE_FRAMES = 3          # 弧面缓动帧数(接触帧缓动带球, 出口速度=入射速度不耗能)
+# 电磁弹射器(用户思路): 弧面=航空母舰电磁弹射器, 每次球碰引流槽, 出口角度/力度都不同
+ARC_EJECT_ANGLE = 12.0       # 出口角随机 ±12°(治"满力度首钉单一": 每次碰弧面角度不同)
+ARC_EJECT_SPEED = (0.7, 1.0) # 出口力度 ×0.7~1.0(每次碰弧面力度不同 → 首钉位置大范围波动)
 _ARC_FRAME = 0               # 物理帧计数(弧面缓动判定用; 预演/真发各自单调即可, 新球无状态)
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
@@ -361,7 +364,7 @@ def _collide_pegs(b, pegs):
                 rehit = (b.hit_peg == (px, py))
                 # 掠射向上保证(用户"增加小概率事件概率"): 侧碰(法线接近水平)反射后若球仍向下
                 # 且无向上分量, 给一个小的向上 vy —— 模拟真实弹珠球沿钉面"弹起"而非"滑落"。
-                # 幅度有界(PEG_GLANCE_UP=60, 弹高≈2px 起步, 多次掠射累积成可见), 不凭空反物理。
+                # 幅度有界(PEG_GLANCE_UP=150, 弹高≈11px 起步, 多次掠射累积成可见), 不凭空反物理。
                 # crown: 同钉再访时不再注入(斩断"侧碰-垂直弹-落回同钉"环)
                 if (not rehit) and b.vy >= 0 and abs(nx) > abs(ny) and b.vy < PEG_GLANCE_UP:
                     b.vy = -PEG_GLANCE_UP
@@ -398,9 +401,10 @@ def _collide_pegs(b, pegs):
                             b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)
                 if PEG_SPRINT and py == 570:    # 隔板钉(末段): 软化冲刺 —— 保留 vy 下限
                     b.vx *= 0.7                  # 防贴钉+落袋干净, 但不再把横速刹死:
-                    if b.vy < 160.0:             # 0.5→0.7 保留末段横向多样性(末段决策迟到,
-                        b.vy = 160.0             # 悬念落在玩家盯最紧的落袋区)。观众否决的
-                                                  # 40~240px 弹开横移由 ALIGN 收尾弹簧兜底
+                    if 0.0 <= b.vy < 160.0:      # 0.5→0.7 保留末段横向多样性(末段决策迟到,
+                        b.vy = 160.0             # 悬念落在玩家盯最紧的落袋区)。条件 0.0<=vy<160:
+                                                  # 只兜底"仍在向下且不够快"的球, 不抹掉碰钉顶刚
+                                                  # 反射的向上分量(治 SPRINT vy 下限压球的顶碰机关枪)
                 b.vx *= PEG_FRICTION            # 碰钉摩擦(物理专家组): 摩擦乘反射后的 vy 直接杀
                 b.vy *= PEG_FRICTION_VY          # 回弹, vx 用 0.95 防贴钉滑行, vy 用 0.97 少砍
                                                   # 法向(保留弹起), 避免垂直分量失控
@@ -467,13 +471,20 @@ def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
     b.y = cy + ny * r
     st = getattr(b, "arc_ease", None)     # park_ball 等构造的球可能无此字段
     if st is None:
-        st = [0, -1]                      # [缓动步数, 上次接触帧]
+        rng = getattr(b, "_rng", None) or random
+        st = [0, -1,                      # [缓动步数, 上次接触帧, 出口角抖动°, 出口力度系数]
+              rng.uniform(-ARC_EJECT_ANGLE, ARC_EJECT_ANGLE),
+              rng.uniform(*ARC_EJECT_SPEED)]
         b.arc_ease = st
-    n, lf = st
+    n, lf = st[0], st[1]
     if lf != frame:
         n += 1
         lf = frame
-    th = ARC_OUT_ANGLE * min(1.0, n / ARC_EASE_FRAMES)
+        if n == 1 and st[3] != 1.0:       # 电磁弹射器: 第一接触帧应用力度随机一次(不每帧连乘)
+            b.vx *= st[3]
+            b.vy *= st[3]
+            st[3] = 1.0
+    th = ARC_OUT_ANGLE * min(1.0, n / ARC_EASE_FRAMES) + st[2]
     a = math.radians(th)
     sp = math.hypot(b.vx, b.vy)
     b.vx = sp * (-math.sin(a))
@@ -868,11 +879,11 @@ def _sfx_launch():
 
 
 # 飞行音包络: 实测 400 次飞行的中位速度曲线(归一化), 每 0.1s 一点。
-# 形状 = 出膛最快 -> 碰弧面缓动转向(0.65s) -> 抛体上升减速 -> 顶部滞空(1.0s 谷)
-#      -> 俯冲加速 -> 首次撞钉(1.42s)收尾淡出。出口角 37°(落格均匀化)后重测:
-#      碰弧面 0.65s / 谷 1.0s / 首钉 1.42s。
-FLIGHT_ENV = [1.00, 0.90, 0.82, 0.72, 0.61, 0.53, 0.44, 0.36,
-              0.29, 0.25, 0.24, 0.27, 0.32, 0.39, 0.30, 0.20]
+# 形状 = 出膛最快 -> 碰弧面缓动转向(0.63s) -> 抛体上升减速 -> 顶部滞空(0.97s 谷)
+#      -> 俯冲加速 -> 首次撞钉收尾淡出。电磁弹射器(出口×0.7~1.0)后重测:
+#      碰弧面 0.63s / 谷 0.97s / 首钉中位 1.33s(p5~p95=1.22~1.62s)。
+FLIGHT_ENV = [1.00, 0.91, 0.82, 0.72, 0.63, 0.54, 0.45, 0.30,
+              0.23, 0.18, 0.18, 0.21, 0.27, 0.32, 0.34, 0.25]
 FLIGHT_DUR = 1.50
 FLIGHT_GRAIN_END = 0.65      # 颗粒(滚动感)淡出时刻: 球此时已碰弧面离开竖井钢轨, 之后是空中气流
 
@@ -953,7 +964,7 @@ def _sfx_charge_full():
 
 
 def _sfx_pocket():
-    """入袋: 闷响 + 一声轻脆(球坐进槽底)。"""
+    """入袋确认: 闷响 + 一声轻脆(球回弹停稳坐进槽底时播, 非首次碰底)。"""
     b = _buf(0.20)
     _add_partials(b, 0.0, 138.0, [(1.00, 1.00, 0.055), (2.10, 0.28, 0.020)])
     _add_noise(b, 0.0, 0.012, 0.40, 0.006, 0.20)
@@ -970,7 +981,7 @@ def _sfx_bounce():
 
 
 def _sfx_riser():
-    """入袋前紧张感上滑: 球穿出最后一排钉、进入无钉区(y>495)时响, 0.26s 后正好撞上入袋声。
+    """入袋前紧张感上滑: 球穿出最后一排钉、进入无钉区(y>495)时响, 铺垫后续的入袋确认(pocket)。
     钉声刚停 -> 上滑 -> "咚", 制造"要落袋了"的期待。
     包络从零渐强(而非全程等响), 既是"riser"该有的形状, 也压住持续正弦的平均能量。"""
     n = int(SR * 0.26)
@@ -3164,7 +3175,7 @@ class RootWidget(BoxLayout):
                     self.sound_mode = cfg["sound_mode"]
                 if isinstance(cfg.get("max_plays"), int) and cfg["max_plays"] in (20, 50, 100):
                     self.max_plays = cfg["max_plays"]
-                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.00, 1.20):
+                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.00, 1.20, 1.50):
                     self.rtp_target = float(cfg["rtp_target"])
                 if isinstance(cfg.get("bet"), int) and cfg["bet"] in PRESETS:
                     self.bet = cfg["bet"]
