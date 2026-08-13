@@ -153,7 +153,10 @@ ARC_OUT_ANGLE = 35.0         # 弧面缓动出口角(相对竖直向左): 25°�
 ARC_EASE_FRAMES = 3          # 弧面缓动帧数(接触帧缓动带球, 出口速度=入射速度不耗能)
 # 电磁弹射器(用户思路): 弧面=航空母舰电磁弹射器, 每次球碰引流槽, 出口角度/力度都不同
 ARC_EJECT_ANGLE = 12.0       # 出口角随机 ±12°(治"满力度首钉单一": 每次碰弧面角度不同)
-ARC_EJECT_SPEED = (0.7, 1.0) # 出口力度 ×0.7~1.0(每次碰弧面力度不同 → 首钉位置大范围波动)
+ARC_EJECT_SPEED = (0.7, 1.0) # [已废弃→非线性增幅] 出口力度 ×0.7~1.0
+ARC_EJECT_BOOST = 0.2        # 电磁弹射器非线性增幅: 满力度出口 ×(1+BOOST), 弱力度几乎不增(保力度区分)
+ARC_EJECT_POW = 2.0          # 增幅非线性指数: 增幅 ∝ launch_power^POW(力度越小增幅越小)
+CEIL_TILT = 5.0              # 天花板反射偏左角(°): 入射角≠反射角的轻微偏差, 满蓄力首钉更左(非镜面反射, 能量守恒)
 _ARC_FRAME = 0               # 物理帧计数(弧面缓动判定用; 预演/真发各自单调即可, 新球无状态)
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
@@ -442,6 +445,12 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
         b.x = cx + nx * BALL_R
         b.y = cy + ny * BALL_R
         hit = _reflect(b, nx, ny, e)
+        if ev == EV_WALL and ry1 == 0 and ry2 == WALL and hit > 0.0:
+            # 天花板非镜面反射(轻微倾斜): 速度大小不变, 方向偏左 CEIL_TILT°(满蓄力首钉更左)
+            sp = math.hypot(b.vx, b.vy)
+            ang = math.atan2(b.vy, b.vx) + math.radians(CEIL_TILT)
+            b.vx = sp * math.cos(ang)
+            b.vy = sp * math.sin(ang)
         if ev and hit > 0.0:
             _mark(b, ev, hit)
 
@@ -472,9 +481,11 @@ def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
     st = getattr(b, "arc_ease", None)     # park_ball 等构造的球可能无此字段
     if st is None:
         rng = getattr(b, "_rng", None) or random
+        p = getattr(b, "launch_power", 0.5)                    # 蓄力力度(非线性增幅输入)
+        boost = 1.0 + ARC_EJECT_BOOST * (p ** ARC_EJECT_POW)   # 非线性增幅: 力度越大增幅越大
         st = [0, -1,                      # [缓动步数, 上次接触帧, 出口角抖动°, 出口力度系数]
               rng.uniform(-ARC_EJECT_ANGLE, ARC_EJECT_ANGLE),
-              rng.uniform(*ARC_EJECT_SPEED)]
+              boost]
         b.arc_ease = st
     n, lf = st[0], st[1]
     if lf != frame:
