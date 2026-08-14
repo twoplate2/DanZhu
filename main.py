@@ -157,7 +157,7 @@ ARC_EJECT_ANGLE = 12.0       # 出口角随机 ±12°(治"满力度首钉单一"
 ARC_EJECT_SPEED = (0.7, 1.0) # [已废弃→非线性增幅] 出口力度 ×0.7~1.0
 ARC_EJECT_BOOST = 0.2        # 电磁弹射器非线性增幅: 满力度出口 ×(1+BOOST), 弱力度几乎不增(保力度区分)
 ARC_EJECT_POW = 2.0          # 增幅非线性指数: 增幅 ∝ launch_power^POW(力度越小增幅越小)
-CEIL_VX_KEEP = 1.2           # 天花板反射横向保留系数: 撞天花板后 vx×1.2(入射角≠反射角), 满蓄力首钉更左(vy不变, 下落不拖)
+CEIL_VX_KEEP = 1.5           # 天花板弹射加能: 撞顶后 vx,vy 同乘(方向不变=观感安全, 实测落袋max-min约6.5%)
 _ARC_FRAME = 0               # 物理帧计数(弧面缓动判定用; 预演/真发各自单调即可, 新球无状态)
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
@@ -437,8 +437,9 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
         b.y = cy + ny * BALL_R
         hit = _reflect(b, nx, ny, e)
         if ev == EV_WALL and ry1 == 0 and ry2 == WALL and hit > 0.0:
-            # 天花板非镜面反射(轻微倾斜): vx×CEIL_VX_KEEP(入射角≠反射角), vy不变(下落不拖)
+            # 天花板弹射加能: vx,vy 同乘(方向不变=观感安全, 不改反射角)
             b.vx *= CEIL_VX_KEEP
+            b.vy *= CEIL_VX_KEEP
         if ev and hit > 0.0:
             _mark(b, ev, hit)
 
@@ -470,7 +471,7 @@ def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
     if st is None:
         rng = getattr(b, "_rng", None) or random
         p = getattr(b, "launch_power", 0.5)                    # 蓄力力度(非线性增幅输入)
-        boost = 1.0 + ARC_EJECT_BOOST * (p ** ARC_EJECT_POW)   # 非线性增幅: 力度越大增幅越大
+        boost = (1.0 + ARC_EJECT_BOOST * (p ** ARC_EJECT_POW)) * rng.uniform(0.8, 1.2)   # 电磁弹射力度 × 对称随机±20%(落袋均匀/首钉多元)
         st = [0, -1,                      # [缓动步数, 上次接触帧, 出口角抖动°, 出口力度系数]
               rng.uniform(-ARC_EJECT_ANGLE, ARC_EJECT_ANGLE),
               boost]
