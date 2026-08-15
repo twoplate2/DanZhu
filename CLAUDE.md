@@ -31,14 +31,18 @@ python -m py_compile main.py
 ## main.py 内部结构
 
 1. **常量+几何**: 520×660 逻辑坐标系(y 向下)。发射槽在井底(PLUNGER_Y=FLOOR-BALL_R-2, 弹簧 Z 字形露出), 发射速度 1077~1114, G=1000
-2. **物理层**: `Ball`(__slots__ class, 21属性, 含 `_rng` 撞钉扰动流), `physics_step`, `launch_ball`, `advance_flight`(纯被动: 重力+碰撞, 零干预), `benchmark_trajectories`
-   - **三段式轨迹**: 竖直上升(vx=0)→弧面反射(25°接触段, ARC_E=0.5)→抛体进钉阵
-   - **弧面** = 根部R8弧 + 25°接触段15px + R400微弯弧30px(切线连续无转折), 碰撞半径=视觉半径(ARC_VISUAL=1.4, 球与弧面相切)
+2. **物理层**: `Ball`(__slots__ class, 含 `_rng` 撞钉扰动流), `physics_step`, `launch_ball`, `advance_flight`(纯被动: 重力+碰撞, 零干预), `benchmark_trajectories`
+   - **三段式轨迹**: 竖直上升(vx=0)→弧面缓动带球转向(35°接触段, ARC_EASE_FRAMES=3, 出口速度=入射速度不耗能)→抛体进钉阵
+   - **4 旋钮离散表**: 弧面角度/力度、天花板角度/力度, 10 个力度档各一套「离散值+概率」表(`KNOB_*` 四张表), 每发按力度档采样(`_sample_table` + `_power_band`), boost 限幅 [0.65,1.25](加速≤25%/减速≤35%)
+   - **力度互补 + 总体均匀**: 弱蓄首钉偏右/满蓄首钉偏左, 随机力度时首钉/落袋总体铺满 9 槽(绕开弱蓄档打不散的物理瓶颈)
+   - **天花板 2 号弹射器**: 撞顶后按力度档采样角度旋转 + 力度缩放, 撞顶保底 vy≥180 防"吸住", 事件位记 EV_CEIL(已修死事件位)
+   - **弧面** = 根部R8弧 + 35°接触段15px + R400微弯弧30px(切线连续无转折), 碰撞半径=视觉半径(ARC_VISUAL=1.4, 球与弧面相切)
    - **彻底被动**: 无引导/无修订/无预定槽, 球完全被动下落, 结算==物理落格恒成立(零穿帮)
-   - **碰钉回弹**: PEG_BOUNCE_VY_MAX=300(弹高≤45px≤一行钉距) + E_SLOW=0.70/E_FAST=0.40 + PEG_FRICTION=0.95/vy0.97 + PEG_GLANCE_UP=150(侧碰掠射向上, 回弹频率高) + PEG_SPRINT=0.7软化(末段保留横速, 落袋干净靠 ALIGN 收尾)
+   - **碰钉回弹**: PEG_BOUNCE_VY_MAX=280(弹高≤39px<行距55) + E_SLOW=0.70/E_FAST=0.40 + PEG_FRICTION=0.95/vy0.97 + PEG_SPRINT=0.7软化(末段保留横速, 落袋干净靠 ALIGN 收尾)
    - **弧面抖动**: 每发 ±6px 垂直平移(arc_dy), 档内首钉散布 ±10~15px
    - **卡死兜底看位移**: 球位置不动(≤1px/帧)超 MAX_FALL_SEC(4s)才强制 settle
-   - **benchmark_trajectories(duration)**: 纯 CPU 性能测试
+   - **遗传算法优化器**: `scratch/optimize_knobs.py`, 三阶段 GA(每档独立→联合480维→降维arc-only120维+种子初始化), 评分=落袋总体均匀×0.7+首钉总体均匀×0.3
+   - **benchmark_trajectories(duration)**: 纯 CPU 性能测试(返回 3 元组 flights/frames/fps_list)
 3. **音效**: 36 合成 PCM + 50 edge-tts 语音(voice/*.wav)。`Sfx.play()`: gain 10档缓存、按名节流
    - **全局语音互斥**: voice_rtp_/voice_bet_/voice_mode_ 3.0s 间隔。click throttle 0.08s。flight 跳过 bake/prime
    - **弧面接触音**: EV_ARC 事件播 rail 0.18(轻金属"擦"声, throttle 0.05)——转向瞬间的听觉反馈
@@ -63,7 +67,7 @@ voice_lose 有意不接入(合成 lose 音更中性)。
 
 ## 验证标准
 
-RTP≈档位±0.05、卡死=0、撞钉音>90%、天花板<10%、哑火零泄漏、
+RTP≈档位±0.05、卡死=0、撞钉音>90%、哑火零泄漏、
 **弧面接触率≈100%**、冲顶x跨度≥20px、首钉75~110帧、转向每发都有、
 首钉前无碰撞段折角≤4°/相邻帧差≤1°、音效体检0异常。
 **回弹感硬门禁**(玩家可见口径, 不用"1px"糊弄): 像素弹高≥10px 占比≥25%(实测26.9%)、≥20px≥5%(实测6.1%)、max≤45px。
