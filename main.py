@@ -2869,6 +2869,9 @@ class RootWidget(BoxLayout):
                         + dp(10) * 5 * us * us + dp(12) * us)  # +底部留白
         avail_h = max(100.0, Window.height - scaled_fixed)
         want = avail_h * (CW / CH) + dp(8)
+        # 列宽上限: 只限制"不能比 0.659 更宽"(横屏 letterbox 的肥盒子收窄成竖条), 不设下限
+        # (手机超长屏 0.42~0.56 本来就比 0.659 瘦, 此上限不触发, 内容照常铺满)
+        want = min(want, Window.height * 0.659)
         if Window.width > Window.height * 1.2:            # 横屏容错
             want = min(want, Window.width * 0.55)
         self.width = min(Window.width, want)
@@ -4056,9 +4059,7 @@ class PlinkoApp(App):
             Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
         if platform == "android":
-            self._dbg_forcing = False      # 防抖: 强制转竖后短暂静默, 避免高频重复调
             Window.bind(on_resize=self._on_orient_change)
-            self._orient_guard_ev = Clock.schedule_interval(self._orient_guard, 0.7)
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
         anchor = AnchorLayout(anchor_x="center", anchor_y="center")
         self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
@@ -4067,20 +4068,10 @@ class PlinkoApp(App):
         self.rootw._apply_sizes()
         return anchor
 
-    # ---- 方向守卫: Android 12+ 大屏(sw>=600dp)对 targetSdk>=31 的 app 强制多窗口、
-    #      忽略 screenOrientation; 联想 ZUI 还可能 FORCE_RESIZE_APP 强制横屏。
-    #      治本在 buildozer.spec 的 android.api=30(走兼容模式, sensorPortrait 生效),
-    #      这里做运行时兜底: 定时读 Display.getRotation(), 横屏就 setRequestedOrientation(7)
-    #      拉回竖屏(正竖↔倒竖 180 度)。 ----
-    def _android_rotation(self):
-        """系统实际显示旋转: 0竖 1横90 2倒竖 3横270; 失败返回 None。"""
-        try:
-            from jnius import autoclass
-            Activity = autoclass("org.kivy.android.PythonActivity")
-            return Activity.mActivity.getWindowManager().getDefaultDisplay().getRotation()
-        except Exception:
-            return None
-
+    # ---- 方向守卫: Android 12+ 大屏 letterbox 由系统决定窗口形状, app 改不了宽高。
+    #      治本: buildozer.spec android.api=30 + manifest sensorPortrait 锁"方向类别";
+    #      渲染兜底: _fit_width 的列宽上限(0.659)让内容在横屏肥盒子里收窄成竖条。
+    #      这里只保留真横屏(w>h)时的一次性强制, 其余交给上面的布局兜底。 ----
     def _force_portrait(self):
         """运行时强制 sensorPortrait(7): 正竖↔倒竖 180 度, 不横屏。"""
         try:
@@ -4090,21 +4081,8 @@ class PlinkoApp(App):
         except Exception:
             pass
 
-    def _orient_guard(self, dt):
-        """定时检测: 横屏(1/3)就强制竖屏(防抖避免高频重复调)。"""
-        rot = self._android_rotation()
-        if rot is None:
-            return
-        if rot in (1, 3):                       # 横屏
-            if not self._dbg_forcing:
-                self._dbg_forcing = True
-                self._force_portrait()
-                Clock.schedule_once(lambda dt: setattr(self, "_dbg_forcing", False), 0.9)
-        else:                                   # 竖屏(0/2)
-            self._dbg_forcing = False
-
     def _on_orient_change(self, win, w, h):
-        """窗口尺寸变化(横竖切换)时立即强制竖屏, 比定时检测更快响应。"""
+        """真横屏(w>h)时强制回竖屏; letterbox 肥盒子(w<h)交给 _fit_width 列宽上限。"""
         if w > h:
             self._force_portrait()
 
