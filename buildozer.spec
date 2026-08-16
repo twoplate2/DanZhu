@@ -18,8 +18,10 @@ requirements = python3,kivy==2.3.0,pyjnius
 # 锁定 python-for-android 到 2024 年的 tag,绕开新版默认下载 Python 3.14 alpha 的问题
 p4a.branch = v2024.01.21
 
-# 竖屏: manifest 声明合法的 portrait; 180度重力感应靠运行时 setRequestedOrientation(7)=sensorPortrait 覆盖
-orientation = portrait
+# 竖屏+180度: 两个值 => SDL hint "Portrait PortraitUpsideDown" => sensorPortrait(7), 正竖↔倒竖不横屏
+orientation = portrait, portrait-reverse
+# 显式 manifest 方向: 多值时 p4a 会把 manifest 合成成 unspecified(启动会横屏闪), 显式锁 portrait 兜底
+android.manifest.orientation = portrait
 fullscreen = 0
 
 android.permissions = VIBRATE

@@ -7,6 +7,8 @@ import sys
 import os
 
 os.environ.setdefault("KIVY_NO_ARGS", "1")   # 自定义参数(--selftest/--smoke)自己解析, 别让 Kivy 抢
+# 竖屏+180度重力感应(正竖↔倒竖, 绝不横屏): Kivy 经 SDL_HINT_ORIENTATIONS 映射到 setRequestedOrientation(7)
+os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown"
 
 import math
 import random
@@ -2821,7 +2823,9 @@ class RootWidget(BoxLayout):
         self.max_plays = 50            # 每轮次数上限
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
+        self.bench_history = []        # 性能测试历史(最近100次)
         self._load_history()           # 从磁盘恢复(跨启动持久化)
+        self._load_bench_history()
         self._auto_reset_on_start = False
         self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
@@ -3107,14 +3111,39 @@ class RootWidget(BoxLayout):
         t = getattr(self, "_bench_start", 0)
         if t > 0 and not self._bench_triggered and time.time() - t >= 3.0:
             self._bench_triggered = True
-            self._bench_running = True
-            self._bench_saved_status = self.status_lbl.text
-            self.status_lbl.text = "性能测试中…"
-            self._set_controls_enabled(False)
-            self._show_bench_dim()   # 第1阶段就开始: 全屏置灰
-            self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
-            self._bench_toast_evt = Clock.schedule_interval(self._bench_toast_tick, 0.5)
-            self._start_benchmark()
+            self._show_bench_menu()   # 长按3秒: 弹性能测试菜单(开始测试/查看历史)
+
+    def _show_bench_menu(self):
+        """弹珠发射性能测试菜单弹窗: 开始测试 / 查看历史。"""
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
+        title_lbl = Label(text='弹珠发射性能测试', font_size='20sp', bold=True, halign='center',
+                          color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
+        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        content.add_widget(title_lbl)
+        start_btn = Button(text='开始测试', font_size='17sp', bold=True,
+                           background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
+                           size_hint_y=None, height=dp(52))
+        hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
+                          background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                          size_hint_y=None, height=dp(52))
+        popup = Popup(title='', content=content, size_hint=(0.82, None), height=dp(210),
+                      auto_dismiss=True, separator_height=0)
+        start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
+        hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
+        content.add_widget(start_btn)
+        content.add_widget(hist_btn)
+        popup.open()
+
+    def _start_bench_test(self):
+        """开始性能测试(菜单点"开始测试"后)。"""
+        self._bench_running = True
+        self._bench_saved_status = self.status_lbl.text
+        self.status_lbl.text = "性能测试中…"
+        self._set_controls_enabled(False)
+        self._show_bench_dim()   # 第1阶段就开始: 全屏置灰
+        self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
+        self._bench_toast_evt = Clock.schedule_interval(self._bench_toast_tick, 0.5)
+        self._start_benchmark()
 
     def _start_benchmark(self):
         """阶段1: 真实屏幕采样(on_flip, 自动发球3发), 发满后切阶段2物理吞吐。"""
@@ -3195,6 +3224,19 @@ class RootWidget(BoxLayout):
         render_fps = getattr(self, "_render_fps", 0.0)
         render_1low = getattr(self, "_render_1low", 0.0)
         dev = self._device_info()
+        # 存历史(最近100次)
+        self.bench_history.append({
+            "time": time.strftime("%m-%d %H:%M"),
+            "phys_fps": int(phys_fps),
+            "avg_frames": int(avg_frames),
+            "cost_ms": round(cost_ms, 1),
+            "render_fps": round(render_fps, 1),
+            "render_1low": round(render_1low, 1),
+            "device": dev,
+        })
+        if len(self.bench_history) > 100:
+            self.bench_history.pop(0)
+        self._save_bench_history()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
                           halign='center', color=hex_rgb(COL_TEXT) + (1,),
@@ -3218,6 +3260,35 @@ class RootWidget(BoxLayout):
         self._set_controls_enabled(True)
         self._bench_running = False
         self._bench_start = 0.0
+
+    def _show_bench_history(self):
+        """弹珠发射性能测试历史弹窗(最近100次, 每行只显示每秒步数)。"""
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
+        title_lbl = Label(text='测试历史（最近100次）', font_size='19sp', bold=True, halign='center',
+                          color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(28))
+        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        content.add_widget(title_lbl)
+        if not self.bench_history:
+            empty = Label(text='暂无测试记录\n\n长按标题 3 秒即可测试', font_size='15sp', halign='center',
+                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(80))
+            empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+            content.add_widget(empty)
+        else:
+            scroll = ScrollView(size_hint=(1, 1))
+            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
+            inner.bind(minimum_height=inner.setter('height'))
+            for r in reversed(self.bench_history[-100:]):
+                row = Label(text='%s    ⚡ %d 步/秒' % (r.get('time', '--'), r.get('phys_fps', 0)),
+                            font_size='15sp', halign='left', valign='middle',
+                            color=hex_rgb(COL_TEXT) + (1,),
+                            size_hint_y=None, height=dp(34))
+                row.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+                inner.add_widget(row)
+            scroll.add_widget(inner)
+            content.add_widget(scroll)
+        popup = Popup(title='', content=content, size_hint=(0.86, 0.7),
+                      auto_dismiss=True, separator_height=0)
+        popup.open()
 
     SOUND_MODES = ("voice", "sfx", "off")   # 顶栏音效钮三态循环顺序
 
@@ -3454,6 +3525,34 @@ class RootWidget(BoxLayout):
         try:
             with open(self._history_path(), "w") as f:
                 json.dump(self.round_history[-100:], f)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _bench_history_path():
+        """性能测试历史 JSON 路径(与轮次历史同目录)。"""
+        if platform == "android":
+            try:
+                base = App.get_running_app().user_data_dir
+            except Exception:
+                base = tempfile.gettempdir()
+        else:
+            base = tempfile.gettempdir()
+        return os.path.join(base, "plinko_bench_history.json")
+
+    def _load_bench_history(self):
+        try:
+            with open(self._bench_history_path(), "r") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self.bench_history = data[-100:]
+        except Exception:
+            pass
+
+    def _save_bench_history(self):
+        try:
+            with open(self._bench_history_path(), "w") as f:
+                json.dump(self.bench_history[-100:], f)
         except Exception:
             pass
 
@@ -3943,14 +4042,7 @@ class RootWidget(BoxLayout):
 class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
-        if platform == "android":
-            try:                                            # 运行时锁定竖屏+180度重力感应: 部分设备系统级自动旋转
-                from jnius import autoclass                 # 会覆盖 manifest 的 sensorPortrait 声明, 强制锁定
-                activity = autoclass("org.kivy.android.PythonActivity").mActivity
-                activity.setRequestedOrientation(7)         # SCREEN_ORIENTATION_SENSOR_PORTRAIT (正竖+倒竖, 不横屏)
-            except Exception:
-                pass
-        else:
+        if platform != "android":
             Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗

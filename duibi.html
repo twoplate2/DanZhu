@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>跳跳的弹珠机 · 经典版 → 当前版 改动全对比</title>
+<style>
+  :root{
+    --bg:#0b1220; --panel:#15223c; --panel2:#0e1830; --line:#2b436e;
+    --text:#e8eefc; --sub:#8fa0c4; --gold:#f0b000; --green:#39d98a; --red:#ff5c5c; --purple:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font-family:"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6}
+  .wrap{max-width:1100px;margin:0 auto;padding:32px 20px 80px}
+  h1{font-size:26px;margin:0 0 6px}
+  h1 .v{color:var(--gold)}
+  .intro{color:var(--sub);font-size:15px;margin:0 0 28px;padding:16px 18px;background:var(--panel2);border-left:3px solid var(--gold);border-radius:8px}
+  section{margin-bottom:34px}
+  h2{font-size:20px;margin:0 0 4px;padding-left:10px;border-left:4px solid var(--green)}
+  h2 .n{color:var(--purple)}
+  .sum{color:var(--sub);font-size:14px;margin:6px 0 14px;padding-left:14px}
+  table{width:100%;border-collapse:collapse;background:var(--panel);border-radius:10px;overflow:hidden;font-size:14px}
+  th,td{padding:10px 12px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top}
+  th{background:var(--panel2);color:var(--gold);font-weight:600;white-space:nowrap}
+  td.name{white-space:nowrap;color:var(--text);font-weight:600;min-width:130px}
+  td.old{color:var(--sub)}
+  td.new{color:var(--green)}
+  td.why{color:var(--sub);font-size:13px;max-width:320px}
+  .del td.name{color:var(--red)}
+  .del td.name::after{content:" (删除)";color:var(--red);font-weight:400}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;font-size:11px;padding:1px 7px;border-radius:4px;margin-right:4px}
+  .tag.del{background:rgba(255,92,92,0.15);color:var(--red)}
+  .tag.new{background:rgba(57,217,138,0.15);color:var(--green)}
+  .tag.chg{background:rgba(240,176,0,0.15);color:var(--gold)}
+  @media(max-width:700px){th,td{padding:8px 6px;font-size:12px}td.why{max-width:none}td.name{min-width:0}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>跳跳的弹珠机 · <span class="v">经典版 → 当前版</span> 改动全对比</h1>
+<p class="intro">
+  从「主动引导 + 预定落点精确控 RTP」整体重构为「彻底被动 + 盘面期望即 RTP」：删掉引导/预定/预演/诱饵/槽区减速五大机制，碰撞物理升级为带回弹限幅+摩擦+掠射+冲刺的完整模型，RTP 三档(80/100/120)扩为四档(80/120/200/300)并改固定格数 KNOB_K，音效从「能响」打磨到「不糊不刺」，UI/构建升级为 180 度倒竖 + 四档盘面 + 多重发射保底。
+</p>
+
+<!-- ============ 物理层 ============ -->
+<section>
+<h2><span class="n">一</span> 物理层 — 从「主动引导」到「彻底被动」的范式重构</h2>
+<div class="sum">删除 steer_ball / choose_target / preflight_check / near-miss 诱饵 / SLOT_BRAKE 五大机制；碰撞物理从裸反射升级为回弹限幅+比例保底+摩擦+掠射+冲刺的完整模型；重力与发射速度整体回调；弧面从天花板装饰变成导流转向机构；新增 GA 优化的 4 旋钮离散表。</div>
+<table>
+<tr><th>改动项</th><th>经典版</th><th>当前版</th><th>为什么改</th></tr>
+<tr><td class="name">重力 G</td><td class="old">G=1200 px/s²（加速下落、缩短飞行）</td><td class="new">G=1000 px/s²（恢复弹珠机节奏，碰钉有可见减速反弹，行穿行 ~0.22s）</td><td class="why">玩家投诉 G=1200 球"嗖嗖穿过"钉阵，降到 1000 恢复碰钉减速的可见性</td></tr>
+<tr><td class="name">钉子恢复系数</td><td class="old">E=0.20, E_SLOW=0.60, E_FAST=0.18</td><td class="new">E=0.20, E_SLOW=0.70, E_FAST=0.40, 新增 E_SIDE=0.20（侧碰低弹）</td><td class="why">用户实测弹高太低，提到激进档（≥20px 发占 62%）；侧碰治横滑</td></tr>
+<tr><td class="name">碰钉反弹约束</td><td class="old">无（仅 e(v) 反射 + 法线扰动，无上限/保底/摩擦/侧碰区分）</td><td class="new">新增 PEG_BOUNCE_VY_MAX=280、VY_MIN=70、KEEP_VY=0.35、REFLECT_VX_MAX=300、MIN_ESCAPE=150、FRICTION=0.95/0.97、GLANCE_UP=150、CROWN_ESCAPE=60、SPRINT=True、±8%随机</td><td class="why">治"水平滑翔/机关枪/同钉黏滞/贴钉"四大问题 + 给可见回弹感（每发向上 11.8 次）</td></tr>
+<tr><td class="name">发射速度</td><td class="old">LAUNCH_MIN=1180 / MAX=1220</td><td class="new">LAUNCH_MIN=1077 / MAX=1114（随 G=1000 回调，apex≈57/17 不撞顶）</td><td class="why">重力降到 1000 后同步回调发射速度，避免撞顶</td></tr>
+<tr class="del"><td class="name">引导函数 steer_ball</td><td class="old">全程只改 vx：越顶弹簧 CROSS_K=80/DAMP=0.80 + 场内弱弹簧 STEER_MIN=8/MAX=20 + 入槽 ALIGN_H=50/K=60</td><td class="new">整个函数删除，无任何引导</td><td class="why">引导=目的性，玩家投诉"小动物找回家的路"，改彻底被动</td></tr>
+<tr class="del"><td class="name">预定落点 choose_target</td><td class="old">发射前预定落点，命中奖励概率 w=min(1,rtp/均值)，RTP 靠落点精确控制</td><td class="new">整个函数删除；RTP 改盘面数学期望（KNOB_K 固定格数）</td><td class="why">去掉"预定落点"修正，零穿帮，RTP=盘面期望</td></tr>
+<tr class="del"><td class="name">预演 preflight_check</td><td class="old">发射前模拟 1000 帧判卡死</td><td class="new">整个函数删除，无预演</td><td class="why">被动化后无修订无预演，发射即飞零延迟</td></tr>
+<tr class="del"><td class="name">near-miss 诱饵</td><td class="old">tease_dx + TEASE_FRAC=0.80，球朝高倍邻槽偏移 40px 再拉回</td><td class="new">tease_dx 及全部 TEASE_* 常量删除，无诱饵表演</td><td class="why">诱饵依赖引导层，被动化后一并移除</td></tr>
+<tr><td class="name">卡死重掷</td><td class="old">relaunch_stalled 退回柱塞按同力度重飞</td><td class="new">改为位移判据踢球（沿接触切向 +120px/s，STALL_RETRY_SEC=1.2，最多 10 次）</td><td class="why">原地踢球比退回柱塞重发更自然，且不依赖预定落点</td></tr>
+<tr class="del"><td class="name">槽区减速 SLOT_BRAKE</td><td class="old">SLOT_BRAKE_VY=0.65 / VX=0.5，球过槽顶每帧减速</td><td class="new">删除（自然重力加速入袋），防弹飞改由 LAND_BOUNCE_MAX_VY=220 替代</td><td class="why">SLOT_BRAKE 是落地变慢根因（拉 31px/s 爬行），改自然重力落袋</td></tr>
+<tr><td class="name">弧面几何</td><td class="old">顶部天花板 4 段微弧，球撞它用 RAIL_E=0.55 反射</td><td class="new">发射区导流弧（R8 弧根部 + 35° 接触段 15px + R400 微弯弧延长 30px），球转向唯一机构</td><td class="why">弧面从天花板装饰变成导流转向机构，球被"护送"进钉阵</td></tr>
+<tr><td class="name">弧面碰撞</td><td class="old">_collide_segment（RAIL_E=0.55 反射 + EV_CEIL + JITTER）</td><td class="new">_collide_arc 缓动带球：ARC_OUT_ANGLE=35°、ARC_EASE_FRAMES=3（每帧 ~8.3°），出口速度=入射不耗能，记 EV_ARC</td><td class="why">避免一帧 39° 突变横移，玩家看到球"滑过导轨逐渐转向"</td></tr>
+<tr><td class="name">天花板弹射</td><td class="old">天花板=deflector 段，简单 _reflect(RAIL_E=0.55)</td><td class="new">KNOB_CEIL_ANGLE/BOOST 离散采样（角度旋转+力度缩放），撞顶保底 vy≥180 防吸住</td><td class="why">撞顶加能（加速≤25%/减速≤35%），让满力度首钉分布更均匀</td></tr>
+<tr><td class="name">4 旋钮离散表</td><td class="old">无（发射参数只有 power→LAUNCH 线性）</td><td class="new">KNOB_POWERS(10档) + ARC_ANGLE/ARC_BOOST/CEIL_ANGLE/CEIL_BOOST 四张"离散值+概率"表，boost 限幅 [0.65,1.25]</td><td class="why">GA 遗传算法优化定稿，逐力度档让首钉/落袋铺满 9 槽</td></tr>
+<tr><td class="name">事件位 EV_ARC</td><td class="old">EV_PEG=1/EV_CEIL=2/EV_WALL=4/EV_DIV=8（4 位）</td><td class="new">新增 EV_ARC=16（导流弧静音接触，接触率统计 + GUI 播 rail 0.18）</td><td class="why">弧面接触单独统计（接触率≈100% 门禁）+ 轻擦声触发</td></tr>
+<tr><td class="name">弧面抖动 arc_dy</td><td class="old">无</td><td class="new">每发发射前 arc_dy=uniform(-6,6)px 垂直平移，档内首钉散布 ±10~15px</td><td class="why">增加每发首钉散布，打破固定轨迹观感</td></tr>
+</table>
+</section>
+
+<!-- ============ 盘面与经济 ============ -->
+<section>
+<h2><span class="n">二</span> 盘面与经济 — 盘面从「仅展示」升级为「真实 RTP 来源」</h2>
+<div class="sum">经济从"盘面只是展示、真实 RTP 由 choose_target 预定落点精确控制"重构为"盘面期望即 RTP、彻底被动均匀落格"的固定格数 KNOB_K 方案，RTP 档位 3→4 并改锁盘 4 档一起生成/切换不刷新；_reward_value 倍率分布（2/3/5/10/20）与 REWARD_EV=3.35 保持不变。</div>
+<table>
+<tr><th>改动项</th><th>经典版</th><th>当前版</th><th>为什么改</th></tr>
+<tr><td class="name">RTP 档位</td><td class="old">三档 0.80/1.00/1.20（80/100/120）</td><td class="new">四档 0.80/1.20/2.00/3.00（80/120/200/300）</td><td class="why">删掉孤儿 100 档、补齐 200/300 高赔档</td></tr>
+<tr><td class="name">盘面生成</td><td class="old">每格独立 q=rtp/REWARD_EV，逐格掷 0/奖，钳制 min_reward(80→2/100→4/120→6)、max_reward=7（强制留≥2零格给 choose_target）</td><td class="new">固定格数：先按 KNOB_K 掷本局有奖格数 K，再 random.sample 选 K 格填 _reward_value，无零格钳制</td><td class="why">盘面从"仅展示"升级为真实期望来源</td></tr>
+<tr><td class="name">KNOB_K 格数表</td><td class="old">无（格数由每格概率 q 自然决定再钳制）</td><td class="new">80%→2/3格、120%→3/4格、200%→5/6格、300%→8/9格，均值=档位×9/3.35</td><td class="why">消灭"只有1格"烂盘 + 精确控 RTP</td></tr>
+<tr><td class="name">结算落点 settle(i)</td><td class="old">i = target_slot（发射前预定槽）</td><td class="new">i = 物理真实落格槽（球落到哪结算哪）</td><td class="why">结算==物理落格恒成立，零穿帮</td></tr>
+<tr><td class="name">四档盘面生成</td><td class="old">单盘 self.multipliers；set_rtp 立即重掷；park_ball 只重掷当前档</td><td class="new">一次生成 4 档盘面 _boards；set_rtp 直接切不刷新；park_ball 4 档一起刷新</td><td class="why">锁盘 4 档一起生成/刷新，切换不再重掷</td></tr>
+</table>
+</section>
+
+<!-- ============ 音效与语音 ============ -->
+<section>
+<h2><span class="n">三</span> 音效与语音 — 从「能响」打磨到「不糊不刺」</h2>
+<div class="sum">coin 滚动错峰、bounce 削刺、撞顶双响修复、sfx 档漏语音门禁、万位 2 读"两万"、RTP 语音补齐 200/300。</div>
+<table>
+<tr><th>改动项</th><th>经典版</th><th>当前版</th><th>为什么改</th></tr>
+<tr><td class="name">coin 滚动错峰</td><td class="old">settle 即连播 coin（0.8, 0.055）</td><td class="new">新增 _coin_start，coin 晚 0.40/0.22s 起播</td><td class="why">中奖瞬间 coin 与 pocket/结果音叠一起互相盖，错峰让结果音先落地</td></tr>
+<tr><td class="name">bounce 削刺</td><td class="old">仅 172Hz 低频，_pack(b,0.52)</td><td class="new">180Hz + 3200Hz 金属"叮"（增益 0.18→0.10）</td><td class="why">钢珠撞槽底要有金属指纹，但高频太刺，增益降一半</td></tr>
+<tr><td class="name">pocket 入袋音</td><td class="old">138Hz+330Hz 轻脆两声</td><td class="new">120Hz 深闷响 + 1480Hz 金属锁扣"咔哒"</td><td class="why">"沉进去"不是"撞"，加锁扣声体现球坐进槽底卡住</td></tr>
+<tr><td class="name">riser 铺垫方向</td><td class="old">0.26s 上行滑音 300→780Hz</td><td class="new">0.16s 下行滑音 520→140Hz</td><td class="why">上行滑音是"起飞"语法违和，球在下落应下行</td></tr>
+<tr><td class="name">撞顶双响修复</td><td class="old">只跳过 EV_WALL，天花板 EV_CEIL 仍与 top 音同帧叠响</td><td class="new">EV_CEIL 也跳过（撞顶只留 top 音）</td><td class="why">满蓄力撞顶双金属音，改成只留一个</td></tr>
+<tr><td class="name">撞钉节流</td><td class="old">throttle=0.022</td><td class="new">throttle=0.08</td><td class="why">机关枪连珠只响第一声</td></tr>
+<tr><td class="name">硬碰撞震动</td><td class="old">pegs_sp>600 时 _vibrate(8)</td><td class="new">整段删除，仅剩发射/中奖震动</td><td class="why">每帧撞钉都震太烦</td></tr>
+<tr><td class="name">sfx 档漏语音</td><td class="old">不判 sound_mode，切下注/倍率都念人声</td><td class="new">加 sound_mode=='voice' 门禁</td><td class="why">音效档下漏出语音，只在语音档播报</td></tr>
+<tr><td class="name">万位 2 读"两"</td><td class="old">2 万读"二万"(voice_d_2)</td><td class="new">加特判 wan==2 → voice_liang，读"两万"</td><td class="why">中文习惯 2 万读"两万"</td></tr>
+<tr><td class="name">RTP 语音文件</td><td class="old">voice_rtp_80/100/120 三条</td><td class="new">voice_rtp_80/120/200/300 四条（删 100 补 200/300）</td><td class="why">RTP 档位 80/100/120 → 80/120/200/300</td></tr>
+</table>
+</section>
+
+<!-- ============ 界面交互 ============ -->
+<section>
+<h2><span class="n">四</span> 界面交互 — 彻底被动 + 多重保底</h2>
+<div class="sum">UI 从"固定竖屏三档 + 预定落点引导"换成"180 度倒竖 + 四档 + 彻底被动发射 + 多重保底（3s 自动发射/结算延迟到回弹/墙钟卡死兜底）"，性能测试升级为真实 FPS 采样 + 物理吞吐两阶段。</div>
+<table>
+<tr><th>改动项</th><th>经典版</th><th>当前版</th><th>为什么改</th></tr>
+<tr><td class="name">发射预定落点</td><td class="old">launch 里 target_slot=choose_target + target_x 发射前预定</td><td class="new">删 choose_target/target_slot/target_x，加 arc_dy 弧面抖动</td><td class="why">彻底被动无引导无预定</td></tr>
+<tr><td class="name">蓄力 3s 自动发射</td><td class="old">charging 分支无超时处理</td><td class="new">蓄力超 3s 自动 launch（防 on_release 丢失卡死）</td><td class="why">防蓄力卡死</td></tr>
+<tr><td class="name">结算延迟到回弹</td><td class="old">landed 立即 settle(i=target_slot)</td><td class="new">先回弹落定再 settle(_settle_slot)</td><td class="why">先回弹强调槽位再弹结算，结算槽=物理落格</td></tr>
+<tr><td class="name">卡死兜底</td><td class="old">_stall_frames 帧计数（>240 帧强制结算到预定槽）</td><td class="new">_last_motion 墙钟（位置不动才踢球/强制物理槽）</td><td class="why">位置不说谎 + 无预定槽可用</td></tr>
+<tr><td class="name">回弹 vy 上限</td><td class="old">无上限</td><td class="new">LAND_BOUNCE_MAX_VY=220</td><td class="why">删 SLOT_BRAKE 后防回弹越隔板</td></tr>
+<tr><td class="name">性能测试</td><td class="old">纯 CPU 10s 返回 n，硬编码 AVG_FRAMES=228 估算</td><td class="new">两阶段：真实屏幕采样（自动 3 球测 FPS+1%low）+ 物理吞吐（返回 3 元组）+ 置灰层</td><td class="why">分开测渲染帧率和物理吞吐，置灰防抢 CPU</td></tr>
+</table>
+</section>
+
+<!-- ============ 构建 ============ -->
+<section>
+<h2><span class="n">五</span> 构建 — 固定竖屏 → 竖屏 + 180 度重力感应</h2>
+<div class="sum">屏幕方向从固定竖屏改为正竖+倒竖（180 度重力感应），不横屏。</div>
+<table>
+<tr><th>改动项</th><th>经典版</th><th>当前版</th><th>为什么改</th></tr>
+<tr><td class="name">竖屏方向</td><td class="old">setRequestedOrientation(1) 固定竖屏</td><td class="new">setRequestedOrientation(7) 正竖+倒竖（180度），不横屏</td><td class="why">支持 180 度重力感应倒屏</td></tr>
+</table>
+</section>
+
+</div>
+</body>
+</html>
