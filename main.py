@@ -4059,8 +4059,9 @@ class PlinkoApp(App):
             self._dbg_orient = None        # 方向调试: 上次方向
             self._dbg_forcing = False      # 防递归强制
             Window.bind(on_resize=self._on_orient_change)
+            tsdk = self._android_target_sdk()
             rot = self._android_rotation()
-            self._dbg_toast("方向守卫启动 rotation=%s" % rot)
+            self._dbg_show("守卫启动 targetSdk=%s rotation=%s" % (tsdk, rot))
             # 循环强制: 每 0.7s 权威检测一次, 横屏就反复拉回竖屏(对抗 Y700 ZUI 覆盖)
             self._orient_guard_ev = Clock.schedule_interval(self._orient_guard, 0.7)
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
@@ -4075,16 +4076,43 @@ class PlinkoApp(App):
     #      Y700 ZUI 还 FORCE_RESIZE_APP 强制横屏。运行时用 Display.getRotation()
     #      权威检测 + 反复 setRequestedOrientation(7=sensorPortrait) 拉回竖屏,
     #      并弹不同文案的原生 Toast 便于定位根因。 ----
-    def _dbg_toast(self, msg):
-        """Android 原生 Toast: 绕过 Kivy center_toast 的互斥/_ball_e 限制, 诊断专用。"""
+    def _dbg_show(self, msg):
+        """诊断显示(三保险): 日志文件(兜底) + Kivy 顶层 Label(屏上黄字, 一定看到) + Android Toast。"""
+        import time as _t
+        try:
+            log = os.path.join(self.user_data_dir, 'direction_debug.log')
+            with open(log, 'a', encoding='utf-8') as f:
+                f.write('%.1f %s\n' % (_t.time(), msg))
+        except Exception:
+            pass
+        try:
+            if getattr(self, '_dbg_lbl', None) is None:
+                from kivy.uix.label import Label as _KL
+                self._dbg_lbl = _KL(text='', font_size='15sp', color=(1, 1, 0, 1),
+                                    size_hint=(None, None), pos=(6, 6),
+                                    halign='left', valign='top')
+                Window.add_widget(self._dbg_lbl)
+            self._dbg_lbl.text = msg
+            self._dbg_lbl.texture_update()
+            self._dbg_lbl.size = (self._dbg_lbl.texture_size[0], self._dbg_lbl.texture_size[1])
+        except Exception:
+            pass
         try:
             from jnius import autoclass
             PythonActivity = autoclass("org.kivy.android.PythonActivity")
             Toast = autoclass("android.widget.Toast")
-            String = autoclass("java.lang.String")
-            Toast.makeText(PythonActivity.mActivity, String(msg), Toast.LENGTH_LONG).show()
+            Toast.makeText(PythonActivity.mActivity, msg, Toast.LENGTH_LONG).show()
         except Exception:
             pass
+
+    def _android_target_sdk(self):
+        """读 App 的 targetSdkVersion: 30=hook 降级生效(治本), 31=没生效。"""
+        try:
+            from jnius import autoclass
+            Activity = autoclass("org.kivy.android.PythonActivity")
+            return Activity.mActivity.getApplicationInfo().targetSdkVersion
+        except Exception:
+            return None
 
     def _android_rotation(self):
         """系统实际显示旋转: 0竖 1横90 2倒竖 3横270; 失败返回 None。"""
@@ -4101,9 +4129,9 @@ class PlinkoApp(App):
             from jnius import autoclass
             activity = autoclass("org.kivy.android.PythonActivity").mActivity
             activity.setRequestedOrientation(7)   # SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            self._dbg_toast("强制竖屏: %s" % reason)
+            self._dbg_show("强制竖屏: %s" % reason)
         except Exception as e:
-            self._dbg_toast("强制失败: %s (%s)" % (reason, e))
+            self._dbg_show("强制失败: %s (%s)" % (reason, e))
 
     def _orient_guard(self, dt):
         """定时权威检测: 横屏(1/3)就强制竖屏, 0.5s 后复查系统是否照办。"""
@@ -4114,7 +4142,7 @@ class PlinkoApp(App):
             if self._dbg_forcing:
                 return
             self._dbg_forcing = True
-            self._dbg_toast("检测横屏 rotation=%d" % rot)
+            self._dbg_show("检测横屏 rotation=%d" % rot)
             self._force_portrait("定时兜底")
             Clock.schedule_once(self._orient_recheck, 0.5)
             Clock.schedule_once(lambda dt: setattr(self, "_dbg_forcing", False), 0.9)
@@ -4125,14 +4153,14 @@ class PlinkoApp(App):
         """强制后复查: 系统听没听 setRequestedOrientation。"""
         rot = self._android_rotation()
         if rot in (1, 3):
-            self._dbg_toast("复查仍横 rotation=%d 系统拒绝" % rot)
+            self._dbg_show("复查仍横 rotation=%d 系统拒绝" % rot)
         else:
-            self._dbg_toast("复查转竖 rotation=%d 已生效" % rot)
+            self._dbg_show("复查转竖 rotation=%d 已生效" % rot)
 
     def _on_orient_change(self, win, w, h):
         """Kivy 窗口尺寸变化(辅助诊断): 记录 w/h, 主检测交给 _orient_guard。"""
         orient = "横屏" if w > h else "竖屏"
-        self._dbg_toast("窗口 %dx%d %s" % (w, h, orient))
+        self._dbg_show("窗口 %dx%d %s" % (w, h, orient))
         self._dbg_orient = orient
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
