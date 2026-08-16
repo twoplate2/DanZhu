@@ -264,7 +264,7 @@ STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就�
                              # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
 STALL_MAX_RETRY = 10          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
-REWARD_EV = 3.35             # _reward_value 的期望; RTP ≈ 非零格概率 x REWARD_EV
+REWARD_EV = 3.35             # _reward_value 的期望; 固定格数方案下 RTP = E[K]×REWARD_EV/9
 
 # ------------------- 碰撞事件位(物理层 -> GUI 音效层) ----------------------
 EV_PEG = 1                   # 撞钉
@@ -747,31 +747,31 @@ def _reward_value():
     return 20
 
 
-def _q_for_rtp(rtp):
-    """反解 q，使 E[每格倍率] = rtp（含"至少1格非零"的强制贡献）。
-    方程: q*REWARD_EV + (1-q)^NUM_SLOTS * REWARD_EV/NUM_SLOTS = rtp，二分求根。"""
-    hi = min(1.0, rtp / REWARD_EV)
-    lo = 0.0
-    for _ in range(60):
-        mid = (lo + hi) / 2
-        f = mid * REWARD_EV + (1.0 - mid) ** NUM_SLOTS * REWARD_EV / NUM_SLOTS
-        if f < rtp:
-            lo = mid
-        else:
-            hi = mid
-    return (lo + hi) / 2
+KNOB_K = {   # 每档"本局几个格子有奖"的格数分布 (格数, 概率)。
+    # 均值 = 档位×NUM_SLOTS/REWARD_EV, 使 RTP 精确=档位; 下限保证每局至少 2 格有奖(消灭"只有1格"烂盘)。
+    # ⚠️ 按 REWARD_EV=3.35 硬编码反推: 若改 _reward_value 概率或 REWARD_EV, 必须同步改本表, 否则 RTP 静默漂移。
+    0.80: [(2, 0.8507), (3, 0.1493)],
+    1.20: [(3, 0.7761), (4, 0.2239)],
+    2.00: [(5, 0.6269), (6, 0.3731)],
+    3.00: [(8, 0.9403), (9, 0.0597)],
+}
 
 
 def roll_multipliers(rtp=0.80):
-    """每格独立: 概率 q 非零, 非零取 _reward_value(E≈3.35)。
-    q 由 _q_for_rtp 反解(含"至少1格非零"的强制贡献)，保证 RTP 精确=档位。"""
-    q = _q_for_rtp(rtp)
+    """固定格数: 先按档位掷"本局 K 个格子有奖"(均值=档位×9/3.35), 再从 9 槽随机选 K 个填 _reward_value。
+    RTP 精确=档位; _reward_value 的 x10/x20 完整保留(不牺牲高级格子)。"""
+    table = KNOB_K.get(rtp, KNOB_K[0.80])
+    r = random.random()
+    k = table[-1][0]
+    acc = 0.0
+    for kk, pp in table:
+        acc += pp
+        if r < acc:
+            k = kk
+            break
     mult = [0] * NUM_SLOTS
-    for i in range(NUM_SLOTS):
-        if random.random() < q:
-            mult[i] = _reward_value()
-    if not any(mult):
-        mult[random.randrange(NUM_SLOTS)] = _reward_value()
+    for i in random.sample(range(NUM_SLOTS), k):
+        mult[i] = _reward_value()
     return mult
 
 # =============================================================================
@@ -1766,7 +1766,8 @@ class Sfx:
         t = clamp(sp / SFX_REF_SP.get(bit, 900.0), 0.0, 1.0)
         if bit == EV_PEG:
             idx = int(clamp(int(t * 5.99) + _ARNG.randint(-1, 1), 0, 5))
-            return self.play("peg%d" % idx, 0.30 + 0.70 * t, 0.038)
+            return self.play("peg%d" % idx, 0.30 + 0.70 * t, 0.08)
+            # throttle 0.038→0.08: 机关枪连珠(间隔<0.08s)只响第一声, 与 PC plinko.py 一致
         if bit == EV_CEIL:
             return self.play("rail", 0.45 + 0.55 * t, 0.22)
         if bit == EV_WALL:
@@ -2810,6 +2811,7 @@ class RootWidget(BoxLayout):
         self.plays = 0
         self.hits = 0
         self.rtp_target = 0.80
+        self._locked_boards = {self.rtp_target: self.multipliers}   # 初始盘面写入缓存(防启动首点免费重掷)
         self.sound_mode = "voice"     # voice(语音已开,默认) | sfx(音效已开) | off(音效已关)
         self.max_plays = 50            # 每轮次数上限
         self.round_plays = 0           # 本轮已玩次数
@@ -3266,7 +3268,11 @@ class RootWidget(BoxLayout):
             pct = int(t * 100)
             self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
         if self.state == "ready":
-            self.multipliers = roll_multipliers(self.rtp_target)
+            if t in self._locked_boards:
+                self.multipliers = self._locked_boards[t]   # 切回已锁档位: 恢复原盘, 不免费重掷
+            else:
+                self.multipliers = roll_multipliers(t)
+                self._locked_boards[t] = self.multipliers
             self.game_area._redraw()
         self._save_config()
 
@@ -3318,6 +3324,7 @@ class RootWidget(BoxLayout):
             return
         self.state = "charging"
         self.power = 0.0
+        self._set_controls_enabled(False)   # 充电窗口禁用按钮(防多点触控切档/切注使盘面失同步)
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
         self.status_lbl.text = "蓄力中"
@@ -3401,6 +3408,7 @@ class RootWidget(BoxLayout):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
         if reroll:
             self.multipliers = roll_multipliers(self.rtp_target)
+            self._locked_boards[self.rtp_target] = self.multipliers   # 只重掷当前档, 保留其余档锁盘(防每发筛4张盘)
             self.game_area._redraw()
         else:
             self.game_area.lamps_off()
@@ -3652,9 +3660,6 @@ class RootWidget(BoxLayout):
         self.round_plays = 0
         self._round_end_shown = False
         self._refresh_stats()
-        if self.state == "ready":
-            self.multipliers = roll_multipliers(self.rtp_target)
-            self.game_area._redraw()
         # 刷新弹窗内选中高亮
         if sel_btns:
             for v, b in sel_btns.items():
@@ -3926,10 +3931,10 @@ class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
         if platform == "android":
-            try:                                            # 运行时锁定竖屏: 部分设备系统级自动旋转
-                from jnius import autoclass                 # 会覆盖 manifest 的 portrait 声明, 强制锁定
+            try:                                            # 运行时锁定竖屏+180度重力感应: 部分设备系统级自动旋转
+                from jnius import autoclass                 # 会覆盖 manifest 的 sensorPortrait 声明, 强制锁定
                 activity = autoclass("org.kivy.android.PythonActivity").mActivity
-                activity.setRequestedOrientation(1)         # SCREEN_ORIENTATION_PORTRAIT
+                activity.setRequestedOrientation(7)         # SCREEN_ORIENTATION_SENSOR_PORTRAIT (正竖+倒竖, 不横屏)
             except Exception:
                 pass
         else:

@@ -18,7 +18,7 @@ requirements = python3,kivy==2.3.0,pyjnius
 # 锁定 python-for-android 到 2024 年的 tag,绕开新版默认下载 Python 3.14 alpha 的问题
 p4a.branch = v2024.01.21
 
-orientation = portrait
+orientation = sensorPortrait
 fullscreen = 0
 
 android.permissions = VIBRATE
