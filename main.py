@@ -3078,6 +3078,8 @@ class RootWidget(BoxLayout):
 
     def _on_title_touch_up(self, win, touch):
         self._bench_start = 0.0
+        if self.state == "charging":
+            self.launch()   # 发射保底: 松手时若仍在蓄力(如滑出按钮致 on_release 未触发), 补发
 
     def _show_bench_dim(self):
         self._bench_dim_shown = True
@@ -3326,7 +3328,7 @@ class RootWidget(BoxLayout):
             return
         self.state = "charging"
         self.power = 0.0
-        self._set_controls_enabled(False)   # 充电窗口禁用按钮(防多点触控切档/切注使盘面失同步)
+        self._charge_start = time.time()     # 蓄力起始时刻(3秒兜底自动发射)
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
         self.status_lbl.text = "蓄力中"
@@ -3784,6 +3786,9 @@ class RootWidget(BoxLayout):
             self._apply_sizes()
         if self.state == "charging":
             self.power = min(1.0, self.power + CHARGE_RATE * dt)  # 用真实dt, 适配30fps设备
+            if time.time() - self._charge_start > 3.0:
+                self.launch()   # 兜底: 蓄力超3秒自动发射(防 on_release 丢失卡死)
+                return
             self._play_charge_sound(self.power)
             weak = self.power < MISFIRE_POWER
             self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
