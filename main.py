@@ -3120,13 +3120,18 @@ class RootWidget(BoxLayout):
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
+        desc_lbl = Label(text='自动发 3 颗球测屏幕帧率，\n再让物理引擎全力跑测每秒步数，\n全程约 10 秒。',
+                         font_size='14sp', halign='center', valign='middle',
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(72))
+        desc_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        content.add_widget(desc_lbl)
         start_btn = Button(text='开始测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = Popup(title='', content=content, size_hint=(0.82, None), height=dp(210),
+        popup = Popup(title='', content=content, size_hint=(0.82, None), height=dp(300),
                       auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
