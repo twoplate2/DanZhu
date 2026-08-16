@@ -2609,16 +2609,18 @@ class GameArea(FloatLayout):
         if 0 <= i < len(self._slot_cols):
             self._pulse = (i, time.time() + 0.30)
 
-    def center_toast(self, text, hexcolor=COL_FIRE, size=26, life=2.0):
+    def center_toast(self, text, hexcolor=COL_FIRE, size=26, life=2.0, force=False):
         """画布中央两行警示飘字(如余额不足): 上浮+淡出。size 单位是 sp(见 big_result_text)。
         老 toast 未消失前不再弹新的(连点发射会瞬间叠一排); 创建即摆位到中央 ——
         默认 pos=(0,0) 是 GameArea 左下角(=重置按钮附近), 下一帧才被 tick_draw 摆位,
-        连点时会在那里闪出"第二个提示"。"""
-        if self._ball_e is None:
+        连点时会在那里闪出"第二个提示"。
+        force=True(方向诊断用): 绕过"球未发射"和"已有 toast"两个限制, 强制弹出。"""
+        if self._ball_e is None and not force:
             return
-        for e in self._effects:
-            if e["kind"] == "toast":
-                return                            # 已有 toast 存活, 不重复弹
+        if not force:
+            for e in self._effects:
+                if e["kind"] == "toast":
+                    return                            # 已有 toast 存活, 不重复弹
         lbl = Label(text=text, font_size=sp(size), bold=True, halign="center",
                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         lbl.texture_update()                      # 立刻出纹理, 尺寸跟文字(center 才摆得准)
@@ -4059,9 +4061,6 @@ class PlinkoApp(App):
             self._dbg_orient = None        # 方向调试: 上次方向
             self._dbg_forcing = False      # 防递归强制
             Window.bind(on_resize=self._on_orient_change)
-            tsdk = self._android_target_sdk()
-            rot = self._android_rotation()
-            self._dbg_show("守卫启动 targetSdk=%s rotation=%s" % (tsdk, rot))
             # 循环强制: 每 0.7s 权威检测一次, 横屏就反复拉回竖屏(对抗 Y700 ZUI 覆盖)
             self._orient_guard_ev = Clock.schedule_interval(self._orient_guard, 0.7)
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
@@ -4070,6 +4069,8 @@ class PlinkoApp(App):
         anchor.add_widget(self.rootw)
         self.rootw._fit_width()
         self.rootw._apply_sizes()
+        if platform == "android":
+            Clock.schedule_once(self._startup_dbg, 0.3)   # 延后到 rootw 建立后再报(center_toast 才能弹)
         return anchor
 
     # ---- 方向守卫: Android 12+ 大屏(targetSdk>=31)会忽略 screenOrientation,
@@ -4077,12 +4078,17 @@ class PlinkoApp(App):
     #      权威检测 + 反复 setRequestedOrientation(7=sensorPortrait) 拉回竖屏,
     #      并弹不同文案的原生 Toast 便于定位根因。 ----
     def _dbg_show(self, msg):
-        """诊断显示(三保险): 日志文件(兜底) + Kivy 顶层 Label(屏上黄字, 一定看到) + Android Toast。"""
+        """诊断显示(四保险): 日志文件 + 游戏弹字(center_toast, 已验证能弹) + 屏上黄字 + 系统弹窗。"""
         import time as _t
         try:
             log = os.path.join(self.user_data_dir, 'direction_debug.log')
             with open(log, 'a', encoding='utf-8') as f:
                 f.write('%.1f %s\n' % (_t.time(), msg))
+        except Exception:
+            pass
+        try:
+            if getattr(self, 'rootw', None) is not None:
+                self.rootw.game_area.center_toast(msg, hexcolor=COL_GREEN, size=20, life=2.5, force=True)
         except Exception:
             pass
         try:
@@ -4104,6 +4110,12 @@ class PlinkoApp(App):
             Toast.makeText(PythonActivity.mActivity, msg, Toast.LENGTH_LONG).show()
         except Exception:
             pass
+
+    def _startup_dbg(self, dt):
+        """启动诊断: 延后到 rootw 建立后再报(此时 center_toast 能弹)。"""
+        tsdk = self._android_target_sdk()
+        rot = self._android_rotation()
+        self._dbg_show("守卫启动 targetSdk=%s rotation=%s" % (tsdk, rot))
 
     def _android_target_sdk(self):
         """读 App 的 targetSdkVersion: 30=hook 降级生效(治本), 31=没生效。"""
