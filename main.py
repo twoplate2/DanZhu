@@ -4073,18 +4073,30 @@ class PlinkoApp(App):
     #      治本在 buildozer.spec 的 android.api=30(走兼容模式, sensorPortrait 生效),
     #      这里做运行时兜底: 定时读 Display.getRotation(), 横屏就 setRequestedOrientation(7)
     #      拉回竖屏(正竖↔倒竖 180 度)。 ----
+    def _dbg_update(self, text):
+        """左上角持久黄字显示诊断(不依赖 center_toast, 球未发射也能显示)。"""
+        try:
+            if getattr(self, '_dbg_lbl', None) is None:
+                from kivy.uix.label import Label as _KL
+                self._dbg_lbl = _KL(text='', font_size='18sp', color=(1, 1, 0, 1),
+                                    size_hint=(None, None), pos=(8, 8), halign='left', valign='top')
+                Window.add_widget(self._dbg_lbl)
+            self._dbg_lbl.text = text
+            self._dbg_lbl.texture_update()
+            self._dbg_lbl.size = (self._dbg_lbl.texture_size[0], self._dbg_lbl.texture_size[1])
+        except Exception:
+            pass
+
     def _startup_dbg(self, dt):
-        """启动报一次 targetSdk(确认 android.api=30 是否生效)。"""
+        """启动报 targetSdk(确认 android.api=30 是否生效)。"""
         try:
             from jnius import autoclass
             Activity = autoclass("org.kivy.android.PythonActivity")
             tsdk = Activity.mActivity.getApplicationInfo().targetSdkVersion
         except Exception:
             tsdk = "?"
-        try:
-            self.rootw.game_area.center_toast("SDK=%s" % tsdk, hexcolor=COL_GREEN, size=22, life=5.0)
-        except Exception:
-            pass
+        rot = self._android_rotation()
+        self._dbg_update("SDK=%s R=%s" % (tsdk, rot))
 
     def _android_rotation(self):
         """系统实际显示旋转: 0竖 1横90 2倒竖 3横270; 失败返回 None。"""
@@ -4105,8 +4117,11 @@ class PlinkoApp(App):
             pass
 
     def _orient_guard(self, dt):
-        """定时检测: 横屏(1/3)就强制竖屏(防抖避免高频重复调)。"""
+        """定时检测: 横屏(1/3)就强制竖屏(防抖避免高频重复调), 并更新左上角方向显示。"""
         rot = self._android_rotation()
+        if rot is None:
+            return
+        self._dbg_update("R=%s 宽%s高%s" % (rot, Window.width, Window.height))
         if rot in (1, 3):                       # 横屏
             if not self._dbg_forcing:
                 self._dbg_forcing = True
