@@ -4055,6 +4055,10 @@ class PlinkoApp(App):
         if platform != "android":
             Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
+        if platform == "android":
+            self._dbg_orient = None        # 方向调试: 上次方向
+            self._dbg_forcing = False      # 防递归强制
+            Window.bind(on_resize=self._on_orient_change)
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
         anchor = AnchorLayout(anchor_x="center", anchor_y="center")
         self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
@@ -4062,6 +4066,35 @@ class PlinkoApp(App):
         self.rootw._fit_width()
         self.rootw._apply_sizes()
         return anchor
+
+    def _force_portrait(self, reason):
+        """运行时强制固定竖屏(荒谬但直接的兜底): Y700 大屏横过来时强制锁回正竖。"""
+        try:
+            from jnius import autoclass
+            activity = autoclass("org.kivy.android.PythonActivity").mActivity
+            activity.setRequestedOrientation(1)   # SCREEN_ORIENTATION_PORTRAIT 固定正竖
+        except Exception:
+            pass
+
+    def _on_orient_change(self, win, w, h):
+        """方向变化调试: 检测到横屏就弹提示 + 强制转回竖屏。"""
+        orient = "横屏" if w > h else "竖屏"
+        if orient == self._dbg_orient:
+            return
+        self._dbg_orient = orient
+        if self._dbg_forcing or orient == "竖屏":
+            return
+        self._dbg_forcing = True
+        try:
+            self._force_portrait("横屏检测")
+            try:
+                self.rootw.game_area.center_toast(
+                    "检测到横屏 %dx%d，已强制转回竖屏" % (w, h),
+                    hexcolor=COL_GREEN, size=22, life=2.0)
+            except Exception:
+                pass
+        finally:
+            Clock.schedule_once(lambda dt: setattr(self, "_dbg_forcing", False), 0.6)
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
@@ -4072,6 +4105,9 @@ class PlinkoApp(App):
         return True
 
     def on_resume(self):
+        if platform == "android":
+            self._dbg_orient = None
+            self._force_portrait("on_resume")
         try:
             self.rootw.sfx.resume_out()
         except Exception:
