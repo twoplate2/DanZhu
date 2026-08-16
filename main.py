@@ -3120,12 +3120,12 @@ class RootWidget(BoxLayout):
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯 Python 执行，反映设备跑弹珠的实际流畅度。',
+        desc_lbl = Label(text='全程约 10 秒。\n\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯 Python 执行，反映设备跑弹珠的实际流畅度。',
                          font_size='15sp', halign='left', valign='middle',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(150))
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         desc_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(desc_lbl)
-        start_btn = Button(text='开始测试（约 10 秒）', font_size='17sp', bold=True,
+        start_btn = Button(text='开始测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
