@@ -41,28 +41,41 @@ def _find_manifest(self):
 
 
 def _lower_target_sdk(self):
-    """targetSdk 降到 30: targetSdk<31 不触发大屏强制多窗口, screenOrientation 生效。"""
+    """targetSdk 降到 30: targetSdk<31 不触发大屏强制多窗口, screenOrientation 生效。
+    同时改 manifest 的 uses-sdk 和所有 gradle 构建文件(递归), 覆盖多种写法。"""
     changed = 0
+    # 1) manifest: android:targetSdkVersion="31"
     mf = _find_manifest(self)
     if mf:
         with open(mf, encoding='utf-8') as f:
             s = f.read()
-        s2 = re.sub(r'android:targetSdkVersion="\d+"',
-                    'android:targetSdkVersion="30"', s)
-        if s2 != s:
+        m = re.search(r'android:targetSdkVersion="(\d+)"', s)
+        if m and m.group(1) != '30':
+            s = s.replace(m.group(0), 'android:targetSdkVersion="30"')
             with open(mf, 'w', encoding='utf-8') as f:
-                f.write(s2)
+                f.write(s)
             changed += 1
-            info('[hook] targetSdk 降级 manifest: %s' % mf)
-    for g in glob.glob('build.gradle'):
+            info('[hook] manifest targetSdk: %s -> 30 (%s)' % (m.group(1), mf))
+        else:
+            info('[hook] manifest targetSdk 未改(现值=%s)' % (m.group(1) if m else '无'))
+    # 2) gradle: targetSdkVersion 31 / targetSdkVersion = 31 / targetSdk 31 ...(递归)
+    grads = glob.glob('**/*.gradle', recursive=True) + glob.glob('build.gradle')
+    for g in grads:
+        if not os.path.exists(g):
+            continue
         with open(g, encoding='utf-8') as f:
             s = f.read()
-        s2 = re.sub(r'targetSdkVersion\s+\d+', 'targetSdkVersion 30', s)
-        if s2 != s:
+        m = re.search(r'targetSdk(?:Version)?\s*[=:]?\s*(\d+)', s)
+        if m and m.group(1) != '30':
+            s = re.sub(r'targetSdk(?:Version)?\s*[=:]?\s*\d+',
+                       'targetSdkVersion 30', s)
             with open(g, 'w', encoding='utf-8') as f:
-                f.write(s2)
+                f.write(s)
             changed += 1
-            info('[hook] targetSdk 降级 gradle: %s' % g)
+            info('[hook] gradle targetSdk: %s -> 30 (%s)' % (m.group(1), g))
+        else:
+            info('[hook] gradle targetSdk 未改(现值=%s) (%s)'
+                 % (m.group(1) if m else '无', g))
     info('[hook] targetSdk 降级: changed=%d' % changed)
     return changed
 
