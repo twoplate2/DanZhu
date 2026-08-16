@@ -3278,7 +3278,7 @@ class RootWidget(BoxLayout):
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
             for r in reversed(self.bench_history[-100:]):
-                row = Label(text='%s    ⚡ %d 步/秒' % (r.get('time', '--'), r.get('phys_fps', 0)),
+                row = Label(text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
                             font_size='15sp', halign='left', valign='middle',
                             color=hex_rgb(COL_TEXT) + (1,),
                             size_hint_y=None, height=dp(34))
