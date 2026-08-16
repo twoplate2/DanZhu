@@ -3121,8 +3121,8 @@ class RootWidget(BoxLayout):
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
         desc_lbl = Label(text='测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯 Python 执行，反映设备跑弹珠的实际流畅度。\n全程约 10 秒。',
-                         font_size='13sp', halign='left', valign='middle',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(150))
+                         font_size='15sp', halign='left', valign='middle',
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(175))
         desc_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(desc_lbl)
         start_btn = Button(text='开始测试', font_size='17sp', bold=True,
