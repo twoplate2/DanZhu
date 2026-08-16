@@ -271,7 +271,7 @@
     <summary>附录C：RTP 数学与验证</summary>
     <div class="appendix-body">
       <div class="grid-2">
-        <div class="card"><h3>RTP 精确 = 档位</h3><p>每格独立 q = rtp/REWARD_EV（非零），REWARD_EV=3.35。_q_for_rtp 二分反解：q×REWARD_EV + (1−q)^9×REWARD_EV/9 = rtp。roll_multipliers 全 0 则强制 1 格非零 → RTP 精确=档位。均匀落格 E[赔付]=档位（无 min/max 保底、无 choose_target 修正）。</p></div>
+        <div class="card"><h3>RTP 精确 = 档位</h3><p>固定格数 KNOB_K 表：先掷"本局几个格子有奖"(均值=档位×9/3.35)，再 random.sample 对称选位置填 _reward_value(x2~x20, 期望3.35)。E[K]×3.35/9=档位 → RTP 精确=档位。每局至少2格有奖(消灭"只有1格"烂盘)。均匀落格 E[赔付]=档位（无 min/max 保底、无 choose_target 修正）。</p></div>
         <div class="card"><h3>自测门禁（n=40000）</h3><p>均匀落格 E[赔付]=档位±0.05、卡死=0、撞钉音>90%、哑火零泄漏、弧面接触率≈100%、冲顶x跨度≥20px、首钉75~110帧、折角≤4°/相邻帧差≤1°、回弹感硬门禁(≥10px占比≥25%/≥20px≥5%/max≤45px)、下落节奏(减速比0.45~0.80+滞留≤30帧+行穿行≥0.15s)、横向稳定性(vx从&lt;80突增&gt;280次数=0)、悬念率哨兵。</p></div>
       </div>
       <div class="data-block"><span class="hl">均匀度系数（L1 平均差）:</span>
@@ -281,7 +281,7 @@
 <span class="hl">RTP 专项验证（实际模拟，scratch/verify_rtp.py）:</span>
   随机力度四档: 0.810 / 1.220 / 1.992 / 3.022（全部 ±0.02 内）
   固定 10 力度档: 偏差全 <±0.05（12000 发/格，大样本后是统计噪声）
-  结论: _q_for_rtp 反解 q 让「每格倍率期望 = 档位」，9 格期望相等 →
+  结论: 固定格数让「每格倍率期望 = 档位」，9 格期望严格相等 →
         返还率与落袋是否均匀完全解耦，无论固定哪个力度、球落哪，长期返还率都 = 档位。</div>
     </div>
   </details>

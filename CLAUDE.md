@@ -38,12 +38,13 @@ python -m py_compile main.py
    - **天花板 2 号弹射器**: 撞顶后按力度档采样角度旋转 + 力度缩放, 撞顶保底 vy≥180 防"吸住", 事件位记 EV_CEIL(已修死事件位)
    - **弧面** = 根部R8弧 + 35°接触段15px + R400微弯弧30px(切线连续无转折), 碰撞半径=视觉半径(ARC_VISUAL=1.4, 球与弧面相切)
    - **彻底被动**: 无引导/无修订/无预定槽, 球完全被动下落, 结算==物理落格恒成立(零穿帮)
+   - **盘面固定格数**: `roll_multipliers` 按 `KNOB_K` 表掷"本局几个格子有奖"(80%档 2格85.1%/3格14.9%、120%档 3格/4格、200%档 5格/6格、300%档 8格/9格), 再 random.sample 选位置填 `_reward_value`(x2 55%/x3 25%/x5 13%/x10 5.5%/x20 1.5%, EV=3.35)。RTP 精确=档位, 消灭"只有1格有奖"烂盘, x10/x20 完整保留
    - **碰钉回弹**: PEG_BOUNCE_VY_MAX=280(弹高≤39px<行距55) + E_SLOW=0.70/E_FAST=0.40 + PEG_FRICTION=0.95/vy0.97 + PEG_SPRINT=0.7软化(末段保留横速, 落袋干净靠 ALIGN 收尾)
    - **弧面抖动**: 每发 ±6px 垂直平移(arc_dy), 档内首钉散布 ±10~15px
    - **卡死兜底看位移**: 球位置不动(≤1px/帧)超 MAX_FALL_SEC(4s)才强制 settle
    - **遗传算法优化器**: `scratch/optimize_knobs.py`, 三阶段 GA(每档独立→联合480维→降维arc-only120维+种子初始化), 评分=落袋总体均匀×0.7+首钉总体均匀×0.3
    - **benchmark_trajectories(duration)**: 纯 CPU 性能测试(返回 3 元组 flights/frames/fps_list)
-3. **音效**: 36 合成 PCM + 50 edge-tts 语音(voice/*.wav)。`Sfx.play()`: gain 10档缓存、按名节流
+3. **音效**: 36 合成 PCM + 51 edge-tts 语音(voice/*.wav)。`Sfx.play()`: gain 10档缓存、按名节流
    - **全局语音互斥**: voice_rtp_/voice_bet_/voice_mode_ 3.0s 间隔。click throttle 0.08s。flight 跳过 bake/prime
    - **弧面接触音**: EV_ARC 事件播 rail 0.18(轻金属"擦"声, throttle 0.05)——转向瞬间的听觉反馈
 4. **后端**: `_SoundPoolOut`(Android) > `_WaveOut`(winmm) > `_KivySoundOut` > 静音
@@ -65,7 +66,7 @@ python -m py_compile main.py
 voice_lose 有意不接入(合成 lose 音更中性)。
 语音互斥仅对 UI 交互生效, 结果/轮次序列不受影响。
 
-> **RTP 语音缺口（已知，未修）**：voice/ 下 RTP 语音只有 `voice_rtp_80/100/120` 三条，其中「100」是孤儿（RTP 已无 100 档）、「200/300」两档无对应语音，切换 200%/300% 时会静默无语音。改 RTP 语音时记得补 200/300 两条。
+> **RTP 语音已补齐（2026-08-16）**：`voice_rtp_80/120/200/300` 四条齐全，孤儿 `voice_rtp_100` 已删。切档四档都有语音。
 
 ## 验证标准
 

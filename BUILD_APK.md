@@ -228,14 +228,16 @@ Kivy canvas 没有 draw_text。`CoreLabel(text=..., font_size=...)` → `refresh
 `buildozer.spec` 的 `orientation = portrait` 只生成 manifest 声明。部分设备/ROM 的
 系统级自动旋转(重力感应)会覆盖 manifest, 导致横屏时 `_fit_width()` 把内容列算成细条。
 
-**解法: Android 运行时强制锁定**:
+**解法: Android 运行时强制锁定(竖屏+180度重力感应)**:
 ```python
 if platform == "android":
     from jnius import autoclass
     activity = autoclass("org.kivy.android.PythonActivity").mActivity
-    activity.setRequestedOrientation(1)  # SCREEN_ORIENTATION_PORTRAIT
+    activity.setRequestedOrientation(7)  # SCREEN_ORIENTATION_SENSOR_PORTRAIT (正竖+倒竖, 不横屏)
 ```
 运行时 API 优先级高于 manifest, 能覆盖系统级自动旋转。
+
+⚠️ **buildozer 1.5.0 的 `orientation` 只认 `landscape / portrait / portrait-reverse / landscape-reverse` 四个值**, `sensorPortrait` 不是合法值(写它会直接报 "is not a valid value for orientation", 构建第一步就挂)。所以「竖屏+180度」只能靠运行时 `setRequestedOrientation(7)`, spec 里 `orientation = portrait` 保持合法值即可。
 
 **再加一道布局容错**: `_fit_width()` 检测 `Window.width > Window.height * 1.2` 时
 改用宽度作为限制维度, 防止万一锁定失效时布局崩成细条。
