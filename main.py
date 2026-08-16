@@ -2811,7 +2811,8 @@ class RootWidget(BoxLayout):
         self.plays = 0
         self.hits = 0
         self.rtp_target = 0.80
-        self._locked_boards = {self.rtp_target: self.multipliers}   # 初始盘面写入缓存(防启动首点免费重掷)
+        self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.00)}   # 4档盘面一起生成, 切换不刷新
+        self.multipliers = self._boards[self.rtp_target]
         self.sound_mode = "voice"     # voice(语音已开,默认) | sfx(音效已开) | off(音效已关)
         self.max_plays = 50            # 每轮次数上限
         self.round_plays = 0           # 本轮已玩次数
@@ -3268,11 +3269,7 @@ class RootWidget(BoxLayout):
             pct = int(t * 100)
             self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
         if self.state == "ready":
-            if t in self._locked_boards:
-                self.multipliers = self._locked_boards[t]   # 切回已锁档位: 恢复原盘, 不免费重掷
-            else:
-                self.multipliers = roll_multipliers(t)
-                self._locked_boards[t] = self.multipliers
+            self.multipliers = self._boards[t]   # 切换: 直接取该档盘面, 不刷新(只有发射才刷新)
             self.game_area._redraw()
         self._save_config()
 
@@ -3407,8 +3404,8 @@ class RootWidget(BoxLayout):
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
         if reroll:
-            self.multipliers = roll_multipliers(self.rtp_target)
-            self._locked_boards[self.rtp_target] = self.multipliers   # 只重掷当前档, 保留其余档锁盘(防每发筛4张盘)
+            self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.00)}   # 重新发射: 4档盘面一起刷新
+            self.multipliers = self._boards[self.rtp_target]
             self.game_area._redraw()
         else:
             self.game_area.lamps_off()
