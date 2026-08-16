@@ -2617,7 +2617,17 @@ class GameArea(FloatLayout):
         force=True(方向诊断用): 绕过"球未发射"和"已有 toast"两个限制, 强制弹出。"""
         if self._ball_e is None and not force:
             return
-        if not force:
+        if force:
+            # 诊断模式: 先移除旧 toast, 实现覆盖而非叠加(叠加会乱码/糊成一团)
+            for e in self._effects:
+                if e["kind"] == "toast":
+                    for w in e["ws"]:
+                        try:
+                            self.remove_widget(w)
+                        except Exception:
+                            pass
+            self._effects = [e for e in self._effects if e["kind"] != "toast"]
+        else:
             for e in self._effects:
                 if e["kind"] == "toast":
                     return                            # 已有 toast 存活, 不重复弹
@@ -4115,7 +4125,7 @@ class PlinkoApp(App):
         """启动诊断: 延后到 rootw 建立后再报(此时 center_toast 能弹)。"""
         tsdk = self._android_target_sdk()
         rot = self._android_rotation()
-        self._dbg_show("守卫启动 targetSdk=%s rotation=%s" % (tsdk, rot))
+        self._dbg_show("SDK=%s" % tsdk)
 
     def _android_target_sdk(self):
         """读 App 的 targetSdkVersion: 30=hook 降级生效(治本), 31=没生效。"""
@@ -4141,9 +4151,9 @@ class PlinkoApp(App):
             from jnius import autoclass
             activity = autoclass("org.kivy.android.PythonActivity").mActivity
             activity.setRequestedOrientation(7)   # SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            self._dbg_show("强制竖屏: %s" % reason)
+            self._dbg_show("强制竖屏")
         except Exception as e:
-            self._dbg_show("强制失败: %s (%s)" % (reason, e))
+            self._dbg_show("强制失败")
 
     def _orient_guard(self, dt):
         """定时权威检测: 横屏(1/3)就强制竖屏, 0.5s 后复查系统是否照办。"""
@@ -4154,7 +4164,7 @@ class PlinkoApp(App):
             if self._dbg_forcing:
                 return
             self._dbg_forcing = True
-            self._dbg_show("检测横屏 rotation=%d" % rot)
+            self._dbg_show("检测横屏")
             self._force_portrait("定时兜底")
             Clock.schedule_once(self._orient_recheck, 0.5)
             Clock.schedule_once(lambda dt: setattr(self, "_dbg_forcing", False), 0.9)
@@ -4165,14 +4175,14 @@ class PlinkoApp(App):
         """强制后复查: 系统听没听 setRequestedOrientation。"""
         rot = self._android_rotation()
         if rot in (1, 3):
-            self._dbg_show("复查仍横 rotation=%d 系统拒绝" % rot)
+            self._dbg_show("系统仍横")
         else:
-            self._dbg_show("复查转竖 rotation=%d 已生效" % rot)
+            self._dbg_show("已转竖")
 
     def _on_orient_change(self, win, w, h):
         """Kivy 窗口尺寸变化(辅助诊断): 记录 w/h, 主检测交给 _orient_guard。"""
         orient = "横屏" if w > h else "竖屏"
-        self._dbg_show("窗口 %dx%d %s" % (w, h, orient))
+        self._dbg_show("窗口%s" % orient)
         self._dbg_orient = orient
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文

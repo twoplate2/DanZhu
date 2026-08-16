@@ -28,7 +28,9 @@ fullscreen = 0
 
 android.permissions = VIBRATE
 
-android.api = 31
+# targetSdk=30(治本): Android 12+ 大屏(sw>=600dp)对 targetSdk>=31 的 app 强制多窗口并
+# 忽略 screenOrientation, 降到 30 走兼容模式, sensorPortrait 才生效。androidx 只需 >=28, 30 能编译。
+android.api = 30
 android.minapi = 21
 android.ndk = 25b
 
