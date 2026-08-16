@@ -105,11 +105,11 @@
 <!-- ============ 界面交互 ============ -->
 <section>
 <h2><span class="n">四</span> 界面交互 — 彻底被动 + 多重保底</h2>
-<div class="sum">UI 从"固定竖屏三档 + 预定落点引导"换成"180 度倒竖 + 四档 + 彻底被动发射 + 多重保底（3s 自动发射/结算延迟到回弹/墙钟卡死兜底）"，性能测试升级为真实 FPS 采样 + 物理吞吐两阶段。</div>
+<div class="sum">UI 从"固定竖屏三档 + 预定落点引导"换成"180 度倒竖 + 四档 + 彻底被动发射 + 多重保底（松手补发+3s 自动发射/结算延迟到回弹/墙钟卡死兜底）"，性能测试升级为真实 FPS 采样 + 物理吞吐两阶段 + 历史记录。</div>
 <table>
 <tr><th>改动项</th><th>经典版</th><th>当前版</th><th>为什么改</th></tr>
 <tr><td class="name">发射预定落点</td><td class="old">launch 里 target_slot=choose_target + target_x 发射前预定</td><td class="new">删 choose_target/target_slot/target_x，加 arc_dy 弧面抖动</td><td class="why">彻底被动无引导无预定</td></tr>
-<tr><td class="name">蓄力 3s 自动发射</td><td class="old">charging 分支无超时处理</td><td class="new">蓄力超 3s 自动 launch（防 on_release 丢失卡死）</td><td class="why">防蓄力卡死</td></tr>
+<tr><td class="name">发射多重保底</td><td class="old">charging 分支无超时处理</td><td class="new">松手补发（Window on_touch_up charging 补发）+ 蓄力超 3s 自动 launch</td><td class="why">防 on_release 丢失（滑出按钮等）导致蓄力卡死</td></tr>
 <tr><td class="name">结算延迟到回弹</td><td class="old">landed 立即 settle(i=target_slot)</td><td class="new">先回弹落定再 settle(_settle_slot)</td><td class="why">先回弹强调槽位再弹结算，结算槽=物理落格</td></tr>
 <tr><td class="name">卡死兜底</td><td class="old">_stall_frames 帧计数（>240 帧强制结算到预定槽）</td><td class="new">_last_motion 墙钟（位置不动才踢球/强制物理槽）</td><td class="why">位置不说谎 + 无预定槽可用</td></tr>
 <tr><td class="name">回弹 vy 上限</td><td class="old">无上限</td><td class="new">LAND_BOUNCE_MAX_VY=220</td><td class="why">删 SLOT_BRAKE 后防回弹越隔板</td></tr>
@@ -123,7 +123,7 @@
 <div class="sum">屏幕方向从固定竖屏改为正竖+倒竖（180 度重力感应），不横屏。</div>
 <table>
 <tr><th>改动项</th><th>经典版</th><th>当前版</th><th>为什么改</th></tr>
-<tr><td class="name">竖屏方向</td><td class="old">setRequestedOrientation(1) 固定竖屏</td><td class="new">setRequestedOrientation(7) 正竖+倒竖（180度），不横屏</td><td class="why">支持 180 度重力感应倒屏</td></tr>
+<tr><td class="name">竖屏方向</td><td class="old">setRequestedOrientation(1) 固定竖屏</td><td class="new">buildozer orientation=portrait,portrait-reverse + android.manifest.orientation + KIVY_ORIENTATION（正竖↔倒竖 180 度，绝不横屏）</td><td class="why">支持 180 度重力感应倒屏（运行时 setRequestedOrientation 会被 SDL 方向白名单覆盖，改构建期配置）</td></tr>
 </table>
 </section>
 
