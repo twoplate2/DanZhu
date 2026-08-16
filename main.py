@@ -3686,8 +3686,8 @@ class RootWidget(BoxLayout):
         amp = amp or {}
         for bit in (EV_PEG, EV_CEIL, EV_WALL, EV_DIV):
             if ev & bit:
-                if bit == EV_WALL and b.y < SFX_TOP_Y:
-                    continue          # 顶墙撞击与 apex 转向同帧发生, 交给 top 音, 不再叠闷咚
+                if bit in (EV_WALL, EV_CEIL) and b.y < SFX_TOP_Y:
+                    continue          # 顶墙/天花板撞击与 apex 转向同帧, 交给 top 音, 不叠
                 self.sfx.impact(bit, amp.get(bit, 0.0))
         if ev & EV_ARC:
             self.sfx.play("rail", 0.18, throttle=0.05)   # 弧面接触: 轻金属"擦"声,
