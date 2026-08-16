@@ -17,6 +17,8 @@ requirements = python3,kivy==2.3.0,pyjnius
 
 # 锁定 python-for-android 到 2024 年的 tag,绕开新版默认下载 Python 3.14 alpha 的问题
 p4a.branch = v2024.01.21
+# 构建后 hook: 往 manifest 主 activity 注入 resizeableActivity=false + 方向覆盖退出(解决安卓12+大屏横屏)
+p4a.hook = p4a/hook.py
 
 # 竖屏+180度: 两个值 => SDL hint "Portrait PortraitUpsideDown" => sensorPortrait(7), 正竖↔倒竖不横屏
 orientation = portrait, portrait-reverse
