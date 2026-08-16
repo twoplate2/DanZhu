@@ -3291,8 +3291,13 @@ class RootWidget(BoxLayout):
                 inner.add_widget(row)
             scroll.add_widget(inner)
             content.add_widget(scroll)
+        close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                           background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                           size_hint_y=None, height=dp(46))
+        content.add_widget(close_btn)
         popup = Popup(title='', content=content, size_hint=(0.86, 0.7),
                       auto_dismiss=True, separator_height=0)
+        close_btn.bind(on_release=popup.dismiss)
         popup.open()
 
     SOUND_MODES = ("voice", "sfx", "off")   # 顶栏音效钮三态循环顺序
