@@ -81,17 +81,17 @@ def _lower_target_sdk(self):
 
 
 def _inject_manifest(self):
-    """注入竖屏锁定属性: screenOrientation=sensorPortrait + resizeableActivity=false + 退出方向覆盖。
-    p4a 对多个 --orientation(portrait,portrait-reverse) 默认可能把 screenOrientation 写成
-    unspecified(不锁定方向), 这里兜底强制改回 sensorPortrait。"""
+    """强制 screenOrientation=sensorPortrait(正竖↔倒竖 180 度)。
+    p4a 对多个 --orientation(portrait,portrait-reverse) 默认可能写 unspecified, 这里兜底强制改回。
+    targetSdk=30 已自动走兼容模式, 不再注入 resizeableActivity=false 和方向覆盖属性
+    (它们会干扰 letterbox 窗口尺寸, 导致横屏时窗口变成接近正方形、画面拉伸变形)。"""
     manifest = _find_manifest(self)
     if not manifest:
-        info('[hook] AndroidManifest.xml 未找到, 跳过注入')
-        return 0, 0
+        info('[hook] AndroidManifest.xml 未找到, 跳过')
+        return 0
     with open(manifest, 'r', encoding='utf-8') as f:
         xml = f.read()
 
-    # 1) 强制 screenOrientation = sensorPortrait(正竖↔倒竖 180 度)
     n0 = 0
     m_orient = re.search(r'android:screenOrientation="[^"]*"', xml)
     if m_orient:
@@ -103,31 +103,11 @@ def _inject_manifest(self):
         if m_act:
             xml = xml[:m_act.end() - 1] + ' android:screenOrientation="sensorPortrait">' + xml[m_act.end():]
             n0 = 1
-    info('[hook] screenOrientation 强制 sensorPortrait: changed=%d' % n0)
-
-    # 2) resizeableActivity=false(对抗大屏强制多窗口)
-    n1 = 0
-    if 'android:resizeableActivity' not in xml:
-        xml = xml.replace('android:screenOrientation=',
-                          'android:resizeableActivity="false" android:screenOrientation=',
-                          1)
-        n1 = 1
-
-    # 3) 退出制造商方向覆盖
-    n2 = 0
-    if 'PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE' not in xml:
-        m_act = re.search(r'<activity[^>]*org\.kivy\.android\.PythonActivity[^>]*?>', xml)
-        if m_act:
-            prop = ('\n            <property '
-                    'android:name="android.window.PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE" '
-                    'android:value="false"/>')
-            xml = xml[:m_act.end()] + prop + xml[m_act.end():]
-            n2 = 1
 
     with open(manifest, 'w', encoding='utf-8') as f:
         f.write(xml)
-    info('[hook] 注入完成: screenOrientation=%d, resizeableActivity=%d, property=%d' % (n0, n1, n2))
-    return n0, n1, n2
+    info('[hook] screenOrientation 强制 sensorPortrait: changed=%d' % n0)
+    return n0
 
 
 def before_apk_build(self):
