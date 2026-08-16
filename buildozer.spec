@@ -20,8 +20,8 @@ p4a.branch = v2024.01.21
 
 # 竖屏+180度: 两个值 => SDL hint "Portrait PortraitUpsideDown" => sensorPortrait(7), 正竖↔倒竖不横屏
 orientation = portrait, portrait-reverse
-# 显式 manifest 方向: 多值时 p4a 会把 manifest 合成成 unspecified(启动会横屏闪), 显式锁 portrait 兜底
-android.manifest.orientation = portrait
+# 显式 manifest 方向: 直接写 sensorPortrait(正竖↔倒竖180度, Android原生值)。之前写 portrait 固定竖屏是残留错误
+android.manifest.orientation = sensorPortrait
 fullscreen = 0
 
 android.permissions = VIBRATE

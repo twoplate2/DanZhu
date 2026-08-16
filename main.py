@@ -7,7 +7,7 @@ import sys
 import os
 
 os.environ.setdefault("KIVY_NO_ARGS", "1")   # 自定义参数(--selftest/--smoke)自己解析, 别让 Kivy 抢
-# 竖屏+180度重力感应(正竖↔倒竖, 绝不横屏): Kivy 经 SDL_HINT_ORIENTATIONS 映射到 setRequestedOrientation(7)
+# 竖屏+180度重力感应: 冗余保险(p4a 已把同值写进 p4a_env_vars.txt), 关键修复在 buildozer.spec 不在本文件
 os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown"
 
 import math
