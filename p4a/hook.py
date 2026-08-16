@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""p4a hook: 解决 Android 12+ 大屏(平板/折叠屏, sw>=600dp)强制多窗口导致
-screenOrientation 被忽略、以及联想 Y700 5代(ZUI)主动覆盖方向的问题。
+"""p4a hook: Android 12+ 大屏(平板/折叠屏, sw>=600dp)方向适配。
 
-根因: targetSdk>=31 的 app 在大屏上被系统强制多窗口, android:screenOrientation
-完全失效。修复两招:
-  1) targetSdk 降到 30  → 走兼容模式, sensorPortrait 正常生效(治本)
-  2) 注入 resizeableActivity=false + PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE=false
-     → 退出制造商方向覆盖(治标, 对抗 ZUI)
+策略(2026-08-16 定稿): 不锁方向, 声明 fullSensor 四方向随重力——
+  1) targetSdk 降到 30 → 不触发 12L+ 大屏"强制多窗口/忽略 screenOrientation",
+     fullSensor 能真正生效(治本)
+  2) manifest 强制 screenOrientation=fullSensor → 横拿时系统给全屏横窗口,
+     app 内切"左盘面+右控制列"分栏布局(盘面竖直、正对玩家、铺满全屏),
+     彻底绕开 letterbox 兼容小盒子(锁竖屏时被 ZUI 塞进近正方形半屏盒, 无解)
 
 p4a hook 函数只接收一个参数 self(ToolchainCL 实例); before_apk_build 在
 current_directory(dist.dist_dir) 块内执行, cwd 即 dist 目录。
@@ -81,10 +81,10 @@ def _lower_target_sdk(self):
 
 
 def _inject_manifest(self):
-    """强制 screenOrientation=sensorPortrait(正竖↔倒竖 180 度)。
-    p4a 对多个 --orientation(portrait,portrait-reverse) 默认可能写 unspecified, 这里兜底强制改回。
-    targetSdk=30 已自动走兼容模式, 不再注入 resizeableActivity=false 和方向覆盖属性
-    (它们会干扰 letterbox 窗口尺寸, 导致横屏时窗口变成接近正方形、画面拉伸变形)。"""
+    """强制 screenOrientation=fullSensor(正竖/倒竖180°/横屏 四方向随重力)。
+    p4a 对多个 --orientation 可能写 unspecified 或单值, 这里兜底强制改回。
+    横拿时系统给全屏横窗口, app 内分栏布局; 不再锁竖屏(锁竖屏会被 12L+ 大屏
+    letterbox 政策/ZUI 厂商策略关进近正方形半屏兼容盒, app 改不了盒子宽高)。"""
     manifest = _find_manifest(self)
     if not manifest:
         info('[hook] AndroidManifest.xml 未找到, 跳过')
@@ -95,18 +95,18 @@ def _inject_manifest(self):
     n0 = 0
     m_orient = re.search(r'android:screenOrientation="[^"]*"', xml)
     if m_orient:
-        if m_orient.group(0) != 'android:screenOrientation="sensorPortrait"':
-            xml = xml.replace(m_orient.group(0), 'android:screenOrientation="sensorPortrait"')
+        if m_orient.group(0) != 'android:screenOrientation="fullSensor"':
+            xml = xml.replace(m_orient.group(0), 'android:screenOrientation="fullSensor"')
             n0 = 1
     else:
         m_act = re.search(r'<activity[^>]*org\.kivy\.android\.PythonActivity[^>]*?>', xml)
         if m_act:
-            xml = xml[:m_act.end() - 1] + ' android:screenOrientation="sensorPortrait">' + xml[m_act.end():]
+            xml = xml[:m_act.end() - 1] + ' android:screenOrientation="fullSensor">' + xml[m_act.end():]
             n0 = 1
 
     with open(manifest, 'w', encoding='utf-8') as f:
         f.write(xml)
-    info('[hook] screenOrientation 强制 sensorPortrait: changed=%d' % n0)
+    info('[hook] screenOrientation 强制 fullSensor: changed=%d' % n0)
     return n0
 
 

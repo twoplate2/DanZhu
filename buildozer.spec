@@ -17,19 +17,20 @@ requirements = python3,kivy==2.3.0,pyjnius
 
 # 锁定 python-for-android 到 2024 年的 tag,绕开新版默认下载 Python 3.14 alpha 的问题
 p4a.branch = v2024.01.21
-# 构建后 hook: 往 manifest 主 activity 注入 resizeableActivity=false + 方向覆盖退出(解决安卓12+大屏横屏)
+# 构建后 hook: 往 manifest 主 activity 强制 screenOrientation=fullSensor + 降 targetSdk 30
 p4a.hook = p4a/hook.py
 
-# 竖屏+180度: 两个值 => SDL hint "Portrait PortraitUpsideDown" => sensorPortrait(7), 正竖↔倒竖不横屏
-orientation = portrait, portrait-reverse
-# 显式 manifest 方向: 直接写 sensorPortrait(正竖↔倒竖180度, Android原生值)。之前写 portrait 固定竖屏是残留错误
-android.manifest.orientation = sensorPortrait
+# 四方向随重力: 正竖/倒竖180°/横拿全支持。横拿时 app 内切左盘面+右控制列分栏(盘面竖直满屏),
+# 不再锁竖屏——锁竖屏会被 12L+ 大屏 letterbox/ZUI 关进半屏兼容盒(画面缩小的病根)
+orientation = portrait, portrait-reverse, landscape, landscape-reverse
+# 显式 manifest 方向: fullSensor(四方向随重力, Android原生值), 与 hook 注入一致
+android.manifest.orientation = fullSensor
 fullscreen = 0
 
 android.permissions = VIBRATE
 
-# targetSdk=30(治本): Android 12+ 大屏(sw>=600dp)对 targetSdk>=31 的 app 强制多窗口并
-# 忽略 screenOrientation, 降到 30 走兼容模式, sensorPortrait 才生效。androidx 只需 >=28, 30 能编译。
+# targetSdk=30(保留): targetSdk>=31 在 12L+ 大屏被强制多窗口并忽略 screenOrientation,
+# 30 走兼容模式, fullSensor 才生效。androidx 只需 >=28, 30 能编译。
 android.api = 30
 android.minapi = 21
 android.ndk = 25b

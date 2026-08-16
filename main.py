@@ -2840,6 +2840,9 @@ class RootWidget(BoxLayout):
         self.target_x = PLUNGER_X
         self.ball = None
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
+        self._land = False            # 横屏分栏布局模式(w>h 时自动切换)
+        self._ctrl_col = None         # 横屏右侧控制列(竖屏时为 None)
+        self._land_spring = Widget(size_hint_y=1)   # 横屏控制列弹簧: 内容顶置、发射行沉底(拇指位)
         self._build_ui()
         if self._auto_reset_on_start:
             self.reset_balance(notify=False)  # 上轮打满被kill: UI就绪后静默重置
@@ -2859,9 +2862,14 @@ class RootWidget(BoxLayout):
         Clock.schedule_interval(self._frame, FIXED_DT)
 
     def _fit_width(self):
-        """内容最大宽度 = 让 520:660 场景恰好填满可用高度。
+        """竖屏(w<=h): 内容最大宽度 = 让 520:660 场景恰好填满可用高度;
         窄屏(手机竖屏)直接铺满宽度; 宽屏(16:10 桌面)内容列居中、两侧留深色边。
-        横屏容错: 宽高比>1.2 时以宽度为限, 防止内容列缩成细条。"""
+        横屏(w>h): 铺满全宽, 走左盘面+右控制列的分栏布局(见 _set_landscape)。"""
+        if Window.width > Window.height:
+            self.width = Window.width
+            self._ui_scale = min(1.0, Window.height / dp(680))
+            self._font_scale = min(1.0, Window.height / dp(360))
+            return
         self._ui_scale = min(1.0, Window.height / dp(680))
         us = self._ui_scale
         # 缩放后的固定高度(行高+间距), 与 _apply_sizes() 一致
@@ -2869,13 +2877,40 @@ class RootWidget(BoxLayout):
                         + dp(10) * 5 * us * us + dp(12) * us)  # +底部留白
         avail_h = max(100.0, Window.height - scaled_fixed)
         want = avail_h * (CW / CH) + dp(8)
-        # 列宽上限: 只限制"不能比 0.659 更宽"(横屏 letterbox 的肥盒子收窄成竖条), 不设下限
-        # (手机超长屏 0.42~0.56 本来就比 0.659 瘦, 此上限不触发, 内容照常铺满)
-        want = min(want, Window.height * 0.659)
-        if Window.width > Window.height * 1.2:            # 横屏容错
-            want = min(want, Window.width * 0.55)
         self.width = min(Window.width, want)
         self._font_scale = min(1.0, self.width / dp(360)) # 宽度缩放因子: 窄屏时字体等比缩小
+
+    def _set_landscape(self, land):
+        """横竖屏布局切换。
+        竖屏: 6 行纵向(顶栏/返还/投入/游戏区/信息/发射), 原样不动。
+        横屏: [游戏区 弹性满高] + [右控制列 固定宽], 5 个控制行竖排进右列。
+        盘面保持竖直、球仍从上往下落、画面正对玩家铺满全屏——横拿平板时
+        系统给全屏横窗口(manifest fullSensor), app 内分栏, 不再被 letterbox 关小盒子。"""
+        land = bool(land)
+        if land == self._land:
+            return
+        self._land = land
+        rows = (self._row_top, self._row_rtp, self._row_bets,
+                self._row_info, self._row_bottom)
+        self.clear_widgets()
+        if land:
+            if self._ctrl_col is None:
+                self._ctrl_col = BoxLayout(orientation="vertical", size_hint_x=None,
+                                           width=dp(400), spacing=dp(10))
+            self._ctrl_col.clear_widgets()
+            for r in rows[:4]:                # 顶栏/返还/投入/信息 顶置
+                self._ctrl_col.add_widget(r)
+            self._ctrl_col.add_widget(self._land_spring)   # 弹簧占位
+            self._ctrl_col.add_widget(rows[4])             # 发射行沉底(右手拇指位)
+            self.orientation = "horizontal"
+            self.add_widget(self.game_area)
+            self.add_widget(self._ctrl_col)
+        else:
+            if self._ctrl_col is not None:
+                self._ctrl_col.clear_widgets()
+            self.orientation = "vertical"
+            for w in rows[:3] + (self.game_area,) + rows[3:]:
+                self.add_widget(w)
 
     # ------------------------------ UI ------------------------------
     def _mk_label(self, text, font_size, hexcolor, halign="left", bold=False, **kw):
@@ -2891,6 +2926,18 @@ class RootWidget(BoxLayout):
         if cb is not None:
             b.bind(on_release=cb)
         return b
+
+    def _popup(self, hint_w, h_dp, **kw):
+        """统一建 Popup。横屏下 size_hint 宽度会按横屏全宽撑成扁条,
+        改固定宽 dp(460)(竖排内容不受影响); 竖屏保持原 size_hint 行为。"""
+        if self._land:
+            kw["size_hint"] = (None, None)
+            kw["width"] = dp(460)
+            kw["height"] = min(dp(h_dp), Window.height * 0.92)
+        else:
+            kw["size_hint"] = (hint_w, None)
+            kw["height"] = dp(h_dp)
+        return Popup(**kw)
 
     def _row_bg(self, row, hexcolor):
         with row.canvas.before:
@@ -3134,8 +3181,8 @@ class RootWidget(BoxLayout):
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = Popup(title='', content=content, size_hint=(0.84, None), height=dp(380),
-                      auto_dismiss=True, separator_height=0)
+        popup = self._popup(0.84, 380, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
         content.add_widget(start_btn)
@@ -3261,8 +3308,8 @@ class RootWidget(BoxLayout):
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(160))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(data_lbl)
-        popup = Popup(title='', content=content, size_hint=(0.90, None), height=dp(300),
-                      auto_dismiss=True, separator_height=0)
+        popup = self._popup(0.90, 300, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
         popup.open()
         self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
         self._set_controls_enabled(True)
@@ -3298,8 +3345,12 @@ class RootWidget(BoxLayout):
                            background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
         content.add_widget(close_btn)
-        popup = Popup(title='', content=content, size_hint=(0.86, 0.7),
-                      auto_dismiss=True, separator_height=0)
+        if self._land:
+            popup = Popup(title='', content=content, size_hint=(None, 0.8),
+                          width=dp(460), auto_dismiss=True, separator_height=0)
+        else:
+            popup = Popup(title='', content=content, size_hint=(0.86, 0.7),
+                          auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
 
@@ -3685,12 +3736,11 @@ class RootWidget(BoxLayout):
                         background_color=hex_rgb(COL_BTN) + (1,),
                         color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
         content.add_widget(ok_btn)
-        popup = Popup(title="本轮游戏结束", content=content,
-                      size_hint=(0.82, None), height=dp(320),
-                      auto_dismiss=False,
-                      title_color=hex_rgb(COL_TEXT) + (1,),
-                      title_size="19sp",
-                      separator_color=hex_rgb(COL_DIV) + (1,))
+        popup = self._popup(0.82, 320, title="本轮游戏结束", content=content,
+                            auto_dismiss=False,
+                            title_color=hex_rgb(COL_TEXT) + (1,),
+                            title_size="19sp",
+                            separator_color=hex_rgb(COL_DIV) + (1,))
         popup.open()
         # 语音播完后自动重置并关闭弹窗; 用户点"确定"也能立即结束
         _done = [False]                            # 防重复调用
@@ -3756,12 +3806,11 @@ class RootWidget(BoxLayout):
                         background_normal="", background_down="",
                         background_color=hex_rgb(COL_BTN) + (1,),
                         color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
-        popup = Popup(title="每轮游戏次数设定", content=content,
-                      size_hint=(0.84, None), height=dp(500),
-                      auto_dismiss=True,
-                      title_color=hex_rgb(COL_TEXT) + (1,),
-                      title_size="19sp",
-                      separator_color=hex_rgb(COL_DIV) + (1,))
+        popup = self._popup(0.84, 500, title="每轮游戏次数设定", content=content,
+                            auto_dismiss=True,
+                            title_color=hex_rgb(COL_TEXT) + (1,),
+                            title_size="19sp",
+                            separator_color=hex_rgb(COL_DIV) + (1,))
         ok_btn.bind(on_release=popup.dismiss)
         content.add_widget(ok_btn)
         popup.open()
@@ -3856,7 +3905,14 @@ class RootWidget(BoxLayout):
         self._row_rtp.padding    = [dp(24), dp(4) * uv]
         self._row_bets.padding   = [dp(24), dp(4) * uv]
         self._row_bottom.padding = [dp(6), dp(4) * uv, dp(12), dp(4) * uv]
-        self.padding = [0, 0, 0, dp(12)]  # 底部留白
+        if self._land and self._ctrl_col is not None:
+            # 横屏分栏: 控制列宽取"装得下最宽行(返还率行≈383dp×us)"与"屏宽36%"的较小值
+            self._ctrl_col.spacing = dp(10) * uv
+            self._ctrl_col.width = min(dp(420) * max(us, 0.72), Window.width * 0.36)
+            self._ctrl_col.padding = [0, dp(4), dp(6), dp(4)]
+            self.padding = [dp(6), dp(6), dp(6), dp(6)]
+        else:
+            self.padding = [0, 0, 0, dp(12)]  # 底部留白
 
         self.title_lbl.font_size       = sp(18) * fs
         self.status_lbl.font_size      = sp(13) * fs
@@ -3894,6 +3950,7 @@ class RootWidget(BoxLayout):
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
             self._last_win_size = ws
+            self._set_landscape(Window.width > Window.height)
             self._fit_width()
             self._apply_sizes()
         if self.state == "charging":
@@ -4058,33 +4115,19 @@ class PlinkoApp(App):
         if platform != "android":
             Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
-        if platform == "android":
-            Window.bind(on_resize=self._on_orient_change)
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
         anchor = AnchorLayout(anchor_x="center", anchor_y="center")
         self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
         anchor.add_widget(self.rootw)
+        self.rootw._set_landscape(Window.width > Window.height)   # 横拿启动直接进分栏
         self.rootw._fit_width()
         self.rootw._apply_sizes()
         return anchor
 
-    # ---- 方向守卫: Android 12+ 大屏 letterbox 由系统决定窗口形状, app 改不了宽高。
-    #      治本: buildozer.spec android.api=30 + manifest sensorPortrait 锁"方向类别";
-    #      渲染兜底: _fit_width 的列宽上限(0.659)让内容在横屏肥盒子里收窄成竖条。
-    #      这里只保留真横屏(w>h)时的一次性强制, 其余交给上面的布局兜底。 ----
-    def _force_portrait(self):
-        """运行时强制 sensorPortrait(7): 正竖↔倒竖 180 度, 不横屏。"""
-        try:
-            from jnius import autoclass
-            activity = autoclass("org.kivy.android.PythonActivity").mActivity
-            activity.setRequestedOrientation(7)   # SCREEN_ORIENTATION_SENSOR_PORTRAIT
-        except Exception:
-            pass
-
-    def _on_orient_change(self, win, w, h):
-        """真横屏(w>h)时强制回竖屏; letterbox 肥盒子(w<h)交给 _fit_width 列宽上限。"""
-        if w > h:
-            self._force_portrait()
+    # ---- 方向策略: manifest fullSensor(四方向随重力), 系统直接给全屏窗口。
+    #      横拿(w>h)时 RootWidget 切左盘面+右控制列分栏(盘面竖直、正对玩家、满屏),
+    #      不再锁竖屏——锁竖屏会被 Android 12L+ 大屏/ZUI 关进 letterbox 兼容小盒子。
+    #      横竖切换由 RootWidget._frame 的窗口尺寸轮询驱动(_set_landscape)。 ----
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
@@ -4095,8 +4138,6 @@ class PlinkoApp(App):
         return True
 
     def on_resume(self):
-        if platform == "android":
-            self._force_portrait()
         try:
             self.rootw.sfx.resume_out()
         except Exception:
