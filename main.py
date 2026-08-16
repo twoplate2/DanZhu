@@ -3286,7 +3286,7 @@ class RootWidget(BoxLayout):
                 row = Label(text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
                             font_size='17sp', halign='left', valign='middle',
                             color=hex_rgb(COL_TEXT) + (1,),
-                            size_hint_y=None, height=dp(40))
+                            size_hint_y=None, height=dp(30))
                 row.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
                 inner.add_widget(row)
             scroll.add_widget(inner)
