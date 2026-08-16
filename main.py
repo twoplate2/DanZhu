@@ -2362,7 +2362,10 @@ def number_voice_names(n):
     wan = n // 10000
     rest = n % 10000
     if wan > 0:
-        names.extend(_read_4digits(wan, is_highest=(wan == n // 10000)))
+        if wan == 2:
+            names.append("voice_liang")   # 万位的 2 读"两"(两万)
+        else:
+            names.extend(_read_4digits(wan, is_highest=True))
         names.append("voice_u_10000")
     names.extend(_read_4digits(rest, is_highest=(wan == 0)))
     return names or ["voice_d_0"]
