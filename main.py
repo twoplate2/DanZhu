@@ -3226,7 +3226,7 @@ class RootWidget(BoxLayout):
         dev = self._device_info()
         # 存历史(最近100次)
         self.bench_history.append({
-            "time": time.strftime("%m-%d %H:%M"),
+            "time": time.strftime("%Y-%m-%d %H:%M"),
             "phys_fps": int(phys_fps),
             "avg_frames": int(avg_frames),
             "cost_ms": round(cost_ms, 1),
