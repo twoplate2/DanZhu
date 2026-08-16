@@ -1108,7 +1108,7 @@ def _sfx_bounce():
     """落地弹跳: 钢珠撞槽底, 短亮带金属"叮"瞬态(逐跳渐弱在播放层按 vy 做)。"""
     b = _buf(0.11)
     _add_partials(b, 0.0, 180.0, [(1.00, 1.00, 0.026), (2.05, 0.30, 0.011)])
-    _add_partials(b, 0.0, 3200.0, [(1.00, 0.18, 0.008)])    # 金属"叮"(非谐高频, 钢珠指纹)
+    _add_partials(b, 0.0, 3200.0, [(1.00, 0.10, 0.008)])    # 金属"叮"(非谐高频, 钢珠指纹, 削刺 0.18→0.10)
     _add_noise(b, 0.0, 0.005, 0.30, 0.0022, 0.45)           # 亮噪声攻击瞬态
     return _pack(b, 0.50)
 
@@ -2794,6 +2794,7 @@ class RootWidget(BoxLayout):
         self._anim_start_time = 0.0
         self._anim_dur = 0.5
         self._coin_until = 0.0
+        self._coin_start = 0.0        # 计分滚动音起播时刻(错峰: 晚于结算)
         self._land_hold = LAND_HOLD
         self._result_until = 0.0       # 结算结果窗口: 期内抑制UI语音, 让结果音优先
         self.bet = DEFAULT_BET
@@ -3257,7 +3258,7 @@ class RootWidget(BoxLayout):
         self._restyle_selects()
         self._refresh_stats()
         self.sfx.play("click", throttle=0.08)
-        if not silent and time.time() >= self._result_until:
+        if not silent and self.sound_mode == "voice" and time.time() >= self._result_until:
             self.sfx.play("voice_bet_%d" % v, throttle=0.6)
         self._save_config()
 
@@ -3265,7 +3266,7 @@ class RootWidget(BoxLayout):
         self.rtp_target = t
         self._restyle_selects()
         self.sfx.play("click", throttle=0.08)
-        if not silent and time.time() >= self._result_until:
+        if not silent and self.sound_mode == "voice" and time.time() >= self._result_until:
             pct = int(t * 100)
             self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
         if self.state == "ready":
@@ -3300,7 +3301,8 @@ class RootWidget(BoxLayout):
             self.game_area._effects = [e for e in self.game_area._effects if e["kind"] != "toast"]
             Clock.schedule_once(lambda dt: self.game_area.center_toast(
                 "弹珠数量已调整到1000个", hexcolor=COL_GREEN, size=28, life=1.5), 0.05)
-            self.sfx.play("voice_reset_progress", throttle=1.5)
+            if self.sound_mode == "voice":
+                self.sfx.play("voice_reset_progress", throttle=1.5)
         # 恢复按钮颜色
         self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
         self._save_config()
@@ -3399,6 +3401,7 @@ class RootWidget(BoxLayout):
         self._anim_target_balance = float(self.balance)
         self._anim_start_time = time.time()
         self._coin_until = (time.time() + (1.2 if big else 0.5)) if payout > 0 else 0.0
+        self._coin_start = (time.time() + (0.40 if big else 0.22)) if payout > 0 else 0.0   # 错峰: coin 晚起播
         self._save_config()
 
     def park_ball(self, reroll=True, silent=False):
@@ -3529,6 +3532,10 @@ class RootWidget(BoxLayout):
 
     def _play_round_end_voice(self, on_done=None):
         """组装并播放轮次结束语音: 模板 + 当前弹珠数 + 后缀。返回总时长(秒)。"""
+        if self.sound_mode != "voice":
+            if on_done:
+                Clock.schedule_once(lambda dt: on_done(), 3.0)   # sfx/off 档不念, 3s 后自动重置
+            return 0.0
         prefix_key = "voice_round_end_%d" % self.max_plays
         voices = [prefix_key]
         voices.extend(number_voice_names(self.balance))
@@ -3663,7 +3670,8 @@ class RootWidget(BoxLayout):
                 b.background_color = hex_rgb(COL_BTN if self.max_plays == v else COL_BTN_OFF) + (1,)
         # toast + 语音提示
         self.game_area.center_toast("每轮已设定为%d次" % val, hexcolor=COL_GREEN, size=20, life=1.5)
-        self.sfx.play("voice_round_set_%d" % val)
+        if self.sound_mode == "voice":
+            self.sfx.play("voice_round_set_%d" % val)
         self._save_config()
 
     # ------------------------------ 音效 ------------------------------
@@ -3905,7 +3913,7 @@ class RootWidget(BoxLayout):
             self.power_lbl.text = ""
         # 余额数字滚动(老虎机式翻滚再落定), 中奖滚分时连播 coin; 大奖(x>=10)滚 1.2s
         now = time.time()
-        if now < self._coin_until:
+        if self._coin_start <= now < self._coin_until:
             self.sfx.play("coin", 0.8, 0.055)
         elapsed = now - self._anim_start_time
         if elapsed < self._anim_dur:
