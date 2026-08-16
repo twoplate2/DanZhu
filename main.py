@@ -3254,11 +3254,11 @@ class RootWidget(BoxLayout):
                 '平均帧率： %.1f\n'
                 '1%%Low帧率：%.1f') % (
                     dev, int(phys_fps), avg_frames, cost_ms, render_fps, render_1low)
-        data_lbl = Label(text=data, font_size='15sp', halign='left', valign='top',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(140))
+        data_lbl = Label(text=data, font_size='17sp', halign='left', valign='top',
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(160))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(data_lbl)
-        popup = Popup(title='', content=content, size_hint=(0.90, None), height=dp(280),
+        popup = Popup(title='', content=content, size_hint=(0.90, None), height=dp(300),
                       auto_dismiss=True, separator_height=0)
         popup.open()
         self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
@@ -3274,8 +3274,8 @@ class RootWidget(BoxLayout):
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
         if not self.bench_history:
-            empty = Label(text='暂无测试记录\n\n长按标题 3 秒即可测试', font_size='15sp', halign='center',
-                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(80))
+            empty = Label(text='暂无测试记录\n\n长按标题 3 秒即可测试', font_size='16sp', halign='center',
+                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(90))
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(empty)
         else:
@@ -3284,9 +3284,9 @@ class RootWidget(BoxLayout):
             inner.bind(minimum_height=inner.setter('height'))
             for r in reversed(self.bench_history[-100:]):
                 row = Label(text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
-                            font_size='15sp', halign='left', valign='middle',
+                            font_size='17sp', halign='left', valign='middle',
                             color=hex_rgb(COL_TEXT) + (1,),
-                            size_hint_y=None, height=dp(34))
+                            size_hint_y=None, height=dp(40))
                 row.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
                 inner.add_widget(row)
             scroll.add_widget(inner)
