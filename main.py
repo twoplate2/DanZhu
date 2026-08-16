@@ -2609,28 +2609,16 @@ class GameArea(FloatLayout):
         if 0 <= i < len(self._slot_cols):
             self._pulse = (i, time.time() + 0.30)
 
-    def center_toast(self, text, hexcolor=COL_FIRE, size=26, life=2.0, force=False):
+    def center_toast(self, text, hexcolor=COL_FIRE, size=26, life=2.0):
         """画布中央两行警示飘字(如余额不足): 上浮+淡出。size 单位是 sp(见 big_result_text)。
         老 toast 未消失前不再弹新的(连点发射会瞬间叠一排); 创建即摆位到中央 ——
         默认 pos=(0,0) 是 GameArea 左下角(=重置按钮附近), 下一帧才被 tick_draw 摆位,
-        连点时会在那里闪出"第二个提示"。
-        force=True(方向诊断用): 绕过"球未发射"和"已有 toast"两个限制, 强制弹出。"""
-        if self._ball_e is None and not force:
+        连点时会在那里闪出"第二个提示"。"""
+        if self._ball_e is None:
             return
-        if force:
-            # 诊断模式: 先移除旧 toast, 实现覆盖而非叠加(叠加会乱码/糊成一团)
-            for e in self._effects:
-                if e["kind"] == "toast":
-                    for w in e["ws"]:
-                        try:
-                            self.remove_widget(w)
-                        except Exception:
-                            pass
-            self._effects = [e for e in self._effects if e["kind"] != "toast"]
-        else:
-            for e in self._effects:
-                if e["kind"] == "toast":
-                    return                            # 已有 toast 存活, 不重复弹
+        for e in self._effects:
+            if e["kind"] == "toast":
+                return                            # 已有 toast 存活, 不重复弹
         lbl = Label(text=text, font_size=sp(size), bold=True, halign="center",
                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         lbl.texture_update()                      # 立刻出纹理, 尺寸跟文字(center 才摆得准)
@@ -4068,73 +4056,35 @@ class PlinkoApp(App):
             Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
         self.title = "跳跳的弹珠机"
         if platform == "android":
-            self._dbg_orient = None        # 方向调试: 上次方向
-            self._dbg_forcing = False      # 防递归强制
+            self._dbg_forcing = False      # 防抖: 强制转竖后短暂静默, 避免高频重复调
             Window.bind(on_resize=self._on_orient_change)
-            # 循环强制: 每 0.7s 权威检测一次, 横屏就反复拉回竖屏(对抗 Y700 ZUI 覆盖)
             self._orient_guard_ev = Clock.schedule_interval(self._orient_guard, 0.7)
+            Clock.schedule_once(self._startup_dbg, 0.5)   # 启动报一次 targetSdk
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
         anchor = AnchorLayout(anchor_x="center", anchor_y="center")
         self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
         anchor.add_widget(self.rootw)
         self.rootw._fit_width()
         self.rootw._apply_sizes()
-        if platform == "android":
-            Clock.schedule_once(self._startup_dbg, 0.3)   # 延后到 rootw 建立后再报(center_toast 才能弹)
         return anchor
 
-    # ---- 方向守卫: Android 12+ 大屏(targetSdk>=31)会忽略 screenOrientation,
-    #      Y700 ZUI 还 FORCE_RESIZE_APP 强制横屏。运行时用 Display.getRotation()
-    #      权威检测 + 反复 setRequestedOrientation(7=sensorPortrait) 拉回竖屏,
-    #      并弹不同文案的原生 Toast 便于定位根因。 ----
-    def _dbg_show(self, msg):
-        """诊断显示(四保险): 日志文件 + 游戏弹字(center_toast, 已验证能弹) + 屏上黄字 + 系统弹窗。"""
-        import time as _t
-        try:
-            log = os.path.join(self.user_data_dir, 'direction_debug.log')
-            with open(log, 'a', encoding='utf-8') as f:
-                f.write('%.1f %s\n' % (_t.time(), msg))
-        except Exception:
-            pass
-        try:
-            if getattr(self, 'rootw', None) is not None:
-                self.rootw.game_area.center_toast(msg, hexcolor=COL_GREEN, size=20, life=2.5, force=True)
-        except Exception:
-            pass
-        try:
-            if getattr(self, '_dbg_lbl', None) is None:
-                from kivy.uix.label import Label as _KL
-                self._dbg_lbl = _KL(text='', font_size='15sp', color=(1, 1, 0, 1),
-                                    size_hint=(None, None), pos=(6, 6),
-                                    halign='left', valign='top')
-                Window.add_widget(self._dbg_lbl)
-            self._dbg_lbl.text = msg
-            self._dbg_lbl.texture_update()
-            self._dbg_lbl.size = (self._dbg_lbl.texture_size[0], self._dbg_lbl.texture_size[1])
-        except Exception:
-            pass
-        try:
-            from jnius import autoclass
-            PythonActivity = autoclass("org.kivy.android.PythonActivity")
-            Toast = autoclass("android.widget.Toast")
-            Toast.makeText(PythonActivity.mActivity, msg, Toast.LENGTH_LONG).show()
-        except Exception:
-            pass
-
+    # ---- 方向守卫: Android 12+ 大屏(sw>=600dp)对 targetSdk>=31 的 app 强制多窗口、
+    #      忽略 screenOrientation; 联想 ZUI 还可能 FORCE_RESIZE_APP 强制横屏。
+    #      治本在 buildozer.spec 的 android.api=30(走兼容模式, sensorPortrait 生效),
+    #      这里做运行时兜底: 定时读 Display.getRotation(), 横屏就 setRequestedOrientation(7)
+    #      拉回竖屏(正竖↔倒竖 180 度)。 ----
     def _startup_dbg(self, dt):
-        """启动诊断: 延后到 rootw 建立后再报(此时 center_toast 能弹)。"""
-        tsdk = self._android_target_sdk()
-        rot = self._android_rotation()
-        self._dbg_show("SDK=%s" % tsdk)
-
-    def _android_target_sdk(self):
-        """读 App 的 targetSdkVersion: 30=hook 降级生效(治本), 31=没生效。"""
+        """启动报一次 targetSdk(确认 android.api=30 是否生效)。"""
         try:
             from jnius import autoclass
             Activity = autoclass("org.kivy.android.PythonActivity")
-            return Activity.mActivity.getApplicationInfo().targetSdkVersion
+            tsdk = Activity.mActivity.getApplicationInfo().targetSdkVersion
         except Exception:
-            return None
+            tsdk = "?"
+        try:
+            self.rootw.game_area.center_toast("SDK=%s" % tsdk, hexcolor=COL_GREEN, size=22, life=5.0)
+        except Exception:
+            pass
 
     def _android_rotation(self):
         """系统实际显示旋转: 0竖 1横90 2倒竖 3横270; 失败返回 None。"""
@@ -4145,45 +4095,30 @@ class PlinkoApp(App):
         except Exception:
             return None
 
-    def _force_portrait(self, reason):
+    def _force_portrait(self):
         """运行时强制 sensorPortrait(7): 正竖↔倒竖 180 度, 不横屏。"""
         try:
             from jnius import autoclass
             activity = autoclass("org.kivy.android.PythonActivity").mActivity
             activity.setRequestedOrientation(7)   # SCREEN_ORIENTATION_SENSOR_PORTRAIT
-            self._dbg_show("强制竖屏")
-        except Exception as e:
-            self._dbg_show("强制失败")
+        except Exception:
+            pass
 
     def _orient_guard(self, dt):
-        """定时权威检测: 横屏(1/3)就强制竖屏, 0.5s 后复查系统是否照办。"""
+        """定时检测: 横屏(1/3)就强制竖屏(防抖避免高频重复调)。"""
         rot = self._android_rotation()
-        if rot is None:
-            return
         if rot in (1, 3):                       # 横屏
-            if self._dbg_forcing:
-                return
-            self._dbg_forcing = True
-            self._dbg_show("检测横屏")
-            self._force_portrait("定时兜底")
-            Clock.schedule_once(self._orient_recheck, 0.5)
-            Clock.schedule_once(lambda dt: setattr(self, "_dbg_forcing", False), 0.9)
+            if not self._dbg_forcing:
+                self._dbg_forcing = True
+                self._force_portrait()
+                Clock.schedule_once(lambda dt: setattr(self, "_dbg_forcing", False), 0.9)
         else:                                   # 竖屏(0/2)
             self._dbg_forcing = False
 
-    def _orient_recheck(self, dt):
-        """强制后复查: 系统听没听 setRequestedOrientation。"""
-        rot = self._android_rotation()
-        if rot in (1, 3):
-            self._dbg_show("系统仍横")
-        else:
-            self._dbg_show("已转竖")
-
     def _on_orient_change(self, win, w, h):
-        """Kivy 窗口尺寸变化(辅助诊断): 记录 w/h, 主检测交给 _orient_guard。"""
-        orient = "横屏" if w > h else "竖屏"
-        self._dbg_show("窗口%s" % orient)
-        self._dbg_orient = orient
+        """窗口尺寸变化(横竖切换)时立即强制竖屏, 比定时检测更快响应。"""
+        if w > h:
+            self._force_portrait()
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
@@ -4195,8 +4130,7 @@ class PlinkoApp(App):
 
     def on_resume(self):
         if platform == "android":
-            self._dbg_orient = None
-            self._force_portrait("on_resume")
+            self._force_portrait()
         try:
             self.rootw.sfx.resume_out()
         except Exception:

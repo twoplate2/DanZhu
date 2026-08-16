@@ -81,39 +81,53 @@ def _lower_target_sdk(self):
 
 
 def _inject_manifest(self):
-    """注入 resizeableActivity=false + 退出方向覆盖属性。"""
+    """注入竖屏锁定属性: screenOrientation=sensorPortrait + resizeableActivity=false + 退出方向覆盖。
+    p4a 对多个 --orientation(portrait,portrait-reverse) 默认可能把 screenOrientation 写成
+    unspecified(不锁定方向), 这里兜底强制改回 sensorPortrait。"""
     manifest = _find_manifest(self)
     if not manifest:
         info('[hook] AndroidManifest.xml 未找到, 跳过注入')
         return 0, 0
     with open(manifest, 'r', encoding='utf-8') as f:
         xml = f.read()
-    if 'android:resizeableActivity' in xml:
-        info('[hook] 已注入过, 跳过')
-        return 0, 0
 
+    # 1) 强制 screenOrientation = sensorPortrait(正竖↔倒竖 180 度)
+    n0 = 0
+    m_orient = re.search(r'android:screenOrientation="[^"]*"', xml)
+    if m_orient:
+        if m_orient.group(0) != 'android:screenOrientation="sensorPortrait"':
+            xml = xml.replace(m_orient.group(0), 'android:screenOrientation="sensorPortrait"')
+            n0 = 1
+    else:
+        m_act = re.search(r'<activity[^>]*org\.kivy\.android\.PythonActivity[^>]*?>', xml)
+        if m_act:
+            xml = xml[:m_act.end() - 1] + ' android:screenOrientation="sensorPortrait">' + xml[m_act.end():]
+            n0 = 1
+    info('[hook] screenOrientation 强制 sensorPortrait: changed=%d' % n0)
+
+    # 2) resizeableActivity=false(对抗大屏强制多窗口)
     n1 = 0
-    if 'android:screenOrientation=' in xml:
-        xml = xml.replace(
-            'android:screenOrientation=',
-            'android:resizeableActivity="false" android:screenOrientation=',
-            1,
-        )
+    if 'android:resizeableActivity' not in xml:
+        xml = xml.replace('android:screenOrientation=',
+                          'android:resizeableActivity="false" android:screenOrientation=',
+                          1)
         n1 = 1
 
+    # 3) 退出制造商方向覆盖
     n2 = 0
-    m = re.search(r'<activity[^>]*org\.kivy\.android\.PythonActivity[^>]*?>', xml)
-    if m:
-        prop = ('\n            <property '
-                'android:name="android.window.PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE" '
-                'android:value="false"/>')
-        xml = xml[:m.end()] + prop + xml[m.end():]
-        n2 = 1
+    if 'PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE' not in xml:
+        m_act = re.search(r'<activity[^>]*org\.kivy\.android\.PythonActivity[^>]*?>', xml)
+        if m_act:
+            prop = ('\n            <property '
+                    'android:name="android.window.PROPERTY_COMPAT_ALLOW_ORIENTATION_OVERRIDE" '
+                    'android:value="false"/>')
+            xml = xml[:m_act.end()] + prop + xml[m_act.end():]
+            n2 = 1
 
     with open(manifest, 'w', encoding='utf-8') as f:
         f.write(xml)
-    info('[hook] 注入完成: resizeableActivity={}, property={}'.format(n1, n2))
-    return n1, n2
+    info('[hook] 注入完成: screenOrientation=%d, resizeableActivity=%d, property=%d' % (n0, n1, n2))
+    return n0, n1, n2
 
 
 def before_apk_build(self):
