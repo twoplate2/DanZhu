@@ -7,8 +7,10 @@ import sys
 import os
 
 os.environ.setdefault("KIVY_NO_ARGS", "1")   # 自定义参数(--selftest/--smoke)自己解析, 别让 Kivy 抢
-# 竖屏+180度重力感应: 冗余保险(p4a 已把同值写进 p4a_env_vars.txt), 关键修复在 buildozer.spec 不在本文件
-os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown"
+# 四方向重力感应: 与 buildozer.spec orientation / manifest fullSensor 同值(p4a 会写进 p4a_env_vars.txt,
+# 这里运行时再设一次防 bootstrap 未带上)。⚠️ 只写竖屏两方向会把 SDL 也锁竖屏, 横拿时
+# 系统只能给 letterbox 兼容盒(ZUI 半屏盒的帮凶), buildozer.spec 放开四方向就会被这里覆盖废掉。
+os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown Landscape LandscapeUpsideDown"
 
 import math
 import random
@@ -2413,6 +2415,137 @@ def _read_4digits(n, is_highest=True):
     return parts
 
 
+from kivy.animation import Animation
+
+
+# =============================================================================
+# 横屏反旋转层(2026-08-17 定案: 画面永远保持竖拿构图, 横拿时玩家扭头看/转回竖屏玩)
+# =============================================================================
+def _land_angle():
+    """横屏渲染旋转角(度, Kivy Rotate 逆时针为正): 抵消系统转屏, 让画面在屏幕上的
+    构图与竖拿时完全一致。Display.getRotation(): 1(ROTATION_90)->+90, 3(ROTATION_270)->-90,
+    其余/读不到(桌面 --landscape 模拟)固定 +90。真机若发现扭头方向不对/画面倒置,
+    交换 90/-90 两映射即可(一行)。"""
+    try:
+        from jnius import autoclass
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        wm = act.getWindowManager()
+        disp = wm.getDefaultDisplay()
+        return -90 if disp.getRotation() == 3 else 90
+    except Exception:
+        return 90
+
+
+def _land_layer():
+    app = App.get_running_app()
+    return getattr(app, "layer", None)
+
+
+class LandLayer(FloatLayout):
+    """Android 12L+ 大屏锁竖屏会被 letterbox 政策/ZUI 塞进半屏兼容盒(app 改不了窗口
+    宽高), 故方向放开(fullSensor 四方向), 横拿时系统给全屏横窗; 本层把整棵 UI 树按
+    "等效竖屏窗口"(短边x长边)布局后整体旋转 90 度铺满横屏 -> 屏幕上的画面构图与
+    竖拿时一模一样。竖屏时 angle=0 且层尺寸=窗口, 行为与没有本层完全一致(零回归)。
+    触摸在 on_touch_* 先逆旋转到等效坐标再分发; 弹窗用 RotPopup 挂到本层。"""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.angle = 0
+        self._anchor = None          # 等效竖屏窗口容器(App.build 里塞 AnchorLayout)
+        with self.canvas.before:
+            PushMatrix()
+            self._rot = Rotate(angle=0, axis=(0, 0, 1), origin=(0, 0))
+        with self.canvas.after:
+            PopMatrix()
+
+    def apply_orientation(self):
+        """窗口尺寸变化时重算层尺寸/旋转角, 返回是否处于横屏反旋转模式。
+        仅 Android(或桌面 --landscape 模拟)启用; 桌面普通宽窗维持竖构图居中不变。"""
+        w, h = Window.width, Window.height
+        land = (w > h and (platform == "android" or "--landscape" in sys.argv))
+        self.pos = (0, 0)
+        self.size = (w, h)
+        self.angle = _land_angle() if land else 0
+        self._rot.angle = self.angle
+        self._rot.origin = (w / 2.0, h / 2.0)
+        if self._anchor is not None:
+            self._anchor.size = (h, w) if land else (w, h)
+            self._anchor.center = self.center
+        return land
+
+    def _to_eq(self, x, y):
+        """物理窗口坐标 -> 等效竖屏坐标(渲染旋转的逆变换, 再平移回等效盒原点)。"""
+        if self.angle == 0:
+            return (x, y)
+        cx, cy = Window.width / 2.0, Window.height / 2.0
+        dx, dy = x - cx, y - cy
+        if self.angle == 90:                      # 逆变换 = 顺时针 90
+            px, py = cx + dy, cy - dx
+        else:                                     # angle == -90: 逆时针 90
+            px, py = cx - dy, cy + dx
+        ax, ay = self._anchor.pos
+        return (px - ax, py - ay)
+
+    def _pass_touch(self, method, touch):
+        if self.angle == 0:
+            return method(touch)
+        touch.push()
+        touch.pos = self._to_eq(*touch.pos)
+        ret = method(touch)
+        touch.pop()
+        return ret
+
+    def on_touch_down(self, touch):
+        return self._pass_touch(super().on_touch_down, touch)
+
+    def on_touch_move(self, touch):
+        return self._pass_touch(super().on_touch_move, touch)
+
+    def on_touch_up(self, touch):
+        return self._pass_touch(super().on_touch_up, touch)
+
+
+class RotPopup(Popup):
+    """挂 LandLayer 的 Popup: 横屏时随层旋转, 坐标系统一为等效竖屏窗口。
+    Kivy 2.3 ModalView.open() 硬编码挂 Window, 这里照抄其 open/_real_remove_widget
+    把宿主换成旋转层(层无 on_resize/on_keyboard 事件, bind 静默无害; 返回键走
+    RootWidget._on_key_down 原路径, 竖屏横屏行为一致)。竖屏(angle=0)回落原生行为。
+    pos_hint 居中交给 FloatLayout 布局, 转屏时尺寸变化自动跟随。"""
+
+    def open(self, *_args, **kwargs):
+        layer = _land_layer()
+        if layer is None or layer.angle == 0:
+            return super().open(*_args, **kwargs)
+        if self._is_open:
+            return
+        self._window = layer
+        self._is_open = True
+        self.dispatch('on_pre_open')
+        if not self.pos_hint:
+            self.pos_hint = {"center_x": 0.5, "center_y": 0.5}
+        layer.add_widget(self)
+        layer.bind(on_resize=self._align_center, on_keyboard=self._handle_keyboard)
+        self.center = layer.center
+        self.fbind('center', self._align_center)
+        self.fbind('size', self._align_center)
+        if kwargs.get('animation', True):
+            ani = Animation(_anim_alpha=1., d=self._anim_duration)
+            ani.bind(on_complete=lambda *_a: self.dispatch('on_open'))
+            ani.start(self)
+        else:
+            self._anim_alpha = 1.
+            self.dispatch('on_open')
+
+    def _real_remove_widget(self):
+        if not self._is_open:
+            return
+        self._window.remove_widget(self)
+        self._window.unbind(on_resize=self._align_center,
+                            on_keyboard=self._handle_keyboard)
+        self._is_open = False
+        self._window = None
+
+
 class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
     静态元素(墙/钉/槽/弧)重绘只在尺寸变化或换盘面时; 球/力度条/柱塞每帧只改 pos;
@@ -2840,9 +2973,6 @@ class RootWidget(BoxLayout):
         self.target_x = PLUNGER_X
         self.ball = None
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
-        self._land = False            # 横屏分栏布局模式(w>h 时自动切换)
-        self._ctrl_col = None         # 横屏右侧控制列(竖屏时为 None)
-        self._land_spring = Widget(size_hint_y=1)   # 横屏控制列弹簧: 内容顶置、发射行沉底(拇指位)
         self._build_ui()
         if self._auto_reset_on_start:
             self.reset_balance(notify=False)  # 上轮打满被kill: UI就绪后静默重置
@@ -2861,56 +2991,27 @@ class RootWidget(BoxLayout):
         self.bind(size=self._relayout_bench_dim, pos=self._relayout_bench_dim)
         Clock.schedule_interval(self._frame, FIXED_DT)
 
+    def _veq(self):
+        """等效竖屏窗口尺寸: 横屏反旋转时 = (短边, 长边), 画面构图与竖拿时一致。
+        竖屏时 = 物理窗口尺寸, 行为不变。所有布局计算一律吃等效值,
+        物理窗口只用来算旋转(LandLayer)。"""
+        w, h = Window.width, Window.height
+        return (w, h) if w <= h else (h, w)
+
     def _fit_width(self):
-        """竖屏(w<=h): 内容最大宽度 = 让 520:660 场景恰好填满可用高度;
+        """内容最大宽度 = 让 520:660 场景恰好填满可用高度。
         窄屏(手机竖屏)直接铺满宽度; 宽屏(16:10 桌面)内容列居中、两侧留深色边。
-        横屏(w>h): 铺满全宽, 走左盘面+右控制列的分栏布局(见 _set_landscape)。"""
-        if Window.width > Window.height:
-            self.width = Window.width
-            self._ui_scale = min(1.0, Window.height / dp(680))
-            self._font_scale = min(1.0, Window.height / dp(360))
-            return
-        self._ui_scale = min(1.0, Window.height / dp(680))
+        尺寸取"等效竖屏窗口"(横屏反旋转时短边x长边), 横竖屏布局同一套。"""
+        vw, vh = self._veq()
+        self._ui_scale = min(1.0, vh / dp(680))
         us = self._ui_scale
         # 缩放后的固定高度(行高+间距), 与 _apply_sizes() 一致
         scaled_fixed = (dp(H_TOP + H_RTP + H_BETS + H_INFO + H_BOTTOM) * us
                         + dp(10) * 5 * us * us + dp(12) * us)  # +底部留白
-        avail_h = max(100.0, Window.height - scaled_fixed)
+        avail_h = max(100.0, vh - scaled_fixed)
         want = avail_h * (CW / CH) + dp(8)
-        self.width = min(Window.width, want)
+        self.width = min(vw, want)
         self._font_scale = min(1.0, self.width / dp(360)) # 宽度缩放因子: 窄屏时字体等比缩小
-
-    def _set_landscape(self, land):
-        """横竖屏布局切换。
-        竖屏: 6 行纵向(顶栏/返还/投入/游戏区/信息/发射), 原样不动。
-        横屏: [游戏区 弹性满高] + [右控制列 固定宽], 5 个控制行竖排进右列。
-        盘面保持竖直、球仍从上往下落、画面正对玩家铺满全屏——横拿平板时
-        系统给全屏横窗口(manifest fullSensor), app 内分栏, 不再被 letterbox 关小盒子。"""
-        land = bool(land)
-        if land == self._land:
-            return
-        self._land = land
-        rows = (self._row_top, self._row_rtp, self._row_bets,
-                self._row_info, self._row_bottom)
-        self.clear_widgets()
-        if land:
-            if self._ctrl_col is None:
-                self._ctrl_col = BoxLayout(orientation="vertical", size_hint_x=None,
-                                           width=dp(400), spacing=dp(10))
-            self._ctrl_col.clear_widgets()
-            for r in rows[:4]:                # 顶栏/返还/投入/信息 顶置
-                self._ctrl_col.add_widget(r)
-            self._ctrl_col.add_widget(self._land_spring)   # 弹簧占位
-            self._ctrl_col.add_widget(rows[4])             # 发射行沉底(右手拇指位)
-            self.orientation = "horizontal"
-            self.add_widget(self.game_area)
-            self.add_widget(self._ctrl_col)
-        else:
-            if self._ctrl_col is not None:
-                self._ctrl_col.clear_widgets()
-            self.orientation = "vertical"
-            for w in rows[:3] + (self.game_area,) + rows[3:]:
-                self.add_widget(w)
 
     # ------------------------------ UI ------------------------------
     def _mk_label(self, text, font_size, hexcolor, halign="left", bold=False, **kw):
@@ -2928,16 +3029,12 @@ class RootWidget(BoxLayout):
         return b
 
     def _popup(self, hint_w, h_dp, **kw):
-        """统一建 Popup。横屏下 size_hint 宽度会按横屏全宽撑成扁条,
-        改固定宽 dp(460)(竖排内容不受影响); 竖屏保持原 size_hint 行为。"""
-        if self._land:
-            kw["size_hint"] = (None, None)
-            kw["width"] = dp(460)
-            kw["height"] = min(dp(h_dp), Window.height * 0.92)
-        else:
-            kw["size_hint"] = (hint_w, None)
-            kw["height"] = dp(h_dp)
-        return Popup(**kw)
+        """统一建 Popup(RotPopup: 横屏挂旋转层随画面转, 坐标系统一为等效竖屏窗口)。
+        高度上限按等效窗口算, size_hint 相对挂载层, 竖屏行为与原生一致。"""
+        _, vh = self._veq()
+        kw["size_hint"] = (hint_w, None)
+        kw["height"] = min(dp(h_dp), vh * 0.92)
+        return RotPopup(**kw)
 
     def _row_bg(self, row, hexcolor):
         with row.canvas.before:
@@ -3125,7 +3222,11 @@ class RootWidget(BoxLayout):
         self.launch()
 
     def _on_title_touch_down(self, win, touch):
-        if (self.title_lbl.collide_point(*touch.pos)
+        pos = touch.pos
+        layer = _land_layer()
+        if layer is not None:
+            pos = layer._to_eq(*pos)        # Window 级触摸是物理坐标, 先逆旋转到等效坐标
+        if (self.title_lbl.collide_point(*pos)
                 and not getattr(self, "_bench_running", False)):
             self._bench_start = time.time()
             self._bench_triggered = False
@@ -3142,9 +3243,10 @@ class RootWidget(BoxLayout):
 
     def _relayout_bench_dim(self, *_):
         if getattr(self, "_bench_dim_shown", False):
-            # 盖全屏: RootWidget 在平板是 AnchorLayout 居中, self.size 只是内容列
+            # 盖满等效竖屏窗口(RootWidget 在 anchor 居中, self.size 只是内容列);
+            # 矩形画在 RootWidget.canvas.after, 随 LandLayer 一起旋转
             self._bench_dim_rect.pos = (-self.x, -self.y)
-            self._bench_dim_rect.size = Window.size
+            self._bench_dim_rect.size = self._veq()
 
     def _hide_bench_dim(self):
         self._bench_dim_shown = False
@@ -3345,12 +3447,8 @@ class RootWidget(BoxLayout):
                            background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
         content.add_widget(close_btn)
-        if self._land:
-            popup = Popup(title='', content=content, size_hint=(None, 0.8),
-                          width=dp(460), auto_dismiss=True, separator_height=0)
-        else:
-            popup = Popup(title='', content=content, size_hint=(0.86, 0.7),
-                          auto_dismiss=True, separator_height=0)
+        popup = RotPopup(title='', content=content, size_hint=(0.86, 0.7),
+                         auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
 
@@ -3905,14 +4003,7 @@ class RootWidget(BoxLayout):
         self._row_rtp.padding    = [dp(24), dp(4) * uv]
         self._row_bets.padding   = [dp(24), dp(4) * uv]
         self._row_bottom.padding = [dp(6), dp(4) * uv, dp(12), dp(4) * uv]
-        if self._land and self._ctrl_col is not None:
-            # 横屏分栏: 控制列宽取"装得下最宽行(返还率行≈383dp×us)"与"屏宽36%"的较小值
-            self._ctrl_col.spacing = dp(10) * uv
-            self._ctrl_col.width = min(dp(420) * max(us, 0.72), Window.width * 0.36)
-            self._ctrl_col.padding = [0, dp(4), dp(6), dp(4)]
-            self.padding = [dp(6), dp(6), dp(6), dp(6)]
-        else:
-            self.padding = [0, 0, 0, dp(12)]  # 底部留白
+        self.padding = [0, 0, 0, dp(12)]  # 底部留白
 
         self.title_lbl.font_size       = sp(18) * fs
         self.status_lbl.font_size      = sp(13) * fs
@@ -3950,7 +4041,9 @@ class RootWidget(BoxLayout):
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
             self._last_win_size = ws
-            self._set_landscape(Window.width > Window.height)
+            layer = _land_layer()
+            if layer is not None:
+                layer.apply_orientation()   # 横竖切换: 重算旋转角/等效窗口(画面保持竖拿构图)
             self._fit_width()
             self._apply_sizes()
         if self.state == "charging":
@@ -4113,21 +4206,29 @@ class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
         if platform != "android":
-            Window.size = (540, 960)       # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中
+            # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中。
+            # --landscape: 模拟横屏反旋转(Y700 横窗比例), 验证"画面保持竖拿构图"用
+            Window.size = (1740, 1000) if "--landscape" in sys.argv else (540, 960)
         self.title = "跳跳的弹珠机"
         sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
+        # 横屏反旋转层: 内容在等效竖屏窗口里布局, 横拿时整体旋转 90 度铺满横屏,
+        # 画面构图与竖拿一致(玩家扭头看/转回竖屏玩)。竖屏时透明无感(零回归)。
+        self.layer = LandLayer()
         anchor = AnchorLayout(anchor_x="center", anchor_y="center")
+        anchor.size_hint = (None, None)   # 等效盒尺寸由 LandLayer 全权控制(FloatLayout 会按 size_hint 覆盖)
+        self.layer._anchor = anchor
+        self.layer.add_widget(anchor)
         self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
         anchor.add_widget(self.rootw)
-        self.rootw._set_landscape(Window.width > Window.height)   # 横拿启动直接进分栏
+        self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
-        return anchor
+        return self.layer
 
-    # ---- 方向策略: manifest fullSensor(四方向随重力), 系统直接给全屏窗口。
-    #      横拿(w>h)时 RootWidget 切左盘面+右控制列分栏(盘面竖直、正对玩家、满屏),
-    #      不再锁竖屏——锁竖屏会被 Android 12L+ 大屏/ZUI 关进 letterbox 兼容小盒子。
-    #      横竖切换由 RootWidget._frame 的窗口尺寸轮询驱动(_set_landscape)。 ----
+    # ---- 方向策略(2026-08-17 定案): manifest+SDL 全四方向(fullSensor), 横拿时系统给
+    #      全屏横窗, LandLayer 把画面反转回竖拿构图铺满(锁竖屏会被 12L+/ZUI 塞 letterbox
+    #      半屏盒, app 改不了盒子宽高, 不对抗)。横竖切换由 RootWidget._frame 的窗口尺寸
+    #      轮询驱动(layer.apply_orientation)。 ----
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
