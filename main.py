@@ -4044,6 +4044,10 @@ class RootWidget(BoxLayout):
             layer = _land_layer()
             if layer is not None:
                 layer.apply_orientation()   # 横竖切换: 重算旋转角/等效窗口(画面保持竖拿构图)
+            app = App.get_running_app()
+            force = getattr(app, "_force_fullsensor", None)
+            if force is not None:
+                force()                     # 窗口一变立即重申 fullSensor, 不等守卫周期(转屏跟手)
             self._fit_width()
             self._apply_sizes()
         if self.state == "charging":
@@ -4223,41 +4227,13 @@ class PlinkoApp(App):
         self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
-        self._install_diag()
-        return self.layer
-
-    def _install_diag(self):
-        """诊断小字(左上角, 黄色): targetSdk/屏幕rotation/窗口尺寸/旋转角。
-        横屏问题排查期临时加, 定案后删。挂 Window 顶层不随 LandLayer 旋转,
-        横拿盒子(angle=0)和反旋转(angle!=90)状态下都正着可读。"""
-        from kivy.uix.label import Label
-        lbl = Label(font_size="11sp", color=(1.0, 0.9, 0.3, 0.9),
-                    halign="left", valign="top", text="diag",
-                    size_hint=(None, None), size=(360, 30), pos=(4, 0))
-        self._diag_lbl = lbl
-
-        def _upd(*_):
-            tsdk = rot = "-"
-            try:
-                from jnius import autoclass
-                act = autoclass("org.kivy.android.PythonActivity").mActivity
-                tsdk = act.getApplicationInfo().targetSdkVersion
-                rot = act.getWindowManager().getDefaultDisplay().getRotation()
-            except Exception:
-                pass
-            layer = getattr(self, "layer", None)
-            ang = layer.angle if layer is not None else 0
-            lbl.text = "tSDK=%s rot=%s ang=%s  win=%dx%d" % (
-                tsdk, rot, ang, Window.width, Window.height)
-            lbl.pos = (4, Window.height - 34)
-
-        _upd()
-        Clock.schedule_interval(_upd, 1.0)
-        Window.add_widget(lbl)
         if platform == "android":
-            # 启动 1s(SDL 启动序列完成后)抢一次话语权; 此后常驻守卫
+            # 方向守卫: 启动 1s(SDL 启动序列完成后)抢一次话语权, 之后常驻。
+            # 0.7s 周期(请求与 manifest 一致幂等): 横拿时持续顶掉 SDL 的竖屏自报,
+            # 转屏跟随基本即时(窗口变化分支里还有一记立即重申, 双保险)。
             Clock.schedule_once(lambda *_: self._force_fullsensor(), 1.0)
-            Clock.schedule_interval(self._orient_guard, 2.0)
+            Clock.schedule_interval(self._orient_guard, 0.7)
+        return self.layer
 
     # ---- 方向策略(2026-08-17 定案): manifest+SDL 全四方向(fullSensor), 横拿时系统给
     #      全屏横窗, LandLayer 把画面反转回竖拿构图铺满(锁竖屏会被 12L+/ZUI 塞 letterbox
