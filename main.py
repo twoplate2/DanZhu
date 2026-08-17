@@ -4233,7 +4233,7 @@ class PlinkoApp(App):
         from kivy.uix.label import Label
         lbl = Label(font_size="11sp", color=(1.0, 0.9, 0.3, 0.9),
                     halign="left", valign="top", text="diag",
-                    size_hint=(None, None), size=(300, 46), pos=(4, 0))
+                    size_hint=(None, None), size=(360, 30), pos=(4, 0))
         self._diag_lbl = lbl
 
         def _upd(*_):
@@ -4247,18 +4247,48 @@ class PlinkoApp(App):
                 pass
             layer = getattr(self, "layer", None)
             ang = layer.angle if layer is not None else 0
-            lbl.text = "tSDK=%s rot=%s  win=%dx%d  ang=%s" % (
-                tsdk, rot, Window.width, Window.height, ang)
-            lbl.pos = (4, Window.height - 50)
+            lbl.text = "tSDK=%s rot=%s ang=%s  win=%dx%d" % (
+                tsdk, rot, ang, Window.width, Window.height)
+            lbl.pos = (4, Window.height - 34)
 
         _upd()
         Clock.schedule_interval(_upd, 1.0)
         Window.add_widget(lbl)
+        if platform == "android":
+            # 启动 1s(SDL 启动序列完成后)抢一次话语权; 此后常驻守卫
+            Clock.schedule_once(lambda *_: self._force_fullsensor(), 1.0)
+            Clock.schedule_interval(self._orient_guard, 2.0)
 
     # ---- 方向策略(2026-08-17 定案): manifest+SDL 全四方向(fullSensor), 横拿时系统给
     #      全屏横窗, LandLayer 把画面反转回竖拿构图铺满(锁竖屏会被 12L+/ZUI 塞 letterbox
     #      半屏盒, app 改不了盒子宽高, 不对抗)。横竖切换由 RootWidget._frame 的窗口尺寸
     #      轮询驱动(layer.apply_orientation)。 ----
+    def _force_fullsensor(self):
+        """以毒攻毒: SDL 启动/onResume 会按自身 hint 调 setRequestedOrientation,
+        可能把 manifest 的 fullSensor 在运行时覆盖成竖屏 -> ZUI 判定'竖屏app'塞半屏盒
+        (80b6db5 真机诊断: manifest 已 fullSensor+targetSdk33, 窗口仍 1519x1754 盒,
+        唯一剩余变量就是 SDL 的运行时自报)。这里再调 FULL_SENSOR(10) 抢回话语权。"""
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            act.setRequestedOrientation(10)   # SCREEN_ORIENTATION_FULL_SENSOR
+        except Exception:
+            pass
+
+    def _orient_guard(self, dt):
+        """常驻方向守卫(2s): 横拿(系统 rotation=1/3)时持续请求 fullSensor。
+        与 manifest 一致的幂等请求, 系统无感; 仅在横置时发声。"""
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            rot = act.getWindowManager().getDefaultDisplay().getRotation()
+            if rot in (1, 3):
+                act.setRequestedOrientation(10)
+        except Exception:
+            pass
+
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
@@ -4269,6 +4299,8 @@ class PlinkoApp(App):
         return True
 
     def on_resume(self):
+        if platform == "android":
+            self._force_fullsensor()   # 回前台 SDL 会重报方向, 抢回话语权
         try:
             self.rootw.sfx.resume_out()
         except Exception:
