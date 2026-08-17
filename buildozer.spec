@@ -17,7 +17,7 @@ requirements = python3,kivy==2.3.0,pyjnius
 
 # 锁定 python-for-android 到 2024 年的 tag,绕开新版默认下载 Python 3.14 alpha 的问题
 p4a.branch = v2024.01.21
-# 构建后 hook: 往 manifest 主 activity 强制 screenOrientation=fullSensor + 降 targetSdk 30
+# 构建后 hook: 往 manifest 主 activity 强制 screenOrientation=fullSensor + resizeableActivity=true
 p4a.hook = p4a/hook.py
 
 # 四方向随重力: 正竖/倒竖180°/横拿全支持。横拿时 app 内切左盘面+右控制列分栏(盘面竖直满屏),
@@ -29,9 +29,10 @@ fullscreen = 0
 
 android.permissions = VIBRATE
 
-# targetSdk=30(保留): targetSdk>=31 在 12L+ 大屏被强制多窗口并忽略 screenOrientation,
-# 30 走兼容模式, fullSensor 才生效。androidx 只需 >=28, 30 能编译。
-android.api = 30
+# targetSdk=33(2026-08-17): 30 的兼容模式在 12L+ 大屏(sw>=600dp)会被塞固定比例
+# letterbox 盒(ZUI 近正方形半屏盒, 实测 fullSensor 四方向也躲不开, 像素取证确认)。
+# 33+ 声明全方向+resizeable 才给全屏窗口; 锁竖屏时代(sensorPortrait 需兼容模式)已结束。
+android.api = 33
 android.minapi = 21
 android.ndk = 25b
 

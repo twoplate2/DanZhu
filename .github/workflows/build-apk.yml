@@ -45,9 +45,10 @@ jobs:
           path: |
             ~/.buildozer
             .buildozer
-          key: buildozer-v3-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          # v4: targetSdk 30→33 换代(v3 前缀回退会捞回 targetSdk30 时代的 dist), 强制干净重建
+          key: buildozer-v4-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
           restore-keys: |
-            buildozer-v3-${{ runner.os }}-
+            buildozer-v4-${{ runner.os }}-
 
       - name: Build APK (debug)
         run: |
