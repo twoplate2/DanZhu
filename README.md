@@ -26,7 +26,7 @@ PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
 ```
 
 排版: 返还/投入/信息/底行四行首字符统一左沿 24dp, 行内 spacing 5dp。
-顶栏标题右偏 36dp 防移动端重叠, 双因子缩放自适应横屏窄屏。
+顶栏标题右偏 36dp 防移动端重叠, 双因子缩放自适应窄屏(横屏由反旋转层接管, 见下节)。
 
 ## 特效与反馈
 
@@ -43,6 +43,33 @@ PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
 切后台自动静音(SoundPool autoPause)、x10+ 大奖滚分/停留 1.2s、
 x2 起中奖震动(45/75/110/150ms)、顶栏声音三态开关(语音已开=绿底,默认 /
 音效已开=蓝底 / 音效已关=深底, 点按循环)。飞行时语音按钮/轮次按钮同步灰化。
+
+## 横屏适配(大屏平板, 2026-08 定稿)
+
+平板/折叠屏(Android 12+ 大屏)上的方向行为:
+
+- **四方向重力感应**: 正竖 / 倒竖 180° / 左横 / 右横全跟手;
+- **横拿时画面保持竖屏构图、铺满全屏**: 玩家扭头看或转回竖屏玩——
+  游戏不横屏化(不做左右分栏, 也不缩成小竖条)。
+
+实现四件套, 缺一不可:
+
+| 层 | 做法 | 位置 |
+|----|------|------|
+| manifest | `screenOrientation=fullSensor` + `resizeableActivity=true` | `p4a/hook.py` 注入 |
+| 版本标签 | `targetSdk 33` | `buildozer.spec`(`android.api`, 30 的兼容模式在大屏=半屏盒) |
+| **运行时方向守卫(关键解药)** | 启动/回前台/转屏瞬间/每 0.7s 调 `setRequestedOrientation(FULL_SENSOR)` | `../tools/android_part_ui.py` `PlinkoApp._force_fullsensor / _orient_guard` |
+| 横屏反旋转层 | 横窗时按"等效竖屏窗口"(短边×长边)布局, 以屏幕中心整体旋转 ±90° 铺满; 触摸逆变换; 弹窗挂层 | `../tools/android_part_ui.py` `LandLayer / RotPopup` |
+
+**病根(联想 Y700/ZUI 实测)**: 大屏系统对"竖屏 app"横拿时塞 1519×1754 半宽兼容盒;
+manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而 SDL 引擎每次启动/回前台
+会自报"竖屏", 把 manifest 的声明顶掉。所以必须运行时持续重申 fullSensor(方向守卫),
+系统才肯把半屏盒换成全屏窗口, 反旋转层才有机会工作。另外"锁竖屏"在 Android 12L+
+大屏上不是"屏幕不转"而是"被 letterbox 成小窗", 是死路, 不要再走。
+
+已知边界: 转屏瞬间有一帧级画面重排(系统真的把盒窗换成全屏窗, 无法完全无感);
+若某个横拿方向画面上下颠倒, 翻转 `../tools/android_part_ui.py` 里 `_land_angle()`
+的 90/-90 映射(一行)。
 
 ## 语音播报 (edge-tts 预录, voice/*.wav 51 个)
 
@@ -73,6 +100,7 @@ x2 起中奖震动(45/75/110/150ms)、顶栏声音三态开关(语音已开=绿�
 python main.py              # 开窗口玩(540×960; 宽屏最大化内容居中)
 python main.py --selftest   # 无界面自测(RTP/命中/卡死/哑火/音效体检)
 python main.py --smoke      # 自动冒烟 + 截图
+python main.py --landscape  # 桌面模拟横屏反旋转(1740×1000 横窗, 验证横屏布局用)
 python main.py --nosound    # 静音启动
 ```
 
@@ -94,7 +122,8 @@ python main.py --nosound    # 静音启动
 
 ```
 main.py                       # Kivy 应用(生成物, 3200+行)
-buildozer.spec                # 打包配置(p4a v2024.01.21, VIBRATE)
+buildozer.spec                # 打包配置(p4a v2024.01.21, VIBRATE, targetSdk 33)
+p4a/hook.py                   # 构建后 hook: manifest 注入 fullSensor + resizeable
 BUILD_APK.md                  # 云构建流程 + 移植弯路集
 how_to_desigin.html           # 多专家协作汇报页面
 icon.png / presplash.png      # 图标 + 启动屏
