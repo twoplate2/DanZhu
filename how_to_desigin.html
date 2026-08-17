@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>跳跳的弹珠机 — 一个小游戏的大设计</title>
 <style>
-  :root { --bg:#0b1220; --panel:#15223c; --card:#111d33; --text:#e8eefc; --sub:#8fa0c4; --muted:#5a6d8a; --green:#39d98a; --blue:#3d8bfd; --red:#e0533b; --purple:#a335ee; --gold:#f0b000; --code-bg:#0a1018; --radius:12px; }
+  :root { --bg:#0b1220; --panel:#15223c; --card:#111d33; --text:#eef2ff; --sub:#a9bad9; --muted:#8b9cc0; --green:#39d98a; --blue:#3d8bfd; --red:#ff6b57; --purple:#b85cff; --gold:#f0b000; --code-bg:#0a1018; --radius:12px; }
   *,*::before,*::after{ margin:0;padding:0;box-sizing:border-box; }
   html{ scroll-behavior:smooth;font-size:16px;scroll-padding-top:60px; }
   body{ background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Helvetica Neue",sans-serif;line-height:1.7;-webkit-font-smoothing:antialiased;overflow-x:hidden; }
@@ -103,7 +103,7 @@
 <nav class="toc-bar"><div class="toc-inner">
   <span class="toc-label">目录</span>
   <a href="#sec-spring">弹簧</a><a href="#sec-flight">三段式</a><a href="#sec-passive">被动</a><a href="#sec-evolve">进化</a>
-  <a href="#sec-voice">声音</a><a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a>
+  <a href="#sec-voice">声音</a><a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a><a href="#sec-orient">横屏</a>
   <span class="toc-sep">|</span>
   <a href="#appendix-a" style="color:var(--gold)">A·音效</a><a href="#appendix-b" style="color:var(--gold)">B·物理</a>
   <a href="#appendix-c" style="color:var(--gold)">C·数学</a><a href="#appendix-e" style="color:var(--gold)">E·进化</a>
@@ -118,7 +118,7 @@
     <div class="hero-num"><div class="num">300%</div><div class="label">最高返奖率<br>四档可切 80/120/200/300</div></div>
     <div class="hero-num"><div class="num">9/9</div><div class="label">九个格子<br>个个有机会</div></div>
     <div class="hero-num"><div class="num">4</div><div class="label">个旋钮<br>机器自己调参</div></div>
-    <div class="hero-num"><div class="num">50</div><div class="label">条语音<br>神经合成离线预录</div></div>
+    <div class="hero-num"><div class="num">51</div><div class="label">条语音<br>神经合成离线预录</div></div>
   </div>
   <div class="spring-stage"><canvas id="springCanvas"></canvas></div>
   <div class="spring-legend">
@@ -176,7 +176,7 @@
 <section class="section sect-voice" id="sec-voice">
   <div class="section-header"><h2>游戏会说话</h2><p class="desc">中几倍、返多少，都用人的声音报给你，一句不乱、永不抢话</p></div>
   <div class="grid-3">
-    <div class="card reveal reveal-d1"><h3>50 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。</p></div>
+    <div class="card reveal reveal-d1"><h3>51 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。</p></div>
     <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>中奖音分<span class="tag tag-blue">5档递增</span>：x2只有3个音，像小铃铛；x3加一音，x5再加一音，x10加低音支撑（像管风琴踏板），x20加到7个音+碎星收尾——像教堂钟声。混响逐渐加深，声场逐渐"撑开"。</p></div>
     <div class="card reveal reveal-d2"><h3>全局语音互斥</h3><p>上一个语音没播完，新按钮语音<span class="tag tag-blue">直接不出声</span>。你快速连点两个按钮，只听到第一个——两个播报不会叠在一起变成一团浆糊。</p></div>
   </div>
@@ -221,6 +221,18 @@
   <div class="insight reveal reveal-d2"><h3>性能自己会证明</h3><p>长按标题"跳跳的弹珠机"3 秒 → 所有按钮灰化 → 先<span class="tag tag-blue">真实采样屏幕帧率</span>（自动发 3 发球），再后台跑<span class="tag tag-blue">物理模拟</span>（每次 0.7 秒、连跑 5 次取中位，短时长不触发手机降频）→ 弹窗显示<span class="tag tag-blue">设备型号、运算速度（每秒多少步）、每次发射耗时、平均帧率、1% 低帧率</span>。PC 和手机都支持，是骡子是马拉出来遛遛。<span class="tag tag-blue">自测四万次飞行</span>验证返奖率精确、落袋零穿帮、回弹感达标。</p></div>
 </section>
 
+<!-- ═══════════ 9. 横屏 ═══════════ -->
+<section class="section sect-build" id="sec-orient">
+  <div class="section-header"><h2>横着拿，也只给你竖屏</h2><p class="desc">一台联想平板引发的"屏幕保卫战"——十几版提交、截图像素取证，才让画面永远是你熟悉的样子</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>四方向跟着手转</h3><p>正着拿、倒着拿 180°、左横、右横——<span class="tag tag-blue">四个方向全跟重力感应</span>。倒着拿画面自动翻正，左边横过去和右边横过去，画面各自认得方向，永远正对你。</p></div>
+    <div class="card reveal reveal-d1"><h3>横拿时画面纹丝不改</h3><p>平板横过来的瞬间，画面<span class="tag tag-blue">还是竖屏时那个样子</span>——构图、大小、方向全不变，整屏铺满。玩家扭头看一眼，或把平板转回竖着继续玩。<span class="tag tag-blue">不做左右分栏，也不缩成小竖条</span>。</p></div>
+    <div class="card reveal reveal-d2"><h3>和系统"抢方向盘"</h3><p>联想大屏系统只认应用"正在说"的方向请求，不读安装清单里的声明——而游戏引擎每次启动都会自报"我是竖屏游戏"，于是被塞进半屏小盒。解法是<span class="tag tag-blue">每 0.7 秒大声纠正一次"我四个方向都行"</span>，转屏瞬间再立刻喊一遍，抢回话语权。</p></div>
+    <div class="card reveal reveal-d2"><h3>手指和弹窗都跟着转</h3><p>画面整体旋转 90° 后，手指坐标做<span class="tag tag-blue">逆变换</span>——点哪是哪，蓄力、发射、长按标题呼出跑分全部跟手；所有弹窗挂进旋转层，<span class="tag tag-blue">跟着画面一起转</span>，不会横着飘出去。</p></div>
+  </div>
+  <div class="insight reveal reveal-d3"><h3>十几版提交换来的三个教训</h3><p>① 大屏系统上"锁竖屏"不是"屏幕不转"，而是"被塞进小窗"——死路；② 声明写在安装清单里没用，<span class="tag tag-blue">这台系统只认运行时的请求</span>，谁最后开口听谁的；③ 定位问题别猜——截图像素取证 + 屏上诊断小字，一次锁定"系统到底给了多大的窗户"。最终方案四件套缺一不可：现代版本标签 + 清单声明 + 运行时守卫 + 反旋转层。</p></div>
+</section>
+
 <!-- ═══════════ APPENDICES ═══════════ -->
 <section class="appendix-section" id="appendix-a">
   <h2 style="text-align:center;color:var(--gold);font-size:1.2rem;margin-bottom:20px;">附录 — 技术深水区（给懂行的人）</h2>
@@ -244,8 +256,9 @@
   片段间5ms间隙依次Clock.schedule_once排队播放，支持"二/两"变体规则
 
 <span class="hl">语音来源（诚实注脚）:</span>
-  50 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 50 个 wav。
-  注意：RTP 切换语音目前只有 80/100/120 三条，200/300 档切换时暂静默——真实缺口，非"全覆盖"。</div>
+  51 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 51 个 wav。
+  RTP 切换语音 80/120/200/300 四条 2026-08-16 补齐（早期 200/300 档静默的缺口已消灭，
+  孤儿 voice_rtp_100 同步删除）——现在四档切换个个有声音。</div>
     </div>
   </details>
   <details>
@@ -316,30 +329,44 @@
     </div>
   </details>
   <details>
-    <summary>附录D：跨平台架构</summary>
+    <summary>附录D：跨平台架构与横屏适配</summary>
     <div class="appendix-body">
       <div class="grid-2">
         <div class="card"><h3>代码生成管道</h3><p>build_android_main.py 从 plinko.py 原样抽取逻辑段 + 拼接 head/backends/ui 三个 Kivy 手写段。改物理→重跑生成器→两版永不漂移。</p></div>
         <div class="card"><h3>锁定版本组合</h3><p>Kivy 2.3.0 + p4a v2024.01.21 + buildozer 1.5.0 + Cython&lt;3.0 + host Python 3.10 + NDK 25b + ubuntu-22.04。缓存命中后 2.5-3 分钟出 APK。</p></div>
       </div>
-      <div class="data-block"><span class="hl">双因子缩放:</span>
+      <div class="data-block"><span class="hl">横屏反旋转层（2026-08-17 定稿，四件套缺一不可）:</span>
+  ① manifest: screenOrientation=fullSensor + resizeableActivity=true（p4a/hook.py 注入）
+  ② 版本标签: targetSdk 33（30 的兼容模式在大屏=被塞固定比例半屏盒）
+  ③ 运行时方向守卫: 每0.7s + 转屏瞬间 + on_resume 调 setRequestedOrientation(FULL_SENSOR)
+     ——联想 ZUI 只认运行时请求，SDL 引擎启动/onResume 自报"竖屏"会顶掉清单声明，
+     必须持续重申抢回话语权（唯一真解药，清单声明单独无效）
+  ④ LandLayer 反旋转层: 横窗(w>h)时整棵 UI 按"等效竖屏窗口"(短边×长边)布局，
+     以屏幕中心旋转±90°铺满(rot=1→+90, rot=3→-90)，画面构图与竖拿完全一致；
+     触摸 on_touch_* 先逆旋转到等效坐标再分发(push/pop)，窗口级绑定同样过逆变换；
+     RotPopup 照抄 ModalView.open/_real_remove_widget 把宿主 Window 换成旋转层
+  已知边界: 转屏瞬间一帧重排（系统真把半屏盒换成全屏窗，无法完全无感）；
+     某横拿方向若上下颠倒 → 翻转 _land_angle() 的 90/-90 映射（一行）
+
+<span class="hl">双因子缩放（竖屏路径，横屏由反旋转层接管）:</span>
   _font_scale = min(1.0, width/360dp)   窄屏时字体缩小
-  _ui_scale   = min(1.0, height/680dp)  横屏时固定UI缩小
-  竖屏时双因子均为1.0 → 不影响原有布局</div>
+  _ui_scale   = min(1.0, height/680dp)  可用高度不足时固定UI缩小
+  横屏时两因子吃"等效竖屏窗口"尺寸（短边×长边），物理窗口只用于算旋转；
+  桌面 --landscape 参数可模拟横窗（1740×1000）验证横屏布局</div>
     </div>
   </details>
 </section>
 
 <!-- ═══════════ CLOSING ═══════════ -->
 <section class="closing">
-  <div class="big-quote">36 个音效没有一个是文件。<br>一根弹簧没有一张图片。<br>一颗球从离手到落袋，没人碰它一下。<br>九个格子的公平，是程序自己"养"出来的。<br><br><em>这不是炫技，这是对玩家的尊重。</em></div>
+  <div class="big-quote">36 个音效没有一个是文件。<br>一根弹簧没有一张图片。<br>一颗球从离手到落袋，没人碰它一下。<br>一块屏横过来竖过去，画面还是那个画面。<br>九个格子的公平，是程序自己"养"出来的。<br><br><em>这不是炫技，这是对玩家的尊重。</em></div>
   <div class="kick reveal">比够用，多走一步。</div>
   <div class="pillars">
     <div class="pillar reveal reveal-d1"><span class="p-icon">🔌</span><div class="p-title">弹簧会说话</div><div class="p-desc">颜色即力度·真实回弹</div></div>
     <div class="pillar reveal reveal-d1"><span class="p-icon">🛤</span><div class="p-title">三段式轨迹</div><div class="p-desc">升空·转弯·落袋</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">没人作弊</div><div class="p-desc">零穿帮·自然落格</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🧬</span><div class="p-title">机器养公平</div><div class="p-desc">进化寻优·4旋钮</div></div>
-    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">50条语音·36音效</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">51条语音·36音效</div></div>
     <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能自证</div><div class="p-desc">4万次自测·真机跑分</div></div>
   </div>
 </section>
