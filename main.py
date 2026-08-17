@@ -4223,7 +4223,37 @@ class PlinkoApp(App):
         self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
+        self._install_diag()
         return self.layer
+
+    def _install_diag(self):
+        """诊断小字(左上角, 黄色): targetSdk/屏幕rotation/窗口尺寸/旋转角。
+        横屏问题排查期临时加, 定案后删。挂 Window 顶层不随 LandLayer 旋转,
+        横拿盒子(angle=0)和反旋转(angle!=90)状态下都正着可读。"""
+        from kivy.uix.label import Label
+        lbl = Label(font_size="11sp", color=(1.0, 0.9, 0.3, 0.9),
+                    halign="left", valign="top", text="diag",
+                    size_hint=(None, None), size=(300, 46), pos=(4, 0))
+        self._diag_lbl = lbl
+
+        def _upd(*_):
+            tsdk = rot = "-"
+            try:
+                from jnius import autoclass
+                act = autoclass("org.kivy.android.PythonActivity").mActivity
+                tsdk = act.getApplicationInfo().targetSdkVersion
+                rot = act.getWindowManager().getDefaultDisplay().getRotation()
+            except Exception:
+                pass
+            layer = getattr(self, "layer", None)
+            ang = layer.angle if layer is not None else 0
+            lbl.text = "tSDK=%s rot=%s  win=%dx%d  ang=%s" % (
+                tsdk, rot, Window.width, Window.height, ang)
+            lbl.pos = (4, Window.height - 50)
+
+        _upd()
+        Clock.schedule_interval(_upd, 1.0)
+        Window.add_widget(lbl)
 
     # ---- 方向策略(2026-08-17 定案): manifest+SDL 全四方向(fullSensor), 横拿时系统给
     #      全屏横窗, LandLayer 把画面反转回竖拿构图铺满(锁竖屏会被 12L+/ZUI 塞 letterbox
