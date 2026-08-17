@@ -219,6 +219,7 @@
     <div class="card reveal reveal-d1"><h3>GitHub Actions 云构建</h3><p>push 到 main → 自动出 APK。锁定版本组合，首次构建 20 分钟，<span class="tag tag-blue">缓存命中后 3 分钟</span>。全程不需要本地装 Android SDK。</p></div>
   </div>
   <div class="insight reveal reveal-d2"><h3>性能自己会证明</h3><p>长按标题"跳跳的弹珠机"3 秒 → 所有按钮灰化 → 先<span class="tag tag-blue">真实采样屏幕帧率</span>（自动发 3 发球），再后台跑<span class="tag tag-blue">物理模拟</span>（每次 0.7 秒、连跑 5 次取中位，短时长不触发手机降频）→ 弹窗显示<span class="tag tag-blue">设备型号、运算速度（每秒多少步）、每次发射耗时、平均帧率、1% 低帧率</span>。PC 和手机都支持，是骡子是马拉出来遛遛。<span class="tag tag-blue">自测四万次飞行</span>验证返奖率精确、落袋零穿帮、回弹感达标。</p></div>
+  <div class="insight reveal reveal-d3"><h3>一场真实的跨平台对拼（2026-08 实测）</h3><p>同口径跑分（纯 Python 单线程，0.7 秒 × 5 轮取中位，两端跑同一个 CPython 3.11、同一套物理代码，无 JIT 无加速）：20 核桌面 i7-14700KF <span class="tag tag-blue">11516 步/秒</span> vs 骁龙 8 至尊版 Gen5 平板（拯救者 Y700 五代）<span class="tag tag-blue">约 10000 步/秒 = 桌面的 87%</span>。物理是单线程 Python——20 个核全程旁观，这是一场"单核贴身肉搏"：移动大核靠高 IPC 和单核 12MB 二级缓存追平桌面高频，剩下一成差距来自安卓的 Python 编译与内存延迟。而游戏每秒只需 120 步，两端余量都约 85 倍——<span class="tag tag-blue">跑分比的是余量，玩起来毫无差别</span>。</p></div>
 </section>
 
 <!-- ═══════════ 9. 横屏 ═══════════ -->
