@@ -2420,7 +2420,36 @@ from kivy.animation import Animation
 
 # =============================================================================
 # 横屏反旋转层(2026-08-17 定案: 画面永远保持竖拿构图, 横拿时玩家扭头看/转回竖屏玩)
+# 2026-08-19 屏幕比例分流: 仅 16:9 及更宽的屏(平板)才四方向旋转;更瘦长的手机
+# (18:9/20.5:9 等)锁竖屏(正竖+倒竖), 不进横屏 —— 瘦长机横拿时系统会多出一条
+# 横向状态栏压在旋转画面上, 显示直接坏掉, 且反旋转构图在小屏上本就不适合阅读。
 # =============================================================================
+_DEVICE_WIDE_MIN = 9.0 / 16.0    # 短边/长边 ≥ 9:16 = 宽屏(16:9 及更宽/更方)
+_device_wide_cache = None        # 开机量一次物理屏比例, 之后不再变
+
+
+def _device_is_wide():
+    """本机物理屏是否 16:9 及更宽(平板类, 允许横屏旋转)。
+    用 Display.getRealSize() 的物理分辨率(含系统栏, 不随旋转变), 不受当前
+    窗口尺寸/状态栏影响。读不到(桌面/异常)时按宽屏处理 = 保持原有行为
+    (桌面 LandLayer 本就只认 --landscape 模拟, 不受影响)。"""
+    global _device_wide_cache
+    if _device_wide_cache is None:
+        aspect = 1.0
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            disp = act.getWindowManager().getDefaultDisplay()
+            pt = autoclass("android.graphics.Point")()
+            disp.getRealSize(pt)
+            s, l = min(pt.x, pt.y), max(pt.x, pt.y)
+            aspect = s / float(l)
+        except Exception:
+            aspect = 1.0
+        _device_wide_cache = aspect >= _DEVICE_WIDE_MIN
+    return _device_wide_cache
+
+
 def _land_angle():
     """横屏渲染旋转角(度, Kivy Rotate 逆时针为正): 抵消系统转屏, 让画面在屏幕上的
     构图与竖拿时完全一致。Display.getRotation(): 1(ROTATION_90)->+90, 3(ROTATION_270)->-90,
@@ -2446,6 +2475,7 @@ class LandLayer(FloatLayout):
     宽高), 故方向放开(fullSensor 四方向), 横拿时系统给全屏横窗; 本层把整棵 UI 树按
     "等效竖屏窗口"(短边x长边)布局后整体旋转 90 度铺满横屏 -> 屏幕上的画面构图与
     竖拿时一模一样。竖屏时 angle=0 且层尺寸=窗口, 行为与没有本层完全一致(零回归)。
+    仅 16:9 及更宽的设备启用(瘦长手机锁竖屏, 见 _device_is_wide)。
     触摸在 on_touch_* 先逆旋转到等效坐标再分发; 弹窗用 RotPopup 挂到本层。"""
 
     def __init__(self, **kw):
@@ -2460,9 +2490,12 @@ class LandLayer(FloatLayout):
 
     def apply_orientation(self):
         """窗口尺寸变化时重算层尺寸/旋转角, 返回是否处于横屏反旋转模式。
-        仅 Android(或桌面 --landscape 模拟)启用; 桌面普通宽窗维持竖构图居中不变。"""
+        仅 16:9 及更宽的设备(平板, 或桌面 --landscape 模拟)且窗口为横向才启用;
+        瘦长手机被竖屏锁(见 _apply_orientation), 窗口不会横, 此处再加一道闸
+        双保险; 桌面普通宽窗维持竖构图居中不变。"""
         w, h = Window.width, Window.height
-        land = (w > h and (platform == "android" or "--landscape" in sys.argv))
+        land = (w > h and (platform == "android" or "--landscape" in sys.argv)
+                and _device_is_wide())
         self.pos = (0, 0)
         self.size = (w, h)
         self.angle = _land_angle() if land else 0
@@ -4045,9 +4078,9 @@ class RootWidget(BoxLayout):
             if layer is not None:
                 layer.apply_orientation()   # 横竖切换: 重算旋转角/等效窗口(画面保持竖拿构图)
             app = App.get_running_app()
-            force = getattr(app, "_force_fullsensor", None)
+            force = getattr(app, "_apply_orientation", None)
             if force is not None:
-                force()                     # 窗口一变立即重申 fullSensor, 不等守卫周期(转屏跟手)
+                force()                     # 窗口一变立即重申方向策略, 不等守卫周期(转屏跟手)
             self._fit_width()
             self._apply_sizes()
         if self.state == "charging":
@@ -4228,40 +4261,50 @@ class PlinkoApp(App):
         self.rootw._fit_width()
         self.rootw._apply_sizes()
         if platform == "android":
-            # 方向守卫: 启动 1s(SDL 启动序列完成后)抢一次话语权, 之后常驻。
-            # 0.7s 周期(请求与 manifest 一致幂等): 横拿时持续顶掉 SDL 的竖屏自报,
-            # 转屏跟随基本即时(窗口变化分支里还有一记立即重申, 双保险)。
-            Clock.schedule_once(lambda *_: self._force_fullsensor(), 1.0)
+            # 方向守卫: 启动 1s(SDL 启动序列完成后)按设备分流抢一次话语权, 之后常驻。
+            # 0.7s 周期幂等: 宽屏横拿时持续顶掉 SDL 的竖屏自报, 转屏跟随基本即时
+            # (窗口变化分支里还有一记立即重申, 双保险); 瘦长手机持续重申竖屏锁。
+            Clock.schedule_once(lambda *_: self._apply_orientation(), 1.0)
             Clock.schedule_interval(self._orient_guard, 0.7)
         return self.layer
 
-    # ---- 方向策略(2026-08-17 定案): manifest+SDL 全四方向(fullSensor), 横拿时系统给
-    #      全屏横窗, LandLayer 把画面反转回竖拿构图铺满(锁竖屏会被 12L+/ZUI 塞 letterbox
-    #      半屏盒, app 改不了盒子宽高, 不对抗)。横竖切换由 RootWidget._frame 的窗口尺寸
-    #      轮询驱动(layer.apply_orientation)。 ----
-    def _force_fullsensor(self):
+    # ---- 方向策略(2026-08-19 按屏幕比例分流): manifest+SDL 全四方向(fullSensor)。
+    #      宽屏(16:9 及更宽, 平板): fullSensor 四方向, 横拿时系统给全屏横窗,
+    #      LandLayer 把画面反转回竖拿构图铺满(锁竖屏会被 12L+/ZUI 塞 letterbox
+    #      半屏盒, app 改不了盒子宽高, 不对抗)。
+    #      瘦长手机(<16:9, 如 20.5:9): 锁竖屏 SENSOR_PORTRAIT(7, 正竖+倒竖180)。
+    #      横拿时系统根本不进横屏 —— 反旋转层在瘦长机上会撞上横向多出的状态栏
+    #      显示坏掉, 手机小屏看旋转竖构图也不适合阅读; 竖屏锁在小屏手机上
+    #      不会触发 12L letterbox(那是大屏政策), 老方案在手机上本就验证过。
+    #      横竖切换由 RootWidget._frame 的窗口尺寸轮询驱动(layer.apply_orientation)。 ----
+    def _apply_orientation(self):
         """以毒攻毒: SDL 启动/onResume 会按自身 hint 调 setRequestedOrientation,
         可能把 manifest 的 fullSensor 在运行时覆盖成竖屏 -> ZUI 判定'竖屏app'塞半屏盒
         (80b6db5 真机诊断: manifest 已 fullSensor+targetSdk33, 窗口仍 1519x1754 盒,
-        唯一剩余变量就是 SDL 的运行时自报)。这里再调 FULL_SENSOR(10) 抢回话语权。"""
+        唯一剩余变量就是 SDL 的运行时自报)。这里按设备分流重申一次抢回话语权:
+        宽屏设备抢 FULL_SENSOR(10), 瘦长手机抢 SENSOR_PORTRAIT(7)。"""
         try:
             from jnius import autoclass
             act = autoclass("org.kivy.android.PythonActivity").mActivity
-            act.setRequestedOrientation(10)   # SCREEN_ORIENTATION_FULL_SENSOR
+            act.setRequestedOrientation(10 if _device_is_wide() else 7)
         except Exception:
             pass
 
     def _orient_guard(self, dt):
-        """常驻方向守卫(2s): 横拿(系统 rotation=1/3)时持续请求 fullSensor。
-        与 manifest 一致的幂等请求, 系统无感; 仅在横置时发声。"""
+        """常驻方向守卫: 按设备分流持续重申方向请求(幂等, 系统无感)。
+        宽屏: 横置(rotation=1/3)时重申 fullSensor, 顶掉 SDL 竖屏自报;
+        瘦长手机: 持续重申竖屏锁(7), 任何运行时横屏自报都被顶掉。"""
         if platform != "android":
             return
         try:
             from jnius import autoclass
             act = autoclass("org.kivy.android.PythonActivity").mActivity
-            rot = act.getWindowManager().getDefaultDisplay().getRotation()
-            if rot in (1, 3):
-                act.setRequestedOrientation(10)
+            if _device_is_wide():
+                rot = act.getWindowManager().getDefaultDisplay().getRotation()
+                if rot in (1, 3):
+                    act.setRequestedOrientation(10)
+            else:
+                act.setRequestedOrientation(7)
         except Exception:
             pass
 
@@ -4276,7 +4319,7 @@ class PlinkoApp(App):
 
     def on_resume(self):
         if platform == "android":
-            self._force_fullsensor()   # 回前台 SDL 会重报方向, 抢回话语权
+            self._apply_orientation()   # 回前台 SDL 会重报方向, 抢回话语权
         try:
             self.rootw.sfx.resume_out()
         except Exception:

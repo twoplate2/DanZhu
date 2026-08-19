@@ -66,22 +66,28 @@ x2 起中奖震动(45/75/110/150ms)、顶栏声音三态开关(语音已开=绿�
   `total_frames / (duration × runs)`)——直接 `total_frames / duration` 会虚报
   5 倍(实踩过)。
 
-## 横屏适配(大屏平板, 2026-08 定稿)
+## 横屏适配(大屏平板, 2026-08 定稿; 2026-08-19 按屏幕比例分流)
 
-平板/折叠屏(Android 12+ 大屏)上的方向行为:
+方向策略按**物理屏比例**分流(开机量一次短边÷长边, 不受旋转/状态栏影响):
 
-- **四方向重力感应**: 正竖 / 倒竖 180° / 左横 / 右横全跟手;
-- **横拿时画面保持竖屏构图、铺满全屏**: 玩家扭头看或转回竖屏玩——
-  游戏不横屏化(不做左右分栏, 也不缩成小竖条)。
+- **16:9 及更宽的屏(平板类)**: 四方向重力感应, 正竖 / 倒竖 180° / 左横 / 右横全跟手;
+  横拿时画面保持竖屏构图、整体旋转铺满全屏——玩家扭头看或转回竖屏玩。
+- **比 16:9 瘦长的手机(18:9 / 20.5:9 等)**: 锁竖屏(正竖 + 倒竖 180°),
+  横拿时系统不进横屏, 不做旋转。瘦长机横拿时系统会多出一条横向状态栏压在
+  旋转画面上导致显示坏掉, 且小屏看旋转竖构图不适合阅读; 竖屏锁在小屏手机上
+  不会触发大屏 letterbox 政策(老方案在手机上验证过)。
 
-实现四件套, 缺一不可:
+宽屏路径实现四件套, 缺一不可:
 
 | 层 | 做法 | 位置 |
 |----|------|------|
 | manifest | `screenOrientation=fullSensor` + `resizeableActivity=true` | `p4a/hook.py` 注入 |
 | 版本标签 | `targetSdk 33` | `buildozer.spec`(`android.api`, 30 的兼容模式在大屏=半屏盒) |
-| **运行时方向守卫(关键解药)** | 启动/回前台/转屏瞬间/每 0.7s 调 `setRequestedOrientation(FULL_SENSOR)` | `../tools/android_part_ui.py` `PlinkoApp._force_fullsensor / _orient_guard` |
-| 横屏反旋转层 | 横窗时按"等效竖屏窗口"(短边×长边)布局, 以屏幕中心整体旋转 ±90° 铺满; 触摸逆变换; 弹窗挂层 | `../tools/android_part_ui.py` `LandLayer / RotPopup` |
+| **运行时方向守卫(关键解药)** | 启动/回前台/转屏瞬间/每 0.7s 按设备分流重申方向: 宽屏 `FULL_SENSOR`, 瘦长机 `SENSOR_PORTRAIT(7)` | `../tools/android_part_ui.py` `PlinkoApp._apply_orientation / _orient_guard / _device_is_wide` |
+| 横屏反旋转层 | 横窗时按"等效竖屏窗口"(短边×长边)布局, 以屏幕中心整体旋转 ±90° 铺满; 仅宽屏设备启用; 触摸逆变换; 弹窗挂层 | `../tools/android_part_ui.py` `LandLayer / RotPopup` |
+
+manifest 对两类设备统一声明 fullSensor(manifest 无法按比例分流), 运行时请求
+优先级更高, 由方向守卫按 `_device_is_wide()`(短边/长边 ≥ 9:16)分流覆盖。
 
 **病根(联想 Y700/ZUI 实测)**: 大屏系统对"竖屏 app"横拿时塞 1519×1754 半宽兼容盒;
 manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而 SDL 引擎每次启动/回前台
