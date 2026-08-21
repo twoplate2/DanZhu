@@ -1482,6 +1482,14 @@ class _SoundPoolOut:
     name = "SoundPool"
 
     def __init__(self, voices=SFX_VOICES):
+        self._voices = voices
+        self._ids = {}
+        self._paths = {}              # name -> wav 路径(拔耳机后重建时重新 load 用)
+        self._sp = self._build_sp()
+        self._receiver = None
+        self._register_noisy_receiver()
+
+    def _build_sp(self):
         from jnius import autoclass
         SoundPool = autoclass("android.media.SoundPool")
         AudioAttributes = autoclass("android.media.AudioAttributes")
@@ -1489,17 +1497,64 @@ class _SoundPoolOut:
                  .setUsage(AudioAttributes.USAGE_GAME)
                  .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                  .build())
-        self._sp = (SoundPool.Builder()
-                    .setMaxStreams(voices)
-                    .setAudioAttributes(attrs)
-                    .build())
-        self._ids = {}
+        return (SoundPool.Builder()
+                .setMaxStreams(self._voices)
+                .setAudioAttributes(attrs)
+                .build())
+
+    def _register_noisy_receiver(self):
+        """拔耳机 → 系统发 ACTION_AUDIO_BECOMING_NOISY → 重建 SoundPool 恢复扬声器路由。
+        耳机拔出时底层音频流被系统断开(stream disconnected), 不重建就永久无声, 只能重启。
+        receiver 存到 self._receiver 保活, 防被 GC(OnLoadCompleteListener 的前车之鉴)。"""
+        try:
+            from jnius import autoclass, PythonJavaClass, java_method
+            PythonActivity = autoclass('org.kivy.android.PythonActivity')
+            AudioManager = autoclass('android.media.AudioManager')
+            IntentFilter = autoclass('android.content.IntentFilter')
+
+            class _NoisyReceiver(PythonJavaClass):
+                __javainterfaces__ = ['android/content/BroadcastReceiver']
+                __javacontext__ = 'app'
+
+                def __init__(self, cb):
+                    super().__init__()
+                    self.cb = cb
+
+                @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
+                def onReceive(self, context, intent):
+                    self.cb()
+
+            self._receiver = _NoisyReceiver(self._rebuild)
+            PythonActivity.mActivity.registerReceiver(
+                self._receiver,
+                IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+        except Exception:
+            self._receiver = None
 
     def prime(self, name, path):
         sid = self._sp.load(path, 1)
         if not sid:                          # 0 = 加载失败(文件坏了/格式不对)
             raise RuntimeError("SoundPool.load failed: " + path)
         self._ids[name] = sid
+        self._paths[name] = path
+
+    def _rebuild(self):
+        """耳机拔出后底层音频流被系统断开: release 旧的, 重建新 SoundPool 并重新 load。"""
+        try:
+            old = self._sp
+            self._ids = {}
+            self._sp = self._build_sp()
+            try:
+                old.release()
+            except Exception:
+                pass
+            for name, path in self._paths.items():
+                try:
+                    self.prime(name, path)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def play_named(self, name, gain01):
         sid = self._ids.get(name)
@@ -1521,6 +1576,13 @@ class _SoundPoolOut:
             pass
 
     def close(self):
+        try:
+            if self._receiver is not None:
+                from jnius import autoclass
+                PythonActivity = autoclass('org.kivy.android.PythonActivity')
+                PythonActivity.mActivity.unregisterReceiver(self._receiver)
+        except Exception:
+            pass
         try:
             self._sp.release()
         except Exception:
@@ -1717,7 +1779,7 @@ class Sfx:
             try:
                 self.out.prime(name, path)
             except Exception:
-                continue
+                return False          # 任一音效加载失败: 缓存视为无效, 触发重新烘焙自愈
             self.named.add(name)
         return True
 
@@ -2388,28 +2450,26 @@ def _read_4digits(n, is_highest=True):
         parts.append("voice_liang" if qian == 2 else "voice_d_%d" % qian)
         parts.append("voice_u_1000")
     else:
-        need_zero = is_highest is False
+        need_zero = is_highest is False   # 低位组(前面有万位)且无千位: 组前要"零"
     if bai > 0:
-        if need_zero and not parts:
-            pass
-        elif need_zero and parts:
+        if need_zero:
             parts.append("voice_d_0")
+            need_zero = False
         parts.append("voice_d_%d" % bai)
         parts.append("voice_u_100")
     elif qian > 0:
-        need_zero = True
+        need_zero = True                  # 千位后百位空: 十位/个位前要"零"
     if shi > 0:
-        if need_zero and parts:
+        if need_zero:
             parts.append("voice_d_0")
+            need_zero = False
         if shi == 1 and not parts:
             parts.append("voice_u_10")          # 10~19: "十" 不读 "一十"
         else:
             parts.append("voice_d_%d" % shi)
             parts.append("voice_u_10")
-    elif bai > 0 and ge > 0:
-        parts.append("voice_d_0")
     if ge > 0:
-        if shi == 0 and (qian > 0 or bai > 0) and parts:
+        if shi == 0 and (need_zero or qian > 0 or bai > 0):
             parts.append("voice_d_0")
         parts.append("voice_d_%d" % ge)
     return parts
