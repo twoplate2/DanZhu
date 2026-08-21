@@ -4217,13 +4217,10 @@ class RootWidget(BoxLayout):
             if tick_ev:
                 self._play_events(tick_ev, tick_amp, self.ball)
         elif self.state == "misfire":
-            self._misfire_frames += 1
             self._accumulator += dt
-            stepped = False
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
-                stepped = True
-            if stepped:
+                self._misfire_frames += 1     # 每物理步 +1(与飞行分支/selftest 同构, 防刷新率漂移)
                 if advance_misfire(self.ball) or self._misfire_frames > MISFIRE_MAX_FRAMES:
                     self.ball.x = PLUNGER_X
                     self.ball.y = PLUNGER_Y
@@ -4231,6 +4228,7 @@ class RootWidget(BoxLayout):
                     self.ball.vy = 0.0
                     self.sfx.play("bounce", 0.55)
                     self.park_ball(reroll=False)
+                    break
         elif self.state == "landing":
             b = self.ball
             if self._landing_primed:
