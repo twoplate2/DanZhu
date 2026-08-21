@@ -48,13 +48,15 @@ package.domain = org.danzhu
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav   # 子目录资源必须显式列, 否则不进 APK
-version = 0.4.0
+version = 0.5.0
 requirements = python3,kivy==2.3.0,pyjnius
 p4a.branch = v2024.01.21          # 见上, 命根子
-orientation = portrait
+p4a.hook = p4a/hook.py            # 往 manifest 注入 screenOrientation=fullSensor + resizeableActivity=true
+orientation = portrait, portrait-reverse, landscape, landscape-reverse
+android.manifest.orientation = fullSensor
 fullscreen = 0
 android.permissions = VIBRATE     # 要震动必须声明, 否则 pyjnius 调用静默失败
-android.api = 31
+android.api = 33
 android.minapi = 21
 android.ndk = 25b                 # 25c+/26 有兼容问题
 android.archs = arm64-v8a,armeabi-v7a
@@ -223,24 +225,18 @@ p4a 的 pillow recipe 能不用就不用。PC 版的 PIL 渐变小球, 在 Kivy 
 Kivy canvas 没有 draw_text。`CoreLabel(text=..., font_size=...)` → `refresh()`
 → `Rectangle(texture=cl.texture, ...)`, 要变色就在前面放 `Color`。
 
-### 3.13 竖屏锁定不能只靠 manifest
+### 3.13 方向按屏幕比例分流, 不要锁死竖屏
 
-`buildozer.spec` 的 `orientation = portrait` 只生成 manifest 声明。部分设备/ROM 的
-系统级自动旋转(重力感应)会覆盖 manifest, 导致横屏时 `_fit_width()` 把内容列算成细条。
+锁竖屏在 Android 12L+ 大屏上不是「不转」, 而是被系统 letterbox 塞进半屏兼容盒(ZUI 近正方形半屏盒, 画面缩小的病根)。当前策略是**按物理屏比例分流**(开机量一次短边÷长边, 不受旋转/状态栏影响):
 
-**解法: Android 运行时强制锁定(竖屏+180度重力感应)**:
-```python
-if platform == "android":
-    from jnius import autoclass
-    activity = autoclass("org.kivy.android.PythonActivity").mActivity
-    activity.setRequestedOrientation(7)  # SCREEN_ORIENTATION_SENSOR_PORTRAIT (正竖+倒竖, 不横屏)
-```
-运行时 API 优先级高于 manifest, 能覆盖系统级自动旋转。
+- **16:9 及更宽**(平板类): 运行时 `setRequestedOrientation(FULL_SENSOR)` 四方向跟手转, 横拿时 `LandLayer` 反旋转层把画面保持竖构图整体旋转铺满;
+- **比 16:9 瘦长的手机**(18:9/20.5:9): 运行时 `setRequestedOrientation(7)`(SENSOR_PORTRAIT)锁竖屏(正竖+倒竖), 横拿不进横屏。
 
-⚠️ **buildozer 1.5.0 的 `orientation` 只认 `landscape / portrait / portrait-reverse / landscape-reverse` 四个值**, `sensorPortrait` 不是合法值(写它会直接报 "is not a valid value for orientation", 构建第一步就挂)。所以「竖屏+180度」只能靠运行时 `setRequestedOrientation(7)`, spec 里 `orientation = portrait` 保持合法值即可。
+横屏四件套缺一不可: ① manifest `screenOrientation=fullSensor` + `resizeableActivity=true`(由 `p4a.hook = p4a/hook.py` 注入)② targetSdk 33(`android.api = 33`, 30 的兼容模式在大屏=半屏盒)③ 运行时方向守卫(启动/回前台/转屏瞬间/每 0.7s 按 `_device_is_wide()` 分流重申)④ `LandLayer` 反旋转层(触摸逆变换 + 弹窗挂层)。
 
-**再加一道布局容错**: `_fit_width()` 检测 `Window.width > Window.height * 1.2` 时
-改用宽度作为限制维度, 防止万一锁定失效时布局崩成细条。
+⚠️ **buildozer 1.5.0 的 `orientation` 只认 `landscape / portrait / portrait-reverse / landscape-reverse` 四个值**, `sensorPortrait`/`fullSensor` 不是合法值(写它会直接报 "is not a valid value for orientation")。所以 manifest 层的 fullSensor 靠 `android.manifest.orientation = fullSensor` + p4a hook 注入, spec 的 `orientation` 保持四方向列表合法值即可。
+
+具体实现见 `main.py` 的 `_device_is_wide` / `_apply_orientation` / `_orient_guard` 和 README「横屏适配」。
 
 ### 3.14 字体固定尺寸在窄屏/横屏下会换行重叠
 
