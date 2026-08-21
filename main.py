@@ -2094,10 +2094,13 @@ def selftest(n=40000):
             if landed is not None:
                 break
     arc_turns.sort()
-    turn_med = arc_turns[len(arc_turns) // 2]
-    arc_ok = turn_med <= 15.0
+    turn_med = arc_turns[len(arc_turns) // 2] if arc_turns else 0.0
+    arc_ok = bool(arc_turns) and turn_med <= 15.0
     ok = ok and arc_ok
-    print("  碰弧面帧方向角突变 p50=%.0f° (须<=15, 一帧横移=玩家投诉的荒谬感)" % turn_med)
+    if arc_turns:
+        print("  碰弧面帧方向角突变 p50=%.0f° (须<=15, 一帧横移=玩家投诉的荒谬感)" % turn_med)
+    else:
+        print("  碰弧面帧方向角突变: 无数据(弧面接触率 0) — 不达标")
 
     # (2c) 蓄力观感区分度: 蓄力必须可见地改变冲顶位置/穿钉路径, 同时竖直时序一帧都不能动
     #      (首钉时刻是 FLIGHT_ENV 那条 1.5s 预烘飞行音的对齐锚点, 漂了音画就脱节)
