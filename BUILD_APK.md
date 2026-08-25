@@ -301,6 +301,34 @@ lbl.bind(width=lambda w,*_: setattr(w,"text_size",(w.width,None)))
 后半段 3 行被压进约 76dp 的空间（需要 ~81dp），第 4 行在纹理生成阶段就被裁掉。
 **解法：`text_size = (width, None)`，高度设 None 跳过 split 逻辑。**
 
+### 3.21 旋转层里的触摸必须修满三处, 少一处就是"横屏点不到按钮"(2026-08-25 实修)
+
+横屏反旋转层(LandLayer)渲染对了不等于触摸对了。真机症状: 横屏画面正常转成竖屏
+构图, 但**所有按钮都点不到, 必须回竖屏才能玩**。根因是三层叠加, 每层单独看都"像对的":
+
+1. **`touch.pos = (x, y)` 赋值是无效变换**。`MotionEvent.pos` 只是个普通元组属性,
+   直接赋值**不会改 `touch.x/y`** —— 而 `ButtonBehavior.on_touch_down` 判点击用的
+   恰恰是 `collide_point(touch.x, touch.y)`。必须用
+   `touch.apply_transform_2d(transform)`(RelativeLayout 同款), 它把 x/y/pos/ox/oy
+   /px/py 一起变。
+2. **变换只做逆旋转, 不要减容器 pos**。Kivy 是单一 window 坐标系(relativelayout
+   模块文档): 普通布局(含 AnchorLayout)下整棵树的 pos 数值就是布局坐标, 只有
+   RelativeLayout/Scatter/ScrollView 才开新坐标系。误把 anchor 当相对坐标系容器、
+   逆旋转后再减 `anchor.pos`, 会把所有控件的点击判定区平移出屏幕(1740x1000 横屏
+   实测偏移 (370,-370))。
+3. **grab 之后的 move/up 不走你的 `on_touch_*`**。按钮在 down 时 `touch.grab(self)`,
+   之后 EventLoop 把事件**直接派发给按钮本体**, 只在派发前用
+   `Window.transform_motion_event_2d(me, widget)` → `parent.to_widget` 链换算坐标
+   —— 该链沿祖先逐层调 `to_local`。旋转层必须覆写 `to_local`(逆变换)/`to_parent`
+   (正变换)把旋转喂进去(Scatter 的做法); 不覆写则按钮抬手时拿到的还是物理坐标,
+   `collide_point` 判不中 + `ButtonBehavior.always_release` 默认 False → **on_release
+   被吞, 按钮按下有反馈、抬起无动作**。
+
+验证方法(桌面即可, 不用真机): `--landscape` 启动 + 注入合成触摸到按钮的**视觉屏幕
+位置**(渲染旋转的正变换算出), 走 `EventLoop.post_dispatch_input('begin'/'end', t)`
+完整还原真实手指的两段派发(窗口树分发 + grab 直达)。注意 `Window.dispatch
+('on_touch_down', t)` 只还原第一段, 会漏掉 grab 段, 测不出第 3 个坑。
+
 
 ## 四、运维小贴士
 

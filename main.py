@@ -2570,7 +2570,13 @@ class LandLayer(FloatLayout):
         return land
 
     def _to_eq(self, x, y):
-        """物理窗口坐标 -> 等效竖屏坐标(渲染旋转的逆变换, 再平移回等效盒原点)。"""
+        """物理窗口坐标 -> 等效竖屏坐标(渲染旋转的逆变换)。
+
+        ⚠️ 只做逆旋转, **不能**再减 anchor.pos: anchor 是普通 AnchorLayout,
+        不是 RelativeLayout —— Kivy 单一 window 坐标系(见 relativelayout 模块
+        文档)下整棵树的 pos 数值本来就是"等效竖屏物理坐标", anchor 没有开新
+        坐标系。多减一次会把所有控件的点击判定区平移出屏幕(横屏 1740x1000 时
+        偏移 (370,-370)), 症状 = 横屏所有按钮点不到、竖屏正常(2026-08-25 修复)。"""
         if self.angle == 0:
             return (x, y)
         cx, cy = Window.width / 2.0, Window.height / 2.0
@@ -2579,14 +2585,45 @@ class LandLayer(FloatLayout):
             px, py = cx + dy, cy - dx
         else:                                     # angle == -90: 逆时针 90
             px, py = cx - dy, cy + dx
-        ax, ay = self._anchor.pos
-        return (px - ax, py - ay)
+        return (px, py)
+
+    def _to_win(self, x, y):
+        """等效竖屏坐标 -> 物理窗口坐标(渲染旋转的正变换, to_parent 用)。"""
+        if self.angle == 0:
+            return (x, y)
+        cx, cy = Window.width / 2.0, Window.height / 2.0
+        dx, dy = x - cx, y - cy
+        if self.angle == 90:                      # 正变换 = 逆时针 90
+            px, py = cx - dy, cy + dx
+        else:                                     # angle == -90: 顺时针 90
+            px, py = cx + dy, cy - dx
+        return (px, py)
+
+    def to_local(self, x, y, **k):
+        """覆写(EventLoop 的 grab 派发依赖): 按钮在 down 时 touch.grab(self),
+        之后 move/up 由 EventLoop **直接派发给按钮本体**(不经过本层的
+        on_touch_*), 派发前 Window 用 parent.to_widget 链换算坐标 —— 该链
+        沿祖先逐层调 to_local。整棵树只有本层带旋转, 这里注入逆旋转, 横屏下
+        按钮的 on_touch_up 才能拿到正确坐标; 不覆写则 collide_point 判不中 +
+        always_release 默认 False 直接吞掉 on_release(症状: 按钮按下有反馈、
+        抬起无动作)。Scatter 就是同款做法(覆写 to_local/to_parent)。"""
+        return self._to_eq(x, y)
+
+    def to_parent(self, x, y, **k):
+        """覆写(与 to_local 对称): 局部(等效竖屏)坐标 -> 物理窗口坐标。
+        Widget.to_window 沿祖先链调 to_parent, 覆写后"问子控件它在窗口哪里"
+        类调用(弹窗定位等)在横屏也能得到正确答案。"""
+        return self._to_win(x, y)
 
     def _pass_touch(self, method, touch):
         if self.angle == 0:
             return method(touch)
         touch.push()
-        touch.pos = self._to_eq(*touch.pos)
+        # 必须用 apply_transform_2d 而不是 touch.pos = ...: pos 只是个普通元组属性,
+        # 直接赋值不改 x/y —— 而 ButtonBehavior.on_touch_down 判点击用的是
+        # collide_point(touch.x, touch.y), 拿到的还是物理坐标, 横屏所有按钮点不中。
+        # apply_transform_2d 把 x/y/pos/ox/oy/px/py 全变换(RelativeLayout 同款做法)。
+        touch.apply_transform_2d(self._to_eq)
         ret = method(touch)
         touch.pop()
         return ret
