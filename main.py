@@ -4364,6 +4364,10 @@ class PlinkoApp(App):
             # (窗口变化分支里还有一记立即重申, 双保险); 瘦长手机持续重申竖屏锁。
             Clock.schedule_once(lambda *_: self._apply_orientation(), 1.0)
             Clock.schedule_interval(self._orient_guard, 0.7)
+            # 全屏沉浸: buildozer fullscreen=1 之外的运行时双保险。
+            # 弹窗/切后台回前台后系统栏会复活, 与方向守卫同节奏持续重申(幂等)。
+            Clock.schedule_once(lambda *_: self._enter_immersive(), 1.0)
+            Clock.schedule_interval(self._enter_immersive, 0.7)
         return self.layer
 
     # ---- 方向策略(2026-08-19 按屏幕比例分流): manifest+SDL 全四方向(fullSensor)。
@@ -4406,6 +4410,26 @@ class PlinkoApp(App):
         except Exception:
             pass
 
+    @staticmethod
+    def _enter_immersive():
+        """沉浸式全屏: 隐藏状态栏/导航栏, 玩家从屏幕边缘滑入可临时呼出(几秒后自动隐藏)。
+        setSystemUiVisibility 在 API30+ 已弃用但未移除, targetSdk 33 下仍生效。"""
+        if platform != "android":
+            return
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            View = autoclass("android.view.View")
+            act.getWindow().getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+        except Exception:
+            pass
+
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
@@ -4418,6 +4442,7 @@ class PlinkoApp(App):
     def on_resume(self):
         if platform == "android":
             self._apply_orientation()   # 回前台 SDL 会重报方向, 抢回话语权
+            self._enter_immersive()     # 回前台系统栏复活, 重新隐藏
         try:
             self.rootw.sfx.resume_out()
         except Exception:

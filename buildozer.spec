@@ -11,7 +11,9 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav
 
-version = 0.5.0
+# 0.5.1(2026-08-26): 回退金雨/QA 基建到 d4a0346, 仅保留全屏沉浸。
+# ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
+version = 0.5.1
 
 requirements = python3,kivy==2.3.0,pyjnius
 
@@ -25,7 +27,9 @@ p4a.hook = p4a/hook.py
 orientation = portrait, portrait-reverse, landscape, landscape-reverse
 # 显式 manifest 方向: fullSensor(四方向随重力, Android原生值), 与 hook 注入一致
 android.manifest.orientation = fullSensor
-fullscreen = 0
+# 全屏沉浸: 隐藏状态栏/导航栏, 画面铺满整屏。
+# spec 层 + main.py 运行时 _enter_immersive() 双保险(切后台回前台系统栏会复活, 需重申)。
+fullscreen = 1
 
 android.permissions = VIBRATE
 
