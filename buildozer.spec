@@ -11,9 +11,10 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav
 
-# 0.5.1(2026-08-26): 回退金雨/QA 基建到 d4a0346, 仅保留全屏沉浸。
+# 0.5.2(2026-08-26): 0.5.1 真机打开即闪退, 头号嫌疑 fullscreen=1(打包侧全屏), 回退为 0。
+# 沉浸效果保留 main.py 运行时 _enter_immersive() 那一半(隐藏状态栏/导航栏由它负责)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.1
+version = 0.5.2
 
 requirements = python3,kivy==2.3.0,pyjnius
 
@@ -27,9 +28,11 @@ p4a.hook = p4a/hook.py
 orientation = portrait, portrait-reverse, landscape, landscape-reverse
 # 显式 manifest 方向: fullSensor(四方向随重力, Android原生值), 与 hook 注入一致
 android.manifest.orientation = fullSensor
-# 全屏沉浸: 隐藏状态栏/导航栏, 画面铺满整屏。
-# spec 层 + main.py 运行时 _enter_immersive() 双保险(切后台回前台系统栏会复活, 需重申)。
-fullscreen = 1
+# 全屏沉浸(仅运行时实现): 状态栏/导航栏由 main.py _enter_immersive() 负责隐藏。
+# fullscreen 必须=0: 0.6.0/0.5.1 用 fullscreen=1 的包真机打开即闪退
+# (P4A_IS_WINDOWED=False → Kivy 给 SDL 窗口加 SDL_WINDOW_FULLSCREEN 全屏标记,
+#  与 ZUI 大屏/resizeableActivity 组合高危), 0.5.2 起不再用打包侧全屏。
+fullscreen = 0
 
 android.permissions = VIBRATE
 

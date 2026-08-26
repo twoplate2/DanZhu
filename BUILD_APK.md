@@ -48,13 +48,13 @@ package.domain = org.danzhu
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav   # 子目录资源必须显式列, 否则不进 APK
-version = 0.5.0
+version = 0.5.2
 requirements = python3,kivy==2.3.0,pyjnius
 p4a.branch = v2024.01.21          # 见上, 命根子
 p4a.hook = p4a/hook.py            # 往 manifest 注入 screenOrientation=fullSensor + resizeableActivity=true
 orientation = portrait, portrait-reverse, landscape, landscape-reverse
 android.manifest.orientation = fullSensor
-fullscreen = 0
+fullscreen = 0                    # ⚠️ 必须=0: 0.6.0/0.5.1 用 1 时真机打开即闪退(见 3.x 弯路), 沉浸由 main.py 运行时实现
 android.permissions = VIBRATE     # 要震动必须声明, 否则 pyjnius 调用静默失败
 android.api = 33
 android.minapi = 21
@@ -328,6 +328,23 @@ lbl.bind(width=lambda w,*_: setattr(w,"text_size",(w.width,None)))
 位置**(渲染旋转的正变换算出), 走 `EventLoop.post_dispatch_input('begin'/'end', t)`
 完整还原真实手指的两段派发(窗口树分发 + grab 直达)。注意 `Window.dispatch
 ('on_touch_down', t)` 只还原第一段, 会漏掉 grab 段, 测不出第 3 个坑。
+
+### 3.22 buildozer `fullscreen = 1` 真机打开即闪退(2026-08-26 实锤回退)
+
+0.6.0/0.5.1 把 spec 的 `fullscreen` 从 0 改 1(当时想"打包侧全屏+运行时沉浸双保险"),
+云构建全绿、桌面 selftest/smoke 全绿, 但真机装上**打开即闪退**。链路:
+fullscreen=1 → buildozer 不传 `--window` → p4a 往 `p4a_env_vars.txt` 写
+`P4A_IS_WINDOWED=False` → Kivy 2.3.0(`_window_sdl2.pyx` 的 USE_ANDROID 分支)给
+SDL 窗口加 `SDL_WINDOW_FULLSCREEN` 标记 → SDL 2.28.5 走安卓全屏窗口的另一套
+创建/布局路径, 与本包 fullSensor 四方向 + resizeableActivity=true + ZUI 大屏的
+组合高危(具体崩点未取到 logcat, 但回退 fullscreen=0 后即为已知可跑配置)。
+
+**桌面测试全绿测不出它**: `fullscreen` 是打包期行为, 桌面预览(platform != android)
+根本不走这条链路。这也是"桌面门禁全绿 ≠ 真机能跑"的又一实例(同 3.21 的教训)。
+
+**解法**: `fullscreen` 恒为 0, 沉浸式全屏只靠运行时——main.py `_enter_immersive()`
+(`setSystemUiVisibility` 隐藏状态栏/导航栏, 启动/回前台/0.7s 周期重申)就够,
+不要动打包侧。要双保险也是两半都留在运行时, 别把一半埋进打包配置。
 
 
 ## 四、运维小贴士
