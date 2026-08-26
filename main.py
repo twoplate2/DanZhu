@@ -4411,9 +4411,11 @@ class PlinkoApp(App):
             pass
 
     @staticmethod
-    def _enter_immersive():
+    def _enter_immersive(*_):
         """沉浸式全屏: 隐藏状态栏/导航栏, 玩家从屏幕边缘滑入可临时呼出(几秒后自动隐藏)。
-        setSystemUiVisibility 在 API30+ 已弃用但未移除, targetSdk 33 下仍生效。"""
+        setSystemUiVisibility 在 API30+ 已弃用但未移除, targetSdk 33 下仍生效。
+        ⚠️ 形参 *_ 必须保留: schedule_interval 回调会塞 dt 进来, 零参签名在真机上
+        启动 0.7s 即 TypeError 闪退(2026-08-26 logcat 实锤, 桌面测试测不出)。"""
         if platform != "android":
             return
         try:

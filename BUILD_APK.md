@@ -48,13 +48,13 @@ package.domain = org.danzhu
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav   # 子目录资源必须显式列, 否则不进 APK
-version = 0.5.2
+version = 0.5.3
 requirements = python3,kivy==2.3.0,pyjnius
 p4a.branch = v2024.01.21          # 见上, 命根子
 p4a.hook = p4a/hook.py            # 往 manifest 注入 screenOrientation=fullSensor + resizeableActivity=true
 orientation = portrait, portrait-reverse, landscape, landscape-reverse
 android.manifest.orientation = fullSensor
-fullscreen = 0                    # ⚠️ 必须=0: 0.6.0/0.5.1 用 1 时真机打开即闪退(见 3.x 弯路), 沉浸由 main.py 运行时实现
+fullscreen = 0                    # 保持 0(与已知可跑版一致): 沉浸由 main.py 运行时 _enter_immersive() 实现, 见弯路 3.22
 android.permissions = VIBRATE     # 要震动必须声明, 否则 pyjnius 调用静默失败
 android.api = 33
 android.minapi = 21
@@ -329,22 +329,29 @@ lbl.bind(width=lambda w,*_: setattr(w,"text_size",(w.width,None)))
 完整还原真实手指的两段派发(窗口树分发 + grab 直达)。注意 `Window.dispatch
 ('on_touch_down', t)` 只还原第一段, 会漏掉 grab 段, 测不出第 3 个坑。
 
-### 3.22 buildozer `fullscreen = 1` 真机打开即闪退(2026-08-26 实锤回退)
+### 3.22 Clock 回调零参签名 = 真机启动 0.7s 必闪退(2026-08-26 logcat 实锤)
 
-0.6.0/0.5.1 把 spec 的 `fullscreen` 从 0 改 1(当时想"打包侧全屏+运行时沉浸双保险"),
-云构建全绿、桌面 selftest/smoke 全绿, 但真机装上**打开即闪退**。链路:
-fullscreen=1 → buildozer 不传 `--window` → p4a 往 `p4a_env_vars.txt` 写
-`P4A_IS_WINDOWED=False` → Kivy 2.3.0(`_window_sdl2.pyx` 的 USE_ANDROID 分支)给
-SDL 窗口加 `SDL_WINDOW_FULLSCREEN` 标记 → SDL 2.28.5 走安卓全屏窗口的另一套
-创建/布局路径, 与本包 fullSensor 四方向 + resizeableActivity=true + ZUI 大屏的
-组合高危(具体崩点未取到 logcat, 但回退 fullscreen=0 后即为已知可跑配置)。
+0.6.0 加全屏沉浸时, `_enter_immersive()` 写成零参 `@staticmethod`, 而
+`Clock.schedule_interval(self._enter_immersive, 0.7)` 的回调 Kivy 会**塞一个 dt
+参数进来** → 启动 0.7 秒整必抛 `TypeError: takes 0 positional arguments but 1
+was given` → 游戏退出。真机症状"打开就闪退"(实际是开起来 1 秒内死)。
 
-**桌面测试全绿测不出它**: `fullscreen` 是打包期行为, 桌面预览(platform != android)
-根本不走这条链路。这也是"桌面门禁全绿 ≠ 真机能跑"的又一实例(同 3.21 的教训)。
+排查中走过的弯路(引以为戒): 先盲改 `fullscreen=1→0` 出 0.5.2, 依然闪退——
+因为 0.5.1 和 0.5.2 都带着这个函数, 两版死于同一个 bug; 期间一度把根因错记到
+fullscreen=1 头上(已纠正: fullscreen 本身未被证明有问题, 只是没必要开)。
 
-**解法**: `fullscreen` 恒为 0, 沉浸式全屏只靠运行时——main.py `_enter_immersive()`
-(`setSystemUiVisibility` 隐藏状态栏/导航栏, 启动/回前台/0.7s 周期重申)就够,
-不要动打包侧。要双保险也是两半都留在运行时, 别把一半埋进打包配置。
+**桌面测试全绿测不出它**: 桌面上函数开头 `if platform != "android": return`
+看似无害, 但 TypeError 发生在**函数体执行之前**(参数都塞不进去), 跟你写没写
+platform 分支、try/except 保险毫无关系——保险在屋里, 人死在门外。selftest/smoke
+的桌面路径根本不注册这个 Clock 回调, 更测不到。
+
+**解法**: 定时器回调的签名一律留形参兜底 `def _enter_immersive(*_):`
+(同文件 `_orient_guard(self, dt)` 就是正确示范)。**同类坑通用法则: 所有交给
+`Clock.schedule_*` 的函数引用, 签名必须能收 1 个位置参数。**
+
+真机排查成本提示: 闪退类问题别猜, 装 platform-tools 抓 `adb logcat -d -b crash`
++ 附近 main 缓冲的 python 段(本项目 Python traceback 打在 `I python` 标签里),
+一眼定位, 比盲改两轮构建快得多。
 
 
 ## 四、运维小贴士

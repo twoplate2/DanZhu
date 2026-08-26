@@ -11,10 +11,10 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav
 
-# 0.5.2(2026-08-26): 0.5.1 真机打开即闪退, 头号嫌疑 fullscreen=1(打包侧全屏), 回退为 0。
-# 沉浸效果保留 main.py 运行时 _enter_immersive() 那一半(隐藏状态栏/导航栏由它负责)。
+# 0.5.3(2026-08-26): 修复真机闪退真凶 —— _enter_immersive() 零参签名收不了
+# schedule_interval 塞进来的 dt, 启动 0.7s 即 TypeError 崩溃(logcat 实锤)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.2
+version = 0.5.3
 
 requirements = python3,kivy==2.3.0,pyjnius
 
@@ -29,9 +29,9 @@ orientation = portrait, portrait-reverse, landscape, landscape-reverse
 # 显式 manifest 方向: fullSensor(四方向随重力, Android原生值), 与 hook 注入一致
 android.manifest.orientation = fullSensor
 # 全屏沉浸(仅运行时实现): 状态栏/导航栏由 main.py _enter_immersive() 负责隐藏。
-# fullscreen 必须=0: 0.6.0/0.5.1 用 fullscreen=1 的包真机打开即闪退
-# (P4A_IS_WINDOWED=False → Kivy 给 SDL 窗口加 SDL_WINDOW_FULLSCREEN 全屏标记,
-#  与 ZUI 大屏/resizeableActivity 组合高危), 0.5.2 起不再用打包侧全屏。
+# fullscreen 保持=0(与已知可跑的 0.5.0 一致, 不折腾): 0.5.1(fullscreen=1)与
+# 0.5.2(=0)当时都闪退, 但真凶是 _enter_immersive 的零参签名 bug(见 BUILD_APK.md
+# 弯路 3.22), fullscreen=1 本身未被证明有问题, 只是也没必要开。
 fullscreen = 0
 
 android.permissions = VIBRATE
