@@ -11,10 +11,11 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav
 
-# 0.5.3(2026-08-26): 修复真机闪退真凶 —— _enter_immersive() 零参签名收不了
-# schedule_interval 塞进来的 dt, 启动 0.7s 即 TypeError 崩溃(logcat 实锤)。
+# 0.5.4(2026-08-26): 竖屏启动沉浸不生效修复 —— setSystemUiVisibility 从 Python
+# 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
+# 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.3
+version = 0.5.4
 
 requirements = python3,kivy==2.3.0,pyjnius
 

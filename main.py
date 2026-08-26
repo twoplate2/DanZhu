@@ -4410,25 +4410,53 @@ class PlinkoApp(App):
         except Exception:
             pass
 
+    _immersive_task_inst = None
+
+    @classmethod
+    def _immersive_task(cls):
+        """构造(并缓存)沉浸 Runnable, 单实例反复投递(防 pyjnius 代理被 GC)。
+        ⚠️ setSystemUiVisibility 必须在 UI 线程执行: 从 SDL(Python)线程直调, 视图已
+        attach 时会被 ViewRootImpl 线程检查拦下(CalledFromWrongThread, 被 except 吞掉
+        后无声无息) —— ZUI 真机实测竖屏启动期沉浸一直不生效, 转一次屏才"自愈"
+        (2026-08-26 dumpsys 逐帧实锤: 窗口 vsysui 始终只剩 LAYOUT_STABLE)。"""
+        if cls._immersive_task_inst is None:
+            from jnius import PythonJavaClass, java_method
+
+            class ImmersiveTask(PythonJavaClass):
+                __javainterfaces__ = ['java/lang/Runnable']
+
+                @java_method('()V')
+                def run(self):
+                    try:
+                        from jnius import autoclass
+                        act = autoclass("org.kivy.android.PythonActivity").mActivity
+                        View = autoclass("android.view.View")
+                        act.getWindow().getDecorView().setSystemUiVisibility(
+                            View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                    except Exception:
+                        pass
+
+            cls._immersive_task_inst = ImmersiveTask()
+        return cls._immersive_task_inst
+
     @staticmethod
     def _enter_immersive(*_):
         """沉浸式全屏: 隐藏状态栏/导航栏, 玩家从屏幕边缘滑入可临时呼出(几秒后自动隐藏)。
         setSystemUiVisibility 在 API30+ 已弃用但未移除, targetSdk 33 下仍生效。
         ⚠️ 形参 *_ 必须保留: schedule_interval 回调会塞 dt 进来, 零参签名在真机上
-        启动 0.7s 即 TypeError 闪退(2026-08-26 logcat 实锤, 桌面测试测不出)。"""
+        启动 0.7s 即 TypeError 闪退(2026-08-26 logcat 实锤, 桌面测试测不出)。
+        ⚠️ 必须 runOnUiThread: 线程不对时静默失败(病根见 _immersive_task 注释)。"""
         if platform != "android":
             return
         try:
             from jnius import autoclass
             act = autoclass("org.kivy.android.PythonActivity").mActivity
-            View = autoclass("android.view.View")
-            act.getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+            act.runOnUiThread(PlinkoApp._immersive_task())
         except Exception:
             pass
 

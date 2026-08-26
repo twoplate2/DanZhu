@@ -48,7 +48,7 @@ package.domain = org.danzhu
 source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 source.include_patterns = fonts/*.otf,voice/*.wav   # 子目录资源必须显式列, 否则不进 APK
-version = 0.5.3
+version = 0.5.4
 requirements = python3,kivy==2.3.0,pyjnius
 p4a.branch = v2024.01.21          # 见上, 命根子
 p4a.hook = p4a/hook.py            # 往 manifest 注入 screenOrientation=fullSensor + resizeableActivity=true
@@ -329,7 +329,34 @@ lbl.bind(width=lambda w,*_: setattr(w,"text_size",(w.width,None)))
 完整还原真实手指的两段派发(窗口树分发 + grab 直达)。注意 `Window.dispatch
 ('on_touch_down', t)` 只还原第一段, 会漏掉 grab 段, 测不出第 3 个坑。
 
-### 3.22 Clock 回调零参签名 = 真机启动 0.7s 必闪退(2026-08-26 logcat 实锤)
+### 3.22 UI 线程之外的 View 调用 = 静默失败, 竖屏启动沉浸不生效(2026-08-26 dumpsys 实锤)
+
+症状: 竖屏打开游戏系统栏不隐藏, 转一次屏(横)后"自愈"变全屏, 之后横竖都正常。
+真机排查(`adb shell dumpsys window windows` 逐帧盯窗口 vsysui 标志):
+竖屏启动后沉浸标志(LAYOUT_STABLE 之外的 6 个位)几分钟都上不去, 转屏前 2 秒
+(用户拿起平板、系统栏状态收敛的那一刻)突然上去并从此稳定。
+
+根因: `View.setSystemUiVisibility` 从 SDL/Python 线程直接调用, 视图已 attach 时
+走 `recomputeViewAttributes` → ViewRootImpl 线程检查 → `CalledFromWrongThreadException`,
+被 `except Exception: pass` 吞掉, 无声无息。转屏引发的窗口重排恰好让某次调用
+绕过检查生效 —— 制造"转屏自愈"假象。0.6.0 引入 `_enter_immersive` 时两处打包:
+签名坑(3.23, 修后闪退没了)和本线程坑(修后才真·全屏), 桌面测试对两者都免疫。
+
+**解法**: 用 pyjnius 的 `PythonJavaClass` 造一个 Java `Runnable`, 把
+`setSystemUiVisibility` 包进 `run()`, 由 `act.runOnUiThread(task)` 投递到 UI
+线程执行(单实例缓存反复投递, 防 pyjnius 代理被 GC 后 native 崩溃)。见
+`_immersive_task()` / `_enter_immersive()`。
+
+**通用法则: 凡是碰 Android View/Window 的调用, 一律 runOnUiThread; "except
+Exception: pass" 会把线程错误吃成"功能时好时坏"的灵异现象, 吞异常的代码必须
+保证调用姿势本身不会错。**
+
+排查方法论(这次用的, 比盲改构建快得多): `dumpsys window windows` 里应用窗口的
+`vsysui=` 就是沉浸标志的"心电图", 配 `grep -A6 包名` 随时把脉; 转屏/焦点/触摸
+等事件时刻用 `logcat -d -b main` 对照。注意: 屏幕熄灭时游戏被暂停、Clock 冻结,
+对着黑屏做实验全是噪音 —— 实验前先 `dumpsys power | grep mWakefulness` 确认 awake。
+
+### 3.23 Clock 回调零参签名 = 真机启动 0.7s 必闪退(2026-08-26 logcat 实锤)
 
 0.6.0 加全屏沉浸时, `_enter_immersive()` 写成零参 `@staticmethod`, 而
 `Clock.schedule_interval(self._enter_immersive, 0.7)` 的回调 Kivy 会**塞一个 dt
