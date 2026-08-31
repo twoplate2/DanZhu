@@ -3811,6 +3811,7 @@ class RootWidget(BoxLayout):
                                   for (x1, y1, x2, y2) in self._base_deflectors]
         self.ball = launch_ball(frozen_power)
         self._settled = False                 # 新发射重置结算标记(结算延迟到回弹后)
+        self._easter_egg = False              # 新发射重置彩蛋标记(球落回竖井才置 True)
         self.state = "flying"
         self._accumulator = 0.0
         self.power = 0.0                      # 发射后清除蓄力显示
@@ -3829,6 +3830,20 @@ class RootWidget(BoxLayout):
 
     # ------------------------------ 结算 ------------------------------
     def settle(self, i):
+        if getattr(self, "_easter_egg", False):
+            self._easter_egg = False
+            self.balance += self.bet               # 彩蛋: 球掉回发射槽, 返还本次投注(净 0)
+            self._refresh_stats()
+            self.status_lbl.text = "彩蛋! 弹珠返还 +%d" % self.bet
+            self.sfx.play("win6", 0.8)             # 彩蛋音(复用 x100 号角, 惊喜)
+            _vibrate(220)
+            self._result_until = time.time() + 2.5
+            self._anim_start_balance = self.display_balance
+            self._anim_target_balance = float(self.balance)
+            self._anim_start_time = time.time()
+            self._save_config()
+            self._show_easter_popup()
+            return
         m = self.multipliers[i]
         payout = self.bet * m
         self.balance += payout
@@ -3882,6 +3897,29 @@ class RootWidget(BoxLayout):
             self._show_round_end()
         if not silent:
             self.sfx.play("ready", 0.8)
+
+    def _show_easter_popup(self):
+        """彩蛋弹窗: 球掉回发射槽, 返还本次投注(纯惊喜, 无额外奖励)。"""
+        content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
+        title = Label(text="彩蛋!", font_size="30sp", bold=True, halign="center",
+                      color=hex_rgb(COL_METER) + (1,), size_hint_y=None, height=dp(44))
+        msg = Label(text="弹珠掉回发射槽了\n返还本次投注 %d 珠" % self.bet,
+                    font_size="17sp", halign="center", valign="middle",
+                    color=hex_rgb(COL_TEXT) + (1,))
+        msg.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+        ok_btn = Button(text="太好了", font_size="16sp", bold=True,
+                        background_normal="", background_down="",
+                        background_color=hex_rgb(COL_BTN) + (1,),
+                        color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
+        content.add_widget(title)
+        content.add_widget(msg)
+        content.add_widget(ok_btn)
+        popup = self._popup(0.78, 260, title="", content=content,
+                            auto_dismiss=True,
+                            title_color=hex_rgb(COL_TEXT) + (1,),
+                            separator_color=hex_rgb(COL_DIV) + (1,))
+        ok_btn.bind(on_release=lambda *_: popup.dismiss())
+        popup.open()
 
     # ------------------------------ 轮次结束 ------------------------------
     @staticmethod
@@ -4332,6 +4370,8 @@ class RootWidget(BoxLayout):
                 # 判据必须用位移而非速度/碰撞事件: 卡死球的
                 # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
+                if b.x > FIELD_R:                          # 球落回竖井(发射槽) — 罕见彩蛋
+                    self._easter_egg = True
                 i = max(0, min(NUM_SLOTS - 1,              # 物理落格结算(球落到哪算哪)
                                int((b.x - FIELD_L) / SLOT_W)))
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
