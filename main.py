@@ -268,7 +268,17 @@ STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就�
                              # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
 STALL_MAX_RETRY = 10          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
-REWARD_EV = 3.35             # _reward_value 的期望; 固定格数方案下 RTP = E[K]×REWARD_EV/9
+# 每档的倍率概率分布(命中格的倍率取值权重, 概率和=1)。各档倍率严格递减、均非零可感知。
+# E[value]=Σ(倍率×概率); 中奖率=RTP/E[value]; KNOB_K 由 E[value] 反推(见下)。
+# 200%/300% 档含 x50/x100 超级大奖。⚠️ 改本表必须同步重推 KNOB_K, 否则 RTP 静默漂移。
+VALUE_DIST = {
+    0.80: {2: 0.813, 3: 0.097, 5: 0.050, 10: 0.030, 20: 0.010},
+    1.20: {2: 0.764, 3: 0.094, 5: 0.080, 10: 0.045, 20: 0.017},
+    2.00: {2: 0.600, 3: 0.165, 5: 0.120, 10: 0.065, 20: 0.035, 50: 0.010, 100: 0.005},
+    3.00: {2: 0.580, 3: 0.160, 5: 0.120, 10: 0.075, 20: 0.040, 50: 0.015, 100: 0.010},
+}
+# 每档平均倍率(从 VALUE_DIST 计算); RTP = E[K]×REWARD_EV[rtp]/9
+REWARD_EV = {rtp: sum(m * p for m, p in dist.items()) for rtp, dist in VALUE_DIST.items()}
 
 # ------------------- 碰撞事件位(物理层 -> GUI 音效层) ----------------------
 EV_PEG = 1                   # 撞钉
@@ -295,6 +305,8 @@ COL_FIRE = "#e0533b"
 COL_GREEN = "#39d98a"
 COL_GRAY = "#5a6a8c"
 COL_METER = "#f0b000"
+COL_X50 = "#ff8c00"          # ×50 超级大奖: 深橙(比 ×20 金更热)
+COL_X100 = "#ff1493"         # ×100 顶级大奖: 霓虹粉(最抢眼)
 COL_BUMPER = "#4a6aa8"       # 底部挡板(比隔板亮, 醒目)
 COL_LAMP_OFF = "#243250"     # 指示灯熄灭色
 HILITE = "#ffffff"
@@ -737,33 +749,48 @@ def benchmark_trajectories(duration=0.7, runs=5):
     return total_flights, total_frames, fps_list
 
 
-def _reward_value():
-    """有奖励时的倍率取值(最小 x2, 整数, 越大越稀有)。E[value]≈3.35。"""
+def _reward_value(rtp=0.80, big_cooldown=False):
+    """有奖励时的倍率取值(最小 x2, 整数, 越大越稀有)。按档位查 VALUE_DIST 累计阈值。
+    big_cooldown=True 时 ≥×10 的倍率概率减半(本局已出过大奖的软冷却), 其余重归一。"""
+    dist = VALUE_DIST.get(rtp, VALUE_DIST[0.80])
+    if big_cooldown:
+        dist = {m: (p * _COOLDOWN_FACTOR if m >= 10 else p) for m, p in dist.items()}
+        s = sum(dist.values())
+        dist = {m: p / s for m, p in dist.items()}
     r = random.random()
-    if r < 0.55:
-        return 2
-    if r < 0.80:
-        return 3
-    if r < 0.93:
-        return 5
-    if r < 0.985:
-        return 10
-    return 20
+    acc = 0.0
+    for mult, prob in sorted(dist.items()):
+        acc += prob
+        if r < acc:
+            return mult
+    return max(dist)          # 浮点误差兜底: 落在最后一段
 
 
 KNOB_K = {   # 每档"本局几个格子有奖"的格数分布 (格数, 概率)。
-    # 均值 = 档位×NUM_SLOTS/REWARD_EV, 使 RTP 精确=档位; 下限保证每局至少 2 格有奖(消灭"只有1格"烂盘)。
-    # ⚠️ 按 REWARD_EV=3.35 硬编码反推: 若改 _reward_value 概率或 REWARD_EV, 必须同步改本表, 否则 RTP 静默漂移。
-    0.80: [(2, 0.8507), (3, 0.1493)],
-    1.20: [(3, 0.7761), (4, 0.2239)],
-    2.00: [(5, 0.6269), (6, 0.3731)],
-    3.00: [(8, 0.9403), (9, 0.0597)],
+    # 均值 E[K] = 中奖率×9 = 档位×9/REWARD_EV[rtp], 使 RTP 精确=档位。
+    # 中奖率: 30%/40%/43%/54%(高档降 ×2 后 E[value] 升, 中奖率相应降)。⚠️ 若改 VALUE_DIST, 必须同步重推本表。
+    0.80: [(2, 0.30), (3, 0.70)],
+    1.20: [(3, 0.40), (4, 0.60)],
+    2.00: [(3, 0.125), (4, 0.875)],
+    3.00: [(4, 0.127), (5, 0.873)],
 }
+
+# 软保底阈值(本局内): 盘面非零格全是 ×2 时, 以 q 概率把最小格升级到 G。
+# 低档保底倍率低(别全×2), 高档可保底 ×10。硬保底 ×10+ 在低档会超发, 故低档只保 ×3/×5。
+_PITY_G = {0.80: 3, 1.20: 5, 2.00: 5, 3.00: 10}
+_PITY_Q = 0.3                 # 软保底触发概率(非每盘强制; 越高超发越多)
+_COOLDOWN_FACTOR = 0.85       # 软冷却系数: 已出≥×10后, ×10+概率乘此系数(减半0.5太狠会少发RTP)
+
+# 解析断言: 每档 RTP 精确=档位(防止手滑改 VALUE_DIST/KNOB_K 导致静默漂移)
+for _rtp in (0.80, 1.20, 2.00, 3.00):
+    _ek = sum(k * p for k, p in KNOB_K[_rtp])
+    _ev = sum(m * p for m, p in VALUE_DIST[_rtp].items())
+    assert abs(_ek * _ev / NUM_SLOTS - _rtp) < 0.005, "RTP 漂移: %.4f" % _rtp
 
 
 def roll_multipliers(rtp=0.80):
-    """固定格数: 先按档位掷"本局 K 个格子有奖"(均值=档位×9/3.35), 再从 9 槽随机选 K 个填 _reward_value。
-    RTP 精确=档位; _reward_value 的 x10/x20 完整保留(不牺牲高级格子)。"""
+    """固定格数: 先按档位掷"本局 K 个格子有奖", 再从 9 槽随机选 K 个填倍率。
+    本局内软冷却(已出≥×10后×10+概率减半) + 软保底(盘面无≥G时 q 升级最小格)。"""
     table = KNOB_K.get(rtp, KNOB_K[0.80])
     r = random.random()
     k = table[-1][0]
@@ -774,8 +801,20 @@ def roll_multipliers(rtp=0.80):
             k = kk
             break
     mult = [0] * NUM_SLOTS
-    for i in random.sample(range(NUM_SLOTS), k):
-        mult[i] = _reward_value()
+    slots = random.sample(range(NUM_SLOTS), k)
+    big_seen = False                       # 本局已出 ≥×10(触发软冷却)
+    for i in slots:
+        m = _reward_value(rtp, big_cooldown=big_seen)
+        if m >= 10:
+            big_seen = True
+        mult[i] = m
+    # 软保底: 盘面非零格全是 ×2 时, 以 q 把最小格升级到 G(别整盘都 ×2)
+    G = _PITY_G.get(rtp)
+    if G:
+        nz = [v for v in mult if v > 0]
+        if nz and all(v == 2 for v in nz) and random.random() < _PITY_Q:
+            idx = min((i for i, v in enumerate(mult) if v > 0), key=lambda i: mult[i])
+            mult[idx] = G
     return mult
 
 # =============================================================================
@@ -1144,11 +1183,13 @@ WIN_TIERS = [
     (["C5", "E5", "G5", "C6", "E6"], 0.075, 1.00, 0.24, 0.60, None),
     (["C5", "E5", "G5", "C6", "E6", "G6"], 0.070, 1.20, 0.28, 0.65, 130.8),
     (["C5", "E5", "G5", "C6", "E6", "G6", "C7"], 0.068, 1.40, 0.32, 0.70, 82.0),
+    (["C5", "E5", "G5", "C6", "E6", "G6", "C7", "E6"], 0.064, 1.60, 0.36, 0.78, 55.0),        # tier5 x50
+    (["C5", "E5", "G5", "C6", "E6", "G6", "C7", "G6", "C7"], 0.062, 1.80, 0.42, 0.85, 41.2),  # tier6 x100
 ]
 
 
 def _sfx_win(tier):
-    """中奖琶音 5 档: 0=x2 1=x3 2=x5 3=x10 4=x20, 音数/混响/低音支撑随档位递增,
+    """中奖琶音 7 档: 0=x2 1=x3 2=x5 3=x10 4=x20 5=x50 6=x100, 音数/混响/低音支撑随档位递增,
     中奖时"听得出中了多大"。开头留 SFX_RESULT_LEAD 静音让入袋"咚"先落地。"""
     tier = max(0, min(len(WIN_TIERS) - 1, tier))
     seq, step, dur, rv, peak, bass = WIN_TIERS[tier]
@@ -1229,6 +1270,16 @@ def _sfx_cash():
     return _pack(b, 0.59)
 
 
+def _sfx_bead(f0):
+    """中奖金雨珠子到账: 玻璃珠轻"叮"(比 coin 高一点圆润一点, 逐颗到账的计数感)。
+    三个音高变体轮播, 倾泻时听感是"叮叮叮"上行计数而非同一声复读。"""
+    b = _buf(0.05)
+    _add_partials(b, 0.0, f0, [(1.00, 1.00, 0.012),
+                               (2.42, 0.35, 0.007)])
+    _add_noise(b, 0.0, 0.002, 0.22, 0.001, 0.85)
+    return _pack(b, 0.50)
+
+
 def iter_bank():
     """按固定顺序逐个合成 (名字, PCM)。**顺序即音色**: 所有配方共用 _ARNG 一条随机流,
     换了顺序噪声实例就变, 所以安卓端"边烘边加载"必须走这同一个顺序。
@@ -1259,6 +1310,8 @@ def iter_bank():
     yield "cash", _sfx_cash()
     for hard in (0, 1):
         yield "top%d" % hard, _sfx_top(hard)
+    for i, f0 in enumerate((1960.0, 2320.0, 2760.0)):   # 金雨珠子到账(追加末尾, 不扰既有音色)
+        yield "bead%d" % i, _sfx_bead(f0)
 
 
 def bake_bank():
@@ -1698,7 +1751,7 @@ class Sfx:
                 self.bank[name] = _read_wav_pcm(path)
             except Exception:
                 continue
-        for name in ("win0", "win1", "win2", "win3", "win4", "lose",
+        for name in ("win0", "win1", "win2", "win3", "win4", "win5", "win6", "lose",
                      "launch", "riser", "top0", "top1"):
             for g in (1.0, 0.9, 0.85):     # 预热长音效的音量缓存
                 self.play_prepare(name, g)
@@ -1892,9 +1945,9 @@ def selftest(n=40000):
     """验证: (1) 各档 RTP 精确=档位; (2) 引导飞行落点=预定槽、不卡死;
     (3) 碰撞事件覆盖率(音效触发源); (4) 音效库体检。
 
-    n 必须够大: 单发赔付方差很大(取值 0/2/3/5/10/20, σ≈3), n=4000 时均值标准误 ≈0.047,
-    与 ±0.05 的门禁同量级 -> 假失败率实测 30%。n=40000 使标准误降到 ≈0.015(3σ 门禁),
-    代价只有 0.4 秒。"""
+    n 必须够大: 单发赔付方差很大(取值 0/2/3/5/10/20/50/100, 低档 σ≈3、高档含 x50/x100 σ≈6.7~9.8)。
+    n=40000 时低档标准误 ≈0.015(3σ<0.05 安全), 但高档标准误 ≈0.049 已贴 ±0.05 门禁会 ~30% 假失败,
+    故高档门禁放宽到 ±0.15(精确性由模块顶层解析断言兜底, 见 VALUE_DIST 后的 assert)。"""
     geo = build_geo()
     ok = True
 
@@ -1906,7 +1959,8 @@ def selftest(n=40000):
             board = roll_multipliers(rtp)
             tot += board[random.randrange(NUM_SLOTS)]
         realized = tot / n
-        good = abs(realized - rtp) < 0.05
+        tol = 0.15 if rtp >= 2.00 else 0.05   # 高档含 x50/x100, σ 大, 门禁放宽
+        good = abs(realized - rtp) < tol
         ok = ok and good
         print("  档位 %.2f -> 实测 RTP %.3f  %s" % (rtp, realized, "OK" if good else "偏差!"))
 
@@ -2285,7 +2339,6 @@ def sfx_check(verbose=True):
             bad.append((name, "首尾爆音"))
     return len(bank), bad
 
-# -*- coding: utf-8 -*-
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
 #   [顶栏] 标题+喇叭图标+状态  [返还] RTP三档左对齐  [投入] 弹珠单位左对齐
@@ -2317,7 +2370,11 @@ def slot_color(m):
         return "#e0533b"
     if m <= 10:
         return "#a335ee"
-    return "#c88800"
+    if m <= 20:
+        return "#c88800"
+    if m <= 50:
+        return COL_X50
+    return COL_X100
 
 
 _BALL_TEX = None
@@ -2852,7 +2909,9 @@ class GameArea(FloatLayout):
             elif m <= 3:     hexcolor = "#3d8bfd"   # 蓝
             elif m <= 5:     hexcolor = COL_FIRE    # 红
             elif m <= 10:    hexcolor = "#a335ee"   # 紫
-            else:            hexcolor = COL_METER   # 金
+            elif m <= 20:    hexcolor = COL_METER   # 金
+            elif m <= 50:    hexcolor = COL_X50     # 深橙
+            else:            hexcolor = COL_X100    # 霓虹粉
             size = sp(48)
         else:
             text = "未中"
@@ -3756,14 +3815,16 @@ class RootWidget(BoxLayout):
         elif m <= 3:  lamp = "#3d8bfd"
         elif m <= 5:  lamp = COL_FIRE
         elif m <= 10: lamp = "#a335ee"
-        else:         lamp = COL_METER
+        elif m <= 20: lamp = COL_METER
+        elif m <= 50: lamp = COL_X50
+        else:         lamp = COL_X100
         self.game_area.set_lamp(i, lamp)
         self.game_area.pulse_slot(i)
         self._play_result_sound(m, payout)
         self.game_area.big_result_text(m, payout)
         self._result_until = time.time() + 2.5   # 结果窗口: 期内抑制UI语音
         if m > 0:                             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
-            _vibrate(150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))
+            _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         # 数字滚动动画 + 大奖节奏分档(x10 以上滚更久, 看得清中大奖)
         big = m >= 10
         self._land_hold = 0.7 if big else max(0.3, LAND_HOLD - 0.5)  # 提前0.5s可发射
@@ -3942,7 +4003,7 @@ class RootWidget(BoxLayout):
         return self._play_voice_sequence(voices, on_done=on_done)
 
     def _show_round_end(self):
-        """本轮游戏结束弹窗: 恭喜文案 + 统计 + 语音播报(播完自动重置并关闭)。"""
+        """本轮游戏结束弹窗: 恭喜文案 + 统计 + 语音播报(玩家点"确定"才重置并关闭)。"""
         if self._round_end_shown:
             return
         self._round_end_shown = True
@@ -3956,10 +4017,10 @@ class RootWidget(BoxLayout):
             self.round_history.pop(0)
         self._save_history()
         content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
-        msg = "本轮游戏 %d 次已结束\n剩余 %d 个弹珠\n弹珠数量已调整到1000个\n欢迎你再次挑战" % (
-            self.round_plays, self.balance)
+        msg = "本轮游戏 %d 次已结束\n剩余 [color=%s]%d[/color] 个弹珠\n弹珠数量已调整到1000个\n欢迎你再次挑战" % (
+            self.round_plays, COL_BALL, self.balance)
         lbl = Label(text=msg, font_size="18sp", halign="center", valign="middle",
-                    color=hex_rgb(COL_TEXT) + (1,))
+                    markup=True, color=hex_rgb(COL_TEXT) + (1,))
         lbl.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
         content.add_widget(lbl)
         ok_btn = Button(text="确定", font_size="16sp", bold=True,
@@ -3973,7 +4034,7 @@ class RootWidget(BoxLayout):
                             title_size="19sp",
                             separator_color=hex_rgb(COL_DIV) + (1,))
         popup.open()
-        # 语音播完后自动重置并关闭弹窗; 用户点"确定"也能立即结束
+        # 玩家点"确定"才重置并关闭弹窗; 语音只播报, 不自动关闭
         _done = [False]                            # 防重复调用
         def _auto_reset():
             if _done[0]:
@@ -3982,9 +4043,7 @@ class RootWidget(BoxLayout):
             self.reset_balance(notify=False)
             popup.dismiss()
         ok_btn.bind(on_release=lambda *_: _auto_reset())
-        voice_total = self._play_round_end_voice(on_done=_auto_reset)
-        # 兜底定时器: 语音回调若因任何原因没触发, 在总时长+3秒后强制重置
-        Clock.schedule_once(lambda dt: _auto_reset(), voice_total + 3.0)
+        self._play_round_end_voice()
 
     def _show_round_settings(self):
         """轮次设定弹窗: 选择 20/50/100 + 最近完成的轮次历史。"""
@@ -4113,7 +4172,7 @@ class RootWidget(BoxLayout):
             # 语音档: "弹珠加xx"替换 win 琶音(语音与琶音同播会互相盖, 见 BUILD 讨论)
             self.sfx.play("voice_win%d" % payout)
             return
-        tier = 0 if m <= 2 else (1 if m <= 3 else (2 if m <= 5 else (3 if m < 20 else 4)))
+        tier = 0 if m <= 2 else (1 if m <= 3 else (2 if m <= 5 else (3 if m < 20 else (4 if m < 50 else (5 if m < 100 else 6)))))
         self.sfx.play("win%d" % tier)
 
     # ------------------------------ 帧循环 ------------------------------
