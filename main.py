@@ -268,17 +268,7 @@ STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就�
                              # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
 STALL_MAX_RETRY = 10          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
-# 每档的倍率概率分布(命中格的倍率取值权重, 概率和=1)。各档倍率严格递减、均非零可感知。
-# E[value]=Σ(倍率×概率); 中奖率=RTP/E[value]; KNOB_K 由 E[value] 反推(见下)。
-# 200%/300% 档含 x50/x100 超级大奖。⚠️ 改本表必须同步重推 KNOB_K, 否则 RTP 静默漂移。
-VALUE_DIST = {
-    0.80: {2: 0.813, 3: 0.097, 5: 0.050, 10: 0.030, 20: 0.010},
-    1.20: {2: 0.764, 3: 0.094, 5: 0.080, 10: 0.045, 20: 0.017},
-    2.00: {2: 0.600, 3: 0.165, 5: 0.120, 10: 0.065, 20: 0.035, 50: 0.010, 100: 0.005},
-    3.00: {2: 0.580, 3: 0.160, 5: 0.120, 10: 0.075, 20: 0.040, 50: 0.015, 100: 0.010},
-}
-# 每档平均倍率(从 VALUE_DIST 计算); RTP = E[K]×REWARD_EV[rtp]/9
-REWARD_EV = {rtp: sum(m * p for m, p in dist.items()) for rtp, dist in VALUE_DIST.items()}
+# (盘面倍率表见 roll_multipliers 上方的 SPECIAL_DIST / FILL_DIST)
 
 # ------------------- 碰撞事件位(物理层 -> GUI 音效层) ----------------------
 EV_PEG = 1                   # 撞钉
@@ -749,72 +739,59 @@ def benchmark_trajectories(duration=0.7, runs=5):
     return total_flights, total_frames, fps_list
 
 
-def _reward_value(rtp=0.80, big_cooldown=False):
-    """有奖励时的倍率取值(最小 x2, 整数, 越大越稀有)。按档位查 VALUE_DIST 累计阈值。
-    big_cooldown=True 时 ≥×10 的倍率概率减半(本局已出过大奖的软冷却), 其余重归一。"""
-    dist = VALUE_DIST.get(rtp, VALUE_DIST[0.80])
-    if big_cooldown:
-        dist = {m: (p * _COOLDOWN_FACTOR if m >= 10 else p) for m, p in dist.items()}
-        s = sum(dist.values())
-        dist = {m: p / s for m, p in dist.items()}
+def _pick(dist):
+    """按 {取值: 概率} 的累计阈值掷一个取值(概率和须=1)。"""
     r = random.random()
     acc = 0.0
-    for mult, prob in sorted(dist.items()):
+    for value, prob in sorted(dist.items()):
         acc += prob
         if r < acc:
-            return mult
+            return value
     return max(dist)          # 浮点误差兜底: 落在最后一段
 
 
-KNOB_K = {   # 每档"本局几个格子有奖"的格数分布 (格数, 概率)。
-    # 均值 E[K] = 中奖率×9 = 档位×9/REWARD_EV[rtp], 使 RTP 精确=档位。
-    # 中奖率: 30%/40%/43%/54%(高档降 ×2 后 E[value] 升, 中奖率相应降)。⚠️ 若改 VALUE_DIST, 必须同步重推本表。
-    0.80: [(2, 0.30), (3, 0.70)],
-    1.20: [(3, 0.40), (4, 0.60)],
-    2.00: [(3, 0.125), (4, 0.875)],
-    3.00: [(4, 0.127), (5, 0.873)],
+# 每盘 = 1 个"特殊格" + n 个 x2 填充格。特殊格掷中 x2 时本盘就是"全 x2 废盘",
+# 所以 SPECIAL_DIST[rtp][2] 就是废盘率 q —— 想让废盘更多/更少只改这一个数,
+# 再把其余权重按比例配平即可(实测 q 从 .02 提到 .15, 好格期望才涨一成, 废盘几乎不花预算)。
+# 好格的底随档位抬高: 80%/120% 底 x3, 200% 底 x5, 300% 底 x10 —— 高档保证"那一格"够像样。
+# 旧实现是"每格独立抽倍率 + 软保底/软冷却打补丁", A/B 实测两个补丁都近乎无效
+# (软保底把 [2,2,2] 升成 [3,2,2], 玩家看不出来; 软冷却治的是 170 盘一遇的事),
+# 且让 RTP 精确性退化成"靠 selftest 经验门禁兜底"。现结构无补丁项, 断言即完整证明。
+SPECIAL_DIST = {
+    0.80: {2: 0.10, 3: 0.71,  5: 0.12, 10: 0.05,  20: 0.02},
+    1.20: {2: 0.08, 3: 0.49,  5: 0.23, 10: 0.145, 20: 0.055},
+    2.00: {2: 0.04, 5: 0.50, 10: 0.27, 20: 0.125, 50: 0.045, 100: 0.020},
+    3.00: {2: 0.02, 10: 0.66, 20: 0.21, 50: 0.065, 100: 0.045},
+}
+# x2 填充格的个数分布。刻意铺宽(不是定值), 让盘面有贫富变化;
+# RTP 只取决于均值, 分布形状随便调, 不影响精确性。
+FILL_DIST = {
+    0.80: {0: 0.10,  1: 0.29,   2: 0.435, 3: 0.175},
+    1.20: {1: 0.10,  2: 0.27,   3: 0.425, 4: 0.205},
+    2.00: {1: 0.07,  2: 0.2375, 3: 0.40,  4: 0.2225, 5: 0.07},
+    3.00: {2: 0.06,  3: 0.18,   4: 0.38,  5: 0.255,  6: 0.125},
 }
 
-# 软保底阈值(本局内): 盘面非零格全是 ×2 时, 以 q 概率把最小格升级到 G。
-# 低档保底倍率低(别全×2), 高档可保底 ×10。硬保底 ×10+ 在低档会超发, 故低档只保 ×3/×5。
-_PITY_G = {0.80: 3, 1.20: 5, 2.00: 5, 3.00: 10}
-_PITY_Q = 0.3                 # 软保底触发概率(非每盘强制; 越高超发越多)
-_COOLDOWN_FACTOR = 0.85       # 软冷却系数: 已出≥×10后, ×10+概率乘此系数(减半0.5太狠会少发RTP)
-
-# 解析断言: 每档 RTP 精确=档位(防止手滑改 VALUE_DIST/KNOB_K 导致静默漂移)
+# 解析断言: 每档 RTP 精确=档位。均匀落格下 E[赔付] = 每盘倍率点数总和/9,
+# 而每盘点数 = 特殊格 + 2×填充格数, 故下式即 RTP==档位 的完整证明(无补丁项需要额外兜底)。
 for _rtp in (0.80, 1.20, 2.00, 3.00):
-    _ek = sum(k * p for k, p in KNOB_K[_rtp])
-    _ev = sum(m * p for m, p in VALUE_DIST[_rtp].items())
-    assert abs(_ek * _ev / NUM_SLOTS - _rtp) < 0.005, "RTP 漂移: %.4f" % _rtp
+    _s, _f = SPECIAL_DIST[_rtp], FILL_DIST[_rtp]
+    assert abs(sum(_s.values()) - 1) < 1e-9 and abs(sum(_f.values()) - 1) < 1e-9, \
+        "概率和不为 1: %.4f" % _rtp
+    _es = sum(m * p for m, p in _s.items())
+    _ef = sum(k * p for k, p in _f.items())
+    assert abs(_es + 2 * _ef - NUM_SLOTS * _rtp) < 1e-9, "RTP 漂移: %.4f" % _rtp
 
 
 def roll_multipliers(rtp=0.80):
-    """固定格数: 先按档位掷"本局 K 个格子有奖", 再从 9 槽随机选 K 个填倍率。
-    本局内软冷却(已出≥×10后×10+概率减半) + 软保底(盘面无≥G时 q 升级最小格)。"""
-    table = KNOB_K.get(rtp, KNOB_K[0.80])
-    r = random.random()
-    k = table[-1][0]
-    acc = 0.0
-    for kk, pp in table:
-        acc += pp
-        if r < acc:
-            k = kk
-            break
+    """每盘 = 1 个特殊格(按 SPECIAL_DIST 掷) + n 个 x2 填充格(n 按 FILL_DIST 掷),
+    随机撒在 9 槽里。特殊格掷中 x2 时本盘即"全 x2 废盘"(概率恰为 SPECIAL_DIST[rtp][2])。
+    RTP 精确 = (E[特殊格] + 2×E[n]) / 9, 见上方断言 —— 不需要保底/冷却修正。"""
+    special = _pick(SPECIAL_DIST.get(rtp, SPECIAL_DIST[0.80]))
+    n = _pick(FILL_DIST.get(rtp, FILL_DIST[0.80]))
     mult = [0] * NUM_SLOTS
-    slots = random.sample(range(NUM_SLOTS), k)
-    big_seen = False                       # 本局已出 ≥×10(触发软冷却)
-    for i in slots:
-        m = _reward_value(rtp, big_cooldown=big_seen)
-        if m >= 10:
-            big_seen = True
+    for i, m in zip(random.sample(range(NUM_SLOTS), 1 + n), [special] + [2] * n):
         mult[i] = m
-    # 软保底: 盘面非零格全是 ×2 时, 以 q 把最小格升级到 G(别整盘都 ×2)
-    G = _PITY_G.get(rtp)
-    if G:
-        nz = [v for v in mult if v > 0]
-        if nz and all(v == 2 for v in nz) and random.random() < _PITY_Q:
-            idx = min((i for i, v in enumerate(mult) if v > 0), key=lambda i: mult[i])
-            mult[idx] = G
     return mult
 
 # =============================================================================
@@ -1945,9 +1922,9 @@ def selftest(n=40000):
     """验证: (1) 各档 RTP 精确=档位; (2) 引导飞行落点=预定槽、不卡死;
     (3) 碰撞事件覆盖率(音效触发源); (4) 音效库体检。
 
-    n 必须够大: 单发赔付方差很大(取值 0/2/3/5/10/20/50/100, 低档 σ≈3、高档含 x50/x100 σ≈6.7~9.8)。
-    n=40000 时低档标准误 ≈0.015(3σ<0.05 安全), 但高档标准误 ≈0.049 已贴 ±0.05 门禁会 ~30% 假失败,
-    故高档门禁放宽到 ±0.15(精确性由模块顶层解析断言兜底, 见 VALUE_DIST 后的 assert)。"""
+    n 必须够大: 单发赔付方差很大(取值 0/2/3/5/10/20/50/100, 实测 σ=1.63/2.24/6.48/8.81)。
+    n=40000 时四档标准误 ≈0.008/0.011/0.032/0.044, 3σ = 0.024/0.034/0.097/0.132,
+    故低档门禁 ±0.05、高档 ±0.15(精确性由模块顶层解析断言兜底, 见 SPECIAL_DIST 后的 assert)。"""
     geo = build_geo()
     ok = True
 
