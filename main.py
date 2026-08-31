@@ -268,7 +268,7 @@ STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就�
                              # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
 STALL_MAX_RETRY = 10          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
-# (盘面倍率表见 roll_multipliers 上方的 VALUE_SHAPE / K_DIST / P_PITY / P_CEIL)
+# (盘面倍率表见 roll_multipliers 上方的 VALUE_SHAPE / K_DIST / MAX_REROLL / PITY_RATIO)
 
 # ------------------- 碰撞事件位(物理层 -> GUI 音效层) ----------------------
 EV_PEG = 1                   # 撞钉
@@ -750,13 +750,12 @@ def _pick(dist):
     return max(dist)          # 浮点误差兜底: 落在最后一段
 
 
-# 盘面生成 = 掷 k 个奖格填倍率, 再加两条"软重随机"(各按概率重抽一次, 不循环):
-#   软保底: 整盘全是 x2 -> 以概率 P_PITY 重抽(治"落袋到哪都翻倍"的烂盘)
-#   软封顶: >=2 个高倍率(>=x5) -> 以概率 P_CEIL 重抽(治"一局堆多个大倍率"的爆表盘)
-# 两条都会改变 RTP(保底超发 / 封顶少发), 故 x2 权重由 _effective_rtp 闭式反解,
-# 把重随机对 RTP 的影响一并配平, 使有效 RTP 精确 = 档位。
-P_PITY = 0.5              # 软保底触发概率(仅"全 x2"时触发)
-P_CEIL = 0.5              # 软封顶触发概率(仅">=2 个高倍率"时触发)
+# 盘面生成 = 掷 k 个奖格填倍率, 坏盘必重抽(最多 MAX_REROLL 次):
+#   坏盘 = (x2 占比 >= PITY_RATIO, 即"几乎全 x2") 或 (>=2 个高倍率 >=x5)
+# 坏盘重抽会改变 RTP(保底超发 / 封顶少发), 故 x2 权重由 _effective_rtp 闭式反解,
+# 把重抽对 RTP 的影响一并配平, 使有效 RTP 精确 = 档位。
+MAX_REROLL = 2            # 坏盘最多重抽次数(共生成 MAX_REROLL+1 盘, 最后一盘无论好坏都收)
+PITY_RATIO = 0.8          # 保底阈值: x2 占比 >= 0.8 即"几乎全 x2"
 CEIL_THRESHOLD = 5        # 高倍率起点: >=x5 即 x5/x10/x20/x50/x100 都算"高"
 
 VALUE_SHAPE = {   # 非 x2 部分的形状(条件分布, 和=1)。低档无 x50/x100, 高档含。
@@ -774,37 +773,33 @@ K_DIST = {        # 每盘有奖格数(低档第1版原样, 高档减格子换 x
 
 
 def _effective_rtp(p2, rtp):
-    """给定 x2 权重 p2, 闭式算出含软重随机后的 RTP(= E[盘面倍率和]/9)。
-    E[盘和] = E[K]*E[v] + P_PITY*P(全x2)*(E[盘和]-2E[K|全x2])
-                         + P_CEIL*P(>=2高)*(E[盘和]-E[和|>=2高])。"""
+    """给定 x2 权重 p2, 闭式算出含坏盘重抽后的 RTP(= E[盘面倍率和]/9)。
+    坏盘 = (x2 占比 >= PITY_RATIO) 或 (>=2 个高倍率); 坏盘必重抽, 最多 MAX_REROLL 次。
+    E[盘和'] = E + (P + P^2 + ... + P^R) * (E - E[坏盘]), P = 坏盘概率, R = MAX_REROLL。"""
     shape, kd = VALUE_SHAPE[rtp], K_DIST[rtp]
-    ev = 2 * p2 + (1 - p2) * sum(v * w for v, w in shape.items())
-    base = sum(k * pk for k, pk in kd.items()) * ev        # E[盘和] (未重随机)
-    # 高倍率(>=CEIL_THRESHOLD)与低倍率(<阈值)的条件期望
+    w3 = shape.get(3, 0.0)
     high = {v: w for v, w in shape.items() if v >= CEIL_THRESHOLD}
-    ph = (1 - p2) * sum(high.values())                     # 单格高倍率概率
-    eh = sum(v * w for v, w in high.items()) / sum(high.values()) if high else 0.0
-    pn = 1 - ph
-    en = (2 * p2 + 3 * (1 - p2) * shape.get(3, 0.0)) / pn if pn > 0 else 0.0
-    total = base
-    # 软保底: 全 x2 -> 重抽
-    pity = 0.0
+    w_high = sum(high.values())
+    eh = sum(v * w for v, w in high.items()) / w_high if w_high else 0.0
+    p3 = (1 - p2) * w3                      # 单格 x3 概率
+    ph = (1 - p2) * w_high                  # 单格高倍率(>=x5)概率
+
+    e_sum = 0.0                             # 无条件 E[盘和]
+    p_bad = 0.0                             # 坏盘概率
+    e_bad = 0.0                             # E[盘和] * P(坏盘) 的加权和
     for k, pk in kd.items():
-        pity += pk * (p2 ** k) * (base - 2.0 * k)
-    total += P_PITY * pity
-    # 软封顶: >=2 个高倍率 -> 重抽
-    ceil = 0.0
-    for k, pk in kd.items():
-        p0 = (1 - ph) ** k
-        p1 = k * ph * (1 - ph) ** (k - 1)
-        pge2 = 1 - p0 - p1
-        if pge2 <= 0:
-            continue
-        eh_ge2 = (k * ph - p1) / pge2                      # E[高倍率格数 | >=2]
-        esum_ge2 = eh_ge2 * eh + (k - eh_ge2) * en
-        ceil += pk * pge2 * (base - esum_ge2)
-    total += P_CEIL * ceil
-    return total / NUM_SLOTS
+        for c2 in range(k + 1):             # c2 个 x2
+            for ch in range(k + 1 - c2):    # ch 个高倍率(>=x5), 其余 c3 个 x3
+                c3 = k - c2 - ch
+                prob = (math.comb(k, c2) * math.comb(k - c2, ch)) * (p2 ** c2) * (ph ** ch) * (p3 ** c3)
+                s = 2 * c2 + 3 * c3 + ch * eh
+                e_sum += pk * prob * s
+                if (c2 * 5 >= k * 4) or (ch >= 2):   # 坏盘: x2 占比>=0.8 或 >=2 个高倍率
+                    p_bad += pk * prob
+                    e_bad += pk * prob * s
+    e_bad_cond = e_bad / p_bad if p_bad > 0 else e_sum
+    factor = sum(p_bad ** i for i in range(1, MAX_REROLL + 1))   # P + P^2
+    return (e_sum + factor * (e_sum - e_bad_cond)) / NUM_SLOTS
 
 
 def _solve_p2(rtp):
@@ -834,20 +829,17 @@ for _rtp in (0.80, 1.20, 2.00, 3.00):
 
 
 def roll_multipliers(rtp=0.80):
-    """掷 k 格填倍率; 软保底(全 x2 -> 概率重抽) + 软封顶(>=2 个高倍率 -> 概率重抽),
-    各只重抽一次不循环。有效 RTP 精确 = 档位(见上方 _effective_rtp 断言)。"""
+    """掷 k 格填倍率; 坏盘(几乎全 x2 或 >=2 个高倍率)必重抽, 最多 MAX_REROLL 次。
+    有效 RTP 精确 = 档位(见上方 _effective_rtp 断言)。"""
     kd = K_DIST.get(rtp, K_DIST[0.80])
     dist = VALUE_DIST.get(rtp, VALUE_DIST[0.80])
-    k = _pick(kd)
-    vals = [_pick(dist) for _ in range(k)]
-    reroll = False
-    if all(v == 2 for v in vals):                          # 软保底: 全 x2
-        reroll = random.random() < P_PITY
-    elif sum(1 for v in vals if v >= CEIL_THRESHOLD) >= 2:  # 软封顶: >=2 个高倍率
-        reroll = random.random() < P_CEIL
-    if reroll:
+    for _ in range(MAX_REROLL + 1):                # 最多 3 盘
         k = _pick(kd)
         vals = [_pick(dist) for _ in range(k)]
+        n2 = sum(1 for v in vals if v == 2)
+        nh = sum(1 for v in vals if v >= CEIL_THRESHOLD)
+        if n2 * 5 < k * 4 and nh < 2:              # 不是坏盘: 收下
+            break
     mult = [0] * NUM_SLOTS
     for i, v in zip(random.sample(range(NUM_SLOTS), k), vals):
         mult[i] = v
