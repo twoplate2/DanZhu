@@ -1,27 +1,29 @@
 # -*- coding: utf-8 -*-
-"""余额模拟器 — 验证不同 RTP 档位下 1000 珠起始、每发投 50 珠的余额分布。
+"""余额模拟器 — 验证不同 RTP 档位下 1000 珠起始、每发投 100 珠、每轮 20 发的余额分布。
 
-规则(与游戏 plinko.py 完全一致):
-  - 盘面 9 槽, 每格独立 q = rtp/3.35 概率非零, 非零倍率取 _reward_value(E≈3.35)
-  - 每发均匀落格(1/9), 赔付 = 50 × 落格倍率(0 槽 = 0)
-  - 余额 += 赔付 - 50; 余额 < 50 无法下注 → 破产停止
+规则(与游戏 plinko.py 完全一致, 直接复用 plinko.roll_multipliers):
+  - 盘面 9 槽, 由 plinko.roll_multipliers 生成(减格子 + 高档 x50/x100 + 软保底/软封顶重随机)
+  - 每发均匀落格(1/9), 赔付 = BET × 落格倍率(0 槽 = 0)
+  - 余额 += 赔付 - BET; 余额 < BET 无法下注 → 破产停止
 
 用法:
   python sim_balance.py            # GUI
-  python sim_balance.py --headless  # 无界面跑默认档位×5000次, 出HTML到 output/
+  python sim_balance.py --headless  # 无界面跑默认档位×5000局, 出HTML到 output/
 输出: output/sim_balance_*.html (零依赖内联JS, 浏览器可开)
 """
 import io, os, sys, math, random, time, argparse
 import statistics
 
-# 与 plinko.py 对齐的赔付逻辑(独立实现, 便于本工具单独跑)
+# 复用父项目真实盘面 roll_multipliers(减格子 + 高档 x50/x100 + 软保底/软封顶重随机),
+# 避免本工具本地再写一套盘面模型导致与游戏漂移。
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)) + "/..")
+import plinko as _P
+
 NUM_SLOTS = 9
-REWARD_EV = 3.35
 DEFAULT_BALANCE = 1000
-BET = 50
-MAX_PLAYS = 500                  # 固定玩这么多发(统一口径: 所有档位玩N发后看余额分布,
-                                 # 中途余额<50 判破产提前停)。不受"跑到破产"截断影响,
-                                 # 高收益档也不会因无限增长拖慢。
+BET = 100                         # 每发投注
+MAX_PLAYS = 20                    # 每轮固定玩这么多发(统一口径: 玩 N 发后看余额分布,
+                                  # 中途余额 < BET 判破产提前停)
 
 RTP_LEVELS = [0.80, 1.20, 2.00, 3.00]
 RTP_LABEL = {0.80: "80%", 1.20: "120%", 2.00: "200%", 3.00: "300%"}
@@ -74,46 +76,43 @@ def measure_slot_dist(n=800, power=0.8, use_cache=True):
     return dist
 
 
-def reward_value():
-    r = random.random()
-    if r < 0.55:
-        return 2
-    if r < 0.80:
-        return 3
-    if r < 0.93:
-        return 5
-    if r < 0.985:
-        return 10
-    return 20
-
-
-def roll_multipliers(rtp):
-    """9 槽盘面: 每格 q=rtp/REWARD_EV 概率非零, 非零取 reward_value。"""
-    q = rtp / REWARD_EV
-    return [reward_value() if random.random() < q else 0 for _ in range(NUM_SLOTS)]
+# 盘面生成直接复用 _P.roll_multipliers(真实 K_DIST + VALUE_SHAPE + 软重随机)
 
 
 def play_once(balance, rtp, plays_target=MAX_PLAYS, slot_dist=None):
-    """固定玩 plays_target 发(或中途破产), 返回 (结局, 实际发数, 余额, 轨迹)。
+    """固定玩 plays_target 发(或中途破产), 返回 (结局, 实际发数, 余额, 轨迹, 中奖发数, x50/x100落地发数, 最大回撤)。
     结局: 'bankrupt'(中途破产, 余额<BET) / 'played'(玩满N发)。
-    slot_dist: 落格概率分布(实测物理), None=均匀。RTP 期望与落格分布无关
-    (每格倍率独立随机, E[赔付]=ΣP(i)·E[倍率_i]=rtp·50), 但方差/轨迹会反映真实分布。"""
+    slot_dist: 落格概率分布(实测物理), None=均匀。RTP 期望与落格分布无关,
+    但方差/轨迹/中奖率/最大回撤会反映真实分布。"""
     plays = 0
     trail = [(0, balance)]
+    hits = 0          # 中奖发数(落在非零格)
+    big = 0           # x50/x100 落地发数
+    peak = balance
+    max_dd = 0
     while plays < plays_target:
         if balance < BET:
-            return "bankrupt", plays, balance, trail
-        board = roll_multipliers(rtp)
+            return "bankrupt", plays, balance, trail, hits, big, max_dd
+        board = _P.roll_multipliers(rtp)
         if slot_dist:
             slot = random.choices(range(NUM_SLOTS), weights=slot_dist, k=1)[0]
         else:
             slot = random.randrange(NUM_SLOTS)
-        payout = BET * board[slot]
-        balance += payout - BET
+        m = board[slot]
+        balance += BET * m - BET
         plays += 1
+        if m > 0:
+            hits += 1
+        if m >= 50:
+            big += 1
+        if balance > peak:
+            peak = balance
+        dd = peak - balance
+        if dd > max_dd:
+            max_dd = dd
         if plays % 10 == 0 or plays == plays_target:
             trail.append((plays, balance))
-    return "played", plays, balance, trail
+    return "played", plays, balance, trail, hits, big, max_dd
 
 
 def run_simulation(rtp, n_runs, slot_dist=None):
@@ -124,12 +123,20 @@ def run_simulation(rtp, n_runs, slot_dist=None):
     bankrupt_lifetimes = []           # 破产者的寿命(高收益档存续者被截断, 破产寿命才是有意义寿命)
     bankrupts = 0
     trails = []
+    total_hits = 0                    # 中奖发数
+    total_big = 0                     # x50/x100 落地发数
+    total_plays = 0                   # 实际下注发数
+    dd_sum = 0                        # 每局最大回撤之和
     trail_sample = max(1, n_runs // 200)
     for i in range(n_runs):
-        outcome, plays, bal, trail = play_once(DEFAULT_BALANCE, rtp, slot_dist=slot_dist)
+        outcome, plays, bal, trail, hits, big, max_dd = play_once(DEFAULT_BALANCE, rtp, slot_dist=slot_dist)
         balances.append(bal)
         lifetimes.append(plays)
         profits.append(bal - DEFAULT_BALANCE)
+        total_hits += hits
+        total_big += big
+        total_plays += plays
+        dd_sum += max_dd
         if outcome == "bankrupt":
             bankrupts += 1
             bankrupt_lifetimes.append(plays)
@@ -141,6 +148,10 @@ def run_simulation(rtp, n_runs, slot_dist=None):
         "n_runs": n_runs,
         "bankrupt_rate": bankrupts / n_runs,
         "survive_rate": (n_runs - bankrupts) / n_runs,   # 存续率(达上限未破产)
+        "lose_rate": sum(1 for b in balances if b < DEFAULT_BALANCE) / n_runs,  # 亏率(终局<起始)
+        "hit_rate": total_hits / total_plays if total_plays else 0.0,          # 中奖率
+        "big_rate": total_big / total_plays if total_plays else 0.0,           # x50/x100 落地率
+        "avg_max_dd": dd_sum / n_runs,                                         # 平均最大回撤
         "lifetime": _stats(lifetimes),
         "bankrupt_lifetime": bl_stats,                    # 破产者寿命(不受上限截断)
         "final_balance": _stats(balances),
@@ -210,6 +221,10 @@ def build_html(results, meta):
     <table class="mini">
       <tr><td>破产率</td><td class="num">{r['bankrupt_rate']*100:.1f}%</td></tr>
       <tr><td>存续率(玩满{MAX_PLAYS}发)</td><td class="num">{r['survive_rate']*100:.1f}%</td></tr>
+      <tr><td>亏率(终局&lt;起始)</td><td class="num">{r['lose_rate']*100:.1f}%</td></tr>
+      <tr><td>中奖率</td><td class="num">{r['hit_rate']*100:.1f}%</td></tr>
+      <tr><td>×50/×100 落地率</td><td class="num">{r['big_rate']*100:.2f}%</td></tr>
+      <tr><td>平均最大回撤</td><td class="num">{r['avg_max_dd']:.0f}</td></tr>
       <tr><td>破产前发数 中位</td><td class="num">{bl['p50'] if bl['p50'] is not None else '—'} 发</td></tr>
       <tr><td>终局余额 中位</td><td class="num">{b['p50']:.0f}</td></tr>
       <tr><td>终局余额 P90</td><td class="num">{b['p90']:.0f}</td></tr>
@@ -231,6 +246,10 @@ def build_html(results, meta):
       <td>{bl['p50'] if bl['p50'] is not None else '—'}</td>
       <td>{b['p10']:.0f}</td><td>{b['p50']:.0f}</td><td>{b['p90']:.0f}</td><td>{b['max']:.0f}</td>
       <td>{np_['mean']:+.0f}</td>
+      <td>{r['lose_rate']*100:.1f}%</td>
+      <td>{r['hit_rate']*100:.1f}%</td>
+      <td>{r['big_rate']*100:.2f}%</td>
+      <td>{r['avg_max_dd']:.0f}</td>
     </tr>"""
 
     js = _build_js(results)
@@ -255,7 +274,7 @@ def build_html(results, meta):
 
 <h2>关键指标对比</h2>
 <table>
-  <tr><th>档位</th><th>破产率</th><th>存续率</th><th>破产前发数</th><th>终局P10</th><th>终局P50</th><th>终局P90</th><th>终局max</th><th>净赚均值</th></tr>
+  <tr><th>档位</th><th>破产率</th><th>存续率</th><th>破产前发数</th><th>终局P10</th><th>终局P50</th><th>终局P90</th><th>终局max</th><th>净赚均值</th><th>亏率</th><th>中奖率</th><th>×50×100</th><th>最大回撤</th></tr>
   {rows}
 </table>
 
@@ -345,7 +364,7 @@ def run_gui():
 
     tk.Label(mf, text="余额模拟器", font=("Microsoft YaHei", 18, "bold"),
              fg="#f0b000", bg="#0e1524").pack()
-    tk.Label(mf, text="起始 1000 珠 · 每发投 50 珠 · 各 RTP 档位余额分布",
+    tk.Label(mf, text="起始 1000 珠 · 每发投 100 珠 · 各 RTP 档位余额分布",
              font=("Microsoft YaHei", 9), fg="#8fa0c4", bg="#0e1524").pack(pady=(2, 10))
 
     # 档位选择
@@ -449,9 +468,9 @@ if __name__ == "__main__":
         print("报告: %s" % p)
         for r in results:
             bl = r["bankrupt_lifetime"]
-            print("  %s: 破产率%.1f%% 存续率%.1f%% 破产寿命中位%s 终局P50=%.0f 净赚均值=%+.0f"
-                  % (RTP_LABEL[r["rtp"]], r["bankrupt_rate"] * 100, r["survive_rate"] * 100,
-                     ("%d" % bl["p50"]) if bl["p50"] is not None else "—",
-                     r["final_balance"]["p50"], r["net_profit"]["mean"]))
+            print("  %s: 破产率%.1f%% 亏率%.1f%% 中奖率%.1f%% ×50×100落地%.2f%% 终局P50=%.0f 净赚均值=%+.0f 平均回撤%.0f"
+                  % (RTP_LABEL[r["rtp"]], r["bankrupt_rate"] * 100, r["lose_rate"] * 100,
+                     r["hit_rate"] * 100, r["big_rate"] * 100,
+                     r["final_balance"]["p50"], r["net_profit"]["mean"], r["avg_max_dd"]))
     else:
         run_gui()
