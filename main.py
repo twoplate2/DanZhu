@@ -2505,6 +2505,28 @@ def _vibrate(ms):
         pass
 
 
+def _vibrate_double(ms=35, gap=40, amp=255):
+    """短促双震(彩蛋用): 两下短脉冲, 手机读作"发现惊喜"; 区别于单次长震的大奖之感。
+    仅 Android。API>=26 用 createWaveform 出确切双脉冲, 否则退回单次。"""
+    if platform != "android":
+        return
+    try:
+        from jnius import autoclass
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        Context = autoclass("android.content.Context")
+        vib = activity.getSystemService(Context.VIBRATOR_SERVICE)
+        if vib is None:
+            return
+        try:
+            VibrationEffect = autoclass("android.os.VibrationEffect")
+            v = VibrationEffect.createWaveform([0, ms, gap, ms], [0, amp, 0, amp], -1)
+            vib.vibrate(v)
+        except Exception:
+            vib.vibrate(ms * 2 + gap)          # 退回单次(近似时长)
+    except Exception:
+        pass
+
+
 def number_voice_names(n):
     """整数 → 中文朗读的语音名列表(队列拼接用, 对标 Clac 项目方案)。
     1250 → ['voice_d_1','voice_u_1000','voice_d_2','voice_u_100','voice_d_5','voice_u_10']
@@ -3832,16 +3854,13 @@ class RootWidget(BoxLayout):
     def settle(self, i):
         if getattr(self, "_easter_egg", False):
             self._easter_egg = False
-            self.balance += self.bet               # 彩蛋: 球掉回发射槽, 返还本次投注(净 0)
-            self.plays -= 1                        # 不计一局(与哑火一致): 总投/每轮投都退回
+            self.balance += 2 * self.bet          # 彩蛋: 球跳回发射槽, 按 ×2 结算(投10回20, 净+10)
+            self.plays -= 1                       # 不计一局(与哑火一致): 总投/每轮投都退回
             self.round_plays -= 1
             self._refresh_stats()
-            self.status_lbl.text = "彩蛋! 弹珠返还 +%d" % self.bet
-            if self.sound_mode == "voice" and self.bet >= 2:   # 语音档: "弹珠加X"(返还金额; bet=1 无对应语音)
-                self.sfx.play("voice_win%d" % self.bet)
-            else:                                              # 音效档(或 bet=1): 号角
-                self.sfx.play("win6", 0.8)
-            _vibrate(220)
+            self.status_lbl.text = "球球回家! 白赚 %d 珠" % self.bet
+            self.sfx.play("win1", 0.6)            # ×2 档轻赢音(对齐小赢量级, 不抢 ×100 号角戏)
+            _vibrate_double(35)                   # 短促双震=惊喜, 非长震大奖
             self._result_until = time.time() + 2.5
             self._anim_start_balance = self.display_balance
             self._anim_target_balance = float(self.balance)
@@ -3904,15 +3923,15 @@ class RootWidget(BoxLayout):
             self.sfx.play("ready", 0.8)
 
     def _show_easter_popup(self):
-        """彩蛋弹窗: 球掉回发射槽, 返还本次投注(纯惊喜, 无额外奖励)。"""
+        """彩蛋弹窗: 球跳回发射槽, 按 ×2 结算(白赚), 点确定才关。"""
         content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
-        title = Label(text="彩蛋!", font_size="30sp", bold=True, halign="center",
+        title = Label(text="球球回家啦!", font_size="28sp", bold=True, halign="center",
                       color=hex_rgb(COL_METER) + (1,), size_hint_y=None, height=dp(44))
-        msg = Label(text="弹珠掉回发射槽了\n返还本次投注 %d 珠" % self.bet,
-                    font_size="17sp", halign="center", valign="middle",
+        msg = Label(text="这颗球溜达一圈, 又自己跳回发射槽啦~\n顺手给你带了 %d 珠的小惊喜!" % self.bet,
+                    font_size="16sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,))
         msg.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
-        ok_btn = Button(text="确定", font_size="16sp", bold=True,
+        ok_btn = Button(text="收下啦", font_size="16sp", bold=True,
                         background_normal="", background_down="",
                         background_color=hex_rgb(COL_BTN) + (1,),
                         color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
