@@ -295,8 +295,11 @@ COL_FIRE = "#e0533b"
 COL_GREEN = "#39d98a"
 COL_GRAY = "#5a6a8c"
 COL_METER = "#f0b000"
-COL_X50 = "#ff8c00"          # ×50 超级大奖: 深橙(比 ×20 金更热)
-COL_X100 = "#ff1493"         # ×100 顶级大奖: 霓虹粉(最抢眼)
+COL_x = {2: "#1e8a5a", 3: "#3d8bfd", 5: "#e0533b", 10: "#9e1f30", 20: "#a335ee", 50: "#c88800", 100: "#ff8c00"}
+# 槽位倍率色(WoW 品质色调整版): x2绿 x3蓝 x5红 x10深红 x20紫 x50深金 x100深橙。
+# 同时是中奖大字/灯带的取色依据。x10深红、x20紫偏暗 → 白字; 其余亮底 → 黑字。
+COL_X50 = "#c88800"          # ×50 深金(原 ×20 的色): 越往上是"金币"家族
+COL_X100 = "#ff8c00"         # ×100 深橙(原 ×50 的色): 顶级大奖(比×50更亮更热)
 COL_BUMPER = "#4a6aa8"       # 底部挡板(比隔板亮, 醒目)
 COL_LAMP_OFF = "#243250"     # 指示灯熄灭色
 HILITE = "#ffffff"
@@ -2388,21 +2391,15 @@ BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 
 
 
 def slot_color(m):
+    """槽位底色(m=0 空槽, 否则按倍数取色, WoW 品质色调整版)。"""
     if m <= 0:
         return "#2a3550"
-    if m <= 2:
-        return "#1e8a5a"
-    if m <= 3:
-        return "#3d8bfd"
-    if m <= 5:
-        return "#e0533b"
-    if m <= 10:
-        return "#a335ee"
-    if m <= 20:
-        return "#c88800"
-    if m <= 50:
-        return COL_X50
-    return COL_X100
+    return COL_x.get(m, "#1e8a5a")
+
+def slot_txt(m):
+    """槽位数字字色: ×100 深橙白字对比 2.3 太低(大奖会糊), 故黑字(8.0)最跳;
+    其余档白字(低档绿蓝红干净醒目, 深红/紫暗底白字最亮)。"""
+    return "#0b1220" if m >= 100 else "#ffffff"
 
 
 _BALL_TEX = None
@@ -2898,10 +2895,7 @@ class GameArea(FloatLayout):
                 tex = cl.texture
                 cx = FIELD_L + (i + 0.5) * SLOT_W
                 cy = (SLOT_TOP + FLOOR) / 2.0
-                if m >= 20:
-                    Color(*hex_rgb("#0b1220"))
-                else:
-                    Color(1, 1, 1)
+                Color(*hex_rgb(slot_txt(m)))
                 Rectangle(texture=tex,
                           pos=(self._px(cx) - tex.width / 2.0,
                                self._py(cy) - tex.height / 2.0),
@@ -2955,13 +2949,7 @@ class GameArea(FloatLayout):
             return
         if m > 0:
             text = "+%d" % payout
-            if m <= 2:       hexcolor = COL_GREEN
-            elif m <= 3:     hexcolor = "#3d8bfd"   # 蓝
-            elif m <= 5:     hexcolor = COL_FIRE    # 红
-            elif m <= 10:    hexcolor = "#a335ee"   # 紫
-            elif m <= 20:    hexcolor = COL_METER   # 金
-            elif m <= 50:    hexcolor = COL_X50     # 深橙
-            else:            hexcolor = COL_X100    # 霓虹粉
+            hexcolor = slot_color(m)
             size = sp(48)
         else:
             text = "未中"
@@ -3878,13 +3866,7 @@ class RootWidget(BoxLayout):
         # "+50"/"0" 是重复信息, 而且下面那行按场景缩放只有 15sp, 小得只剩干扰。
         self.status_lbl.text = ("中奖!  +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
         if m <= 0:    lamp = COL_FIRE
-        elif m <= 2:  lamp = COL_GREEN
-        elif m <= 3:  lamp = "#3d8bfd"
-        elif m <= 5:  lamp = COL_FIRE
-        elif m <= 10: lamp = "#a335ee"
-        elif m <= 20: lamp = COL_METER
-        elif m <= 50: lamp = COL_X50
-        else:         lamp = COL_X100
+        else:         lamp = slot_color(m)
         self.game_area.set_lamp(i, lamp)
         self.game_area.pulse_slot(i)
         self._play_result_sound(m, payout)
