@@ -3833,9 +3833,14 @@ class RootWidget(BoxLayout):
         if getattr(self, "_easter_egg", False):
             self._easter_egg = False
             self.balance += self.bet               # 彩蛋: 球掉回发射槽, 返还本次投注(净 0)
+            self.plays -= 1                        # 不计一局(与哑火一致): 总投/每轮投都退回
+            self.round_plays -= 1
             self._refresh_stats()
             self.status_lbl.text = "彩蛋! 弹珠返还 +%d" % self.bet
-            self.sfx.play("win6", 0.8)             # 彩蛋音(复用 x100 号角, 惊喜)
+            if self.sound_mode == "voice" and self.bet >= 2:   # 语音档: "弹珠加X"(返还金额; bet=1 无对应语音)
+                self.sfx.play("voice_win%d" % self.bet)
+            else:                                              # 音效档(或 bet=1): 号角
+                self.sfx.play("win6", 0.8)
             _vibrate(220)
             self._result_until = time.time() + 2.5
             self._anim_start_balance = self.display_balance
@@ -3907,7 +3912,7 @@ class RootWidget(BoxLayout):
                     font_size="17sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,))
         msg.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
-        ok_btn = Button(text="太好了", font_size="16sp", bold=True,
+        ok_btn = Button(text="确定", font_size="16sp", bold=True,
                         background_normal="", background_down="",
                         background_color=hex_rgb(COL_BTN) + (1,),
                         color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
@@ -3915,7 +3920,7 @@ class RootWidget(BoxLayout):
         content.add_widget(msg)
         content.add_widget(ok_btn)
         popup = self._popup(0.78, 260, title="", content=content,
-                            auto_dismiss=True,
+                            auto_dismiss=False,
                             title_color=hex_rgb(COL_TEXT) + (1,),
                             separator_color=hex_rgb(COL_DIV) + (1,))
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
