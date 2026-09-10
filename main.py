@@ -2729,8 +2729,9 @@ DIM_ALPHA = 0.68       # 压暗强度(盖满整块游戏区, 含槽区)
 #      弹珠还在往下落, 声音却没了(用户报的就是这个)。
 BOUNCE_THROTTLE = 0.10
 
-# 覆盖层可见顶边(板面最上沿)对应的 design y, 约 -331.7 —— 球在这之上时不能画,
-# 否则会漏到板面上方的"投入弹珠"那一行(Kivy 不裁剪子控件)。
+# 覆盖层可见顶边(板面最上沿)对应的 design y, 约 -388 (杯改 545 宽后重算; 旧注释 -331.7 是
+# 470 宽时代的失效值 —— 改 CUP_W/CUP_BOTTOM 后这里会跟着变, 别把数字抄进注释当准)。
+# 球在这之上时不能画, 否则会漏到板面上方的"投入弹珠"那一行(Kivy 不裁剪子控件)。
 VISIBLE_TOP = -DESIGN_H * CUP_T / CUP_H
 
 _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
@@ -4209,9 +4210,18 @@ class RootWidget(BoxLayout):
 
     def _popup(self, hint_w, h_dp, **kw):
         """统一建 Popup(RotPopup: 横屏挂旋转层随画面转, 坐标系统一为等效竖屏窗口)。
-        高度上限按等效窗口算, size_hint 相对挂载层, 竖屏行为与原生一致。"""
-        _, vh = self._veq()
-        kw["size_hint"] = (hint_w, None)
+
+        ⚠️ 宽高都必须按**等效竖屏窗口**(`_veq()` = 短边x长边)算成绝对值, 不能用
+        size_hint —— size_hint 取的是父容器的**原始**宽高, 而设备横拿时窗口是横的。
+        主界面走 `_fit_width()` 吃的是 `_veq()`(已排序, 保持竖构图), 弹窗若吃裸窗口
+        尺寸就会比界面宽 60~80%: 实测 960x540 下界面宽 540 / 弹窗 806,
+        1740x1000 下 1000 / 1462。
+        这就是"设备横屏时启动游戏(游戏正确变竖屏), 一开设置窗口宽度就是错的"的根因。
+        `_veq()` 会排序, 所以即使弹窗在方向尚未落定前打开, 也能拿到竖构图的那一边。
+        """
+        vw, vh = self._veq()
+        kw["size_hint"] = (None, None)
+        kw["width"] = hint_w * vw
         kw["height"] = min(dp(h_dp), vh * 0.92)
         return RotPopup(**kw)
 
@@ -4626,7 +4636,10 @@ class RootWidget(BoxLayout):
                            background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
         content.add_widget(close_btn)
-        popup = RotPopup(title='', content=content, size_hint=(0.86, 0.7),
+        # 宽高同 _popup(): 必须吃等效竖屏窗口, 不能用 size_hint(见 _popup 的说明)
+        _vw, _vh = self._veq()
+        popup = RotPopup(title='', content=content, size_hint=(None, None),
+                         width=0.86 * _vw, height=0.7 * _vh,
                          auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
