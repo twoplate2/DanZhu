@@ -2758,6 +2758,9 @@ BET_COLORS = {1: "#39c98a", 10: "#4da8ff", 50: "#e0533b", 100: "#a335ee"}
 CUP_W = 545.0
 CUP_H = CUP_W * DESIGN_H / DESIGN_W                 # 313.4, 与资产 800x460 同比
 CUP_L = CW / 2.0 - CUP_W / 2.0                      # -12.5(左右各露 PNG 的空白边)
+# ⚠️ 杯子矩形比游戏区矩形**左右各宽 12.5 逻辑 px**(CUP_L 是负的), 而压暗矩形 = 游戏区矩形。
+#   今天没穿帮, 唯一原因是玻璃 PNG 的非透明内容只到 design x 24.00..775.50, 留了 3.85 逻辑 px 余量。
+#   谁要是给玻璃加外发光 / 把杯口画宽 / 裁掉这张 PNG 的透明边, 杯壁上就会凭空出现一条竖直的硬压暗边。
 CUP_BOTTOM = 578.0
 CUP_T = CUP_BOTTOM - CUP_H                          # 264.6
 TEXT_CY_WIN = 150.0                                 # 中奖大字让位后的逻辑 cy
@@ -2924,7 +2927,13 @@ _GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例�
 # 杯口环的**后半个**(远侧那半圈)在 back 贴图里占的高度比例。
 # 生成器里 `rim_back = _half_mask(rim, front=False, split_y=80)`, 环本体是 design y 5..155、
 # 切开线 80 —— 换算到 920 行的贴图就是 10..160; 这里多留 6 行给生成器那层高斯模糊的晕。
-RIM_BACK_FRAC = 166.0 / 920.0
+# 后层(back)里需要"补画到压暗之上"的两段 —— 每段都是**贴图行的比例区间(从顶边算)**。
+# 生成器用 `_half_mask(..., split_y)` 把环切成前/后两半, 后半个落在 back 层里、跟着一起被压暗:
+#   杯口环: 环本体 design y 5..155, split 80   -> 贴图行 10..160   (上面留 6 行给高斯晕: 0..166)
+#   杯底环: 环本体 design y 347..459, split 404 -> 贴图行 694..808 (下沿留到 808 就是切开线)
+# ⚠️ 两段缺一不可: 只补杯口环的话, **杯底环的远半边会消失** —— 它的 alpha 只有 22(杯口环 68),
+#    被压掉 68% 之后净贡献只剩 3~5/255, 读出来就是"杯子底部后半圈没画"(专家 2026-09-11 实测)。
+RIM_BACK_BANDS = ((0.0, 166.0 / 920.0), (694.0 / 920.0, 808.0 / 920.0))
 # 补画分几段做**纵向渐变** —— 后半个杯口环整体乘一个 alpha 是"两级台阶", 不是过渡:
 # 后层(back)被压暗、前层(front)不压暗, 两者在杯子左右两侧直接拼上, 实测那一圈是硬切
 # (玩家: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次")。
@@ -3094,21 +3103,24 @@ def _pile_projected(count, seed):
     return proj
 
 
-def _rim_band_strips(back_tex):
-    """把 back 贴图里**后半个杯口环**那一条横切成 `RIM_BAND_STRIPS` 段子贴图(带缓存)。
+def _rim_back_strips(back_tex):
+    """把 back 贴图里**需要补画到压暗之上**的那几段切成条带, 返回可直接画的列表。
 
-    为什么需要它: 压暗改到"后层玻璃**之后**"以后, 杯口环的后半圈(杯口**远侧**那半)
-    跟着被压暗 —— 实测峰值 **68.0 -> 29.0(降 57%)**, 而前半圈(在 front 层)纹丝不动。
-    所以要把这一条补画到压暗之上。
+    返回 `[(子贴图, 在杯子矩形里的纵向起点比例, 高度比例, alpha), ...]`, 已按画序(上->下)排好。
 
-    ⚠️ 但**不能整条一个 alpha**(第一版就是那样, 已推翻): 后层被压暗、前层不压暗, 两者在
-    杯子左右两侧直接拼上 —— 整条补画等于把远侧拉回亮、近侧本来就亮, 那一圈仍是**硬切**,
-    只是台阶换了个位置(玩家: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次")。
-    分段的 alpha 从顶部 `RIM_BAND_ALPHA_TOP` 线性升到分界处的 1.0, 于是远侧到近侧是一圈
-    连续的明暗渐变, 分界两侧都接近 1.0, 接缝自然消失。
+    为什么需要它: 压暗改到"后层玻璃**之后**"以后, 后层里那两半环(杯口环的后半 = 杯口**远侧**
+    那半、杯底环的后半)跟着被压暗 —— 实测杯口远环峰值 68.0 -> 29.0, 前后对比从 1.76:1 拉到
+    4.1:1; 杯底远半更惨(alpha 只有 22, 净贡献 16.7 -> 5.3, 基本读不出来)。
 
-    ⚠️ 也别用"alpha > 60 的像素"来挑: back 里杯体和杯底也有 alpha>60 的像素(各约 1.1 万),
-    那样等于把所有薄纱都捞回来了。必须按**几何**(贴图行段)切。
+    ⚠️ 但**一整条一个 alpha 不行**(第一版就是那样, 已被玩家打回): 后层被压暗、前层不压暗,
+    两者在杯子左右两侧**直接拼上** —— 整条补画只是把台阶挪个位置(25 vs 120 -> 80 vs 120),
+    还是硬切。玩家原话: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次"。
+    所以每段横切成 `RIM_BAND_STRIPS` 条, 每条一个 alpha, 从该段顶部的 `RIM_BAND_ALPHA_TOP`
+    线性升到段底(也就是前后半圈的切开线)的 1.0 —— 相邻条只差 4%, 且切开线两侧都接近 1.0,
+    接缝自然消失。实测沿环一圈: 远侧中心 ~42 -> 两侧 ~70 -> 近侧 ~120, 连续变化。
+
+    ⚠️ 也别用"alpha > 60 的像素"来挑: back 里杯体和杯底也有 alpha>60 的像素, 那样等于把
+    薄纱一起捞回来, 把"板面被杯子提亮"的元凶放回去。必须按**几何**(贴图行段)切。
     """
     if back_tex is None:
         return None
@@ -3117,16 +3129,20 @@ def _rim_band_strips(back_tex):
         return ent[1]
     try:
         w, h = back_tex.size
-        hh = max(1, int(round(h * RIM_BACK_FRAC)))          # 整条的高度
-        sh = max(1, hh // RIM_BAND_STRIPS)                  # 每段的高度
-        top = h - hh                                        # 整条在图里的底边(纹理 y 向上)
+        n = RIM_BAND_STRIPS
         out = []
-        for i in range(RIM_BAND_STRIPS):                    # i=0 是最上面那段
-            y = top + (RIM_BAND_STRIPS - 1 - i) * sh        # 段底边的纹理 y
-            t = back_tex.get_region(0, y, w, sh)
-            t.mag_filter = "linear"
-            t.min_filter = "linear"
-            out.append(t)
+        for (y0f, y1f) in RIM_BACK_BANDS:
+            band_frac = y1f - y0f
+            sh = max(1, int(round(h * band_frac / n)))    # 每条的高度(贴图像素)
+            top_row = y0f * h                             # 该段的顶行(从贴图顶边算)
+            for i in range(n):                            # i=0 是该段最上面那条
+                y = int(round(h - (top_row + (i + 1) * sh)))   # Kivy 纹理 y 向上
+                t = back_tex.get_region(0, y, w, sh)
+                t.mag_filter = "linear"
+                t.min_filter = "linear"
+                seg = band_frac / n
+                # 画在杯子矩形里的位置: 该段底边在 1-y1f 处, 第 i 条再往上让 (n-1-i) 格
+                out.append((t, 1.0 - y1f + seg * (n - 1 - i), seg, _rim_band_alpha(i)))
         _GLASS_RIM_TEX[id(back_tex)] = (back_tex, out)
     except Exception:
         return None
@@ -3693,16 +3709,11 @@ class WinPileFX(Widget):
                 Rectangle(pos=self.pos, size=self.size)
 
             if a_cup > 0.0:
-                # 后半个杯口环补画一次(在压暗之上、弹珠之前) —— 见 _rim_back_texture。
-                # 放在球之前: 远侧那半圈本来就在珠子后面, 球要能挡住它。
-                rim_strips = _rim_band_strips(back_tex)
-                if rim_strips:
-                    seg = bh * RIM_BACK_FRAC / float(len(rim_strips))
-                    for i, t in enumerate(rim_strips):     # i=0 是最上面那段
-                        Color(1.0, 1.0, 1.0, a_cup * _rim_band_alpha(i))
-                        Rectangle(texture=t,
-                                  pos=(bx, by + bh * (1.0 - RIM_BACK_FRAC) + seg * (len(rim_strips) - 1 - i)),
-                                  size=(bw, seg))
+                # 后层那两半环(杯口远侧 + 杯底远半)补画到压暗之上 —— 见 _rim_back_strips。
+                # 放在球之前: 它们本来就在珠子后面, 球要能挡住。
+                for t, f0, fh, a in (_rim_back_strips(back_tex) or ()):
+                    Color(1.0, 1.0, 1.0, a_cup * a)
+                    Rectangle(texture=t, pos=(bx, by + bh * f0), size=(bw, bh * fh))
 
                 # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
                 for b in self._balls:
