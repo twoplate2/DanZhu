@@ -2925,7 +2925,20 @@ _GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例�
 # 生成器里 `rim_back = _half_mask(rim, front=False, split_y=80)`, 环本体是 design y 5..155、
 # 切开线 80 —— 换算到 920 行的贴图就是 10..160; 这里多留 6 行给生成器那层高斯模糊的晕。
 RIM_BACK_FRAC = 166.0 / 920.0
-_GLASS_RIM_TEX = {}     # id(back_tex) -> (back_tex, 子贴图)
+# 补画分几段做**纵向渐变** —— 后半个杯口环整体乘一个 alpha 是"两级台阶", 不是过渡:
+# 后层(back)被压暗、前层(front)不压暗, 两者在杯子左右两侧直接拼上, 实测那一圈是硬切
+# (玩家: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次")。
+# 分成 N 段、每段一个 alpha, 从顶部 RIM_BAND_ALPHA_TOP 线性升到杯口分界处的 1.0 ——
+# 于是"远侧暗 -> 近侧亮"变成一圈连续的渐变, 分界处两侧都接近 1.0, 接缝消失。
+# N=12 时相邻两段的 alpha 只差 4%, 看不出台阶。多出来的只是十几个 Rectangle, 可忽略。
+RIM_BAND_STRIPS = 12
+RIM_BAND_ALPHA_TOP = 0.55   # 环最上沿那段补画到多少(1.0 = 完全不压暗)
+_GLASS_RIM_TEX = {}     # id(back_tex) -> (back_tex, [各段子贴图])
+
+
+def _rim_band_alpha(i):
+    """第 i 段(0 = 最上)的补画强度 —— 从 RIM_BAND_ALPHA_TOP 线性升到 1.0。"""
+    return RIM_BAND_ALPHA_TOP + (1.0 - RIM_BAND_ALPHA_TOP) * (i / float(RIM_BAND_STRIPS - 1))
 _PILE_CACHE = {}        # (count, seed) -> proj
 _PILE_ORDER = []
 _PILE_CACHE_MAX = 12
@@ -3081,17 +3094,20 @@ def _pile_projected(count, seed):
     return proj
 
 
-def _rim_back_texture(back_tex):
-    """把 back 贴图里**后半个杯口环**那一条切成子贴图 —— 在压暗之上补画一次用。
+def _rim_band_strips(back_tex):
+    """把 back 贴图里**后半个杯口环**那一条横切成 `RIM_BAND_STRIPS` 段子贴图(带缓存)。
 
     为什么需要它: 压暗改到"后层玻璃**之后**"以后, 杯口环的后半圈(杯口**远侧**那半)
-    跟着被压暗 —— 实测峰值 **68.0 -> 29.0(降 57%)**, 而前半圈(在 front 层)纹丝不动,
-    前后对比从 **1.76:1 拉到 4.1:1**。近亮远暗本身是对的(真实玻璃就是远侧暗, 改之前
-    就有), 但拉到 4:1 之后那半圈读起来像"没画出来"(玩家 2026-09-11 报"上边缘的内侧和
-    外侧颜色差异较大")。所以只把**这一条**补到压暗之上 —— 杯体的薄纱仍然留在压暗之下,
-    那层才是"板面被杯子提亮回去"的元凶, 不能一起捞上来。
+    跟着被压暗 —— 实测峰值 **68.0 -> 29.0(降 57%)**, 而前半圈(在 front 层)纹丝不动。
+    所以要把这一条补画到压暗之上。
 
-    ⚠️ 别用"alpha > 60 的像素"来挑: back 里杯体和杯底也有 alpha>60 的像素(各约 1.1 万),
+    ⚠️ 但**不能整条一个 alpha**(第一版就是那样, 已推翻): 后层被压暗、前层不压暗, 两者在
+    杯子左右两侧直接拼上 —— 整条补画等于把远侧拉回亮、近侧本来就亮, 那一圈仍是**硬切**,
+    只是台阶换了个位置(玩家: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次")。
+    分段的 alpha 从顶部 `RIM_BAND_ALPHA_TOP` 线性升到分界处的 1.0, 于是远侧到近侧是一圈
+    连续的明暗渐变, 分界两侧都接近 1.0, 接缝自然消失。
+
+    ⚠️ 也别用"alpha > 60 的像素"来挑: back 里杯体和杯底也有 alpha>60 的像素(各约 1.1 万),
     那样等于把所有薄纱都捞回来了。必须按**几何**(贴图行段)切。
     """
     if back_tex is None:
@@ -3101,14 +3117,20 @@ def _rim_back_texture(back_tex):
         return ent[1]
     try:
         w, h = back_tex.size
-        hh = max(1, int(round(h * RIM_BACK_FRAC)))
-        tex = back_tex.get_region(0, h - hh, w, hh)   # Kivy 纹理 y 向上 -> 取顶上那一条
-        tex.mag_filter = "linear"
-        tex.min_filter = "linear"
-        _GLASS_RIM_TEX[id(back_tex)] = (back_tex, tex)
+        hh = max(1, int(round(h * RIM_BACK_FRAC)))          # 整条的高度
+        sh = max(1, hh // RIM_BAND_STRIPS)                  # 每段的高度
+        top = h - hh                                        # 整条在图里的底边(纹理 y 向上)
+        out = []
+        for i in range(RIM_BAND_STRIPS):                    # i=0 是最上面那段
+            y = top + (RIM_BAND_STRIPS - 1 - i) * sh        # 段底边的纹理 y
+            t = back_tex.get_region(0, y, w, sh)
+            t.mag_filter = "linear"
+            t.min_filter = "linear"
+            out.append(t)
+        _GLASS_RIM_TEX[id(back_tex)] = (back_tex, out)
     except Exception:
         return None
-    return tex
+    return out
 
 
 class WinPileFX(Widget):
@@ -3673,12 +3695,14 @@ class WinPileFX(Widget):
             if a_cup > 0.0:
                 # 后半个杯口环补画一次(在压暗之上、弹珠之前) —— 见 _rim_back_texture。
                 # 放在球之前: 远侧那半圈本来就在珠子后面, 球要能挡住它。
-                rim_tex = _rim_back_texture(back_tex)
-                if rim_tex is not None:
-                    Color(1.0, 1.0, 1.0, a_cup)
-                    Rectangle(texture=rim_tex,
-                              pos=(bx, by + bh * (1.0 - RIM_BACK_FRAC)),
-                              size=(bw, bh * RIM_BACK_FRAC))
+                rim_strips = _rim_band_strips(back_tex)
+                if rim_strips:
+                    seg = bh * RIM_BACK_FRAC / float(len(rim_strips))
+                    for i, t in enumerate(rim_strips):     # i=0 是最上面那段
+                        Color(1.0, 1.0, 1.0, a_cup * _rim_band_alpha(i))
+                        Rectangle(texture=t,
+                                  pos=(bx, by + bh * (1.0 - RIM_BACK_FRAC) + seg * (len(rim_strips) - 1 - i)),
+                                  size=(bw, seg))
 
                 # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
                 for b in self._balls:
