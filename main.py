@@ -3928,6 +3928,14 @@ def _vibrate_tick(gain):
 
 
 
+# 隐藏弹窗里"制作时刻"的格式。
+# ⚠️ 时间**必须是 24 小时制(%H)**, 玩家定稿。用 %I 会变成"下午 1:49"那种 12 小时制,
+#    跟其余界面的时间口径不一致(历史记录里也是 `%Y-%m-%d %H:%M`, 24 小时制)。
+# ⚠️ 年月日写成**汉字**: `2026-09-11` 这种全数字写法在中文语境下容易被读反(有人按 日/月 读),
+#    带上「年月日」就没有歧义(`fx_probe [13]` 有功能性断言钉住这两条)。
+BUILD_TIME_FMT = '%Y年%m月%d日 %H:%M'
+
+
 def _vibrate_double(ms=35, gap=40, amp=255):
     """短促双震(彩蛋用): 两下短脉冲, 手机读作"发现惊喜"; 区别于单次长震的大奖之感。
     仅 Android。API>=26 用 createWaveform 出确切双脉冲, 否则退回单次。"""
@@ -5233,8 +5241,11 @@ class RootWidget(BoxLayout):
             t = os.path.getmtime(os.path.abspath(__file__))
             # 1600000000 = 2020-09; 再过掉"未来时间"(设备时钟不对时会取到), 免得显示怪日期
             if 1600000000 < t < time.time() + 86400:
-                # 文案(用户两次定稿): 不用「构建」(行话), 用「于 <日期 时间> 制作」。
-                parts.append('于 %s 制作' % time.strftime('%Y-%m-%d %H:%M', time.localtime(t)))
+                # 文案(用户三次定稿): 不用「构建」(行话); 用「于 … 制作」;
+                # 年月日写成**汉字**(用户: "加入年月日文字, 避免误解") —— `2026-09-11` 这种
+                # 全数字写法在中文语境下容易被读反(有人按 日/月 读), 带上「年月日」就没有歧义。
+                parts.append('于 %s 制作'
+                             % time.strftime(BUILD_TIME_FMT, time.localtime(t)))
         except Exception:
             pass
         return ' · '.join(parts)
