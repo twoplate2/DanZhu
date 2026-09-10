@@ -5106,7 +5106,7 @@ class RootWidget(BoxLayout):
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='全程约 10 秒。\n\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯 Python 执行，反映设备跑弹珠的实际流畅度。',
+        desc_lbl = Label(text='全程约 25 秒(含完整的中奖装杯演出)。\n\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯 Python 执行，反映设备跑弹珠的实际流畅度。',
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         desc_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
@@ -5578,24 +5578,29 @@ class RootWidget(BoxLayout):
             self._settle_cb = _on_settled
 
             # 中奖演出: 倍率决定颗数, 投注档决定球色。放在彩蛋分支(本函数开头 return)之外。
-            # ⚠️ 性能测试期间**不播演出**, 直接揭晓。两个理由, 第二个更硬:
-            #   1) 装杯会画满整个游戏区, 盖住跑分置灰层;
-            #   2) 装杯最多要画 100 颗球 —— 那份渲染开销会直接污染正在采样的帧率,
-            #      测出来的就不是这台机器真实的分了。跑分要测的是**盘面物理 + 常规界面**。
-            if getattr(self, "_bench_running", False):
-                self._reveal_deadline = 0.0       # 0 = 不启用兜底(已经当场揭了)
+            # ⚠️ 性能测试期间**照常播**(用户 2026-09-11 定案, 见下面那段) —— 这条以前是反的。
+            # ⚠️ 2026-09-11 用户定案: **跑分期间也照常播装杯**。
+            #    原来这里对 `_bench_running` 是"直接揭晓、不播演出"(下面那段废弃注释的
+            #    第 1、2 条理由), 玩家报"性能测试有bug, 你丢掉了落袋动画", 并要求保留。
+            #    代价是**真实的**, 记在这里免得以后有人又把它"优化"掉:
+            #      · 跑分那 3 发之间, `_auto_launch_tick` 要等 state 回 ready 才发下一发,
+            #        而装杯期间 state 是 landed ⇒ 采样窗口从 ~1.5s 拉长到 ~15~20s,
+            #        里面混进大量装杯渲染 ⇒ **平均帧率偏低**(用户明确接受: "保留动画,
+            #        接受跑分数字偏低");
+            #      · 全程时长从 ~10s 涨到 ~20~30s(菜单里那句提示已同步改掉)。
+            #    (废弃的旧理由, 留档: 1) 装杯会画满游戏区盖住置灰层; 2) 装杯最多画 100 颗球,
+            #     开销会污染正在采样的帧率 —— 第 2 条就是上面写的那个代价, 现在接受它。
+            #     第 1 条已不成立: 置灰层在 RootWidget.canvas.after, 本来就盖在装杯之上。)
+            if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
+                # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
                 _on_settled()
-            else:
-                if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
-                    # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
-                    _on_settled()
-                # 兜底: 到点还没揭就自己揭(防 tick 停摆)。
-                # ⚠️ 基准必须和 tick() 判揭晓用**同一个真源**(`win_fx.reveal_at()`)。
-                #    这里曾经按 `expected_sec - (hold_for + RESULT_FADE)` 反推, 等价于
-                #    "最后一颗球停住 + 0.05s"。揭晓改成"第一次触地 + REVEAL_DELAY(0.3s)"之后,
-                #    那两个时刻只差 0.196~0.315s, 于是兜底会比真事件**早**最多 0.054s 触发 ——
-                #    数字/语音在球停稳前就冒出来, 正是当初要消灭的"提前剧透"。
-                self._reveal_deadline = self.game_area.win_fx.reveal_at() + 0.05
+            # 兜底: 到点还没揭就自己揭(防 tick 停摆)。
+            # ⚠️ 基准必须和 tick() 判揭晓用**同一个真源**(`win_fx.reveal_at()`)。
+            #    这里曾经按 `expected_sec - (hold_for + RESULT_FADE)` 反推, 等价于
+            #    "最后一颗球停住 + 0.05s"。揭晓改成"第一次触地 + REVEAL_DELAY(0.3s)"之后,
+            #    那两个时刻只差 0.196~0.315s, 于是兜底会比真事件**早**最多 0.054s 触发 ——
+            #    数字/语音在球停稳前就冒出来, 正是当初要消灭的"提前剧透"。
+            self._reveal_deadline = self.game_area.win_fx.reveal_at() + 0.05
             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         else:
@@ -6573,8 +6578,10 @@ def _smoke():
             r.settle(4)                       # 跑分中中奖
             print("SMOKE bench-win: cup=%s reveal=%s busy=%s"
                   % (r.game_area.win_fx.mode, r._reveal_done, r.game_area.win_fx.busy()))
-            if r.game_area.win_fx.mode != "idle" or not r._reveal_done:
-                print("SMOKE-FAIL: 跑分中不该播装杯/吞揭晓")
+            # ⚠️ 2026-09-11 用户定案反过来了: 跑分期间**应该**照常播装杯
+            #    (玩家报"你丢掉了落袋动画", 要求保留)。以前这条断言是"不该播"。
+            if r.game_area.win_fx.mode == "idle":
+                print("SMOKE-FAIL: 跑分中应该照常播装杯(用户定案保留落袋动画), 实际已回 idle")
             r.state = "landing"
             r._settled = False
             r._easter_egg = True
