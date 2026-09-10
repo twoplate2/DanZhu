@@ -2415,6 +2415,22 @@ DESIGN_H = 460.0
 CX = 400.0
 FLOOR_Y = 404.0            # 碗反射椭圆中心: 地板平面 h=0(俯视斜角 v2)
 RIM_Y = 80.0               # 壁顶
+RIM_H = FLOOR_Y - RIM_Y    # 杯口在 h 坐标里的高度(=324)
+# 允许堆顶超出杯口多少 design px —— 0 表示堆不溢出(老行为)。用户要"装满、有溢出、但掉不下来":
+# 球堆是**生成期算好的静态终态, 运行期零物理**, 所以"不掉下来"是天然的, 只要把层铺到杯口
+# 之上就行。上限受画布顶约束: 堆顶球顶的 design y 必须 > 0(否则会被画到画布外)。
+# 允许堆顶超出杯口多少 design px —— 0 表示堆不溢出(老行为)。
+# 用户要"装满、有溢出、但掉不下来": 球堆是**生成期算好的静态终态, 运行期零物理**, 所以
+# "不掉下来"是天然的。但**真正的"溢出"做不到**, 原因是几何上的, 别再来回试(已试遍):
+#   1. 层间距是密排的 1.633r。N=100 时球径被容量卡在 r≈46.5, 层间距 ≈76 design px;
+#      而杯口(design y=80)到画布顶(y=0)只有 ~80 —— "多铺一层"会直接冲出画布
+#      (实测堆顶 y = -51, 球会被画到杯子上方的钉阵区, 像悬在空中)。中间没有过渡态。
+#   2. build_pile 有"装不下就把球缩 6% 重试"的兜底, 所以把杯口以下收窄(wall_f)想挤出
+#      冒尖的球也没用 —— 它只会把球缩得更小, 直到 100 颗重新塞进杯口以下。
+#      实测 40 组 (r_dp x 溢出上限 x wall_f x over_f) 组合, 没有一组能让任何一颗球到杯口之上。
+#   能做的只有把球径顶到容量上限(见 android_part_pile._r_dp_for: N>60 用 28), 让堆顶
+#   从 design y=61 抬到 41 —— 正好顶到杯口, 再高就不是这个模型能给的了。
+OVERFLOW_MAX = 0.0         # design px, 允许堆顶超杯口多少(0=不溢出, 老行为)
 K2 = 0.20                  # 斜投影纵剪: 与碗/杯口椭圆 b/a≈0.20 同源(俯视约 12 度)
 PACK_PHI = 0.907           # 三角格盘面密度(pi/2sqrt3): 体积方程与格点枚举自洽
 TAPER = 1.43               # 圆肩: 底半径/堆高(对应休止角 ~35 度)
@@ -2471,12 +2487,20 @@ def floor_radius():
 
 class PileSpec(object):
     def __init__(self, count, r_dp=11.5, seed=0, dp2px=DESIGN_W / 430.0,
-                 jitter=0.10, polish=30):
+                 jitter=0.10, polish=30, over_f=1.0, wall_f=1.0):
         self.count = max(0, int(count))
         self.r = r_dp * dp2px
         self.seed = int(seed)
         self.jitter = float(jitter)
         self.polish = int(polish)
+        # 杯口**之上**那一层的收窄系数(1.0=不收窄)。只作用于 h > RIM_H 的层:
+        # 杯口以下必须贴满杯壁(整堆收窄会让球悬在杯子中间——用户实拍反馈过),
+        # 杯口以上才是自由堆, 收窄了才像"冒尖的一墩"。
+        self.over_f = float(over_f)
+        # 杯口**以下**的可用半径系数。1.0=严格贴壁。略微小于 1 会让每层少装几颗,
+        # 把多出来的球挤到杯口之上变成"冒尖"——代价是球与杯壁之间留一条缝,
+        # 缝宽 = 壁半宽 x (1-wall_f)。0.95 时约 18 design px(0.39 个球半径), 肉眼仍算贴着。
+        self.wall_f = float(wall_f)
 
 
 def _volume_H(spec):
@@ -2500,7 +2524,7 @@ def _enumerate(spec, H, wall_mode=False):
     k_p = 1.12 if wall_mode else 1.0
     jit = (0.03 if wall_mode else spec.jitter) * 2.0 * r
     R = min(TAPER * H, floor_radius() - r)
-    h_cap = (FLOOR_Y - RIM_Y) * 0.95
+    h_cap = RIM_H * 0.95 + (OVERFLOW_MAX if wall_mode else 0.0)
     hv = math.sqrt(8.0 / 3.0) * r            # 密排面间距 1.633r: 层 k+1 坐在层 k 三角谷上
     pitch = math.sqrt(3.0) * r * k_p
     beads = []
@@ -2514,6 +2538,9 @@ def _enumerate(spec, H, wall_mode=False):
             break
         dome = R * math.sqrt(max(0.0, 1.0 - (h / H) ** 2))
         wall = halfwidth(h)
+        if wall_mode:
+            # 杯口以下: 贴壁(可轻微收窄以挤出"冒尖"的球); 杯口以上: 自由堆, 收窄成墩
+            wall *= spec.wall_f if h <= RIM_H else spec.over_f
         # 俯视是圆(深度短缩全交给投影 K2, 与碗椭圆 b=26~K2*257 自洽): 两轴同限。
         # 留出抖动余量, 抖后仍在壁内(贴壁大层边缘本无余量)。
         a = max(0.5, (wall if wall_mode else min(wall, dome)) - r - jit)
@@ -2556,7 +2583,7 @@ def build_pile(spec):
     if spec.count == 0:
         return [], {"count": 0, "H": 0.0, "R": 0.0, "ms": 0.0}
     wall_mode = spec.count >= 35
-    cap = (FLOOR_Y - RIM_Y) * 0.95
+    cap = RIM_H * 0.95 + (OVERFLOW_MAX if wall_mode else 0.0)
     H = cap if wall_mode else _volume_H(spec)
     beads, H, R = _enumerate(spec, H, wall_mode)
     if not wall_mode:
@@ -2833,7 +2860,14 @@ _PILE_VARIANTS = 4      # 同倍率留 4 种堆形变体, 免得每局一模一�
 
 
 def _r_dp_for(n):
-    """球半径(dp)按颗数分级: 同局所有球等半径(R2 红线)。"""
+    """球半径(dp)按颗数分级: 同局所有球等半径(R2 红线)。
+
+    ⚠️ 大 N 的值不是审美选的, 是**容量上限**: build_pile 装不下就自动缩 6% 重试(最多 4 次),
+    所以球径实际被卡在"100 颗刚好能塞进杯口以下"的那个尺寸。实测(N=100, 120 个种子全过):
+      r_dp=23 -> 实r 42.8(堆顶 design y=61, 够不到杯口)
+      r_dp>=25 -> 实r 46.5(堆顶 y=41, 正好顶到杯口)  <- 这就是上限, 再大也只会被缩回来
+    想再满只能改堆的结构(见 pile3d.OVERFLOW_MAX 处的说明: 层间距 1.633r 太粗, 加一层会冲出画布)。
+    """
     if n <= 3:
         return 26.0
     if n <= 8:
@@ -2841,8 +2875,8 @@ def _r_dp_for(n):
     if n <= 20:
         return 22.0
     if n <= 60:
-        return 21.0
-    return 23.0
+        return 23.0
+    return 28.0
 
 
 def _mix_rgb(a, b, amount):
