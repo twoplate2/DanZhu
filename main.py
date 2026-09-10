@@ -2685,11 +2685,14 @@ BET_COLORS = {1: "#39c98a", 10: "#4da8ff", 50: "#e0533b", 100: "#a335ee"}
 # DEFAULT_BET 故意**借用**主游戏 b1 段已有的那个(=10), 不另起名字。
 
 # ---- 杯子几何(520x660 逻辑画布内) ----
+# 位置: 用户定稿"中下部, 不要正中间"。杯顶取画布高 46%(303.6), 于是杯占逻辑 y 303.6~573.9,
+# 底缘离槽区隔板顶(SLOT_TOP-10=606)还有 32px, 视觉上像搁在下半区、不压到倍率槽。
+# 杯子下移顺带把下落落差拉长(起点仍在板面之上), 重力感反而更足。
 CUP_W = 470.0
 CUP_H = CUP_W * DESIGN_H / DESIGN_W                 # 270.25, 与资产 800x460 同比
 CUP_L = CW / 2.0 - CUP_W / 2.0                      # 25.0
-CUP_T = CH / 2.0 - CUP_H / 2.0                      # 194.875 (杯占逻辑 y 194.9~465.1)
-TEXT_CY_WIN = 118.0                                 # 中奖大字让位后的逻辑 cy
+CUP_T = CH * 0.46                                   # 303.6
+TEXT_CY_WIN = 150.0                                 # 中奖大字让位后的逻辑 cy
 
 # ---- 时序(秒) ----
 WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿灯先被看见
@@ -3871,10 +3874,14 @@ class GameArea(FloatLayout):
         shadow.bind(size=lambda w, _: setattr(w, "text_size", w.size))
         self.add_widget(shadow)
         self.add_widget(main)
+        # 中奖时大字上移到杯顶之上(TEXT_CY_WIN=118 逻辑): 中奖玻璃杯占逻辑 y 194.9~465.1,
+        # 3 秒内大字还会上浮 ~55 逻辑 px, 118 起跳留足余量 —— 不然大字压在杯身上。
+        # 未中不播杯子, 保持原来的画布中央位置。
+        cy_logical = (CH / 2.0 - 80.0) if m <= 0 else TEXT_CY_WIN
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
                               "life": 3.0, "size": size, "rgb": hex_rgb(hexcolor),
                               "cx": self._px(CW / 2.0) - self.x,
-                              "cy": self._py(CH / 2.0 - 80) - self.y})
+                              "cy": self._py(cy_logical) - self.y})
 
     def pulse_slot(self, i):
         if 0 <= i < len(self._slot_cols):
@@ -4780,13 +4787,16 @@ class RootWidget(BoxLayout):
         else:         lamp = slot_color(m)
         self.game_area.set_lamp(i, lamp)
         self.game_area.pulse_slot(i)
-        self._play_result_sound(m, payout)
+        self._play_pocket_sound(m)
         self.game_area.big_result_text(m, payout)
         if m > 0:
             # 中奖演出: 倍率决定颗数, 投注档决定球色。倍率<=0(未中)不播。
             # 放在彩蛋分支(本函数开头 return)之外, 彩蛋有自己的弹窗和节奏。
-            self.game_area.win_fx.play_win(m, self.bet)
-        self._result_until = time.time() + 2.5   # 结果窗口: 期内抑制UI语音
+            # 赢音/中奖语音交给杯子落定那一刻回调(见 _play_win_voice)。
+            self.game_area.win_fx.play_win(
+                m, self.bet, on_done=lambda: self._play_win_voice(m, payout))
+        self._result_until = time.time() + 2.5 + (
+            self.game_area.win_fx.expected_sec(m) if m > 0 else 0.0)
         if m > 0:                             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         # 数字滚动动画 + 大奖节奏分档(x10 以上滚更久, 看得清中大奖)
@@ -5150,10 +5160,19 @@ class RootWidget(BoxLayout):
         self._last_charge_sound = now
         self.sfx.play("ratchet%d" % int(clamp(power, 0.0, 1.0) * 5.99))
 
-    def _play_result_sound(self, m, payout):
+    def _play_pocket_sound(self, m):
+        """入袋音 —— 结算瞬间就播(杯子还没出来), 所以和赢音拆开。"""
         self.sfx.play("pocket")
         if m <= 0:
             self.sfx.play("lose", 0.9)    # "好遗憾"语音已制作(voice_lose), 暂不接入
+
+    def _play_win_voice(self, m, payout):
+        """赢音/中奖语音 —— 由中奖玻璃杯**全部落定那一刻**回调触发。
+
+        档位映射与杯子落定的节奏天然对齐: 杯里最后一颗球砸下去, 小号角/语音才响,
+        比"球刚进槽就报喜"更有兑现感。映射表一个字没动, 与改动前逐档一致。
+        """
+        if m <= 0:
             return
         if self.sound_mode == "voice":
             # 语音档: "弹珠加xx"替换 win 琶音(语音与琶音同播会互相盖, 见 BUILD 讨论)
@@ -5360,7 +5379,11 @@ class RootWidget(BoxLayout):
                     self._settled = True
                     self.settle(self._settle_slot)
         elif self.state == "landed":
-            if time.time() - self.landed_at >= self._land_hold:
+            # 中奖玻璃杯演出期间不放行: 否则 park_ball 会在杯子播到一半时重掷盘面、
+            # 恢复按钮, 杯子就盖在一个已经换过的盘面上, 玩家还能同时发下一颗。
+            # 硬兜底在 WinPileFX.busy() 里(FX_MAX_SEC 超时无条件放手), 不会锁死。
+            if (time.time() - self.landed_at >= self._land_hold
+                    and not self.game_area.win_fx_busy()):
                 self.park_ball()
         if self.state != "charging" and self.power <= 0.01 and self.power_lbl.text:
             self.power_lbl.text = ""
@@ -5611,13 +5634,34 @@ def _smoke():
             r.balance = 5                    # 余额 < 投注 -> 触发飘字
             r.start_charge()
             print("SMOKE s9 after start_charge: state=%s" % r.state)
+        Clock.schedule_once(when_ready(s9b, "s9b"), 0.5)
 
     def s9b(dt):
         r = app.rootw
         print("SMOKE s9b: state=%s balance=%s" % (r.state, r.balance))
         shot("08_no_beads.png")
-        print("SMOKE DONE ->", outdir)
+        print("SMOKE-OK state=%s cup=%s -> %s"
+              % (r.state, r.game_area.win_fx.mode, outdir))
         App.get_running_app().stop()
+
+    def when_ready(fn, name, tries=120):
+        """等状态机真正回到 ready 再执行, 超时(默认 12s)则打日志后强制执行。
+
+        ⚠️ 中奖玻璃杯演出会锁住输入(见 _frame 的 landed 分支), 固定时刻的 s8/s9 会被
+        **静默跳过** —— 冒烟照样全绿, 覆盖却没了。所以改成轮询, 并把结果打进日志。
+        """
+        def poll(dt, left=tries):
+            r = app.rootw
+            if r.state == "ready" and not r.game_area.win_fx_busy():
+                fn(dt)
+                return
+            if left <= 0:
+                print("SMOKE %s 等 ready 超时: state=%s cup=%s"
+                      % (name, r.state, r.game_area.win_fx.mode))
+                fn(dt)
+                return
+            Clock.schedule_once(lambda d: poll(d, left - 1), 0.1)
+        return poll
 
     Clock.schedule_once(s1, 1.5)
     Clock.schedule_once(s2, 2.5)
@@ -5628,9 +5672,8 @@ def _smoke():
     Clock.schedule_once(s7, 15.0)
     Clock.schedule_once(s7b, 15.4)
     Clock.schedule_once(s7c, 16.8)
-    Clock.schedule_once(s8, 17.0)
-    Clock.schedule_once(s9, 20.0)
-    Clock.schedule_once(s9b, 20.5)
+    Clock.schedule_once(when_ready(s8, "s8"), 17.0)
+    Clock.schedule_once(when_ready(s9, "s9"), 20.0)
     app.run()
 
 

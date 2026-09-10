@@ -14,13 +14,15 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.7(2026-09-10): 中奖演出期间锁输入(播完才放行) + 中奖大字上移让位 + 赢音改由
+# 落定时刻回调触发 + 杯子位置改到画面中下部。含 FX_MAX_SEC 软锁兜底。
 # 0.5.6(2026-09-10): 接线中奖玻璃杯渲染层(WinPileFX 挂进 GameArea, settle 时播放)。
 # 0.5.5(2026-09-10): 引入中奖玻璃杯表现层(assets/ 三张 PNG + pile3d 球堆模块)。
 # 0.5.4(2026-08-26): 竖屏启动沉浸不生效修复 —— setSystemUiVisibility 从 Python
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.6
+version = 0.5.7
 
 requirements = python3,kivy==2.3.0,pyjnius
 
