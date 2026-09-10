@@ -2685,13 +2685,16 @@ BET_COLORS = {1: "#39c98a", 10: "#4da8ff", 50: "#e0533b", 100: "#a335ee"}
 # DEFAULT_BET 故意**借用**主游戏 b1 段已有的那个(=10), 不另起名字。
 
 # ---- 杯子几何(520x660 逻辑画布内) ----
-# 位置: 用户定稿"中下部, 不要正中间"。杯顶取画布高 46%(303.6), 于是杯占逻辑 y 303.6~573.9,
-# 底缘离槽区隔板顶(SLOT_TOP-10=606)还有 32px, 视觉上像搁在下半区、不压到倍率槽。
-# 杯子下移顺带把下落落差拉长(起点仍在板面之上), 重力感反而更足。
-CUP_W = 470.0
-CUP_H = CUP_W * DESIGN_H / DESIGN_W                 # 270.25, 与资产 800x460 同比
-CUP_L = CW / 2.0 - CUP_W / 2.0                      # 25.0
-CUP_T = CH * 0.46                                   # 303.6
+# 尺寸: 545 逻辑宽 —— 玻璃图 800 宽里真实内容只占 x 24~776(两侧各 24px 空白), 换算下来
+# 画面上的杯壁占 545*752/800 ≈ 512 逻辑宽, 距画布边(CW=520)还剩约 4px 余量。
+# 再大会被画布边裁到杯壁。球径随 bw 等比放大, 所以这是"整体放大"而不是只放大杯子。
+# 位置: 用户定稿"中下部, 不要正中间"。**底缘锚定** CUP_BOTTOM, 杯高变了只往上长,
+# 底缘离槽区隔板顶(SLOT_TOP-10=606)恒定留 28px, 不会因为改尺寸就压到倍率槽。
+CUP_W = 545.0
+CUP_H = CUP_W * DESIGN_H / DESIGN_W                 # 313.4, 与资产 800x460 同比
+CUP_L = CW / 2.0 - CUP_W / 2.0                      # -12.5(左右各露 PNG 的空白边)
+CUP_BOTTOM = 578.0
+CUP_T = CUP_BOTTOM - CUP_H                          # 264.6
 TEXT_CY_WIN = 150.0                                 # 中奖大字让位后的逻辑 cy
 
 # ---- 时序(秒) ----
@@ -4752,6 +4755,8 @@ class RootWidget(BoxLayout):
         self.ball = launch_ball(frozen_power)
         self._settled = False                 # 新发射重置结算标记(结算延迟到回弹后)
         self._easter_egg = False              # 新发射重置彩蛋标记(球落回竖井才置 True)
+        self._easter_hold = False             # 彩蛋流程锁: 弹窗+装杯期间压住 park_ball
+        self._easter_popup = None             # 彩蛋弹窗引用(探针用, 也便于将来查是否还开着)
         self.state = "flying"
         self._accumulator = 0.0
         self.power = 0.0                      # 发射后清除蓄力显示
@@ -4776,14 +4781,17 @@ class RootWidget(BoxLayout):
             self.plays -= 1                       # 不计一局(与哑火一致): 总投/每轮投都退回
             self.round_plays -= 1
             self._refresh_stats()
-            self.status_lbl.text = "球球回家! 白赚 %d 珠" % self.bet
-            self.sfx.play("win1", 0.6)            # ×2 档轻赢音(对齐小赢量级, 不抢 ×100 号角戏)
+            # 不设 status_lbl: 这条路径的结果全交给弹窗说(用户定稿, 状态栏那行已删)
             _vibrate_double(35)                   # 短促双震=惊喜, 非长震大奖
             self._result_until = time.time() + 2.5
             self._anim_start_balance = self.display_balance
             self._anim_target_balance = float(self.balance)
             self._anim_start_time = time.time()
             self._save_config()
+            # 一路锁到"弹窗关掉 + 装杯播完": 彩蛋分支不设 _land_hold, 不锁的话
+            # park_ball 会在 landed_at+0.6s(弹窗还开着)就跑掉 —— 重掷盘面、state 回 ready、
+            # 按钮恢复, 然后装杯才播, 变成"已经能发射了还在放动画"。
+            self._easter_hold = True
             self._show_easter_popup()
             return
         m = self.multipliers[i]
@@ -4842,15 +4850,22 @@ class RootWidget(BoxLayout):
             self.sfx.play("ready", 0.8)
 
     def _show_easter_popup(self):
-        """彩蛋弹窗: 球跳回发射槽, 按 ×2 结算(白赚), 点确定才关。"""
+        """彩蛋弹窗: 球跳回发射槽, 按 ×2 结算(返还 2×投注), 点确定才关。
+
+        文案与语音用中性正式的措辞(用户定稿): 这条路径的措辞与游戏其余部分
+        ("弹珠数量已调整到一千个" / "弹珠返还比例调整到百分之三百")保持一致,
+        量词统一用「个弹珠」(对齐"每次投入弹珠: 1个/10个/50个/100个"那排按钮)。
+        金额报的是**总返还** 2×bet(按确定后余额确实 +2×bet); 净赚仍是 bet。
+        """
         content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
-        title = Label(text="球球回家啦!", font_size="28sp", bold=True, halign="center",
+        title = Label(text="弹珠返回发射槽", font_size="28sp", bold=True, halign="center",
                       color=hex_rgb(COL_METER) + (1,), size_hint_y=None, height=dp(44))
-        msg = Label(text="这颗球溜达一圈, 又自己跳回发射槽啦~\n顺手给你带了 %d 珠的小惊喜!" % self.bet,
+        msg = Label(text="弹珠未落入倍率槽, 已回到发射槽。\n本局按 ×2 结算, 返还 %d 个弹珠。"
+                         % (2 * self.bet),
                     font_size="16sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,))
         msg.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
-        ok_btn = Button(text="收下啦", font_size="16sp", bold=True,
+        ok_btn = Button(text="确定", font_size="16sp", bold=True,
                         background_normal="", background_down="",
                         background_color=hex_rgb(COL_BTN) + (1,),
                         color=(1, 1, 1, 1), size_hint_y=None, height=dp(48))
@@ -4862,7 +4877,33 @@ class RootWidget(BoxLayout):
                             title_color=hex_rgb(COL_TEXT) + (1,),
                             separator_color=hex_rgb(COL_DIV) + (1,))
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
+        # 绑 on_dismiss 而不是按钮: 将来多一条关闭路径(手势/系统)也不会漏掉装杯。
+        # 顺便把弹窗引用留给探针用。
+        popup.bind(on_dismiss=self._on_easter_closed)
+        self._easter_popup = popup
+        # 晓晓念的就是弹窗这句话。直接调 sfx.play —— set_bet/set_rtp 那类辅助函数会被
+        # _result_until 挡掉(本分支刚把它设成 now+2.5), 走辅助函数会自己把自己抑制掉。
+        if self.sound_mode == "voice":
+            self.sfx.play("voice_easter_%d" % self.bet, throttle=0.5)
         popup.open()
+
+    def _on_easter_closed(self, *_):
+        """弹窗关掉 -> 补播一场 ×2 的装杯(用户定稿: 关掉弹窗再看弹珠落进去)。
+
+        装杯会把 busy() 置 True, 所以 park_ball 的解锁顺手延到装杯播完。
+        排不上(异常/未知档)就直接放行 —— 装杯是表演, 绝不能拖累解锁。
+        """
+        if not self.game_area.win_fx.play_win(2, self.bet, on_done=self._easter_finish):
+            self._easter_finish()
+
+    def _easter_finish(self):
+        """装杯全部落定: 解锁 park_ball + 播 ×2 档轻赢音。
+
+        轻赢音原本在结算那一刻播, 现在挪到这儿收尾 —— 弹窗期间观众还没看到弹珠落进杯子,
+        先响一声会跟画面脱节。
+        """
+        self._easter_hold = False
+        self.sfx.play("win1", 0.6)            # ×2 档轻赢音(对齐小赢量级, 不抢 ×100 号角戏)
 
     # ------------------------------ 轮次结束 ------------------------------
     @staticmethod
@@ -5394,8 +5435,11 @@ class RootWidget(BoxLayout):
             # 中奖玻璃杯演出期间不放行: 否则 park_ball 会在杯子播到一半时重掷盘面、
             # 恢复按钮, 杯子就盖在一个已经换过的盘面上, 玩家还能同时发下一颗。
             # 硬兜底在 WinPileFX.busy() 里(FX_MAX_SEC 超时无条件放手), 不会锁死。
+            # _easter_hold: 彩蛋的弹窗+装杯整段(弹窗是模态的, 玩家只有"确定"一条出口,
+            # 所以这个锁不会把谁困住; 装杯那半段另有 busy() 的 9s 兜底)。
             if (time.time() - self.landed_at >= self._land_hold
-                    and not self.game_area.win_fx_busy()):
+                    and not self.game_area.win_fx_busy()
+                    and not self._easter_hold):
                 self.park_ball()
         if self.state != "charging" and self.power <= 0.01 and self.power_lbl.text:
             self.power_lbl.text = ""

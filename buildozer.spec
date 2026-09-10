@@ -14,6 +14,8 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.9(2026-09-10): 彩蛋(弹珠返回发射槽)改中性正式文案 + 补晓晓语音(按投注档 4 条) +
+# 弹窗关掉后补播 ×2 装杯; 中奖杯整体放大 16%(470->545 逻辑宽, 球径等比放大)。
 # 0.5.8(2026-09-10): 中奖杯启动期分帧预热(球纹理按当前投注档优先 + 7 档球堆) +
 # 球堆缓存 LRU 上限 12 + 投放间隔收进 _make_balls 一处算。补 fx_probe 与踩坑文档。
 # 0.5.7(2026-09-10): 中奖演出期间锁输入(播完才放行) + 中奖大字上移让位 + 赢音改由
@@ -24,7 +26,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.8
+version = 0.5.9
 
 requirements = python3,kivy==2.3.0,pyjnius
 
