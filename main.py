@@ -1751,6 +1751,7 @@ class Sfx:
         self._scaled = {}
         self._last = {}
         self._last_voice = 0.0       # 全局语音间隔: 防重叠
+        self._last_voice_len = 0.0  # 上一句的时长(互斥按它判, 不写死 3 秒)
         self._thread = None
         if not self.enabled:
             return
@@ -1880,11 +1881,15 @@ class Sfx:
         if not self.enabled:
             return False
         now = time.time()
-        # UI交互语音互斥: 上一个没播完(≤3s)前新的不出声; 结果/轮次语音不在此限
+        # UI交互语音互斥: 上一句**还没播完**就不出新的; 结果/轮次语音不在此限。
+        # ⚠️ 用上一句的**真实时长**判, 不能写死 3 秒 —— 写死的话连按音效开关时,
+        # 第一句之后 3 秒内全被挡, 按钮颜色在切而完全没声音, 音画脱节
+        # (实测连按 12 次只听到第 1 句; 而"关闭声音"本身只有 0.9 秒)。
         if name.startswith(("voice_rtp_", "voice_bet_", "voice_mode_")):
-            if now - self._last_voice < 3.0:
+            if now - self._last_voice < self._last_voice_len:
                 return False
             self._last_voice = now
+            self._last_voice_len = self.voice_duration(name)
         pcm_mode = getattr(self.out, "mode", "pcm") == "pcm"
         if pcm_mode:
             pcm = self.bank.get(name)
@@ -1965,12 +1970,19 @@ class Sfx:
             m()
 
     def set_enabled(self, on):
-        """静音开关: 关时立即暂停输出, 开时恢复。"""
+        """静音开关: 关时暂停输出, 开时**只放开 enabled**, 不 resume。
+
+        ⚠️ 开的时候**不能** autoResume: 静音那一刻 autoPause() 会把当时正在播的流掐在半路,
+        一 resume 就从半路接着播出来 —— 症状是"连按音效开关会听到半句上一句提示音",
+        而且连按越频繁、被掐的流越多, 越明显。
+        autoResume 只该服务于"切后台回来"(PlinkoApp.on_resume -> resume_out), 那里的语义
+        才是"把刚才暂停的接着播完"。
+        (SoundPool.autoPause 只遍历已分配的 channel 去暂停, 不会挡住后续 play() 新建 channel,
+         所以这里不 resume 不影响"取消静音后能不能出声"。)
+        """
         self.enabled = bool(on)
         if not on:
             self.pause_out()
-        else:
-            self.resume_out()
 
 def selftest(n=40000):
     """验证: (1) 各档 RTP 精确=档位; (2) 引导飞行落点=预定槽、不卡死;

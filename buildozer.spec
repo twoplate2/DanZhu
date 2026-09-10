@@ -14,6 +14,9 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.15(2026-09-10): 修连按音效开关时"声音不太对": 语音互斥改按真实时长判(原来写死
+# 3 秒 -> 连按时 3 秒内全静音, 音画脱节); 安卓取消静音不再 autoResume(会把被掐在
+# 半路的提示音续播出来)。
 # 0.5.14(2026-09-10): 声音开关改两态(去掉了"语音已开"这档, 新的"音效已开"= 老的
 # "语音已开"含语音); 声音设置不再持久化; 删孤儿语音 voice_mode_voice;
 # 顺带修 PC 侧 off->on 崩溃(enabled=True 而 out=None -> play() AttributeError)。
@@ -39,7 +42,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.14
+version = 0.5.15
 
 requirements = python3,kivy==2.3.0,pyjnius
 
