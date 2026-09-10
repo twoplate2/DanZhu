@@ -14,6 +14,17 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.29(2026-09-11): 长按标题的隐藏弹窗加一行"版本 · 构建日期"。
+# 版本走 Android PackageManager 的 versionName(就是 buildozer.spec 的 version);
+# 日期取 main.py 的文件 mtime。
+# **为什么不把日期烘成源码常量**: `tools/build_android_main.py` 是纯字符串拼接、不做任何
+# 改写 —— 源码里写死日期, `--check` 每次都报"生成物与源不同步"。运行时取 mtime 与生成
+# 过程完全解耦, 生成器一个字都不用改。
+# mtime 为什么约等于构建日: p4a 打包时把整个 app 目录塞进 APK 里的 private.tar, 条目时间戳
+# = 构建机上文件的写入时间(CI 是新拉代码后立刻构建), 首次运行解包时 tarfile 保留 mtime。
+# 两个弹窗都加了(菜单 + 结果); 全程 try/except, 拿不到就少一行, 绝不把弹窗带崩。
+# `fx_probe [13]` 钉住: 不抛异常 + 日期格式必须是 YYYY-MM-DD(设备时钟不对时不显示怪日期)。
+#
 # 0.5.28(2026-09-11): 杯口环从"两个明暗层次"改成**纵向渐变**。
 # 玩家: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次"。
 # 根因: 后半个杯口环画在 back 层(被压暗)、前半个画在 front 层(不压暗), 两者在杯子
@@ -263,7 +274,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.28
+version = 0.5.29
 
 requirements = python3,kivy==2.3.0,pyjnius
 

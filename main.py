@@ -5092,13 +5092,19 @@ class RootWidget(BoxLayout):
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         desc_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(desc_lbl)
+        info = self._build_info()
+        if info:
+            ver_lbl = Label(text=info, font_size='13sp', halign='center', valign='middle',
+                            color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
+            ver_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+            content.add_widget(ver_lbl)
         start_btn = Button(text='开始测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = self._popup(0.84, 380, title='', content=content,
+        popup = self._popup(0.84, 405, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
@@ -5185,6 +5191,42 @@ class RootWidget(BoxLayout):
         import platform as pf
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
+    def _build_info(self):
+        """这个包是**哪个版本、什么时候构建的** —— 长按标题那两个弹窗里显示一行。
+
+        版本走 Android 的 PackageManager(它的 versionName 就是 buildozer.spec 的 version);
+        日期取 `main.py` 的文件 mtime。
+
+        ⚠️ **为什么不把日期烘成源码常量**: `tools/build_android_main.py` 是纯字符串拼接、
+        不做任何改写 —— 源码里写死日期的话, `--check` 每次都报"生成物与源不同步"。
+        运行时取 mtime 就与生成过程完全解耦, 生成器一个字都不用改。
+
+        mtime 为什么约等于构建日: 打包时 p4a 把整个 app 目录塞进 APK 里的 `private.tar`,
+        条目时间戳 = 构建机上那些文件的写入时间(CI 是新拉代码后立刻构建), 首次运行时
+        bootstrap 解包, `tarfile` 默认保留 mtime。
+
+        ⚠️ 整段 try/except: 拿不到就少显示一段, 绝不把弹窗带崩 —— 这只是隐藏功能里的
+        一行信息, 不值得为它冒任何风险。
+        """
+        parts = []
+        if platform == 'android':
+            try:
+                from jnius import autoclass
+                act = autoclass('org.kivy.android.PythonActivity').mActivity
+                pi = act.getPackageManager().getPackageInfo(act.getPackageName(), 0)
+                if pi.versionName:
+                    parts.append('v%s' % pi.versionName)
+            except Exception:
+                pass
+        try:
+            t = os.path.getmtime(os.path.abspath(__file__))
+            # 1600000000 = 2020-09; 再过掉"未来时间"(设备时钟不对时会取到), 免得显示怪日期
+            if 1600000000 < t < time.time() + 86400:
+                parts.append('构建 %s' % time.strftime('%Y-%m-%d', time.localtime(t)))
+        except Exception:
+            pass
+        return ' · '.join(parts)
+
     def _bench_done(self, flights, frames, fps_list):
         if getattr(self, "_bench_toast_evt", None):
             self._bench_toast_evt.cancel()
@@ -5221,11 +5263,14 @@ class RootWidget(BoxLayout):
                 '平均帧率： %.1f\n'
                 '1%%Low帧率：%.1f') % (
                     dev, int(phys_fps), avg_frames, cost_ms, render_fps, render_1low)
+        info = self._build_info()
+        if info:                       # 版本 + 构建日期: 一眼看出"装的是哪个包"
+            data = data + chr(10) + info
         data_lbl = Label(text=data, font_size='17sp', halign='left', valign='top',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(160))
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(185))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(data_lbl)
-        popup = self._popup(0.90, 300, title='', content=content,
+        popup = self._popup(0.90, 320, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         popup.open()
         self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
