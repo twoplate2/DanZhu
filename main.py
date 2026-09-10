@@ -4209,9 +4209,15 @@ class GameArea(FloatLayout):
         # 杯子占逻辑 y ≈264.6~578, 且大字要上浮 38px/s, 起跳点留足余量才不会被杯口压住)。
         # 未中不播杯子, 保持原来的画布中央位置。
         cy_logical = (CH / 2.0 - 80.0) if m <= 0 else TEXT_CY_WIN
+        # ⚠️ **横向不要再减 `self.x`**(2026-09-10 修)。这里是 `_px()` 的返回值, 已经是
+        # Kivy 窗口绝对坐标; 而本项目的子控件 canvas 就是**绝对坐标**, 父级不做平移
+        # (见 CLAUDE.md 坐标系那条坑)。再减一次等于把大字左移整整一个 `GameArea.x`。
+        # 竖屏 `GameArea.x` 恒为 0, 减了个 0 所以一直没人发现; **横屏反旋转时 x=370**
+        # (1740x1000), 大字就偏左 370px —— 玩家报的"弹珠+xxx 在特殊情况下偏左很多"。
+        # 纵向的 `- self.y` 是历史遗留(竖屏 y=122, 是被眼睛调过的既成观感), 本轮不动。
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
                               "life": BIG_TEXT_LIFE, "size": size, "rgb": hex_rgb(hexcolor),
-                              "cx": self._px(CW / 2.0) - self.x,
+                              "cx": self._px(CW / 2.0),
                               "cy": self._py(cy_logical) - self.y})
 
     def pulse_slot(self, i):
@@ -4232,7 +4238,9 @@ class GameArea(FloatLayout):
                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         lbl.texture_update()                      # 立刻出纹理, 尺寸跟文字(center 才摆得准)
         lbl.size = lbl.texture_size
-        cx = self._px(CW / 2.0) - self.x
+        # ⚠️ 横向同样**不减 `self.x`** —— 理由见 big_result_text 处(子控件 canvas 是绝对
+        # 坐标, 竖屏 x=0 掩盖了这个错, 横屏会整体左移一个 GameArea.x)。
+        cx = self._px(CW / 2.0)
         cy = self._py(CH / 2.0 - 40) - self.y
         lbl.center = (cx, cy)
         self.add_widget(lbl)
