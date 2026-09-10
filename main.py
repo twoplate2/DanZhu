@@ -5192,7 +5192,7 @@ class RootWidget(BoxLayout):
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
     def _build_info(self):
-        """这个包是**哪个版本、什么时候构建的** —— 长按标题那两个弹窗里显示一行。
+        """这个包是**哪个版本、什么时候做出来的** —— 长按标题那两个弹窗里显示一行。
 
         版本走 Android 的 PackageManager(它的 versionName 就是 buildozer.spec 的 version);
         日期取 `main.py` 的文件 mtime。
@@ -5222,7 +5222,8 @@ class RootWidget(BoxLayout):
             t = os.path.getmtime(os.path.abspath(__file__))
             # 1600000000 = 2020-09; 再过掉"未来时间"(设备时钟不对时会取到), 免得显示怪日期
             if 1600000000 < t < time.time() + 86400:
-                parts.append('构建 %s' % time.strftime('%Y-%m-%d %H:%M', time.localtime(t)))
+                # 文案(用户两次定稿): 不用「构建」(行话), 用「于 <日期 时间> 制作」。
+                parts.append('于 %s 制作' % time.strftime('%Y-%m-%d %H:%M', time.localtime(t)))
         except Exception:
             pass
         return ' · '.join(parts)
@@ -6537,6 +6538,11 @@ def _smoke():
         # 跑分期间不许弹窗/不许播装杯(用户报: 跑分时彩蛋窗打断灰屏)。
         # 顺带守住 CLAUDE.md 里"绝不软锁"那条红线 —— 彩蛋被拦掉时必须**解锁**,
         # 只 return 不 _easter_finish 的话 _easter_hold 永远不放, 玩家只能杀进程。
+        # ⚠️ 先清掉前面某一局**真彩蛋**可能留下的窗/锁: 不清的话下面那条断言测的是
+        #    "残留"而不是"跑分拦没拦住"(实测偶发误报: hold=False 却报 FAIL)。
+        #    这是冒烟夹具的清理, 不是产品逻辑。
+        r._easter_popup = None
+        r._easter_hold = False
         r._bench_running = True
         try:
             r.multipliers = [0] * 9

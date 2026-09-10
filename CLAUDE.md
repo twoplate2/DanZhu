@@ -94,7 +94,8 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
   - 那一行的日期取 `main.py` 的 **mtime**, 不烘进源码: 生成器是纯字符串拼接, 烘日期会让
     `--check` 每次都报不同步。p4a 把 app 目录塞进 APK 的 `private.tar` 时, 条目时间戳 = 构建机
     上文件的写入时间(CI 是新拉代码后立刻构建), 首次运行解包保留 mtime, 所以它约等于构建日。
-    版本走 PackageManager 的 `versionName`。`fx_probe [13]` 钉住『不抛异常 + 格式 YYYY-MM-DD』。
+    版本走 PackageManager 的 `versionName`。文案是『**于 <日期 时间> 制作**』(用户定稿: 不用「构建」这个行话)。
+    `fx_probe [13]` 钉住『不抛异常 + 格式 = 于 YYYY-MM-DD HH:MM 制作』。
 
 ## 语音播报
 

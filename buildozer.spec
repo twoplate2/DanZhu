@@ -14,6 +14,12 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.6.0(2026-09-11): 大版本号进位(用户定案 v0.6)。功能上 = 0.5.30 的两个文案修正:
+#   · 那一行改成「于 <日期 时间> 制作」(用户两次定稿: 不用「构建」这个行话, 也不要"制作+日期",
+#     要"日期+制作"且前面加个"于") —— 最终形态 `v0.6.0 · 于 2026-09-11 01:35 制作`。
+#   · 冒烟夹具修一处**偶发误报**: s9b 跑分前的 `_easter_popup` 没清, 前面某一局真彩蛋留下的
+#     引用会让"跑分中不该弹彩蛋窗"这条断言误判(SMOKE-FAIL hold=False 却报了)。清掉即可。
+#
 # 0.5.30(2026-09-11): 构建日期补上时分, 那一行字号 13sp -> 16sp(玩家: "构建的字太小")。
 # 格式: `v0.5.30 · 构建 2026-09-11 01:29`。`fx_probe [13]` 的格式门禁同步收紧。
 #
@@ -277,7 +283,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.30
+version = 0.6.0
 
 requirements = python3,kivy==2.3.0,pyjnius
 
