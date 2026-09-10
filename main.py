@@ -2874,7 +2874,24 @@ FALL_MIN, FALL_MAX = 0.55, 1.30
 ENTER_FADE = 0.08      # 越过覆盖层顶边后的渐入
 SQUASH_W = 0.045       # 撞击压扁窗口(每个落点一次)
 
+DIM_RGB = (0.02, 0.03, 0.05)   # 压暗色(近黑, 带一点冷调)。板面与 HUD 五行共用同一个色
 DIM_ALPHA = 0.68       # 压暗强度(盖满整块游戏区, 含槽区)
+# HUD 五行(顶栏/返奖档/投注档/信息行/底行)**不在 GameArea 的矩形里**, 所以板面那块压暗
+# 盖不到它们 —— 横屏反旋转时这五行落在画面两侧, 板面已经黑透、两边还亮着, 装杯想要的
+# "聚光灯"感就散了(横屏实测: 左条 36.6、右条 29.6, 而压暗后的板面只有 14~17)。
+# 这五行**各自再压一层**, 实现在 ui 段的 `RootWidget._row_dim` / `_sync_hud_dim`;
+# 生灭曲线共用本文件的 `_layers()`, 所以这里只多出"峰值"这一个旋钮。
+#
+# **取成和板面同一个 DIM_ALPHA, 不做差异化**。两个理由:
+#   1. 观感: 装杯期这五行是不可操作的, 没有"留点层次给玩家看"的需求; 整屏一个强度
+#      才读得出"灯灭了", 分成两档反而像"两边是另一层东西"。
+#   2. 工程: 两个同屏常数迟早会各改各的(交接记录里就为这个标了 ⚠️)。同一个值, 改一次两边动。
+# 实测(540x960, 控件灰化口径, 同一场演出内单 run 对照):
+#     未装杯: 顶栏 65.1 / 返奖 42.8 / 投注 40.9 / 信息 36.0 / 底行 45.2
+#     装杯中: 18.7 / 12.6 / 12.4 / 14.3 / 12.0     (同一时刻压暗后的板面 12.6~14)
+# 顶栏天生偏亮一档(底色是 COL_PANEL, 比其它行亮), 其余四行与板面齐平。
+# 演出结束后五行**精确复原**(实测 65.0/42.8/40.9/36.1/45.2 == 基线), 不会卡在暗的。
+HUD_ALPHA = DIM_ALPHA
 # 落地音只靠节流限速, **不按颗数截断**。
 # 曾经有个 BOUNCE_BUDGET=24 的"只前 N 颗播落地音"上限, 已删, 三条理由:
 #   1. 它当初的理由是"SoundPool 只有 8 条流, 会被滚分的 coin 抢光" —— 但 coin 已经
@@ -3071,6 +3088,9 @@ class WinPileFX(Widget):
         super().__init__(**kw)
         self.area = area                  # GameArea, 只为取 game.sfx
         self.mode = "idle"                # idle | pending | win | result
+        # 本帧真正画上去的压暗曲线值(0..1), 由 _redraw 每帧写入, 供 HUD 五行取值
+        # (见 dim_alpha 的说明: 两边必须是**同一个数**, 不能各取一次时间)。
+        self._a_dim_now = 0.0
         self._balls = []
         self._value = DEFAULT_BET
         self._seq = 0
@@ -3239,6 +3259,30 @@ class WinPileFX(Widget):
             self._abort()
             return False
         return True
+
+    def dim_alpha(self, peak=DIM_ALPHA):
+        """本帧**真正画上去的**压暗强度 = peak × 板面那一帧的 a_dim。
+
+        板面那块压暗画在 `_redraw` 里; HUD 五行不在 GameArea 的矩形内, 由 ui 段的
+        `RootWidget._sync_hud_dim` 每帧调本方法取值。**曲线的真源只有一处**: `_redraw`
+        把本帧算出的 `a_dim` 存进 `_a_dim_now`, 这里只做换算 —— 不自己再取一次时间。
+
+        ⚠️ 为什么不能在这里重新 `_layers(time.time())`: 那样 HUD 与板面就是**两次独立
+        采样**。曲线最陡处约 `DIM_ALPHA*3/ENTER_DIM_DUR ≈ 12.75 alpha/s`, 两次采样差
+        10ms 就够差 0.13 个 alpha 看得出来; 更要命的是**退场结束那一帧** ——
+        `tick()` 把 mode 切成 idle 之后 `_redraw` 就不再画板面了, 而 HUD 若自己去取时间,
+        它要比板面**多暗一整帧**(专家组实测指出)。所以取值必须来自"板面刚画的那一个数"。
+
+        idle 直接返回 0(`_a_dim_now` 在 idle 时也已归零, 这里是双保险): `_settled_at`
+        在 idle 时是上一局残值, 交给 `_layers()` 会算出天文数字 -> clamp 成 1。
+        异常也吞成 0 —— 压暗只是观感, 绝不能因为它把主循环带崩。
+        """
+        if self.mode == "idle":
+            return 0.0
+        try:
+            return peak * self._a_dim_now
+        except Exception:
+            return 0.0
 
     def _abort(self):
         self.mode = "idle"
@@ -3421,11 +3465,20 @@ class WinPileFX(Widget):
                 b["settled"] = True
 
     def _bounce(self, gain):
-        """落地音(逐颗)。只靠节流限速, 不按颗数截断 —— 见 BOUNCE_THROTTLE 处的说明。"""
+        """落地音(逐颗) + **同步震动**。只靠节流限速, 不按颗数截断 —— 见 BOUNCE_THROTTLE 的说明。
+
+        震动**挂在 `sfx.play()` 的返回值上**, 不自己再判一次时间: 节流只有一个真源,
+        两边各判必然漂移, 玩家会听到"响了但没震"(或反过来)。这条分支同时决定了
+        "音效已关就不震"(play 在 enabled=False 时返回 False) —— 有意为之: 本作只有
+        一个反馈开关, 关了声音的人多半也不想在会议里被震四秒。要改成独立开关的话,
+        把节流从 Sfx.play 挪到这里即可, 但**别在两处各判一次**。
+        """
         g = getattr(self.area, "game", None)
         sfx = getattr(g, "sfx", None)
-        if sfx is not None:
-            sfx.play("bounce", max(0.20, min(0.75, gain)), BOUNCE_THROTTLE)
+        if sfx is None:
+            return
+        if sfx.play("bounce", max(0.20, min(0.75, gain)), BOUNCE_THROTTLE):
+            _vibrate_tick(gain)
 
     # ------------------------------ 逐球插值 ------------------------------
 
@@ -3540,23 +3593,22 @@ class WinPileFX(Widget):
 
     def _redraw(self, *_):
         self._dirty = False
+        # 本帧真正画上去的压暗曲线值, 给 HUD 五行读(见 dim_alpha)。**必须在所有早退之前
+        # 归零** —— 早退的每一种情形(idle / 尺寸未定 / 两边都透明)都等于"本帧板面没压暗"。
+        self._a_dim_now = 0.0
         if self.width <= 1.0 or self.height <= 1.0:
             return
         self.canvas.clear()
         if self.mode == "idle":
             return
         a_dim, a_cup, k, dy = self._layers(time.time())
+        self._a_dim_now = a_dim
         if a_dim <= 0.0 and a_cup <= 0.0:
             return
         self._apply_anim_rect(k, dy)
         bx, by, bw, bh = self._abx, self._aby, self._abw, self._abh
         back_tex, front_tex, fb_tex = _glass_textures()
         with self.canvas:
-            # 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点
-            if a_dim > 0.0:
-                Color(0.02, 0.03, 0.05, DIM_ALPHA * a_dim)
-                Rectangle(pos=self.pos, size=self.size)
-
             if a_cup > 0.0:
                 # 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
                 fx, fy, _ = self._map(CX, FLOOR_Y)
@@ -3568,6 +3620,16 @@ class WinPileFX(Widget):
                     Color(1.0, 1.0, 1.0, a_cup)
                     Rectangle(texture=back_tex, pos=(bx, by), size=(bw, bh))
 
+            # 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点。
+            # ⚠️ 位置: 在**后层玻璃之后、球之前**。放到后层玻璃之前(原写法)时, 后层玻璃
+            # 会把刚压暗的板面又提亮回去 —— 实测杯内只被压掉 12%, 而杯外板面压掉 46%,
+            # 玩家盯着的杯子周围反而是全画面压暗最失败的地方。前层玻璃也不能盖在压暗之后
+            # 之外的位置: 放到最后会把弹珠本身也压暗(球就"沉"进背景里了)。
+            if a_dim > 0.0:
+                Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], DIM_ALPHA * a_dim)
+                Rectangle(pos=self.pos, size=self.size)
+
+            if a_cup > 0.0:
                 # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
                 for b in self._balls:
                     if b["settled"]:
@@ -3721,11 +3783,14 @@ def ball_texture():
     return tex
 
 
-def _vibrate(ms):
-    """中奖震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。
+def _vibrate(ms, amp=255):
+    """单次震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。
     取服务必须用 Context.VIBRATOR_SERVICE 字符串 —— 传 autoclass("android.os.Vibrator")
     那个 Class 对象在 pyjnius 下匹配不到 getSystemService(Class<T>) 重载, 会静默失败
-    (整段被 try/except 吞掉, 表现为"权限也给了、代码也跑了, 就是不震")。"""
+    (整段被 try/except 吞掉, 表现为"权限也给了、代码也跑了, 就是不震")。
+
+    `amp` 只在 API 26+ 生效; 老机器退回 `vibrate(ms)`, 振幅由系统定。
+    """
     if platform != "android":
         return
     try:
@@ -3738,11 +3803,32 @@ def _vibrate(ms):
         try:
             VibrationEffect = autoclass("android.os.VibrationEffect")
             vib.vibrate(VibrationEffect.createOneShot(
-                ms, 255))     # 最大振幅; DEFAULT_AMPLITUDE(-1) 约 50%, 太弱
+                ms, amp))     # 满振幅 255; DEFAULT_AMPLITUDE(-1) 约 50%, 太弱
         except Exception:
             vib.vibrate(ms)                  # API < 26: 没有 VibrationEffect
     except Exception:
         pass
+
+
+def _vibrate_tick(gain):
+    """装杯落珠的**单次轻震**(只有 Android 有; 其它平台静默)。
+
+    ⚠️ 这个函数**不判时间、不计数** —— 节流只能有一处真源, 就是调用点
+    (`WinPileFX._bounce` 里那次 `sfx.play(...)` 的返回值)。两边各判一次必然漂移,
+    玩家就会出现"听到响但手上没感觉"(或反过来), 那正是"同步"要消灭的东西。
+
+    时长/振幅都跟着撞击强弱走(gain 与落地音用的是同一个 0.25~0.72):
+    10~18ms / 振幅 80~220。**刻意做得很短、也不算满**:
+      - 节流后是 10 次/秒(见 BOUNCE_THROTTLE), 脉冲一长就糊成"持续嗡嗡",
+        而不是"珠子一颗一颗落进杯子里";
+      - 振幅压在 220 不满格, 因为这是"雨点"不是"大奖震一下"(后者是 settle 那次长震)。
+    手机马达的启动时间约 10~20ms, 所以 10ms 以下没意义 —— 下限就取 10ms。
+    """
+    if platform != "android":
+        return
+    g = max(0.0, min(1.0, (gain - 0.20) / 0.55))
+    _vibrate(int(round(10 + 8 * g)), int(round(80 + 140 * g)))
+
 
 
 def _vibrate_double(ms=35, gap=40, amp=255):
@@ -4506,6 +4592,11 @@ class RootWidget(BoxLayout):
         self.target_x = PLUNGER_X
         self.ball = None
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
+        # HUD 五行的装杯期压暗块(见 _row_dim / _sync_hud_dim): 板面那块压暗够不到这五行,
+        # 横屏反旋转时它们正好落在画面两侧亮着, 于是"板面已黑、两边还亮"。
+        # ⚠️ 必须在 _build_ui() **之前**初始化 —— _row_dim 是 _build_ui 里调的, 会往里 append。
+        self._hud_dim_cols = []
+        self._hud_dim_last = -1.0
         self._build_ui()
         if self._auto_reset_on_start:
             self.reset_balance(notify=False)  # 上轮打满被kill: UI就绪后静默重置
@@ -4516,7 +4607,12 @@ class RootWidget(BoxLayout):
         Window.bind(on_touch_down=self._on_title_touch_down,
                     on_touch_up=self._on_title_touch_up)
         self._bench_running = False
-        # 跑分置灰层: 第2轮物理benchmark时全屏置灰(半透明深色矩形盖住整个界面含游戏区)
+        # 跑分置灰层: 第2轮物理benchmark时全屏置灰(半透明深色矩形盖住整个界面含游戏区)。
+        # ⚠️ 它是**第三套**压暗常数(0.72), 与 DIM_ALPHA/HUD_ALPHA(0.68) 不是一套。两者
+        # 不会同屏: 跑分要长按标题 3 秒才起, 而装杯期输入是锁的(`_bench_running` 还会
+        # 直接拦住 play_win, --smoke 有断言)。真要改其中一个, 记得它们互不影响。
+        # ⚠️ 它挂在 `RootWidget.canvas.after` = 盖住**整棵子树**(含 GameArea 里的中奖大字),
+        # 所以不能拿它做装杯期的 HUD 压暗 —— 那会把大字一起压掉(见 _row_dim 的说明)。
         self._bench_dim_shown = False
         with self.canvas.after:
             self._bench_dim_col = Color(0.05, 0.06, 0.09, 0.0)
@@ -4594,6 +4690,51 @@ class RootWidget(BoxLayout):
         row.bind(pos=lambda w, *_: setattr(w._bg_rect, "pos", w.pos),
                  size=lambda w, *_: setattr(w._bg_rect, "size", w.size))
 
+    def _row_dim(self, row):
+        """给一行 HUD 挂"装杯期压暗"块 —— 画在该行自身的**全部子控件之上**。
+
+        为什么必须挂在这里(三个地方都试过, 只有这个成立):
+          - 挂 `WinPileFX` 里(GameArea 内)不行: 那五行画在 GameArea **之后**
+            (RootWidget.children 顺序 = [顶栏,返奖档,投注档,GameArea,信息行,底行],
+            后 add 的后画), 板面那块压暗够不到它们;
+          - 挂 `RootWidget.canvas.after` 也不行: 它会盖住 GameArea 里的中奖大字
+            ("大字留上方"是用户定案的);
+          - 挂行自己的 `canvas.before` 不行: 那是行底图, 压不到上面的标签/按钮。
+        `canvas.after` 是这一行里最后一个绘制组, 所以背景+文字+按钮一起被压暗。
+        (Kivy 语义已用最小样例实测: 子控件自己的 canvas.after 盖住它自己的 canvas
+         与全部子控件; 父的 canvas.after 盖住整棵子树。)
+
+        坐标沿用 `_row_bg` 那一套(`pos=row.pos`) —— 同一种写法、同一个坐标系,
+        不引入新的坐标假设。**必须在子控件都加完之后调用**(见 _build_ui 里的位置)。
+
+        颜色不在这里写死: 每帧由 `_sync_hud_dim` 从 `WinPileFX._layers()` 取,
+        全屏只有那一条生灭曲线。
+        """
+        with row.canvas.after:
+            col = Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], 0.0)
+            rect = Rectangle(pos=row.pos, size=row.size)
+        row.bind(pos=lambda w, *_: setattr(rect, "pos", w.pos),
+                 size=lambda w, *_: setattr(rect, "size", w.size))
+        self._hud_dim_cols.append(col)
+        # 挂上新块就把短路判据作废: `_sync_hud_dim` 只缓存 alpha, 新加的 Color 初值是 0.0,
+        # 若当前恰好也是 0.0 就会被"值没变"跳过 —— 等演出开始时才第一次写, 那一帧是黑的。
+        self._hud_dim_last = -1.0
+
+    def _sync_hud_dim(self):
+        """每帧把 HUD 五行的压暗块对齐到装杯演出的生灭曲线。
+
+        真源只有一个: `WinPileFX._layers()`(经 `dim_alpha()`)。这里**不重算任何曲线** ——
+        两边各写一份必然脱钩(这个仓库已经踩过一次: `_reveal_deadline` 硬编码 0.45,
+        尾巴从 0.45 改到 0.60 时静默脱钩, 兜底提前触发把数字剧透了)。
+        `_hud_dim_last` 短路是性能考虑: 演出之外这一层恒为 0, 不必每帧去动 5 个 Color。
+        """
+        a = self.game_area.win_fx.dim_alpha(HUD_ALPHA)
+        if a == self._hud_dim_last:
+            return
+        self._hud_dim_last = a
+        for col in self._hud_dim_cols:
+            col.rgba = (DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], a)
+
     def _build_ui(self):
         # 顶栏: [左容器 flex] [标题 固定宽·居中] [右容器 flex]
         # 左右等 flex → 标题严格全栏居中, 与两侧内容长短无关
@@ -4625,6 +4766,7 @@ class RootWidget(BoxLayout):
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
         right_box.add_widget(self.status_lbl)
         top.add_widget(right_box)
+        self._row_dim(top)            # 子控件加完之后再挂压暗块(canvas.after 必须在最上)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
@@ -4643,6 +4785,7 @@ class RootWidget(BoxLayout):
             self.rtp_btns[val] = b
             rtp.add_widget(b)
         rtp.add_widget(Widget())   # 右侧留空(和投入弹珠行一致)
+        self._row_dim(rtp)
         self.add_widget(rtp)
         # 投入行: 投入弹珠单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
@@ -4659,6 +4802,7 @@ class RootWidget(BoxLayout):
             self.bet_btns[v] = b
             bets.add_widget(b)
         bets.add_widget(Widget())   # 右侧留空
+        self._row_dim(bets)
         self.add_widget(bets)
         # 游戏区(全宽)
         self.game_area = GameArea(self)
@@ -4677,6 +4821,7 @@ class RootWidget(BoxLayout):
         self.stats_lbl = self._mk_label("", "15sp", COL_TEXT, "center", True,
                                         size_hint_x=0.70)
         info.add_widget(self.stats_lbl)
+        self._row_dim(info)
         self.add_widget(info)
         # 底行: [重置 96] —长距离— [力度 100] [蓄力发射 弹性]
         fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
@@ -4702,6 +4847,7 @@ class RootWidget(BoxLayout):
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
         fire.add_widget(Widget(size_hint_x=0.05))                 # 右侧弹簧(蓄力左移≈2dp)
+        self._row_dim(fire)
         self.add_widget(fire)
         self.padding = [0, 0, 0, dp(12)]  # 底部留白
         self._refresh_stats()
@@ -5974,6 +6120,14 @@ class RootWidget(BoxLayout):
             self._settle_cb()
         self.balance_lbl.text = str(int(round(self.display_balance)))
         self.game_area.tick_draw()
+        # 装杯期把 HUD 五行一起压暗(板面那块覆盖不到它们, 见 _row_dim)。
+        # ⚠️ 位置: 必须在 `tick_draw()` **之后**。演出由 tick_draw -> win_fx.tick() ->
+        #    _redraw() 推进, 而 `_redraw` 会把**本帧真正画上去的** a_dim 存进 `_a_dim_now`;
+        #    HUD 从这里取值 ⇒ 两边永远是同一个数(同帧同值)。放在前面的话 HUD 读到的是
+        #    上一帧: 退场结束那一帧板面已经不画了, HUD 还会多黑一整帧(专家组实测指出)。
+        # ⚠️ 它后面**不能再有早退**。下面 charging 分支的 `return` 在它之前是安全的:
+        #    蓄力期不可能有装杯演出(演出期输入是锁的), `_a_dim_now` 此时本来就是 0。
+        self._sync_hud_dim()
 
 
 # =============================================================================

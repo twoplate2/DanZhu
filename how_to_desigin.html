@@ -103,7 +103,7 @@
 <nav class="toc-bar"><div class="toc-inner">
   <span class="toc-label">目录</span>
   <a href="#sec-spring">弹簧</a><a href="#sec-flight">三段式</a><a href="#sec-passive">被动</a><a href="#sec-evolve">进化</a>
-  <a href="#sec-voice">声音</a><a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a><a href="#sec-orient">横屏</a>
+  <a href="#sec-voice">声音</a><a href="#sec-win">中奖</a><a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a><a href="#sec-orient">横屏</a>
   <span class="toc-sep">|</span>
   <a href="#appendix-a" style="color:var(--gold)">A·音效</a><a href="#appendix-b" style="color:var(--gold)">B·物理</a>
   <a href="#appendix-c" style="color:var(--gold)">C·数学</a><a href="#appendix-e" style="color:var(--gold)">E·进化</a>
@@ -111,14 +111,14 @@
 </div></nav>
 
 <header class="hero">
-  <div class="hero-badge">跳跳的弹珠机 · 设计深潜 · 2026.08</div>
+  <div class="hero-badge">跳跳的弹珠机 · 设计深潜 · 2026.09</div>
   <h1><span>一个小游戏的大设计</span></h1>
   <p class="subtitle">一根<em>看得见力量</em>的弹簧，一颗<em>没人操控</em>的球，一台<em>会自己进化</em>的机器——<br>弹珠机，就不再只是弹珠机</p>
   <div class="hero-numbers">
-    <div class="hero-num"><div class="num">300%</div><div class="label">最高返奖率<br>四档可切 80/120/200/300</div></div>
+    <div class="hero-num"><div class="num">360%</div><div class="label">最高返奖率<br>四档可切 80/120/200/360</div></div>
     <div class="hero-num"><div class="num">9/9</div><div class="label">九个格子<br>个个有机会</div></div>
     <div class="hero-num"><div class="num">4</div><div class="label">个旋钮<br>机器自己调参</div></div>
-    <div class="hero-num"><div class="num">51</div><div class="label">条语音<br>神经合成离线预录</div></div>
+    <div class="hero-num"><div class="num">57</div><div class="label">条语音<br>神经合成离线预录</div></div>
   </div>
   <div class="spring-stage"><canvas id="springCanvas"></canvas></div>
   <div class="spring-legend">
@@ -176,20 +176,39 @@
 <section class="section sect-voice" id="sec-voice">
   <div class="section-header"><h2>游戏会说话</h2><p class="desc">中几倍、返多少，都用人的声音报给你，一句不乱、永不抢话</p></div>
   <div class="grid-3">
-    <div class="card reveal reveal-d1"><h3>51 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。</p></div>
-    <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>中奖音分<span class="tag tag-blue">5档递增</span>：x2只有3个音，像小铃铛；x3加一音，x5再加一音，x10加低音支撑（像管风琴踏板），x20加到7个音+碎星收尾——像教堂钟声。混响逐渐加深，声场逐渐"撑开"。</p></div>
+    <div class="card reveal reveal-d1"><h3>57 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。</p></div>
+    <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>中奖音分<span class="tag tag-blue">7 档递增</span>：x2 只有3个音，像小铃铛；x3 加一音，x5 再加一音；x10 加到六个音、底下垫一层低音（像管风琴踏板），x20 七个音、收尾还撒一把碎星，x50 的底音再往下沉一截，x100 九个音、声场最宽最亮。混响逐档加深，声场逐渐"撑开"。</p></div>
     <div class="card reveal reveal-d2"><h3>全局语音互斥</h3><p>上一个语音没播完，新按钮语音<span class="tag tag-blue">直接不出声</span>。你快速连点两个按钮，只听到第一个——两个播报不会叠在一起变成一团浆糊。</p></div>
   </div>
   <div class="grid-2" style="margin-top:14px">
-    <div class="card reveal reveal-d3"><h3>36 种音效，0 个文件</h3><p>弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。其中 6 种撞钉声的音高恰好构成一个<span class="tag tag-blue">全音阶</span>——任何两个音叠在一起都不会刺耳。球下落时随机撞钉，每次触发的音高不同、节奏不同，但无论怎么排列都是天然和谐的旋律，像在听一段每次都不一样的即兴音乐。</p></div>
+    <div class="card reveal reveal-d3"><h3>41 种音效，0 个文件</h3><p>弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。其中 6 种撞钉声的音高恰好构成一个<span class="tag tag-blue">全音阶</span>——任何两个音叠在一起都不会刺耳。球下落时随机撞钉，每次触发的音高不同、节奏不同，但无论怎么排列都是天然和谐的旋律，像在听一段每次都不一样的即兴音乐。</p></div>
     <div class="card reveal reveal-d3"><h3>四层后备，绝不哑火</h3><p>Android 原生硬件混音 → 电脑多声道直写声卡 → 软件兜底 → 静音模式不崩溃。任意一层坏了自动切下一层，<span class="tag tag-blue">玩家永远听得到声音</span>。</p></div>
   </div>
 </section>
 
 <div class="quote-block">"棘轮声越来越急、弹簧变金黄、发射咔哒一声伴随轻微震动、球撞钉子叮叮当当、入袋咚+弹跳、语音报结果——视觉、听觉、触觉从未同时缺席。每一步操作都有确认，每一个状态都有声音。"<span class="author">— UX 专家评审</span></div>
 
-<!-- ═══════════ 6. 防沉迷 ═══════════ -->
-<section class="section section-alt sect-fair" id="sec-guard">
+<!-- ═══════════ 6. 中奖演出 ═══════════ -->
+<section class="section section-alt sect-spring" id="sec-win">
+  <div class="section-header"><h2>中了一次，就让你看见一次</h2><p class="desc">中了多少倍，天上就落下多少颗珠子——杯子装满了，才让你走</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>倍率就是颗数</h3><p>中了 x2，落下两颗；中了 x100，落下整整一百颗。数字不再只是一个跳动的倍数，而是<span class="tag tag-gold">一堆你能数得清、看得见、装得满的珠子</span>。中得越大，那阵珠子雨就下得越久。</p></div>
+    <div class="card reveal reveal-d1"><h3>珠子什么颜色，就是你押的哪一档</h3><p>一颗绿、十颗蓝、五十颗红、一百颗紫——同一局里颜色不会混，<span class="tag tag-gold">杯子里那堆珠子是什么颜色，一眼就知道你押的是哪一档</span>。等到雨停，杯子里的颜色就是你这一局的身份。</p></div>
+    <div class="card reveal reveal-d1"><h3>先亮灯，再压暗，杯子才登场</h3><p>结算完先停<span class="tag tag-gold">半秒</span>——让槽位的白闪和绿灯先被你看见——然后<span class="tag tag-gold">整个画面</span>才慢慢压暗（顶栏、返还比例、投入设置、底下的按钮，连板面一起沉下去，一个角落都不留），一只玻璃杯从上方降进画面中下部，珠子雨才跟着落下来。<span class="tag tag-gold">不抢跑</span>：该看清的顺序，一个都不跳。</p></div>
+    <div class="card reveal reveal-d1"><h3>装满之后的"回味时间"</h3><p>珠子全部落定、杯子装满之后，画面会<span class="tag tag-gold">静静地停一会儿</span>再退场：x2 停 0.6 秒、x3 停 0.7、x5 停 0.8、x10 停 0.9、x20 停 1.0、x50 停 1.1、x100 停 1.2 秒。<span class="tag tag-gold">为什么按"档"加而不是按倍数加？</span>因为倍数是一档一档翻倍的，每档多停一点点，体感上正好是"翻一倍，就多停一点"——奖越大，越舍得让你多看两眼。</p></div>
+  </div>
+  <div class="grid-2" style="margin-top:14px">
+    <div class="card reveal reveal-d2"><h3>一百颗珠子也不会卡</h3><p>珠子怎么落、怎么叠，在<span class="tag tag-gold">演出开始之前就整套算完了</span>，播的时候画面只负责按时间把它放出来。所以哪怕一次落一百颗，画面依旧稳——你看到的是热闹，机器其实只是在"翻页"。</p></div>
+    <div class="card reveal reveal-d2"><h3>每局堆得都不一样</h3><p>珠子是<span class="tag tag-gold">按三角格一圈圈码起来的真三维堆</span>，不是画上去的贴图；而且备了四套堆法轮流用，免得你连着中几把，每次都看到一模一样的一座小山。</p></div>
+    <div class="card reveal reveal-d3"><h3>报喜故意慢了 0.4 秒</h3><p>以前最后一颗球刚碰到底，中奖音、播报和大字就一起炸出来——可那颗球还要再弹两下才停，<span class="tag tag-gold">最后几下落地的声音全被盖住了</span>（玩家原话："我甚至听不到弹珠落地的声音"）。现在报喜统一往后挪 <span class="tag tag-gold">0.4 秒</span>，<span class="tag tag-gold">等最后几声响完，再报喜</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>退场是"灯先亮、道具后走"</h3><p>杯子不是"啪一下消失"的——那正是玩家反馈"消失得太快、没有回味"之后改掉的老做法。现在退场时背景先亮回来，杯子再一边上浮、一边缩小、一边透明地退走，<span class="tag tag-gold">两件事错开一点点</span>，看起来才像"落幕"，而不是"断片"。</p></div>
+  </div>
+  <div class="insight reveal reveal-d3"><h3>一场中奖有多长（实测）</h3><p>x2 约 <span class="tag tag-gold">2.6 秒</span>、x5 约 3.2 秒、x20 约 4.3 秒、x100 约 4.8 秒。小奖的整场演出比打一发球等它落袋还短，最大的 x100 也不过四秒多——<span class="tag tag-gold">庆祝够不够，不看时长看密度</span>；再长就该烦了，而这个尺度刚好是"看完还想再来一发"的长度。</p></div>
+  <div class="insight reveal reveal-d3"><h3>"容易中"和"中得多"，是同一个旋钮的两头</h3><p>四档里到底有多少局会中奖（实测）：80% 档约 <span class="tag tag-gold">24%</span>、120% 档约 36%、200% 档约 43%、360% 档约 <span class="tag tag-gold">79%</span>——最高档一盘九格里六到八格都有奖，几乎必中。<span class="tag tag-gold">代价是那一档里差不多一半的中奖都是 x2</span>。返还比例是定死的，所以"中得勤"必然意味着"每次中得小"——这不是两件事，是同一件事的两面，而这个取舍明确交给你自己挑。</p></div>
+</section>
+
+<!-- ═══════════ 7. 防沉迷 ═══════════ -->
+<section class="section sect-fair" id="sec-guard">
   <div class="section-header"><h2>有温度的刹车</h2><p class="desc">不是冷冰冰踢你出去，而是像完成一局棋一样有仪式感</p></div>
   <div class="grid-3">
     <div class="card reveal reveal-d1"><h3>每轮 N 次，打完自动停</h3><p>每轮<span class="tag tag-green">20、50或100次</span>可选。打完后弹出总结窗口+语音播报完整报数，可点"确定"快速结束，自动重置。用"恭喜完成一轮挑战"替代"你已被限制"。</p></div>
@@ -198,21 +217,22 @@
   </div>
 </section>
 
-<!-- ═══════════ 7. 细节 ═══════════ -->
-<section class="section sect-heart" id="sec-heart">
+<!-- ═══════════ 8. 细节 ═══════════ -->
+<section class="section section-alt sect-heart" id="sec-heart">
   <div class="section-header"><h2>藏在毫厘里的用心</h2><p class="desc">那些你可能永远不会注意到、但少了就会觉得"差点意思"的东西</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>发射震动 + 音量分级</h3><p>柱塞释放瞬间<span class="tag tag-purple">14ms 微震</span>（哑火 8ms），配合发射音效按力度分级。<span class="tag tag-purple">满蓄力和刚过阈值的发射声不再一样</span>——蓄力的听觉回报完整回归。</p></div>
     <div class="card reveal reveal-d1"><h3>钉子受击闪金光</h3><p>球撞到钉子时，那颗钉子会<span class="tag tag-purple">"叮"地闪一下金光、微微鼓一下</span>，300 毫秒后慢慢弹回原样。你每一次撞钉都有视觉反馈，球越活跃，钉子阵越"活"。</p></div>
     <div class="card reveal reveal-d2"><h3>落地弹跳：球真的在弹</h3><p>球落入槽位后<span class="tag tag-purple">弹跳3~4次才停住</span>，弹跳系数随机变化避免机械重复。落地有金属锁扣声、弹跳有金属叮声。不再瞬移到槽中心——球停在哪就停在哪，自然得不像代码。</p></div>
+    <div class="card reveal reveal-d2"><h3>钱算对了，球也停对了</h3><p>球冲进槽位时是带着横向的劲的，以前回弹那几下里它能<span class="tag tag-purple">滑过隔板、躺到隔壁格</span>——钱算在原来那格，球却停在旁边，看着就是不对劲。现在球一触到槽底就把横着的劲清零，回弹变成<span class="tag tag-purple">纯粹的上下弹</span>，物理上就不可能再滑出去。九个格子的隔板，谁都越不过去。</p></div>
     <div class="card reveal reveal-d2"><h3>飞行中统一灰化</h3><p>球在飞时，<span class="tag tag-purple">所有按钮+标签文字统一灰化</span>——返还比例、投入设置、统计文字全部变暗。只有弹珠数字和状态提示保持亮色。视觉层级一目了然：现在不是操作的时候，看球就行。</p></div>
     <div class="card reveal reveal-d3"><h3>关声音可以反悔</h3><p>点"关闭声音"后，系统<span class="tag tag-purple">先播完提示语音才真关</span>——延迟1秒。在这1秒内切回来，关闭自动取消。重启后声音状态与按钮显示一致，不会"看着是关的实际在响"。</p></div>
     <div class="card reveal reveal-d3"><h3>呼吸 + 返回键保护</h3><p>入袋"咚"和中奖语音之间有<span class="tag tag-purple">一小段刻意沉默</span>。Android返回键被拦截——<span class="tag tag-purple">误触不会退出</span>，整局进度不会清零。好的声音不是塞满每一毫秒，好的交互不是多一个退出路径。</p></div>
   </div>
 </section>
 
-<!-- ═══════════ 8. 跨平台 ═══════════ -->
-<section class="section section-alt sect-build" id="sec-build">
+<!-- ═══════════ 9. 跨平台 ═══════════ -->
+<section class="section sect-build" id="sec-build">
   <div class="section-header"><h2>两个平台，一颗心</h2><p class="desc">电脑手机共用同一套物理和声音，一个字不改——还能自己给自己跑分</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>单事实源 + 代码生成</h3><p>PC 版是物理/音效/数学的<span class="tag tag-blue">唯一事实源</span>。Android 版由构建脚本从 PC 版原样抽取纯逻辑段 + 拼接手写界面段生成——<span class="tag tag-blue">物理代码一个字都不改</span>，杜绝手抄千行出错的系统性风险。</p></div>
@@ -222,8 +242,8 @@
   <div class="insight reveal reveal-d3"><h3>一场真实的跨平台对拼（2026-08 实测）</h3><p>同口径跑分（纯 Python 单线程，0.7 秒 × 5 轮取中位，两端跑同一个 CPython 3.11、同一套物理代码，无 JIT 无加速）：20 核桌面 i7-14700KF <span class="tag tag-blue">11516 步/秒</span> vs 骁龙 8 至尊版 Gen5 平板（拯救者 Y700 五代）<span class="tag tag-blue">约 10000 步/秒 = 桌面的 87%</span>。物理是单线程 Python——20 个核全程旁观，这是一场"单核贴身肉搏"：移动大核靠高 IPC 和单核 12MB 二级缓存追平桌面高频，剩下一成差距来自安卓的 Python 编译与内存延迟。而游戏每秒只需 120 步，两端余量都约 85 倍——<span class="tag tag-blue">跑分比的是余量，玩起来毫无差别</span>。</p></div>
 </section>
 
-<!-- ═══════════ 9. 横屏 ═══════════ -->
-<section class="section sect-build" id="sec-orient">
+<!-- ═══════════ 10. 横屏 ═══════════ -->
+<section class="section section-alt sect-build" id="sec-orient">
   <div class="section-header"><h2>横着拿，也只给你竖屏</h2><p class="desc">一台联想平板引发的"屏幕保卫战"——十几版提交、截图像素取证，才让画面永远是你熟悉的样子</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>四方向跟着手转</h3><p>正着拿、倒着拿 180°、左横、右横——<span class="tag tag-blue">四个方向全跟重力感应</span>。倒着拿画面自动翻正，左边横过去和右边横过去，画面各自认得方向，永远正对你。</p></div>
@@ -241,8 +261,8 @@
     <summary>附录A：音效与语音技术内幕</summary>
     <div class="appendix-body">
       <div class="grid-2">
-        <div class="card"><h3>合成引擎</h3><p>22050Hz 16bit单声道PCM，正弦分音+噪声瞬态+梳状混响。固定种子保证每次音色一致。音效体检自动检测削波/直流偏移/首尾爆音/静音四项指标。36 个音效全部代码生成，0 个音频文件。</p></div>
-        <div class="card"><h3>5档中奖琶音递增</h3><p>x2→C5-E5-G5大三和弦(0.72s)，x3→4音(0.85s)，x5→5音(1.00s)，x10→6音+130.8Hz低音支撑，x20→7音到C7+82Hz低音+碎星收尾(1.40s)。混响0.14→0.32递增，声场逐渐"撑开"。</p></div>
+        <div class="card"><h3>合成引擎</h3><p>22050Hz 16bit单声道PCM，正弦分音+噪声瞬态+梳状混响。固定种子保证每次音色一致。音效体检自动检测削波/直流偏移/首尾爆音/静音四项指标。41 个音效全部代码生成，0 个音频文件。体检之外还有一道「揭晓投递语义」门禁：用受控时钟逐帧驱动状态机，断言每一次中奖的揭晓恰好发生一次——这条是线上真出过一次"中奖音丢失"才补的，普通数值门禁抓不到这类"少播一次/多播一次"的毛病。</p></div>
+        <div class="card"><h3>7档中奖琶音递增</h3><p>x2→C5-E5-G5大三和弦(0.72s)，x3→4音(0.85s)，x5→5音(1.00s)，x10→6音+130.8Hz低音支撑(1.2s)，x20→7音到C7+82Hz低音+碎星收尾(1.40s)，x50→1.6s+55Hz底音，x100→9音(1.80s)+41.2Hz最低音。混响随档位递增，声场逐渐"撑开"。</p></div>
       </div>
       <div class="data-block"><span class="hl">撞钉音配方（_sfx_tink）:</span>
   非谐分音 (1.00, 2.01, 3.42) × 基频1040~1880Hz + 0.004s噪声瞬态(lp=0.60)
@@ -257,16 +277,17 @@
   片段间5ms间隙依次Clock.schedule_once排队播放，支持"二/两"变体规则
 
 <span class="hl">语音来源（诚实注脚）:</span>
-  51 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 51 个 wav。
-  RTP 切换语音 80/120/200/300 四条 2026-08-16 补齐（早期 200/300 档静默的缺口已消灭，
-  孤儿 voice_rtp_100 同步删除）——现在四档切换个个有声音。</div>
+  57 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 57 个 wav。
+  RTP 切换语音 80/120/200/360 四条 2026-08-16 补齐（早期高档位静默的缺口已消灭，
+  孤儿 voice_rtp_100 同步删除）——现在四档切换个个有声音。
+  最高档 2026-09-10 由 300% 调为 360%（返奖率四档 = 80/120/200/360）。</div>
     </div>
   </details>
   <details>
     <summary>附录B：物理引擎深潜</summary>
     <div class="appendix-body">
       <div class="grid-2">
-        <div class="card"><h3>三段式轨迹</h3><p>① 竖直上升(vx=0，零干预) → ② 弧面缓动带球转向（ARC_EASE_FRAMES=3 每帧约8.3°缓动到 25°切线，出口速度=入射速度不耗能，碰撞半径=视觉半径 ARC_VISUAL=1.4）→ ③ 抛体纯重力落袋。全程无引导/无预定槽/无预演修订。</p></div>
+        <div class="card"><h3>三段式轨迹</h3><p>① 竖直上升(vx=0，零干预) → ② 弧面缓动带球转向（ARC_EASE_FRAMES=3 每帧约8.3°缓动到 35°切线，出口速度=入射速度不耗能，碰撞半径=视觉半径 ARC_VISUAL=1.4）→ ③ 抛体纯重力落袋。全程无引导/无预定槽/无预演修订。转向角 2026 年由 25° 调到 35°——角度太小会把落格压偏。</p></div>
         <div class="card"><h3>4 旋钮离散表（按力度档关联）</h3><p>KNOB_ARC_ANGLE / KNOB_ARC_BOOST / KNOB_CEIL_ANGLE / KNOB_CEIL_BOOST 四张表，10 个力度档（KNOB_POWERS=[0.15..1.00]），每档 3~6 个「离散值+权重」对。boost 限幅 [0.65,1.25]（加速≤25%/减速≤35%）。每发按力度档采样。</p></div>
       </div>
       <div class="data-block"><span class="hl">物理核心参数（2026-08 定稿）:</span>
@@ -278,38 +299,47 @@
   发射: LAUNCH_MIN=1077  LAUNCH_MAX=1114
   天花板: 撞顶按力度档采样 KNOB_CEIL_ANGLE（速度向量旋转）+ KNOB_CEIL_BOOST（vx,vy同乘）
            撞顶保底 vy≥180 防"吸住"；修 EV_CEIL 死事件位（顶墙碰撞记 EV_CEIL 而非 EV_WALL）
-  RTP 四档 = 80 / 120 / 200 / 300%</div>
+  RTP 四档 = 80 / 120 / 200 / 360%</div>
     </div>
   </details>
   <details>
     <summary>附录C：RTP 数学与验证</summary>
     <div class="appendix-body">
       <div class="grid-2">
-        <div class="card"><h3>RTP 精确 = 档位</h3><p>固定格数 KNOB_K 表：先掷"本局几个格子有奖"(均值=档位×9/3.35)，再 random.sample 对称选位置填 _reward_value(x2~x20, 期望3.35)。E[K]×3.35/9=档位 → RTP 精确=档位。每局至少2格有奖(消灭"只有1格"烂盘)。均匀落格 E[赔付]=档位（无 min/max 保底、无 choose_target 修正）。</p></div>
+        <div class="card"><h3>RTP 精确 = 档位</h3><p>每档两张盘面分布表：K_DIST[rtp] 决定"本局九格里有几个格子有奖"（80% 档多为 2 格，360% 档 6~8 格），VALUE_DIST[rtp] 决定这些格子填什么倍率（x2 占大头，往上逐级稀疏，倍率期望恒为 3.35）。这两张表不是人手调出来的，而是由 _solve_p2 闭式反解配平：E[赔付] ≡ 档位。均匀落格 E[赔付]=档位（无 min/max 保底、无 choose_target 修正）。x50/x100 只在 200%/360% 两档存在。</p></div>
         <div class="card"><h3>自测门禁（n=40000）</h3><p>均匀落格 E[赔付]=档位±0.05、卡死=0、撞钉音>90%、哑火零泄漏、弧面接触率≈100%、冲顶x跨度≥20px、首钉75~110帧、折角≤4°/相邻帧差≤1°、回弹感硬门禁(≥10px占比≥25%/≥20px≥5%/max≤45px)、下落节奏(减速比0.45~0.80+滞留≤30帧+行穿行≥0.15s)、横向稳定性(vx从&lt;80突增&gt;280次数=0)、悬念率哨兵。</p></div>
       </div>
       <div class="data-block"><span class="hl">均匀度系数（L1 平均差）:</span>
   uniformity = 1 − Σ|p_i − 1/9| / (16/9)    （只落1槽=0、绝对均匀=1）
   曾试 L2 平方（偏差被平方缩没、分数虚高到 9.9、区分度差），弃用回 L1。
 
-<span class="hl">RTP 专项验证（实际模拟，scratch/verify_rtp.py）:</span>
-  随机力度四档: 0.810 / 1.220 / 1.992 / 3.022（全部 ±0.02 内）
+<span class="hl">RTP 专项验证（实际模拟，../scratch/verify_rtp.py）:</span>
+  随机力度四档: 0.798 / 1.201 / 2.013 / 3.610（全部 ±0.02 内）
   固定 10 力度档: 偏差全 <±0.05（12000 发/格，大样本后是统计噪声）
-  结论: 固定格数让「每格倍率期望 = 档位」，9 格期望严格相等 →
-        返还率与落袋是否均匀完全解耦，无论固定哪个力度、球落哪，长期返还率都 = 档位。</div>
+  结论: 「每格倍率期望 = 档位」，9 格期望严格相等 →
+        返还率与落袋是否均匀完全解耦，无论固定哪个力度、球落哪，长期返还率都 = 档位。
+
+<span class="hl">四档真实中奖率（2500 发真物理 × 4000 张盘面实测）:</span>
+  80%  → 中奖 24.1%   平均赔付 0.798
+  120% → 中奖 35.6%   平均赔付 1.201
+  200% → 中奖 43.4%   平均赔付 2.013
+  360% → 中奖 78.7%   平均赔付 3.610
+  360% 档一盘 9 格里 6~8 格有奖，几乎必中，代价是约一半的中奖是 x2；
+  x50/x100 只在 200%/360% 档的倍率分布里存在（80%/120% 档抽不出来）。
+  「中奖率」与「每次中多少」是同一个旋钮的两端——返还率恒等于档位。</div>
     </div>
   </details>
   <details>
     <summary>附录E：遗传算法寻优（机器自己调参）</summary>
     <div class="appendix-body">
       <div class="grid-2">
-        <div class="card"><h3>三阶段 GA</h3><p>脚本 scratch/optimize_knobs.py。三阶段演进：①每档独立 GA(48维，已弃) → ②联合 GA(480维，个体=10档完整配置) → ③降维 arc-only(120维，只优化弧面角度)+种子初始化（从当前配置起跳，收敛快6倍）。</p></div>
+        <div class="card"><h3>三阶段 GA</h3><p>脚本 ../scratch/optimize_knobs.py（scratch 在父项目仓库，不在 Android 仓库里）。三阶段演进：①每档独立 GA(48维，已弃) → ②联合 GA(480维，个体=10档完整配置) → ③降维 arc-only(120维，只优化弧面角度)+种子初始化（从当前配置起跳，收敛快6倍）。</p></div>
         <div class="card"><h3>评分与算子</h3><p>评分 = 落袋总体均匀×0.7 + 首钉总体均匀×0.3（随机力度混合统计）。算子：锦标赛选择 k=3 + 均匀交叉 + 高斯变异 + 精英保留2。28核并行，2500发/评估，剪枝概率&lt;5%。</p></div>
       </div>
       <div class="data-block"><span class="hl">前后对比:</span>
   总评分 0.862 → 0.889，首钉总体均匀 0.697 → 0.760
 
-<span class="hl">力度互补分布（50000 发/档实测，scratch/verify_distribution.py）:</span>
+<span class="hl">力度互补分布（50000 发/档实测，../scratch/verify_distribution.py）:</span>
   力度   首钉x中位  偏离中轴    首钉主槽(%)
   0.15     324      +88(偏右)  槽5/6/7(35/30/22)
   0.25     277      +42(偏右)  槽4/5(30/37)
@@ -360,14 +390,14 @@
 
 <!-- ═══════════ CLOSING ═══════════ -->
 <section class="closing">
-  <div class="big-quote">36 个音效没有一个是文件。<br>一根弹簧没有一张图片。<br>一颗球从离手到落袋，没人碰它一下。<br>一块屏横过来竖过去，画面还是那个画面。<br>九个格子的公平，是程序自己"养"出来的。<br><br><em>这不是炫技，这是对玩家的尊重。</em></div>
+  <div class="big-quote">41 个音效没有一个是文件。<br>一根弹簧没有一张图片。<br>一颗球从离手到落袋，没人碰它一下。<br>一块屏横过来竖过去，画面还是那个画面。<br>九个格子的公平，是程序自己"养"出来的。<br><br><em>这不是炫技，这是对玩家的尊重。</em></div>
   <div class="kick reveal">比够用，多走一步。</div>
   <div class="pillars">
     <div class="pillar reveal reveal-d1"><span class="p-icon">🔌</span><div class="p-title">弹簧会说话</div><div class="p-desc">颜色即力度·真实回弹</div></div>
     <div class="pillar reveal reveal-d1"><span class="p-icon">🛤</span><div class="p-title">三段式轨迹</div><div class="p-desc">升空·转弯·落袋</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">没人作弊</div><div class="p-desc">零穿帮·自然落格</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🧬</span><div class="p-title">机器养公平</div><div class="p-desc">进化寻优·4旋钮</div></div>
-    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">51条语音·36音效</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">57条语音·41音效</div></div>
     <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能自证</div><div class="p-desc">4万次自测·真机跑分</div></div>
   </div>
 </section>
@@ -375,7 +405,7 @@
 <footer class="footer">
   <div class="color-bar"><span style="background:var(--gold)"></span><span style="background:var(--blue)"></span><span style="background:var(--green)"></span><span style="background:var(--purple)"></span><span style="background:var(--red)"></span></div>
   <div class="ftitle">跳跳的弹珠机 — DanZhu Plinko</div>
-  <div class="fsub">Python + Kivy · Android 版<span class="separator"></span>设计评审报告 · 2026.08</div>
+  <div class="fsub">Python + Kivy · Android 版<span class="separator"></span>设计评审报告 · 2026.09</div>
   <a href="https://github.com/twoplate2/DanZhu" target="_blank" rel="noopener">github.com/twoplate2/DanZhu</a>
 </footer>
 </div>
