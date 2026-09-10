@@ -14,6 +14,14 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.21(2026-09-10): 最高返还档 300% -> 360%(用户定案)。改动面 = 数值表 + 盘面生成 +
+# UI 按钮 + 语音 + 防沉迷白名单 + 自测门禁, 全部同步(用户要求的"同步其他调整"):
+#   VALUE_SHAPE / K_DIST 的键 3.00 -> 3.60; VALUE_DIST 构建循环; roll_multipliers 的调用方
+#   (`_boards` 两处 + PC/安卓各一处); 按钮 ("360%", 3.60); 配置文件白名单; sim_balance.py;
+#   新增语音 voice_rtp_360("百分之三百六十"), 删掉孤儿 voice_rtp_300; 文档四处。
+#   RTP 是闭式反解的(_solve_p2): 改键之后 x2 权重自动重新配平到精确 3.600000, 不用手调。
+#   ⚠️ 自测门禁复查过: 最高档 σ=9.25, n=40000 时 3σ=0.139, 离 0.15 门禁只剩 0.011 ——
+#   以后再往上加档(比如 400%)必须先同步放宽门禁, 否则每次自测约千分之一概率假失败。
 # 0.5.20(2026-09-10): 中奖杯球径顶到容量上限 —— x100 实 r 42.8 -> 46.5, 堆顶从 design y=61
 # 抬到 41(正好顶到杯口), 杯子明显装满且球贴壁。N<=60 那档 21 -> 23(容量上限 38.5, 安全)。
 # 球径不是审美选的: build_pile 装不下就把球缩 6% 重试, 所以 N=100 的球径被卡在
@@ -78,7 +86,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.20
+version = 0.5.21
 
 requirements = python3,kivy==2.3.0,pyjnius
 

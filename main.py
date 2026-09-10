@@ -765,13 +765,13 @@ VALUE_SHAPE = {   # 非 x2 部分的形状(条件分布, 和=1)。低档无 x50/
     0.80: {3: 0.556, 5: 0.289, 10: 0.122, 20: 0.033},
     1.20: {3: 0.556, 5: 0.289, 10: 0.122, 20: 0.033},
     2.00: {3: 0.50, 5: 0.27, 10: 0.12, 20: 0.06, 50: 0.033, 100: 0.017},
-    3.00: {3: 0.50, 5: 0.27, 10: 0.12, 20: 0.06, 50: 0.033, 100: 0.017},
+    3.60: {3: 0.50, 5: 0.27, 10: 0.12, 20: 0.06, 50: 0.033, 100: 0.017},
 }
 K_DIST = {        # 每盘有奖格数(低档第1版原样, 高档减格子换 x50/x100 频率)
     0.80: {2: 0.8507, 3: 0.1493},              # E[K]=2.15
     1.20: {3: 0.7761, 4: 0.2239},              # E[K]=3.22
     2.00: {3: 0.25, 4: 0.50, 5: 0.25},         # E[K]=4.00
-    3.00: {5: 0.30, 6: 0.40, 7: 0.30},         # E[K]=6.00
+    3.60: {5: 0.30, 6: 0.40, 7: 0.30},         # E[K]=6.00
 }
 
 
@@ -821,7 +821,7 @@ def _solve_p2(rtp):
 
 # 每档完整倍率分布(x2 权重解出后拼成), 并断言 RTP 精确=档位。
 VALUE_DIST = {}
-for _rtp in (0.80, 1.20, 2.00, 3.00):
+for _rtp in (0.80, 1.20, 2.00, 3.60):
     assert abs(sum(VALUE_SHAPE[_rtp].values()) - 1) < 1e-9 and \
            abs(sum(K_DIST[_rtp].values()) - 1) < 1e-9, "概率和不为 1: %.2f" % _rtp
     _p2 = _solve_p2(_rtp)
@@ -1988,15 +1988,17 @@ def selftest(n=40000):
     """验证: (1) 各档 RTP 精确=档位; (2) 引导飞行落点=预定槽、不卡死;
     (3) 碰撞事件覆盖率(音效触发源); (4) 音效库体检。
 
-    n 必须够大: 单发赔付方差很大(取值 0/2/3/5/10/20/50/100, 实测 σ=1.50/2.14/6.43/8.76)。
-    n=40000 时四档标准误 ≈0.008/0.011/0.032/0.044, 3σ = 0.022/0.032/0.096/0.131,
-    故低档门禁 ±0.05、高档 ±0.15(精确性由模块顶层解析断言兜底, 见 VALUE_DIST 构建处的 assert)。"""
+    n 必须够大: 单发赔付方差很大(取值 0/2/3/5/10/20/50/100, 实测 σ=1.96/2.29/6.92/9.25)。
+    n=40000 时四档标准误 ≈0.010/0.012/0.035/0.046, 3σ = 0.029/0.034/0.104/0.139,
+    故低档门禁 ±0.05、高档 ±0.15(最高档 3σ=0.139, 离 0.15 只剩 0.011 —— 再往上加档位
+    就得同步放宽门禁, 否则每次自测约有千分之一概率假失败)。
+    精确性由模块顶层解析断言兜底, 见 VALUE_DIST 构建处的 assert。"""
     geo = build_geo()
     ok = True
 
     # (1) 盘面 RTP 期望: 均匀落格下 E[赔付]=档位(彻底被动, 无 choose_target 修正)
     print("== 返还率精确性(均匀落格盘面期望) ==")
-    for rtp in (0.80, 1.20, 2.00, 3.00):
+    for rtp in (0.80, 1.20, 2.00, 3.60):
         tot = 0.0
         for _ in range(n):
             board = roll_multipliers(rtp)
@@ -4358,7 +4360,7 @@ class RootWidget(BoxLayout):
         self.plays = 0
         self.hits = 0
         self.rtp_target = 0.80
-        self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.00)}   # 4档盘面一起生成, 切换不刷新
+        self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.60)}   # 4档盘面一起生成, 切换不刷新
         self.multipliers = self._boards[self.rtp_target]
         # 声音两态: on(音效已开, 含语音播报, 默认) | off(音效已关)。
         # **不持久化** —— 不进配置文件, 每次启动都是 on(用户定稿)。
@@ -4518,7 +4520,7 @@ class RootWidget(BoxLayout):
                                       size_hint_x=None, width=dp(115))
         rtp.add_widget(self._rtp_title_lbl)
         self.rtp_btns = {}
-        for label, val in (("80%", 0.80), ("120%", 1.20), ("200%", 2.00), ("300%", 3.00)):
+        for label, val in (("80%", 0.80), ("120%", 1.20), ("200%", 2.00), ("360%", 3.60)):
             b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
             b.size_hint_x = None
             b.width = dp(56)
@@ -5177,7 +5179,7 @@ class RootWidget(BoxLayout):
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
         if reroll:
-            self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.00)}   # 重新发射: 4档盘面一起刷新
+            self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.60)}   # 重新发射: 4档盘面一起刷新
             self.multipliers = self._boards[self.rtp_target]
             self.game_area._redraw()
         else:
@@ -5343,7 +5345,7 @@ class RootWidget(BoxLayout):
                 # 老存档里的 "voice"/"sfx" 两个旧值因此被自然忽略, 不需要迁移代码。
                 if isinstance(cfg.get("max_plays"), int) and cfg["max_plays"] in (20, 50, 100):
                     self.max_plays = cfg["max_plays"]
-                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.20, 2.00, 3.00):
+                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.20, 2.00, 3.60):
                     self.rtp_target = float(cfg["rtp_target"])
                 if isinstance(cfg.get("bet"), int) and cfg["bet"] in PRESETS:
                     self.bet = cfg["bet"]

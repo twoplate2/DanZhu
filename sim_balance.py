@@ -25,8 +25,8 @@ BET = 100                         # 每发投注
 MAX_PLAYS = 20                    # 每轮固定玩这么多发(统一口径: 玩 N 发后看余额分布,
                                   # 中途余额 < BET 判破产提前停)
 
-RTP_LEVELS = [0.80, 1.20, 2.00, 3.00]
-RTP_LABEL = {0.80: "80%", 1.20: "120%", 2.00: "200%", 3.00: "300%"}
+RTP_LEVELS = [0.80, 1.20, 2.00, 3.60]
+RTP_LABEL = {0.80: "80%", 1.20: "120%", 2.00: "200%", 3.60: "360%"}
 
 
 _SLOT_DIST_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "slot_dist.json")
