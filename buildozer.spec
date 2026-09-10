@@ -14,6 +14,8 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.11(2026-09-10): 彩蛋顺序改为"先播装杯 -> 落定 -> 弹对话框"(原来弹窗在前);
+# 删掉装杯落地音的 BOUNCE_BUDGET=24 颗数上限(它让 ×20 后段静音 1.4s / ×100 静音 2.3s)。
 # 0.5.10(2026-09-10): 揭晓合流 —— 大字/余额滚动/结果语音 全部推迟到"最后一颗球落定"
 # 那一刻一起给(以前 t=0 就报数字, 语音等装杯播完才念, 中间隔一整场); 槽位指示灯改回
 # "中了就绿/未中红"(原按倍率取色, 而 slot_color(5) 恰好等于未中的红); PC 大字生命
@@ -30,7 +32,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.10
+version = 0.5.11
 
 requirements = python3,kivy==2.3.0,pyjnius
 

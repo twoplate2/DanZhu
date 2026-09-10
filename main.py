@@ -2720,8 +2720,13 @@ ENTER_FADE = 0.08      # 越过覆盖层顶边后的渐入
 SQUASH_W = 0.045       # 撞击压扁窗口(每个落点一次)
 
 DIM_ALPHA = 0.68       # 压暗强度(盖满整块游戏区, 含槽区)
-BOUNCE_BUDGET = 24     # 高倍率只前 N 颗播落地音: SoundPool 只有 8 条流,
-                       # 和滚分的 coin(0.055 节流)抢流会把中奖音挤断
+# 落地音只靠节流限速, **不按颗数截断**。
+# 曾经有个 BOUNCE_BUDGET=24 的"只前 N 颗播落地音"上限, 已删, 三条理由:
+#   1. 它当初的理由是"SoundPool 只有 8 条流, 会被滚分的 coin 抢光" —— 但 coin 已经
+#      挪到揭晓之后了(见 RootWidget._reveal_win), 装杯期间根本不响;
+#   2. bounce 音本身只有 0.11s, 节流 0.10(10/秒)下重叠也就 1~2 条流, 挤不爆 8 条;
+#   3. 实测代价(删之前): ×20 后半段静音 1.4s、×50 静音 1.8s、×100 静音 2.3s ——
+#      弹珠还在往下落, 声音却没了(用户报的就是这个)。
 BOUNCE_THROTTLE = 0.10
 
 # 覆盖层可见顶边(板面最上沿)对应的 design y, 约 -331.7 —— 球在这之上时不能画,
@@ -2898,7 +2903,6 @@ class WinPileFX(Widget):
         self._settled_at = 0.0
         self._deadline = 0.0
         self._on_done = None
-        self._bounce_n = 0
         self._s = 1.0
         self._ox = 0.0
         self._oyt = 0.0
@@ -2978,7 +2982,6 @@ class WinPileFX(Widget):
         self._settled_at = 0.0
         self._deadline = self._t0 + FX_MAX_SEC
         self._on_done = on_done
-        self._bounce_n = 0
         self.mode = "pending"
         self._dirty = True
         return True
@@ -3111,10 +3114,7 @@ class WinPileFX(Widget):
         self._redraw()
 
     def _bounce(self, gain):
-        """落地音。高倍率时 SoundPool 的 8 条流会被滚分的 coin 抢光, 所以限颗数+节流。"""
-        if self._bounce_n >= BOUNCE_BUDGET:
-            return
-        self._bounce_n += 1
+        """落地音(逐颗)。只靠节流限速, 不按颗数截断 —— 见 BOUNCE_THROTTLE 处的说明。"""
         g = getattr(self.area, "game", None)
         sfx = getattr(g, "sfx", None)
         if sfx is not None:
@@ -4806,11 +4806,14 @@ class RootWidget(BoxLayout):
             self._anim_target_balance = float(self.balance)
             self._anim_start_time = time.time()
             self._save_config()
-            # 一路锁到"弹窗关掉 + 装杯播完": 彩蛋分支不设 _land_hold, 不锁的话
-            # park_ball 会在 landed_at+0.6s(弹窗还开着)就跑掉 —— 重掷盘面、state 回 ready、
-            # 按钮恢复, 然后装杯才播, 变成"已经能发射了还在放动画"。
+            # 一路锁到"装杯播完 + 弹窗关掉": 彩蛋分支不设 _land_hold, 不锁的话
+            # park_ball 会在 landed_at+0.6s 就跑掉 —— 重掷盘面、state 回 ready、按钮恢复,
+            # 然后装杯才播, 变成"已经能发射了还在放动画"。
             self._easter_hold = True
-            self._show_easter_popup()
+            # 先播装杯, 全部落定后再弹对话框(用户定稿)。排不上(球堆异常)也绝不能把
+            # 弹窗吞了 —— 那是这条路径唯一的结果说明。
+            if not self.game_area.win_fx.play_win(2, self.bet, on_done=self._on_easter_settled):
+                self._on_easter_settled()
             return
         m = self.multipliers[i]
         payout = self.bet * m
@@ -4915,6 +4918,16 @@ class RootWidget(BoxLayout):
         if not silent:
             self.sfx.play("ready", 0.8)
 
+    def _on_easter_settled(self):
+        """装杯全部落定 -> 弹对话框(用户定稿: 先看弹珠落进杯子, 再看说明)。
+
+        守卫 _easter_hold: 玩家若在装杯期间按了重置并又发了一发(launch 会清这个锁),
+        这时再弹窗就会盖在新一局上 —— 那就不弹了。
+        """
+        if not self._easter_hold:
+            return
+        self._show_easter_popup()
+
     def _show_easter_popup(self):
         """彩蛋弹窗: 球跳回发射槽, 按 ×2 结算(返还 2×投注), 点确定才关。
 
@@ -4943,33 +4956,26 @@ class RootWidget(BoxLayout):
                             title_color=hex_rgb(COL_TEXT) + (1,),
                             separator_color=hex_rgb(COL_DIV) + (1,))
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
-        # 绑 on_dismiss 而不是按钮: 将来多一条关闭路径(手势/系统)也不会漏掉装杯。
+        # 绑 on_dismiss 而不是按钮: 将来多一条关闭路径(手势/系统)也不会漏掉解锁。
         # 顺便把弹窗引用留给探针用。
         popup.bind(on_dismiss=self._on_easter_closed)
         self._easter_popup = popup
-        # 晓晓念的就是弹窗这句话。直接调 sfx.play —— set_bet/set_rtp 那类辅助函数会被
-        # _result_until 挡掉(本分支刚把它设成 now+2.5), 走辅助函数会自己把自己抑制掉。
+        # 播报。直接调 sfx.play —— set_bet/set_rtp 那类辅助函数会被 _result_until 挡掉
+        # (本分支刚把它设成 now+2.5), 走辅助函数会自己把自己抑制掉。
+        # 与正常中奖同一套约定: 语音档播语音, 非语音档播 ×2 轻赢琶音(两者同播会互盖)。
         if self.sound_mode == "voice":
             self.sfx.play("voice_easter_%d" % self.bet, throttle=0.5)
+        else:
+            self.sfx.play("win1", 0.6)
         popup.open()
 
     def _on_easter_closed(self, *_):
-        """弹窗关掉 -> 补播一场 ×2 的装杯(用户定稿: 关掉弹窗再看弹珠落进去)。
-
-        装杯会把 busy() 置 True, 所以 park_ball 的解锁顺手延到装杯播完。
-        排不上(异常/未知档)就直接放行 —— 装杯是表演, 绝不能拖累解锁。
-        """
-        if not self.game_area.win_fx.play_win(2, self.bet, on_done=self._easter_finish):
-            self._easter_finish()
+        """弹窗关掉 -> 整段彩蛋结束, 放行 park_ball。"""
+        self._easter_finish()
 
     def _easter_finish(self):
-        """装杯全部落定: 解锁 park_ball + 播 ×2 档轻赢音。
-
-        轻赢音原本在结算那一刻播, 现在挪到这儿收尾 —— 弹窗期间观众还没看到弹珠落进杯子,
-        先响一声会跟画面脱节。
-        """
+        """彩蛋流程收尾: 解锁。装杯已经把 busy() 走完了, 这里只松 _easter_hold。"""
         self._easter_hold = False
-        self.sfx.play("win1", 0.6)            # ×2 档轻赢音(对齐小赢量级, 不抢 ×100 号角戏)
 
     # ------------------------------ 轮次结束 ------------------------------
     @staticmethod
