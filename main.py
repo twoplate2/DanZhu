@@ -2718,8 +2718,14 @@ BIG_TEXT_LIFE = 1.8
 # ⚠️ RESULT_HOLD + RESULT_FADE 的和 = 解锁前的尾巴(0.45s, 用户定案), **不要改和**:
 # expected_sec()/_reveal_deadline()/fx_probe 全按这个和算。内部配比可调。
 WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿灯先被看见
-RESULT_HOLD = 0.20     # 全部落定后的静止(0.30 -> 0.20)
-RESULT_FADE = 0.25     # 可见的离开(0.15 -> 0.25)。和仍 = 0.45, 解锁一毫秒不动
+# ⚠️ 退场计时的基准是 `_last_settle`(最后一颗球**回弹停住**、杯子装满静止), 不是揭晓那个
+# `_last_touch`(第一次触地)。这两个时刻必须分开, 否则球还在弹杯子就开始淡出 ——
+# 玩家: "弹珠落入容器后消失得太快, 没有回味"(实踩, 就是把这俩合成一个造成的)。
+RESULT_HOLD = 0.35     # 装满后的静止(0.20 -> 0.35: 留出回味, 用户定案)
+RESULT_FADE = 0.25     # 可见的离开
+# 和 = 0.60。以前是 0.45(且基准是第一次触地), 现在基准后移到"装满" + 静止加长 ——
+# 净效果: 从"最后一颗触地"算, 消失时刻只比老版本晚 0.15s, 但**装满后有 0.35s 静止**,
+# 这就是"回味"。expected_sec / _reveal_deadline / fx_probe 都从这个和推导, 改这里它们跟着走。
 FX_MAX_SEC = 9.0       # 硬兜底: 超过这个时长无条件解锁
 
 # ---- 进场/退场的分层与位移 ----
@@ -2963,7 +2969,9 @@ class WinPileFX(Widget):
         self._rng = random.Random()
         self._t0 = 0.0                    # 杯子该出现的时刻(settle + WINDUP)
         self._rain_shift = 0.0            # 本局雨的整场前移量(见 RAIN_ANCHOR), expected_sec 要用
-        self._last_touch = 0.0            # 最后一颗球**第一次触地**的时刻(相对 _t0) —— T 的判据
+        self._last_touch = 0.0            # 最后一颗球**第一次触地**(相对 _t0) —— 揭晓用
+        self._last_settle = 0.0           # 最后一颗球**回弹停住**(相对 _t0) —— 退场计时用
+        self._done_fired = False          # 揭晓是否已放出去(它比退场早, 要各自触发一次)
         self._settled_at = 0.0
         self._deadline = 0.0
         self._on_done = None
@@ -3042,9 +3050,9 @@ class WinPileFX(Widget):
         """
         n = max(1, int(multiplier))
         if self._balls:
-            # T 是"最后一颗**触地**"(见 _last_touch), 不再是"最后一颗弹完" —— 所以基准跟着换,
-            # 否则会高估整场时长, 兜底 deadline 白等一路。
-            tail = self._last_touch + 0.05     # 0.05 留一帧, 免得兜底和真事件同毫秒打架
+            # 整场时长按"退场起点"(最后一颗回弹停住)算, 不是揭晓那个(第一次触地)——
+            # 退场动画的时钟挂在 _last_settle 上, 基准跟它走才自洽。
+            tail = self._last_settle + 0.05    # 0.05 留一帧, 免得兜底和真事件同毫秒打架
         else:                                                   # 还没排上(球堆异常): 退回估算
             iv = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / n))
             tail = SPAWN_TOP + (n - 1) * iv + FALL_MAX + 0.33
@@ -3084,6 +3092,7 @@ class WinPileFX(Widget):
         now = time.time()
         self._t0 = now + WINDUP
         self._settled_at = 0.0
+        self._done_fired = False
         self._deadline = self._t0 + FX_MAX_SEC
         self._on_done = on_done
         self.mode = "pending"
@@ -3184,10 +3193,13 @@ class WinPileFX(Widget):
             for b in self._balls:
                 b["t0"] -= self._rain_shift
                 b["end"] -= self._rain_shift
-        # T(整场演出的收尾时刻)的判据 = 最后一颗球**第一次触地**(用户定稿)。
-        # 以前用的是 max(end) —— 那要把每颗球的两次落地弹跳都等完, 整场白长 0.22~0.31s
-        # (实测 x2 1.71->1.46s, x100 3.30->3.08s), 而弹跳只是装饰。
+        # 两个收尾时刻, **必须分开**(用户定稿):
+        #   _last_touch  = 最后一颗球第一次触地 -> 揭晓(大字/余额/语音), 越早越跟手
+        #   _last_settle = 最后一颗球回弹停住   -> 退场计时起点, 这一刻杯子才装满静止
+        # 曾经把这俩合成一个, 结果退场从"最后一颗刚触地"就开始计时 —— 球还在弹,
+        # 杯子已经在淡出(玩家: "落进容器后消失得太快, 没有回味")。
         self._last_touch = max((b["t0"] + b["f"] for b in self._balls), default=0.0)
+        self._last_settle = max((b["end"] for b in self._balls), default=0.0)
 
     # ------------------------------ 帧推进 ------------------------------
 
@@ -3208,11 +3220,14 @@ class WinPileFX(Widget):
         if self.mode == "win":
             t = now - self._t0
             self._advance_balls(t)
-            # T = 最后一颗球**第一次触地**的那一刻(用户定稿), 不再等它弹完。
-            if t >= self._last_touch:
+            # 揭晓: 最后一颗**第一次触地**就放(越早越跟手)
+            if t >= self._last_touch and not self._done_fired:
+                self._done_fired = True
+                self._fire_done()                  # -> 播中奖音/语音 + 大字/余额
+            # 退场: 等最后一颗**回弹停住**(杯子装满静止)才开始计时 —— 见 RESULT_HOLD 处
+            if t >= self._last_settle:
                 self._settled_at = now
                 self.mode = "result"
-                self._fire_done()                  # 最后一颗触地 -> 播中奖音/语音
         if self.mode == "result":
             # 尾巴: 没弹完的球继续把弹跳播完(用户定稿"球继续弹, 只提前 T")。
             # ⚠️ 这一段**不能停** —— _ball_screen 对未落定的球是按 tt 插值的, 不推进的话
@@ -5037,9 +5052,11 @@ class RootWidget(BoxLayout):
             if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
                 # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
                 _on_settled()
-            # 兜底: 到点还没揭就自己揭(防 tick 停摆)。expected_sec 是 T 的上界(实测偏高
-            # 0.55~0.80s), 减去尾巴 0.45 仍早于 WinPileFX 的 FX_MAX_SEC(9s) 硬解锁。
-            self._reveal_deadline = time.time() + self.game_area.win_fx.expected_sec(m) - 0.45
+            # 兜底: 到点还没揭就自己揭(防 tick 停摆)。expected_sec 是整场上界,
+            # 基准 = 退场起点之后的那个尾巴, 所以减的是 (RESULT_HOLD + RESULT_FADE)。
+            # ⚠️ **不要写死 0.45** —— 那个数已经变过一次(0.45 -> 0.60), 写死就和 WinPileFX 脱钩。
+            self._reveal_deadline = time.time() + self.game_area.win_fx.expected_sec(m) - (
+                RESULT_HOLD + RESULT_FADE)
             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         else:
