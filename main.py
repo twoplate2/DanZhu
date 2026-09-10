@@ -2370,6 +2370,884 @@ def sfx_check(verbose=True):
             bad.append((name, "首尾爆音"))
     return len(bank), bad
 
+# -*- coding: utf-8 -*-
+"""中奖玻璃杯的生成期球堆模块 —— 方案 A+ 杂交定稿「解析式 3D 分层谷位密堆」。
+
+⚠️ 本文件是 Wingui 原型的正式版副本(原稿 wingui/pile3d.py, 该目录不在 git 内)。
+   tools/build_android_main.py 会把本文件原样内联进 android/main.py, 改这里就够;
+   绝对不要手改 android/main.py。
+
+⚠️ _WALL_BEZ 与 wingui/assets/generate_glass_tumbler.py 的贝塞尔壁**强耦合**:
+   球堆"贴"的壁就是 PNG"画"出来的壁。改壁形必须同时重出三张 glass_tumbler*.png,
+   否则球会穿出画出来的杯壁(生成器里有同源注释, 见其第 44~46 行)。
+
+四层数据流: PileSpec(参数) -> build_pile(3D 终态) -> project_pile(斜投影+画家序)
+-> WinPileFX(tools/android_part_pile.py, 只画不模拟)。纯 stdlib、零 Kivy 导入,
+headless 可单测/可 PIL 对拍(wingui/pile_preview.py)。
+
+坐标系: design px(与 assets/glass_tumbler.png 画布同源, 800x460; y 向下为屏幕语义,
+本模块用 h=离地高度)。容器剖面取法与生成器同源: bezier 内壁 / 碗反射椭圆 / 杯口椭圆
+的纵横向比例——堆"贴"的壁就是"画"出来的壁(修 D3),不新造几何。
+
+确定性: 同 (count, seed) 逐球心一致(R5);模拟全部发生在生成期一次,运行期零物理。
+
+坑: build_pile 容量兜底时会**原地缩小 spec.r**(最多 4 次 ×0.94), 同一个 PileSpec
+    复用第二次会更小 —— 每局新建 spec, 不要跨局复用实例。
+"""
+import math
+import random
+import time
+
+DESIGN_W = 800.0
+DESIGN_H = 460.0
+CX = 400.0
+FLOOR_Y = 404.0            # 碗反射椭圆中心: 地板平面 h=0(俯视斜角 v2)
+RIM_Y = 80.0               # 壁顶
+K2 = 0.20                  # 斜投影纵剪: 与碗/杯口椭圆 b/a≈0.20 同源(俯视约 12 度)
+PACK_PHI = 0.907           # 三角格盘面密度(pi/2sqrt3): 体积方程与格点枚举自洽
+TAPER = 1.43               # 圆肩: 底半径/堆高(对应休止角 ~35 度)
+
+# 杯底加宽并放缓收口：底/口宽约 0.80，避免旧版漏斗感；必须与生成器同源。
+_WALL_BEZ = ((39.0, 80.0), (65.0, 262.0), (110.0, 404.0))  # 左壁 bezier(生成器同源)
+
+
+def _bez_at(t):
+    u = 1.0 - t
+    x = u * u * _WALL_BEZ[0][0] + 2 * u * t * _WALL_BEZ[1][0] + t * t * _WALL_BEZ[2][0]
+    y = u * u * _WALL_BEZ[0][1] + 2 * u * t * _WALL_BEZ[1][1] + t * t * _WALL_BEZ[2][1]
+    return x, y
+
+
+_HW_TABLE = None
+
+
+def _build_hw_table(n=160):
+    pts = []
+    for i in range(n + 1):
+        x, y = _bez_at(i / float(n))
+        pts.append((FLOOR_Y - y, CX - x))        # (h, halfwidth)
+    pts.sort()
+    return pts
+
+
+def halfwidth(h):
+    """离地 h 高度处"画出来的"杯内壁半宽(design px), 表外钳制。"""
+    global _HW_TABLE
+    if _HW_TABLE is None:
+        _HW_TABLE = _build_hw_table()
+    tab = _HW_TABLE
+    if h <= tab[0][0]:
+        return tab[0][1]
+    if h >= tab[-1][0]:
+        return tab[-1][1]
+    lo, hi = 0, len(tab) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if tab[mid][0] <= h:
+            lo = mid
+        else:
+            hi = mid
+    h0, w0 = tab[lo]
+    h1, w1 = tab[hi]
+    return w0 + (w1 - w0) * (h - h0) / (h1 - h0)
+
+
+def floor_radius():
+    """碗底平面可用半径(壁内)。"""
+    return halfwidth(0.0)
+
+
+class PileSpec(object):
+    def __init__(self, count, r_dp=11.5, seed=0, dp2px=DESIGN_W / 430.0,
+                 jitter=0.10, polish=30):
+        self.count = max(0, int(count))
+        self.r = r_dp * dp2px
+        self.seed = int(seed)
+        self.jitter = float(jitter)
+        self.polish = int(polish)
+
+
+def _volume_H(spec):
+    """体积守恒初值: N 球体积 / 格盘密度 = 半椭球堆体积 (2/3)pi R^2 H, R=TAPER*H。"""
+    v_total = spec.count * (4.0 / 3.0) * math.pi * spec.r ** 3 / PACK_PHI
+    H = (v_total / ((2.0 / 3.0) * math.pi * TAPER * TAPER)) ** (1.0 / 3.0)
+    cap = (FLOOR_Y - RIM_Y) * 0.78        # 大珠档允许堆到内壁 78%(×100 要有"半坛"体积感)
+    return max(spec.r * 2.0, min(H, cap))
+
+
+def _enumerate(spec, H, wall_mode=False):
+    """给定堆高 H 做确定性格点枚举: 返回 (beads, H, R)。放不满则调用方增大 H。
+
+    wall_mode(N>=35): "一坛子"语义——逐层铺满杯壁圆盘直到堆顶(平截口外圆内收,
+    天然微微圆顶); 土丘 dome 剖面只用于小奖档(否则大珠×50 圆顶剖面离散层装不下)。
+    """
+    rng = random.Random(spec.seed)
+    r = spec.r
+    # 壁填充满盘无松量: 间距 1.12 + 抖动 0.03d 让同层/跨层结构上就不可能咬死,
+    # 抛光只兜跨层最坏叠加的偶发(实测残余 <2px 容差)。
+    k_p = 1.12 if wall_mode else 1.0
+    jit = (0.03 if wall_mode else spec.jitter) * 2.0 * r
+    R = min(TAPER * H, floor_radius() - r)
+    h_cap = (FLOOR_Y - RIM_Y) * 0.95
+    hv = math.sqrt(8.0 / 3.0) * r            # 密排面间距 1.633r: 层 k+1 坐在层 k 三角谷上
+    pitch = math.sqrt(3.0) * r * k_p
+    beads = []
+    k = 0
+    while True:
+        h = r + k * hv
+        if wall_mode:
+            if h > h_cap:
+                break
+        elif h > H + r * 0.5:
+            break
+        dome = R * math.sqrt(max(0.0, 1.0 - (h / H) ** 2))
+        wall = halfwidth(h)
+        # 俯视是圆(深度短缩全交给投影 K2, 与碗椭圆 b=26~K2*257 自洽): 两轴同限。
+        # 留出抖动余量, 抖后仍在壁内(贴壁大层边缘本无余量)。
+        a = max(0.5, (wall if wall_mode else min(wall, dome)) - r - jit)
+        if a <= 0.5 and not wall_mode:
+            if k == 0:
+                a = max(0.6 * r, floor_radius() - r)   # 极小堆也要坐得进
+            else:
+                break
+        b = a
+        ox = r * k_p if (k % 2) else 0.0
+        oz = 0.577 * r * k_p if (k % 2) else 0.0
+        pts = []
+        rows = int(2.0 * b / pitch) + 1
+        for j in range(rows):
+            z = (j - (rows - 1) / 2.0) * pitch + oz
+            if b <= 0 or (z / b) ** 2 > 0.94:
+                continue
+            cols = int(2.0 * a / (2.0 * r * k_p)) + 1
+            row_shift = (j % 2) * r * k_p        # 真三角格: 奇行错开半格(漏了它=方格错位挤压)
+            for i in range(cols):
+                x = (i - (cols - 1) / 2.0) * 2.0 * r * k_p + ox + row_shift
+                if (x / a) ** 2 + (z / b) ** 2 > 0.94:
+                    continue
+                pts.append((x, z))
+        pts.sort(key=lambda p: p[0] * p[0] + p[1] * p[1])   # 由内而外 -> 圆顶自然收肩
+        for x, z in pts:
+            if len(beads) >= spec.count:
+                break
+            jx = rng.uniform(-1.0, 1.0) * jit
+            jz = rng.uniform(-1.0, 1.0) * jit
+            beads.append({"x": x + jx, "z": z + jz, "h": h, "layer": k, "r": r})
+        k += 1
+    return beads, H, R
+
+
+def build_pile(spec):
+    """确定性 3D 球堆终态(生成期一次算完): 大 N 走壁填充"一坛子"; 小 N 体积初值 ->
+    不足则长高 -> 截断到 N -> xz 重叠抛光 -> 断言(在壁内/不重叠/不沉底/颗数=倍率)。"""
+    t0 = time.perf_counter()
+    if spec.count == 0:
+        return [], {"count": 0, "H": 0.0, "R": 0.0, "ms": 0.0}
+    wall_mode = spec.count >= 35
+    cap = (FLOOR_Y - RIM_Y) * 0.95
+    H = cap if wall_mode else _volume_H(spec)
+    beads, H, R = _enumerate(spec, H, wall_mode)
+    if not wall_mode:
+        tries = 0
+        while len(beads) < spec.count and tries < 24 and H < (FLOOR_Y - RIM_Y) * 0.78:
+            H *= 1.08
+            beads, H, R = _enumerate(spec, H)
+            tries += 1
+    # 容量兜底: 缩 6% 半径重试, 颗数=倍率的硬承诺优先于目标粒径。
+    shrink = 0
+    while len(beads) < spec.count and shrink < 4:
+        spec.r *= 0.94
+        shrink += 1
+        H = cap if wall_mode else _volume_H(spec)
+        beads, H, R = _enumerate(spec, H, wall_mode)
+        if not wall_mode:
+            tries = 0
+            while len(beads) < spec.count and tries < 24 and H < (FLOOR_Y - RIM_Y) * 0.78:
+                H *= 1.08
+                beads, H, R = _enumerate(spec, H)
+                tries += 1
+    assert len(beads) == spec.count, "pile count short"
+    _polish(beads, spec)
+    _assert_pile(beads, spec)
+    cost_ms = (time.perf_counter() - t0) * 1000.0
+    meta = {"count": len(beads), "H": H, "R": R, "ms": cost_ms}
+    return beads, meta
+
+
+def _polish(beads, spec):
+    """仅消重叠的 xz 推开(3D 距离判定, 纵层距不动), ≤spec.polish 轮, 与 R5 无冲突;
+    推开后把球钳回本层壁内圆(抛光不可把球挤出杯)。"""
+    r2 = spec.r * 2.0
+    for _ in range(spec.polish):
+        moved = False
+        for i in range(len(beads)):
+            bi = beads[i]
+            for j in range(i + 1, len(beads)):
+                bj = beads[j]
+                dx = bj["x"] - bi["x"]
+                dz = bj["z"] - bi["z"]
+                dh = bj["h"] - bi["h"]
+                d2 = dx * dx + dz * dz + dh * dh
+                if d2 >= r2 * r2:
+                    continue
+                d = math.sqrt(d2)
+                flat = math.sqrt(dx * dx + dz * dz)
+                if flat < 1e-6:
+                    dx, dz, flat = r2, 0.0, r2          # 直接叠放罕见: 沿 x 分开
+                push = (r2 - d) * 0.5
+                bi["x"] -= dx / flat * push
+                bi["z"] -= dz / flat * push
+                bj["x"] += dx / flat * push
+                bj["z"] += dz / flat * push
+                moved = True
+        for b in beads:
+            lim = halfwidth(b["h"]) - spec.r + 0.5   # 只防越出断言边界, 不与抛光抢球
+            rr = math.hypot(b["x"], b["z"])
+            if rr > lim > 0:
+                b["x"] *= lim / rr
+                b["z"] *= lim / rr
+        if not moved:
+            break
+
+
+def _assert_pile(beads, spec):
+    r = spec.r
+    r2 = 2.0 * r
+    slop = 2.0          # 亚像素级链式约束残留(抛光阻尼收敛尾差)属观感无关
+    n = len(beads)
+    for i in range(n):
+        b = beads[i]
+        assert abs(b["x"]) <= halfwidth(b["h"]) - r + 1.0, "ball out of wall"
+        assert b["h"] >= r - 0.5, "ball below floor"
+    for i in range(n):
+        bi = beads[i]
+        for j in range(i + 1, n):
+            bj = beads[j]
+            dx = bi["x"] - bj["x"]
+            dz = bi["z"] - bj["z"]
+            dh = bi["h"] - bj["h"]
+            assert dx * dx + dz * dz + dh * dh > (r2 - slop) ** 2, "unresolved overlap"
+
+
+def project_pile(beads):
+    """(x,h,z) -> 屏幕 design px 斜投影(k1=0 纯纵剪), 返回画家序(远先近后)绘制表。"""
+    if not beads:
+        return []
+    zs = [b["z"] for b in beads]
+    zmax = max(zs)
+    span = (zmax - min(zs)) or 1.0
+    out = []
+    for idx, b in enumerate(beads):
+        t = (zmax - b["z"]) / span                     # 0=最远 1=最近
+        out.append({"i": idx,
+                    "sx": CX + b["x"],
+                    "sy": FLOOR_Y - b["h"] - K2 * b["z"],
+                    "r": b["r"],
+                    "shade": 0.62 + 0.38 * t,
+                    "z": b["z"]})
+    out.sort(key=lambda p: -p["z"])                    # 远先画, 近后画 -> 画家算法遮挡
+    return out
+
+# =============================================================================
+# 中奖表现层 —— 玻璃杯装弹珠(端口自 wingui/win_showcase.py 的 ShowcaseCanvas)
+# =============================================================================
+# ⚠️ 真源在 E:/AI_Tools/other/DanZhu/wingui/(该目录不在 git 内, 也不在 tools/ 里)。
+#   本文件由 tools/build_android_main.py 内联进 android/main.py —— 改这里, 重跑生成器;
+#   绝对不要手改 android/main.py。上游 pile3d 已被内联到本段之前, 所以这里直接用
+#   DESIGN_W / CX / FLOOR_Y / PileSpec 等裸名(不能再写 pile3d.XXX)。
+#
+# 玩法: 中奖时结算后停 WINDUP 秒(让槽位白闪/绿灯先被看见), 然后整块游戏区压暗,
+# 玻璃杯浮上来, 倍率=颗数的弹珠从板面上方雨点般落下堆满杯子, 全部落定后播中奖音,
+# 留 0.45s 尾巴淡出, 才解锁让玩家发下一发。
+#
+# 三条不可动摇的约束:
+#   1. 运行期零物理 —— 球堆在生成期由 pile3d 解析式算完, 运行期只做斜投影 + 纯时基插值。
+#   2. 时基一律 time.time() 绝对值, 不新增 Clock.schedule_interval。Kivy 的 Clock 在切
+#      后台时会停/跳, 用绝对时基的话"切回来动画直接跳终态"而不是卡住, 顺带绕开
+#      BUILD_APK.md §3.23 的"Clock 回调零参签名真机必闪退"红线。
+#   3. 绝不软锁 —— busy() 有 FX_MAX_SEC 硬兜底, 任何异常路径都必须回到 idle, 否则
+#      park_ball 永不执行, 玩家只能杀进程。
+#
+# 坐标系(踩过的坑, 别再猜): Kivy 子控件的 canvas **就是绝对(窗口)坐标**, 父级不会给
+#   子控件做平移 —— 已用像素实测确认(Rectangle 画在子控件 canvas 的 (0,0) 落在窗口原点,
+#   把子控件摆到 (30,40) 后红块仍在窗口原点)。所以这里和 GameArea._redraw 一样,
+#   几何一律 self.x/self.y + 偏移, 不要用"父级局部帧"的写法。
+#   (注: GameArea.big_result_text 里 "self._px(...) - self.x" 是历史写法, 纵向整体偏了
+#    一个 GameArea.y; 因为是被眼睛调过的既成观感, 本轮不动它, 但别照着抄。)
+
+from kivy.core.image import Image as _CoreImage
+
+# 投入档位决定杯中弹珠颜色(用户定案): 1绿 / 10蓝 / 50红 / 100紫。
+BET_COLORS = {1: "#39c98a", 10: "#4da8ff", 50: "#e0533b", 100: "#a335ee"}
+# 注: 本段所有模块级名字都带 CUP_/_CUP 前缀或独一无二的词 —— 生成器是纯字符串拼接、
+# 不做任何去重, 同名者会静默覆盖前面那个。实踩: 叫 _BALL_TEX 会被 ui 段的
+# "_BALL_TEX = None" 覆盖成 None(那段跑在本段之后) -> 首次中奖 AttributeError。
+# DEFAULT_BET 故意**借用**主游戏 b1 段已有的那个(=10), 不另起名字。
+
+# ---- 杯子几何(520x660 逻辑画布内) ----
+CUP_W = 470.0
+CUP_H = CUP_W * DESIGN_H / DESIGN_W                 # 270.25, 与资产 800x460 同比
+CUP_L = CW / 2.0 - CUP_W / 2.0                      # 25.0
+CUP_T = CH / 2.0 - CUP_H / 2.0                      # 194.875 (杯占逻辑 y 194.9~465.1)
+TEXT_CY_WIN = 118.0                                 # 中奖大字让位后的逻辑 cy
+
+# ---- 时序(秒) ----
+WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿灯先被看见
+FADE_IN = 0.20         # 压暗 + 杯子淡入
+RESULT_HOLD = 0.30     # 全部落定 -> 播中奖音 -> 停一拍
+RESULT_FADE = 0.15     # 淡出, 之后才解锁(合计尾巴 0.45s, 用户定案)
+FX_MAX_SEC = 9.0       # 硬兜底: 超过这个时长无条件解锁
+
+# ---- 投放与下落 ----
+SPAWN_TOP = 0.08       # 第一颗的投放时刻
+SPAWN_WINDOW = 1.6     # 投放总窗口上限(秒)
+SPAWN_MIN, SPAWN_CAP = 0.016, 0.16
+RAIN_HEADROOM = 420.0  # design px: 起点抬到覆盖层可见顶边之上, 保住重力落差
+FALL_GRAVITY = 1900.0  # 原型 2400 是按"960dp 高窗"调的, 嵌进 660 高板面必须降
+FALL_MIN, FALL_MAX = 0.55, 1.30
+ENTER_FADE = 0.08      # 越过覆盖层顶边后的渐入
+SQUASH_W = 0.045       # 撞击压扁窗口(每个落点一次)
+
+DIM_ALPHA = 0.68       # 压暗强度(盖满整块游戏区, 含槽区)
+BOUNCE_BUDGET = 24     # 高倍率只前 N 颗播落地音: SoundPool 只有 8 条流,
+                       # 和滚分的 coin(0.055 节流)抢流会把中奖音挤断
+BOUNCE_THROTTLE = 0.10
+
+# 覆盖层可见顶边(板面最上沿)对应的 design y, 约 -331.7 —— 球在这之上时不能画,
+# 否则会漏到板面上方的"投入弹珠"那一行(Kivy 不裁剪子控件)。
+VISIBLE_TOP = -DESIGN_H * CUP_T / CUP_H
+
+_CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
+_GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例存
+_PILE_CACHE = {}        # (count, seed) -> proj
+_PILE_ORDER = []
+_PILE_CACHE_MAX = 12
+_PILE_VARIANTS = 4      # 同倍率留 4 种堆形变体, 免得每局一模一样
+
+
+def _r_dp_for(n):
+    """球半径(dp)按颗数分级: 同局所有球等半径(R2 红线)。"""
+    if n <= 3:
+        return 26.0
+    if n <= 8:
+        return 24.0
+    if n <= 20:
+        return 22.0
+    if n <= 60:
+        return 21.0
+    return 23.0
+
+
+def _mix_rgb(a, b, amount):
+    return tuple(int(x + (y - x) * amount) for x, y in zip(a, b))
+
+
+def _ball_texture(bet):
+    """主游戏 ball_texture() 的彩色版: 同一套猫眼渐变外形, 只换球身颜色。
+
+    d=128 逐像素纯 Python 合成(Android 上没有 PIL, 见 BUILD_APK.md §3.8)。
+    低端机单档约 100~200ms, 所以由 prebake_step 在启动后分帧预烘, 不要在中奖那帧现做。
+    """
+    tex = _CUP_BALL_TEX.get(bet)
+    if tex is not None:
+        return tex
+    if bet not in BET_COLORS:                       # 未知档回退金球, 不 KeyError
+        stops = [(0.00, (254, 240, 138)), (0.20, (250, 220, 80)),
+                 (0.40, (234, 179, 8)), (0.65, (202, 138, 4)),
+                 (0.85, (160, 100, 10)), (0.94, (120, 65, 10)),
+                 (0.99, (50, 25, 5))]
+    else:
+        base = tuple(int(c * 255) for c in hex_rgb(BET_COLORS[bet]))
+        stops = [(0.00, _mix_rgb(base, (255, 255, 255), 0.64)),
+                 (0.20, _mix_rgb(base, (255, 255, 255), 0.42)),
+                 (0.40, _mix_rgb(base, (255, 255, 255), 0.18)),
+                 (0.65, _mix_rgb(base, (0, 0, 0), 0.16)),
+                 (0.85, _mix_rgb(base, (0, 0, 0), 0.40)),
+                 (0.94, _mix_rgb(base, (0, 0, 0), 0.62)),
+                 (0.99, _mix_rgb(base, (0, 0, 0), 0.82))]
+    d = 128
+    r = d / 2.0
+    buf = bytearray(d * d * 4)
+    for y in range(d):
+        for x in range(d):
+            dx = x - r + 0.5
+            dy = y - r + 0.5
+            dist = math.hypot(dx, dy) / (r - 0.5)
+            if dist >= 1.0:
+                continue
+            rr, gg, bb = stops[-1][1]
+            for j in range(len(stops) - 1):
+                if stops[j][0] <= dist <= stops[j + 1][0]:
+                    s0, c0 = stops[j]
+                    s1, c1 = stops[j + 1]
+                    f = (dist - s0) / (s1 - s0) if s1 > s0 else 0
+                    rr = int(c0[0] + (c1[0] - c0[0]) * f)
+                    gg = int(c0[1] + (c1[1] - c0[1]) * f)
+                    bb = int(c0[2] + (c1[2] - c0[2]) * f)
+                    break
+            i = (y * d + x) * 4
+            buf[i:i + 4] = bytes((rr, gg, bb, 255 if dist <= 0.97
+                                  else int(255 * (1.0 - dist) / 0.03)))
+    # 偏移猫眼色带: 和主游戏同一套公式, 让杯里的球一眼认得出是同一颗球
+    base = stops[3][1]
+    band_c = _mix_rgb(base, (0, 0, 0), 0.28)
+    ba = math.radians(-32.0)
+    off = 0.08 * d
+    band_w = 0.11 * d
+    cos_a, sin_a = math.cos(ba), math.sin(ba)
+    for y in range(d):
+        for x in range(d):
+            i = (y * d + x) * 4
+            if buf[i + 3] == 0:
+                continue
+            dx, dy = x - r, y - r
+            s = dx * cos_a + dy * sin_a
+            v = -dx * sin_a + dy * cos_a
+            if abs(s) < r:
+                wmax = band_w * math.sqrt(1.0 - (s / r) ** 2)
+                dv = abs(v - off)
+                if dv < wmax:
+                    t = dv / wmax
+                    w = (1.0 - t * t) ** 2 * 0.50
+                    buf[i] = int(buf[i] + (band_c[0] - buf[i]) * w)
+                    buf[i + 1] = int(buf[i + 1] + (band_c[1] - buf[i + 1]) * w)
+                    buf[i + 2] = int(buf[i + 2] + (band_c[2] - buf[i + 2]) * w)
+    tex = Texture.create(size=(d, d), colorfmt="rgba")
+    tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
+    tex.mag_filter = "linear"
+    tex.min_filter = "linear"
+    _CUP_BALL_TEX[bet] = tex
+    return tex
+
+
+def _glass_textures():
+    """玻璃后层/前层 + 兼容整图; 分层失败回退整图, 再失败返回空三元组。
+
+    ⚠️ 最后一档回退是**静默**的 —— 会画出一个"没有杯子的一团弹珠"。所以这里显式
+    print(CUP-TEX MISSING), 让它出现在 logcat 里, 而不是等玩家来问"杯子去哪了"。
+    """
+    global _GLASS_TEX
+    if _GLASS_TEX is not None:
+        return _GLASS_TEX
+    assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+    try:
+        back = _CoreImage(os.path.join(assets, "glass_tumbler_back.png")).texture
+        front = _CoreImage(os.path.join(assets, "glass_tumbler_front.png")).texture
+        for texture in (back, front):
+            texture.mag_filter = "linear"
+            texture.min_filter = "linear"
+        _GLASS_TEX = (back, front, None)
+    except Exception:
+        try:
+            fallback = _CoreImage(os.path.join(assets, "glass_tumbler.png")).texture
+            fallback.mag_filter = "linear"
+            fallback.min_filter = "linear"
+            _GLASS_TEX = (None, None, fallback)
+            print("CUP-TEX FALLBACK: 分层玻璃图缺失, 退回整图")
+        except Exception:
+            _GLASS_TEX = (None, None, None)
+            print("CUP-TEX MISSING: assets/glass_tumbler*.png 都没加载到, 中奖杯不会显示")
+    return _GLASS_TEX
+
+
+def _pile_projected(count, seed):
+    """(count, seed) -> 投影绘制表, 带 LRU。同 (count,seed) 逐球心一致可复现。"""
+    key = (count, seed % _PILE_VARIANTS)
+    proj = _PILE_CACHE.get(key)
+    if proj is None:
+        # ⚠️ build_pile 容量兜底时会原地缩小 spec.r, 所以每局都新建 spec, 不复用实例
+        spec = PileSpec(count, r_dp=_r_dp_for(count), seed=key[1])
+        beads, meta = build_pile(spec)
+        proj = project_pile(beads)
+        proj.append({"meta": True, "H": meta["H"], "R": meta["R"]})
+        _PILE_CACHE[key] = proj
+        _PILE_ORDER.append(key)
+        while len(_PILE_ORDER) > _PILE_CACHE_MAX:
+            _PILE_CACHE.pop(_PILE_ORDER.pop(0), None)
+    return proj
+
+
+class WinPileFX(Widget):
+    """中奖覆盖层: 压暗 -> 玻璃后层 -> 已落定球(画家序) -> 飞行球 -> 玻璃前层。
+
+    挂在 GameArea 下、铺满 GameArea。因为它是 GameArea 的**先加**子控件, 后加的
+    中奖大字 Label 天然盖在它上面 —— 压暗盖不住大字, 正是"杯子当覆盖层、大字留上方"。
+    帧推进由 GameArea.tick_draw() 每帧调用 tick() 完成, 自己不持有任何 Clock。
+    """
+
+    def __init__(self, area, **kw):
+        super().__init__(**kw)
+        self.area = area                  # GameArea, 只为取 game.sfx
+        self.mode = "idle"                # idle | pending | win | result
+        self._balls = []
+        self._value = DEFAULT_BET
+        self._seq = 0
+        self._rng = random.Random()
+        self._interval = SPAWN_CAP
+        self._t0 = 0.0                    # 杯子该出现的时刻(settle + WINDUP)
+        self._settled_at = 0.0
+        self._deadline = 0.0
+        self._on_done = None
+        self._bounce_n = 0
+        self._s = 1.0
+        self._ox = 0.0
+        self._oyt = 0.0
+        self._bx = self._by = 0.0
+        self._bw = self._bh = 1.0
+        self._dirty = False
+        self.bind(size=self._sync_geom, pos=self._sync_geom)
+
+    # ------------------------------ 几何 ------------------------------
+
+    def _sync_geom(self, *_):
+        """与 GameArea._redraw 同一套映射: 520x660 逻辑画布等比缩放居中。
+
+        绝对坐标 —— 子控件 canvas 不平移(见文件头), 所以要带上 self.x/self.y。
+        """
+        s = min(self.width / CW, self.height / CH)
+        self._s = s
+        self._ox = self.x + (self.width - CW * s) / 2.0
+        self._oyt = self.y + (self.height + CH * s) / 2.0
+        self._bx = self._ox + CUP_L * s
+        self._bw = CUP_W * s
+        self._bh = CUP_H * s
+        self._by = self._oyt - (CUP_T + CUP_H) * s     # 杯矩形左下角(屏幕 y 向上)
+        self._dirty = True
+
+    def _map(self, sxd, syd):
+        """design px(左上原点, y 向下) -> 屏幕 px; 第三项是半径缩放。"""
+        return (self._bx + sxd / DESIGN_W * self._bw,
+                self._by + (1.0 - syd / DESIGN_H) * self._bh,
+                self._bw / DESIGN_W)
+
+    def _rain_start_y(self, r):
+        """起点整球在覆盖层可见顶边之上(design 空间, 值为负)。"""
+        return VISIBLE_TOP - r * 1.2 - self._rng.uniform(0.0, RAIN_HEADROOM)
+
+    # ------------------------------ 出发 ------------------------------
+
+    def expected_sec(self, multiplier):
+        """本档预计总时长(秒)。给 RootWidget 延长 _result_until 用。"""
+        n = max(1, int(multiplier))
+        iv = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / n))
+        return (WINDUP + SPAWN_TOP + (n - 1) * iv
+                + FALL_MAX + 0.33 + RESULT_HOLD + RESULT_FADE)
+
+    def play_win(self, multiplier, bet, on_done=None):
+        """排定一场中奖演出。返回 False 表示没排上(调用方照常解锁)。
+
+        失败绝不能影响结算 —— 余额这时已经加过了, 这里只是表演。
+        """
+        try:
+            multiplier = int(multiplier)
+            bet = int(bet)
+        except (TypeError, ValueError):
+            return False
+        if multiplier <= 0:
+            return False
+        # 重入(自动化探针会绕过输入锁直接调 settle): 上一局的赢音回调还没放出去,
+        # 先补上再重启, 否则玩家会少听一次中奖音。
+        prev, self._on_done = self._on_done, None
+        if prev is not None:
+            try:
+                prev()
+            except Exception:
+                pass
+        try:
+            self._value = bet if bet in BET_COLORS else DEFAULT_BET
+            self._seq += 1
+            self._interval = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / multiplier))
+            self._make_balls(multiplier, self._value, self._seq)
+        except Exception as exc:               # build_pile 的断言/任何意外
+            print("CUP-PILE FAIL: %s" % exc)
+            self._balls = []
+            self.mode = "idle"
+            self._dirty = True
+            return False
+        now = time.time()
+        self._t0 = now + WINDUP
+        self._settled_at = 0.0
+        self._deadline = self._t0 + FX_MAX_SEC
+        self._on_done = on_done
+        self._bounce_n = 0
+        self.mode = "pending"
+        self._dirty = True
+        return True
+
+    def busy(self):
+        """锁输入判据。硬兜底: 超时无条件放手, 绝不把玩家锁死。"""
+        if self.mode == "idle":
+            return False
+        if time.time() >= self._deadline:
+            self._abort()
+            return False
+        return True
+
+    def _abort(self):
+        self.mode = "idle"
+        self._balls = []
+        self._dirty = True
+        cb, self._on_done = self._on_done, None
+        if cb is not None:                     # 兜底也要把赢音放出去, 别吞掉奖励感
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def _fire_done(self):
+        cb, self._on_done = self._on_done, None
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    # ------------------------------ 生成期 ------------------------------
+
+    def _make_balls(self, count, value, seed):
+        """把投影终态展开成"每颗球一套独立随机的下落/回弹/自转参数"。
+
+        弹跳逐球独立抽样(用户: "一致=假"): 下坠时长由落差反推, 一次弹/二次弹幅度
+        递减, 最终精确回归堆槽位 —— 起点/终点的可读性靠确定性, 过程靠随机。
+        """
+        proj = _pile_projected(count, seed)
+        self._balls = []
+        idx = 0
+        u = self._rng.uniform
+        mouth_half = max(1.0, halfwidth(FLOOR_Y - RIM_Y))
+        for p in proj:
+            if p.get("meta"):
+                continue
+            r = p["r"]
+            sy0 = self._rain_start_y(r)
+            sx0 = CX + u(-0.80 * mouth_half, 0.80 * mouth_half) + u(-0.12 * r, 0.12 * r)
+            span = max(1.0, p["sy"] - sy0)
+            fall_time = max(FALL_MIN, min(
+                FALL_MAX, math.sqrt(2.0 * span / FALL_GRAVITY) * u(0.88, 1.12)))
+            # 越过覆盖层顶边的时刻: 之前不画, 免得球漏到板面上方的 UI 行
+            f_enter = fall_time * math.sqrt(max(0.0, min(1.0, (VISIBLE_TOP - sy0) / span)))
+            bounce_1 = r * u(0.28, 0.52)
+            bounce_time_1 = u(0.13, 0.20)
+            squash_1 = u(0.08, 0.16)
+            self._balls.append({
+                "i": idx, "sxf": p["sx"], "syf": p["sy"], "r_d": r,
+                "shade": p["shade"], "z": p["z"], "value": value,
+                "settled": False, "t0": 0.0, "tt": -1.0, "end": 0.0,
+                "a1": False, "a2": False, "a1h": bounce_1, "a2h": bounce_1 * 0.3,
+                "f_enter": f_enter,
+                # 猫眼环是球面纹理的一部分; 每颗独立初始角和自转速度, 飞行时转、
+                # 落定后冻结, 免得整堆像同一张贴图复制出来的。
+                "ring_angle": u(-180.0, 180.0), "spin_deg": u(-420.0, 420.0),
+                "sx0": sx0, "sy0": sy0, "f": fall_time,
+                "t1": bounce_time_1, "t2": bounce_time_1 * u(0.42, 0.62),
+                "a1_amp": bounce_1, "a2_amp": bounce_1 * u(0.18, 0.36),
+                "hop": u(-0.24, 0.24) * r,
+                "sq1": squash_1, "sq2": squash_1 * u(0.35, 0.55)})
+            idx += 1
+        self._balls.sort(key=lambda bb: -bb["z"])       # 画家序: 远先画
+        cursor = SPAWN_TOP
+        jitter = min(0.035, self._interval * 0.75)
+        for b in sorted(self._balls, key=lambda bb: bb["i"]):
+            b["t0"] = cursor
+            cursor += max(0.012, self._interval + u(-jitter, jitter))
+            b["end"] = b["t0"] + b["f"] + b["t1"] + b["t2"]
+
+    # ------------------------------ 帧推进 ------------------------------
+
+    def tick(self):
+        """由 GameArea.tick_draw() 每帧调用(不给 dt, 同文件里 _effects 的写法)。"""
+        if self.mode == "idle":
+            if self._dirty:
+                self._redraw()
+            return
+        now = time.time()
+        if self.mode == "pending":
+            if now < self._t0:
+                if self._dirty:
+                    self._redraw()
+                return
+            self.mode = "win"
+        if self.mode == "win":
+            t = now - self._t0
+            done = True
+            for b in self._balls:
+                if b["settled"]:
+                    continue
+                tt = t - b["t0"]
+                b["tt"] = tt
+                if tt < 0.0:
+                    done = False
+                    continue
+                if tt >= b["f"] and not b["a1"]:
+                    b["a1"] = True
+                    self._bounce(0.42 + 0.30 * min(1.0, b["a1_amp"] / b["r_d"]))
+                if tt >= b["f"] + b["t1"] and not b["a2"]:
+                    b["a2"] = True
+                    self._bounce(0.25 + 0.20 * min(1.0, b["a2_amp"] / b["r_d"]))
+                if t < b["end"]:
+                    done = False
+                else:
+                    b["settled"] = True
+            if done:
+                self._settled_at = now
+                self.mode = "result"
+                self._fire_done()                  # 全部落定 -> 播中奖音/语音
+        if self.mode == "result" and now >= self._settled_at + RESULT_HOLD + RESULT_FADE:
+            self.mode = "idle"
+            self._balls = []
+        self._redraw()
+
+    def _bounce(self, gain):
+        """落地音。高倍率时 SoundPool 的 8 条流会被滚分的 coin 抢光, 所以限颗数+节流。"""
+        if self._bounce_n >= BOUNCE_BUDGET:
+            return
+        self._bounce_n += 1
+        g = getattr(self.area, "game", None)
+        sfx = getattr(g, "sfx", None)
+        if sfx is not None:
+            sfx.play("bounce", max(0.20, min(0.75, gain)), BOUNCE_THROTTLE)
+
+    # ------------------------------ 逐球插值 ------------------------------
+
+    def _ball_screen(self, b):
+        """当前帧 design 位置 -> (屏幕 x, y, rx, ry, 旋转角)。"""
+        r = b["r_d"]
+        if b["settled"]:
+            sxd, syd = b["sxf"], b["syf"]
+            sx_k = sy_k = 1.0
+            angle = b["ring_angle"]
+        else:
+            tt = b["tt"]
+            if tt < 0.0:
+                return None
+            angle = b["ring_angle"] + b["spin_deg"] * max(
+                0.0, min(tt, b["f"] + b["t1"] + b["t2"]))
+            t_land, t_b1, t_b2 = b["f"], b["t1"], b["t2"]
+            if tt < t_land:
+                p = tt / t_land
+                # 起落都无横向突变: 先近垂直进入杯口, 接近堆面才被导向目标槽位
+                lateral = p * p * (3.0 - 2.0 * p)
+                sxd = b["sx0"] + (b["sxf"] - b["sx0"]) * lateral
+                syd = b["sy0"] + (b["syf"] - b["sy0"]) * p * p
+                sx_k, sy_k = 1.0, 1.0 + 0.045 * p
+            elif tt < t_land + t_b1:
+                q = (tt - t_land) / t_b1
+                sxd = b["sxf"] + b["hop"] * math.sin(math.pi * q)
+                syd = b["syf"] - b["a1_amp"] * math.sin(math.pi * q)
+                d = max(0.0, 1.0 - (tt - t_land) / SQUASH_W)
+                sx_k, sy_k = 1.0 + b["sq1"] * d, 1.0 - b["sq1"] * d
+            else:
+                q = (tt - t_land - t_b1) / t_b2
+                sxd = b["sxf"] + b["hop"] * 0.35 * math.sin(math.pi * q)
+                syd = b["syf"] - b["a2_amp"] * math.sin(math.pi * q)
+                d = max(0.0, 1.0 - (tt - t_land - t_b1) / SQUASH_W)
+                sx_k, sy_k = 1.0 + b["sq2"] * d, 1.0 - b["sq2"] * d
+        x, y, s = self._map(sxd, syd)
+        r0 = r * s
+        rx, ry = r0 * sx_k, r0 * sy_k
+        if ry < r0:
+            y -= (r0 - ry)                       # 压扁时底边钉在落点上(视觉不穿地)
+        return x, y, rx, ry, angle
+
+    # ------------------------------ 绘制 ------------------------------
+
+    def _alpha(self, now):
+        """整体不透明度: 淡入 -> 1 -> 淡出(淡出走完才 idle, 所以解锁时已经没有残影)。"""
+        if self.mode == "pending":
+            return 0.0
+        a = min(1.0, max(0.0, (now - self._t0) / FADE_IN))
+        if self.mode == "result":
+            left = self._settled_at + RESULT_HOLD + RESULT_FADE - now
+            a = min(a, max(0.0, left / RESULT_FADE))
+        return a
+
+    def _draw_bead(self, b, alpha):
+        if not b["settled"]:
+            if b["tt"] < b["f_enter"]:           # 还在可见顶边之上: 不画
+                return
+            alpha *= max(0.0, min(1.0, (b["tt"] - b["f_enter"]) / ENTER_FADE))
+            if alpha <= 0.0:
+                return
+            shade = min(1.0, b["shade"] + 0.10)  # 飞行球提亮一档, 与堆里的区分开
+        else:
+            shade = b["shade"]
+        scr = self._ball_screen(b)
+        if scr is None:
+            return
+        x, y, rx, ry, angle = scr
+        Color(shade, shade, shade, alpha)
+        PushMatrix()
+        Rotate(angle=angle, origin=(x, y))
+        Rectangle(texture=_ball_texture(b["value"]),
+                  pos=(x - rx, y - ry), size=(rx * 2, ry * 2))
+        PopMatrix()
+
+    def _redraw(self, *_):
+        self._dirty = False
+        if self.width <= 1.0 or self.height <= 1.0:
+            return
+        self.canvas.clear()
+        if self.mode == "idle":
+            return
+        now = time.time()
+        alpha = self._alpha(now)
+        if alpha <= 0.0:
+            return
+        bx, by, bw, bh = self._bx, self._by, self._bw, self._bh
+        back_tex, front_tex, fb_tex = _glass_textures()
+        with self.canvas:
+            # 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点
+            Color(0.02, 0.03, 0.05, DIM_ALPHA * alpha)
+            Rectangle(pos=self.pos, size=self.size)
+
+            # 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
+            fx, fy, _ = self._map(CX, FLOOR_Y)
+            Color(0.02, 0.02, 0.03, alpha * 0.35)
+            Ellipse(pos=(fx - bw * 0.34, fy - bh * 0.045), size=(bw * 0.68, bh * 0.09))
+
+            if back_tex is not None:
+                Color(1.0, 1.0, 1.0, alpha)
+                Rectangle(texture=back_tex, pos=(bx, by), size=(bw, bh))
+
+            # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
+            for b in self._balls:
+                if b["settled"]:
+                    self._draw_bead(b, alpha)
+            # 飞行/弹跳球一律最后画(置顶), 盖掉层间穿插
+            for b in self._balls:
+                if not b["settled"]:
+                    self._draw_bead(b, alpha)
+
+            tex = front_tex if front_tex is not None else fb_tex
+            if tex is not None:
+                Color(1.0, 1.0, 1.0, alpha)
+                Rectangle(texture=tex, pos=(bx, by), size=(bw, bh))
+
+    # ------------------------------ 启动期预热 ------------------------------
+
+    def prebake_step(self, dt=0):
+        """启动后每帧烘一档球纹理, 避免中奖那一帧现算掉帧(低端机单档 100~200ms)。
+
+        ⚠️ 自链式 Clock.schedule_once 的回调**必须能收 1 个位置参数** —— BUILD_APK.md
+        §3.23: 零参签名在真机上启动 0.7s 必闪退, 而桌面 selftest/smoke 测不出来。
+        """
+        todo = [b for b in (1, 10, 50, 100) if b not in _CUP_BALL_TEX]
+        if todo:
+            try:
+                _ball_texture(todo[0])
+            except Exception:
+                pass
+            Clock.schedule_once(self.prebake_step, 0.02)
+            return
+        for n in (2, 3, 5, 10, 20, 50, 100):
+            if (n, 1) not in _PILE_CACHE:
+                try:
+                    _pile_projected(n, 1)
+                except Exception:
+                    pass
+                Clock.schedule_once(self.prebake_step, 0.02)
+                return
+
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
 #   [顶栏] 标题+喇叭图标+状态  [返还] RTP三档左对齐  [投入] 弹珠单位左对齐
