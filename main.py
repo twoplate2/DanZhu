@@ -2778,9 +2778,12 @@ WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿
 # 但那一刻那颗球还要再弹 0.20~0.32s 才停住, 而中奖琶音是 -1.4dBFS、带混响、最长 1.8s 的全场
 # 最响的音 —— 一进来就把最后两三下落地声全盖住。玩家原话: "珠子还没完全落进容器就弹提示音,
 # 我甚至听不到弹珠落地的声音。"
-# 用户定案: **固定延后 0.3s**(不是跟 `_last_settle` 走 —— 那个每局在 0.196~0.315 之间抖,
+# 用户定案: **固定延后 0.4s**(不是跟 `_last_settle` 走 —— 那个每局在 0.185~0.323 之间抖,
 # 固定值更好预期, 也不会在个别局里退化成"揭晓紧跟触地"或者"揭晓拖到球停住之后")。
-REVEAL_DELAY = 0.3     # 揭晓 = _last_touch + 这个值
+# 0.3 -> 0.4(2026-09-10 用户定案加长): 最后一颗球的**最后一次**落地音落在 `触地 + t1`
+# (`t1 ∈ [0.13, 0.20]`), 0.3 本来就盖得住; 加到 0.4 是给"球堆里还在滚的那点余音"留更宽余量。
+# `fx_probe [5]` 有门禁钉住"揭晓必须晚于末声"这个语义 —— 改 t1 区间或改这个常数都要重跑它。
+REVEAL_DELAY = 0.4     # 揭晓 = _last_touch + 这个值
 #
 # ---- 装满后的静止时长("回味") —— 按倍率分档(用户定案) ----
 # 为什么分档: 大奖更稀有也更值得郑重, 小奖该快走。行业里"庆祝时长随奖额变化"是写进专利的
@@ -3241,6 +3244,9 @@ class WinPileFX(Widget):
         self.mode = "idle"
         self._balls = []
         self._dirty = True
+        # 出口兜底也算"已放": 否则 _pump_reveal 的 `not self._balls` 分支会在下一帧再放一次
+        # (回调本身是原子消费, 不会双响; 但闩要一致, 免得以后有人加副作用时踩坑)。
+        self._done_fired = True
         cb, self._on_done = self._on_done, None
         if cb is not None:                     # 兜底也要把赢音放出去, 别吞掉奖励感
             try:
@@ -3349,11 +3355,6 @@ class WinPileFX(Widget):
         if self.mode == "win":
             t = now - self._t0
             self._advance_balls(t)
-            # 揭晓: 最后一颗**第一次触地**之后再等 REVEAL_DELAY(见该常量处: 让最后几下落
-            # 地声先播完, 不被中奖琶音盖掉)。
-            if t >= self.reveal_sec() and not self._done_fired:
-                self._done_fired = True
-                self._fire_done()                  # -> 播中奖音/语音 + 大字/余额
             # 退场: 等最后一颗**回弹停住**(杯子装满静止)才开始计时 —— 见 hold_for 处
             if t >= self._last_settle:
                 self._settled_at = now
@@ -3366,7 +3367,37 @@ class WinPileFX(Widget):
             if now >= self._settled_at + self._hold + RESULT_FADE:
                 self.mode = "idle"
                 self._balls = []
+        # ⚠️ 揭晓判定必须在**所有 mode 迁移之后**, 且**不能只认 win 分支**(2026-09-10 实修)。
+        # 血泪: 它原来关在 `if self.mode == "win"` 里, 而揭晓时刻(触地 + REVEAL_DELAY=0.3)
+        #   通常**晚于** win->result 的切换点(触地 + 0.185~0.323, 均值 0.254)—— 于是 mode
+        #   先跳走, 这个一次性事件再也没人判: 实测 60fps 下 86% 的中奖局回调一路挂到**下一局**
+        #   才被 play_win 的补执行放出来(上一局的数字/语音画在新一局开头, 而新一局自己的大字
+        #   被 _reveal_done 吞掉)。最惨的是"中奖后不再发射"—— 没有下一局, 中奖音**永久丢失**,
+        #   就是玩家报的"完全不播放中奖声音"。
+        self._pump_reveal(now)
         self._redraw()
+
+    def _pump_reveal(self, now):
+        """揭晓的**唯一出口**(幂等)。改这里之前先读 tick() 末尾那段血泪注释。
+
+        为什么不是"在某个分支里判一个时间阈值": 这个一次性事件的时刻(触地+REVEAL_DELAY)
+        与 win->result 的切换点(触地+0.185~0.323)只差零点几秒且**通常还更晚** —— 阈值判定
+        只要落在被跳过的分支里, 事件就永久丢失。改成"状态迁移之后统一放行"后, 谁先谁后
+        都不影响结果: 每帧都判, `_done_fired` 是单向闩, 所以恰好放一次。
+
+        `not self._balls` 那条是**排空**用的: result->idle 那一帧会先清空 _balls, 紧接着
+        走到这里 —— 于是只要 tick() 在演出期间被推进过哪怕一帧, 走出 result 时欠的账必然
+        被放掉, 不再是"靠 hold_for 够长"这种算术侥幸。
+        """
+        if self._done_fired:
+            return
+        if not self._balls:
+            self._done_fired = True
+            self._fire_done()
+            return
+        if now >= self._t0 + self._last_touch + REVEAL_DELAY:
+            self._done_fired = True
+            self._fire_done()                  # -> 播中奖音/语音 + 大字/余额
 
     def _advance_balls(self, t):
         """逐球插值推进 + 落地音。win 和 result 两段都要调(见 result 里的说明)。"""
@@ -4462,9 +4493,11 @@ class RootWidget(BoxLayout):
         # 揭晓合流(中奖): 大字/余额滚动/结果语音 全部推迟到"最后一颗球落定"那一刻一起给。
         # t=0 就报数字 = 提前剧透, 后面整场装杯沦为重播(用户反馈)。
         self._anim_pending = False    # 为真时余额冻结在扣注后的值, 一帧都不许追平
-        self._reveal_done = True      # 本局是否已揭晓(幂等闸)
+        self._reveal_done = True      # 本局是否已揭晓(幂等闸, 唯一真源在 settle 的 _on_settled)
         self._reveal_deadline = 0.0   # 兜底: 到点还没揭就自己揭(防 tick 停摆把数字吞了)
         self._pending_win = None      # (m, payout), 兜底揭晓时要用
+        self._win_seq = 0             # 中奖轮次序号: 当幂等键用, 丢弃上一局的迟到回调
+        self._settle_cb = None        # 本轮的揭晓闭包: 主路径与兜底路径**共用同一个**
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
@@ -5188,14 +5221,30 @@ class RootWidget(BoxLayout):
             # 账务(上面的 balance/hits/_save_config)一秒都不挪: 中途被杀不能吞奖励。
             self.status_lbl.text = "命中 x%d · 结算中…" % m   # 中间态: 第一秒不发空, 余额"冻结"不像 bug
             self._anim_pending = True
+            # ---- 揭晓: 一次性事件, 用"本轮序号"当幂等键 ----
+            # 三个洞一起补(2026-09-10 实修; 血泪见 android_part_pile.py 的 _pump_reveal):
+            #   1) 闸原来只在 `_reveal_win` 里, **语音完全没有闸** —— 兜底先揭、迟到的 on_done
+            #      后到时, 大字被挡掉而语音照样响;
+            #   2) 闸在 `play_win` **之前**复位, 而 play_win 开头会补执行上一局遗留的回调 ——
+            #      那一刀把上一局的数字画在本局第 0 帧(杯子还没出现), 同时把本局的闸锁死,
+            #      于是本局自己的大字再也立不起来(实测 300 局里 258 局如此);
+            #   3) 兜底路径自己另写了一份"揭晓该做什么", 与主路径分叉(兜底那份没有语音)。
+            # 现在: 闸收到唯一一处、同时盖住两个副作用, 并用序号丢弃迟到的旧回调。
+            self._win_seq += 1
+            seq = self._win_seq
             self._reveal_done = False
             self._pending_win = (m, payout)
 
             def _on_settled():
-                # 揭晓 + 语音同拍: 最后一颗球落定的那一刻, 数字和声音一起给。
-                # 顺序不能反 —— 先立大字再响, 语音响起时屏上已经有数了。
-                self._reveal_win(m, payout)      # 幂等, 内部自带 try/except
+                # 揭晓 + 语音同拍: 数字和声音一起给。顺序不能反 —— 先立大字再响。
+                # `seq != self._win_seq` 说明这是**上一局**的迟到回调, 直接丢弃。
+                if self._reveal_done or seq != self._win_seq:
+                    return
+                self._reveal_done = True
+                self._reveal_win(m, payout)      # 内部自带 try/except
                 self._play_win_voice(m, payout)
+
+            self._settle_cb = _on_settled
 
             # 中奖演出: 倍率决定颗数, 投注档决定球色。放在彩蛋分支(本函数开头 return)之外。
             # ⚠️ 性能测试期间**不播演出**, 直接揭晓。两个理由, 第二个更硬:
@@ -5237,12 +5286,11 @@ class RootWidget(BoxLayout):
     def _reveal_win(self, m, payout):
         """揭晓: 装杯最后一颗球落定的那一刻, 大字 + 余额滚动 + coin 一起给。
 
-        语音的挂点不在这里 —— 它挂在 play_win 的 on_done 上(见 settle), 这里只是和它同拍。
-        幂等: play_win 重入时会先补执行旧的 on_done, 兜底 deadline 也可能再调一次。
+        语音的挂点不在这里 —— 它挂在 settle 的 `_on_settled` 里(和这里同拍)。
+        ⚠️ **幂等闸不在这里**: 唯一真源是 settle() 的 `_on_settled`(它同时挡住语音)。
+        在这里再放一道闸就是"两处各自判断同一个东西", 改一处另一处静默脱钩 ——
+        项目在 `hold_for` 上已经踩过一次这个坑, 别再犯。
         """
-        if self._reveal_done:
-            return
-        self._reveal_done = True
         try:
             self._anim_pending = False
             self.status_lbl.text = ("中奖!  +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
@@ -5916,10 +5964,14 @@ class RootWidget(BoxLayout):
                 self.display_balance += (self.balance - self.display_balance) * 0.5
         # 兜底揭晓: 正常路径下 on_done 会先到, 这条只在杯子卡住/tick 异常时才用得上。
         # 必须在 park_ball 之前触发, 否则玩家会看到新盘面上飘着旧局的 +200。
-        if (not self._reveal_done and self._pending_win
+        # 兜底揭晓: 正常路径下 FX 的 `_pump_reveal()` 会先放; 这条只在 tick 完全停摆
+        # (切后台/卡死)时才用得上。**必须调同一个闭包** —— 兜底自己另写一份"揭晓该做什么",
+        # 就会出现"补了数字没补声音"这种副作用不一致(实测就是这么丢音的)。
+        # 共用闭包 + 共用 `_reveal_done`/`seq` 闸 ⇒ 主路径和兜底可以安全赛跑, 不会双响。
+        if (not self._reveal_done and self._pending_win and self._settle_cb
                 and self._reveal_deadline and now >= self._reveal_deadline):
             print("REVEAL 兜底触发: %s" % (self._pending_win,))
-            self._reveal_win(*self._pending_win)
+            self._settle_cb()
         self.balance_lbl.text = str(int(round(self.display_balance)))
         self.game_area.tick_draw()
 
