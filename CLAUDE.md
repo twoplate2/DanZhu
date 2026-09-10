@@ -90,7 +90,8 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
    - 满蓄力: 每0.60s轻响 charge_full(0.40)
    - 防沉迷: balance/round_plays/plays/hits 持久化, 启动自动处理打满状态
    - 返回键拦截(key 27), 声音状态一致, 轮次结束语音兜底 total+3.0s
-   - **性能测试(隐藏)**: 长按标题3s→10s benchmark→Popup弹窗(设备/帧数/次秒 + **版本 · 构建日期**)
+   - **性能测试(隐藏)**: 长按标题3s→10s benchmark→Popup弹窗(设备/帧数/次秒)。
+  ⚠️ 版本/制作日期只放**菜单弹窗**, **成绩面板不放**(用户 2026-09-11 定稿: 成绩面板只放成绩)。
   - 那一行的日期取 `main.py` 的 **mtime**, 不烘进源码: 生成器是纯字符串拼接, 烘日期会让
     `--check` 每次都报不同步。p4a 把 app 目录塞进 APK 的 `private.tar` 时, 条目时间戳 = 构建机
     上文件的写入时间(CI 是新拉代码后立刻构建), 首次运行解包保留 mtime, 所以它约等于构建日。

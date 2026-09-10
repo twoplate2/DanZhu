@@ -14,6 +14,10 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.6.2(2026-09-11): 性能测试的**成绩面板去掉**版本/制作日期行(用户: "成绩面板别加")。
+# 成绩面板只放成绩; 版本/日期留在**长按标题的菜单弹窗**里(那是用户最初要的位置)。
+# 成绩面板的高度随之从 320 退回 300(标签 185 -> 160)。
+#
 # 0.6.1(2026-09-11): 补齐"后层那两半环"的补画 —— 上一版**只补了杯口环, 漏了杯底环**。
 # 专家第二轮实测指出: 杯底环的后半(back 层的 base_back, alpha 只有 22)一并被压暗之后,
 # 净贡献从 16.7 掉到 5.3(杯内板面 10.7), 读出来就是"杯子底部后半圈没画"。它和杯口远环是
@@ -296,7 +300,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.6.1
+version = 0.6.2
 
 requirements = python3,kivy==2.3.0,pyjnius
 

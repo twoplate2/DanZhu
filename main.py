@@ -5275,14 +5275,13 @@ class RootWidget(BoxLayout):
                 '平均帧率： %.1f\n'
                 '1%%Low帧率：%.1f') % (
                     dev, int(phys_fps), avg_frames, cost_ms, render_fps, render_1low)
-        info = self._build_info()
-        if info:                       # 版本 + 构建日期: 一眼看出"装的是哪个包"
-            data = data + chr(10) + info
+        # ⚠️ 这一屏**不放**版本/制作日期(用户 2026-09-11 定稿: "性能测试的成绩面板别加").
+        #    成绩面板只放成绩; 版本/日期在长按标题的**菜单弹窗**里(见 _show_bench_menu)。
         data_lbl = Label(text=data, font_size='17sp', halign='left', valign='top',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(185))
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(160))
         data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(data_lbl)
-        popup = self._popup(0.90, 320, title='', content=content,
+        popup = self._popup(0.90, 300, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         popup.open()
         self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
