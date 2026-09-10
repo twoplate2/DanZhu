@@ -5005,6 +5005,12 @@ class RootWidget(BoxLayout):
             self._anim_target_balance = float(self.balance)
             self._anim_start_time = time.time()
             self._save_config()
+            # 性能测试期间不表演: 不播装杯、不弹彩蛋窗。用户报"跑分时弹珠回到发射槽弹了
+            # 个提示窗, 打断了灰屏" —— 弹窗会盖住跑分置灰层, 而且多一个模态窗口就多一份
+            # 渲染开销, 会污染正在采样的帧率。账务照走(余额/统计都不吞), 单局照常结束。
+            if getattr(self, "_bench_running", False):
+                self._land_hold = max(0.3, LAND_HOLD - 0.5)
+                return
             # 一路锁到"装杯播完 + 弹窗关掉": 彩蛋分支不设 _land_hold, 不锁的话
             # park_ball 会在 landed_at+0.6s 就跑掉 —— 重掷盘面、state 回 ready、按钮恢复,
             # 然后装杯才播, 变成"已经能发射了还在放动画"。
@@ -5049,14 +5055,22 @@ class RootWidget(BoxLayout):
                 self._play_win_voice(m, payout)
 
             # 中奖演出: 倍率决定颗数, 投注档决定球色。放在彩蛋分支(本函数开头 return)之外。
-            if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
-                # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
+            # ⚠️ 性能测试期间**不播演出**, 直接揭晓。两个理由, 第二个更硬:
+            #   1) 装杯会画满整个游戏区, 盖住跑分置灰层;
+            #   2) 装杯最多要画 100 颗球 —— 那份渲染开销会直接污染正在采样的帧率,
+            #      测出来的就不是这台机器真实的分了。跑分要测的是**盘面物理 + 常规界面**。
+            if getattr(self, "_bench_running", False):
+                self._reveal_deadline = 0.0       # 0 = 不启用兜底(已经当场揭了)
                 _on_settled()
-            # 兜底: 到点还没揭就自己揭(防 tick 停摆)。expected_sec 是整场上界,
-            # 基准 = 退场起点之后的那个尾巴, 所以减的是 (RESULT_HOLD + RESULT_FADE)。
-            # ⚠️ **不要写死 0.45** —— 那个数已经变过一次(0.45 -> 0.60), 写死就和 WinPileFX 脱钩。
-            self._reveal_deadline = time.time() + self.game_area.win_fx.expected_sec(m) - (
-                RESULT_HOLD + RESULT_FADE)
+            else:
+                if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
+                    # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
+                    _on_settled()
+                # 兜底: 到点还没揭就自己揭(防 tick 停摆)。expected_sec 是整场上界,
+                # 基准 = 退场起点之后的那个尾巴, 所以减的是 (RESULT_HOLD + RESULT_FADE)。
+                # ⚠️ **不要写死 0.45** —— 那个数已经变过一次(0.45 -> 0.60), 写死就和 WinPileFX 脱钩。
+                self._reveal_deadline = time.time() + self.game_area.win_fx.expected_sec(m) - (
+                    RESULT_HOLD + RESULT_FADE)
             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         else:
@@ -5119,13 +5133,26 @@ class RootWidget(BoxLayout):
         if not silent:
             self.sfx.play("ready", 0.8)
 
-    def _on_easter_settled(self):
-        """装杯全部落定 -> 弹对话框(用户定稿: 先看弹珠落进杯子, 再看说明)。
+    def _on_easter_settled(self, *_):
+        """装杯播完 -> 弹对话框(用户定稿: 先看弹珠落进杯子, 再看说明)。
 
         守卫 _easter_hold: 玩家若在装杯期间按了重置并又发了一发(launch 会清这个锁),
         这时再弹窗就会盖在新一局上 —— 那就不弹了。
         """
         if not self._easter_hold:
+            return
+        # 兜底防线: 性能测试期间绝不弹窗(会盖住跑分置灰层)。这里**不能只 return** ——
+        # 那样 _easter_hold 永远不放, 玩家会被软锁死; 必须走 _easter_finish 解锁。
+        # (正常路径上 settle() 的彩蛋分支已经拦掉了, 这只是第二道防线。)
+        if getattr(self, "_bench_running", False):
+            self._easter_finish()
+            return
+        # ⚠️ 这个回调现在挂在"最后一颗球**第一次触地**"(揭晓用), 而装杯的退场还要再跑
+        # 0.6s 左右。用户定稿是"先播完装杯、全部落定再弹对话框" —— 所以这里必须等到
+        # win_fx 真正回到 idle, 否则弹窗会在杯子还在淡出的时候盖上来。
+        # (轮询有上界: win_fx 自己有 FX_MAX_SEC=9s 硬兜底, 不会空转。)
+        if self.game_area.win_fx.mode != "idle":
+            Clock.schedule_once(self._on_easter_settled, 0.2)
             return
         self._show_easter_popup()
 
@@ -5993,6 +6020,30 @@ def _smoke():
         r = app.rootw
         print("SMOKE s9b: state=%s balance=%s" % (r.state, r.balance))
         shot("08_no_beads.png")
+        # 跑分期间不许弹窗/不许播装杯(用户报: 跑分时彩蛋窗打断灰屏)。
+        # 顺带守住 CLAUDE.md 里"绝不软锁"那条红线 —— 彩蛋被拦掉时必须**解锁**,
+        # 只 return 不 _easter_finish 的话 _easter_hold 永远不放, 玩家只能杀进程。
+        r._bench_running = True
+        try:
+            r.multipliers = [0] * 9
+            r.multipliers[4] = 50
+            r.state = "landing"
+            r._settled = False
+            r.settle(4)                       # 跑分中中奖
+            print("SMOKE bench-win: cup=%s reveal=%s busy=%s"
+                  % (r.game_area.win_fx.mode, r._reveal_done, r.game_area.win_fx.busy()))
+            if r.game_area.win_fx.mode != "idle" or not r._reveal_done:
+                print("SMOKE-FAIL: 跑分中不该播装杯/吞揭晓")
+            r.state = "landing"
+            r._settled = False
+            r._easter_egg = True
+            r.settle(4)                       # 跑分中彩蛋
+            if r._easter_popup is not None or r._easter_hold:
+                print("SMOKE-FAIL: 跑分中弹了彩蛋窗或软锁住了 (hold=%s)" % r._easter_hold)
+        finally:
+            r._bench_running = False
+            r._easter_hold = False
+            r._easter_popup = None
         print("SMOKE-OK state=%s cup=%s -> %s"
               % (r.state, r.game_area.win_fx.mode, outdir))
         App.get_running_app().stop()
