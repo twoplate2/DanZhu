@@ -2715,18 +2715,41 @@ TEXT_CY_WIN = 150.0                                 # 中奖大字让位后的�
 BIG_TEXT_LIFE = 1.8
 
 # ---- 时序(秒) ----
-# ⚠️ RESULT_HOLD + RESULT_FADE 的和 = 解锁前的尾巴(0.45s, 用户定案), **不要改和**:
-# expected_sec()/_reveal_deadline()/fx_probe 全按这个和算。内部配比可调。
 WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿灯先被看见
 # ⚠️ 退场计时的基准是 `_last_settle`(最后一颗球**回弹停住**、杯子装满静止), 不是揭晓那个
 # `_last_touch`(第一次触地)。这两个时刻必须分开, 否则球还在弹杯子就开始淡出 ——
 # 玩家: "弹珠落入容器后消失得太快, 没有回味"(实踩, 就是把这俩合成一个造成的)。
-RESULT_HOLD = 0.35     # 装满后的静止(0.20 -> 0.35: 留出回味, 用户定案)
-RESULT_FADE = 0.25     # 可见的离开
-# 和 = 0.60。以前是 0.45(且基准是第一次触地), 现在基准后移到"装满" + 静止加长 ——
-# 净效果: 从"最后一颗触地"算, 消失时刻只比老版本晚 0.15s, 但**装满后有 0.35s 静止**,
-# 这就是"回味"。expected_sec / _reveal_deadline / fx_probe 都从这个和推导, 改这里它们跟着走。
+#
+# ---- 装满后的静止时长("回味") —— 按倍率分档(用户定案) ----
+# 为什么分档: 大奖更稀有也更值得郑重, 小奖该快走。行业里"庆祝时长随奖额变化"是写进专利的
+# 标准做法(US20070010315A1: 10 分 -> 2s, 100 分 -> 10s), 而它的分档口径就是"赢额/投注" ——
+# 本作 payout = 倍率 × 投注, 所以按**倍率**分档 = 按行业口径分档。
+# 为什么按"档位"线性而不是按倍率线性: 倍率是 2/3/5/10/20/50/100, 逐档约翻倍;
+# 按档位 +0.1 等价于按 log(倍率) 线性, 这才是"每翻一倍多停一点"的自然形状。
+# 为什么地板不能太低: x2 占中奖场次的 55%(x2+x3 占 80%), 而 0.35->0.40 这种 +0.05s
+# 低于人对该量级时长的可辨差(~10~15%), 改了等于没改 —— 玩家为此回来过两次。
+# ⚠️ 这张表**只能有一处真源**, 就是下面的 hold_for()。expected_sec / tick / _layers /
+#    ui 的 _reveal_deadline / fx_probe 全从它取值。
+#    血泪: _reveal_deadline 里曾经硬编码过 0.45, 后来尾巴改成 0.60 时**静默**脱钩 ->
+#    兜底 deadline 提前触发 -> 数字和语音提前冒出来剧透。**别再写死任何和。**
+HOLD_TIERS = (2, 3, 5, 10, 20, 50, 100)   # 档位顺序(与下面两个常量一起决定全表)
+HOLD_BASE = 0.6        # x2(最小档)的停留
+HOLD_STEP = 0.1        # 每升一档 +0.1s
+# => x2 0.6 / x3 0.7 / x5 0.8 / x10 0.9 / x20 1.0 / x50 1.1 / x100 1.2
+RESULT_FADE = 0.25     # 可见的离开(**恒定, 不随档位变** —— 离开的手感要一致)
 FX_MAX_SEC = 9.0       # 硬兜底: 超过这个时长无条件解锁
+
+
+def hold_for(m):
+    """本局"装满后静止"的时长(秒) —— 按倍率所在档位线性递增。
+
+    小于最小档按最小档算, 大于等于最高档封顶。这是全项目唯一的停留时长真源。
+    """
+    i = 0
+    for k, t in enumerate(HOLD_TIERS):
+        if m >= t:
+            i = k
+    return HOLD_BASE + HOLD_STEP * i
 
 # ---- 进场/退场的分层与位移 ----
 # 病根: 整层由**一根 alpha** 统一驱动 -> 进场是"所有东西同时淡入"、退场是"同时淡出",
@@ -2746,7 +2769,7 @@ ENTER_CUP_AT, ENTER_CUP_DUR = 0.32, 0.18   # 杯子: 0.32 起, 0.50 收 == WINDU
 # 56px 时起手杯底在逻辑 522(离隔板顶 606 还有 84px), 安全。
 ENTER_RISE = 56.0      # 逻辑px: 起手比落位高这么多
 ENTER_SCALE = 0.92     # 起手略小, 落位 1.0(0.97 时总宽只差 16px, 也读不出来)
-# 退场(相对最后一颗落定时刻 T): 先静止 RESULT_HOLD, 然后整组上浮 + 缩小 + 淡出;
+# 退场(相对装满时刻 _last_settle): 先静止 hold_for(倍率) 秒, 然后整组上浮 + 缩小 + 淡出;
 # 压暗层比道具早 EXIT_DIM_LEAD 撤 -> "灯先亮回来, 道具后撤走"。
 # ⚠️ 这里是"突然消失"的病根, 别再改回三次缓入:
 #   原实现 a_cup = 1 - ((td-0.20)/0.25)**3 —— 三次缓入到窗口 79% 处才走完一半,
@@ -2971,6 +2994,7 @@ class WinPileFX(Widget):
         self._rain_shift = 0.0            # 本局雨的整场前移量(见 RAIN_ANCHOR), expected_sec 要用
         self._last_touch = 0.0            # 最后一颗球**第一次触地**(相对 _t0) —— 揭晓用
         self._last_settle = 0.0           # 最后一颗球**回弹停住**(相对 _t0) —— 退场计时用
+        self._hold = HOLD_BASE            # 本局"装满后静止"时长(play_win 按倍率重设)
         self._done_fired = False          # 揭晓是否已放出去(它比退场早, 要各自触发一次)
         self._settled_at = 0.0
         self._deadline = 0.0
@@ -3056,7 +3080,7 @@ class WinPileFX(Widget):
         else:                                                   # 还没排上(球堆异常): 退回估算
             iv = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / n))
             tail = SPAWN_TOP + (n - 1) * iv + FALL_MAX + 0.33
-        return WINDUP + tail + RESULT_HOLD + RESULT_FADE
+        return WINDUP + tail + hold_for(n) + RESULT_FADE
 
     def play_win(self, multiplier, bet, on_done=None):
         """排定一场中奖演出。返回 False 表示没排上(调用方照常解锁)。
@@ -3081,6 +3105,7 @@ class WinPileFX(Widget):
         try:
             self._value = bet if bet in BET_COLORS else DEFAULT_BET
             self._seq += 1
+            self._hold = hold_for(multiplier)      # 本局回味时长: 按倍率档位取值
             self._make_balls(multiplier, self._value, self._seq)
         except Exception as exc:               # build_pile 的断言/任何意外
             print("CUP-PILE FAIL: %s" % exc)
@@ -3224,7 +3249,7 @@ class WinPileFX(Widget):
             if t >= self._last_touch and not self._done_fired:
                 self._done_fired = True
                 self._fire_done()                  # -> 播中奖音/语音 + 大字/余额
-            # 退场: 等最后一颗**回弹停住**(杯子装满静止)才开始计时 —— 见 RESULT_HOLD 处
+            # 退场: 等最后一颗**回弹停住**(杯子装满静止)才开始计时 —— 见 hold_for 处
             if t >= self._last_settle:
                 self._settled_at = now
                 self.mode = "result"
@@ -3233,7 +3258,7 @@ class WinPileFX(Widget):
             # ⚠️ 这一段**不能停** —— _ball_screen 对未落定的球是按 tt 插值的, 不推进的话
             # 它们会冻在半空(而不是落到堆里)。
             self._advance_balls(now - self._t0)
-            if now >= self._settled_at + RESULT_HOLD + RESULT_FADE:
+            if now >= self._settled_at + self._hold + RESULT_FADE:
                 self.mode = "idle"
                 self._balls = []
         self._redraw()
@@ -3343,13 +3368,13 @@ class WinPileFX(Widget):
             return 1.0, 1.0, 1.0, 0.0
         # result: 退场
         td = now - self._settled_at
-        u = max(0.0, min(1.0, (td - RESULT_HOLD) / RESULT_FADE))
+        u = max(0.0, min(1.0, (td - self._hold) / RESULT_FADE))
         # 位移/缩放: 二次缓出 —— 运动必须发生在还看得见的时候(见 EXIT_LIFT 处的说明)
         u_pos = 1.0 - (1.0 - u) ** 2
         # 透明度: 线性, 且在解锁前 EXIT_ALPHA_TAIL 就归零
-        u_a = max(0.0, min(1.0, (td - RESULT_HOLD) / (RESULT_FADE - EXIT_ALPHA_TAIL)))
+        u_a = max(0.0, min(1.0, (td - self._hold) / (RESULT_FADE - EXIT_ALPHA_TAIL)))
         # 压暗层早 EXIT_DIM_LEAD 撤 -> 灯先亮回来, 道具后撤走
-        u_dim = self._eo((td - RESULT_HOLD + EXIT_DIM_LEAD) / RESULT_FADE)
+        u_dim = self._eo((td - self._hold + EXIT_DIM_LEAD) / RESULT_FADE)
         a_dim = 1.0 - u_dim
         a_cup = 1.0 - u_a
         k = 1.0 - (1.0 - EXIT_SCALE) * u_pos
@@ -5067,10 +5092,11 @@ class RootWidget(BoxLayout):
                     # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
                     _on_settled()
                 # 兜底: 到点还没揭就自己揭(防 tick 停摆)。expected_sec 是整场上界,
-                # 基准 = 退场起点之后的那个尾巴, 所以减的是 (RESULT_HOLD + RESULT_FADE)。
-                # ⚠️ **不要写死 0.45** —— 那个数已经变过一次(0.45 -> 0.60), 写死就和 WinPileFX 脱钩。
+                # 基准 = 退场起点之后的那个尾巴, 所以减的是 (本局停留 + RESULT_FADE)。
+                # ⚠️ 停留**按倍率分档**(hold_for), 必须用同一个函数取值 —— 这里曾经硬编码
+                #    0.45, 尾巴改成 0.60 时静默脱钩 -> 兜底提前触发 -> 数字/语音提前剧透。
                 self._reveal_deadline = time.time() + self.game_area.win_fx.expected_sec(m) - (
-                    RESULT_HOLD + RESULT_FADE)
+                    hold_for(m) + RESULT_FADE)
             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         else:
