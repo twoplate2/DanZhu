@@ -4196,7 +4196,9 @@ class RootWidget(BoxLayout):
         self.rtp_target = 0.80
         self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.00)}   # 4档盘面一起生成, 切换不刷新
         self.multipliers = self._boards[self.rtp_target]
-        self.sound_mode = "voice"     # voice(语音已开,默认) | sfx(音效已开) | off(音效已关)
+        # 声音两态: on(音效已开, 含语音播报, 默认) | off(音效已关)。
+        # **不持久化** —— 不进配置文件, 每次启动都是 on(用户定稿)。
+        self.sound_mode = "on"
         self.max_plays = 50            # 每轮次数上限
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
@@ -4723,7 +4725,9 @@ class RootWidget(BoxLayout):
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
 
-    SOUND_MODES = ("voice", "sfx", "off")   # 顶栏音效钮三态循环顺序
+    # 声音两态循环: 音效已开(含语音) -> 音效已关。原来是三态, 中间的"音效已开(不播语音)"
+    # 档没有存在价值 —— 要语音的选开、不要的直接关掉, 中间那档只会让人纠结(用户定稿)。
+    SOUND_MODES = ("on", "off")
 
     def toggle_mute(self):
         i = self.SOUND_MODES.index(self.sound_mode)
@@ -4734,24 +4738,22 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(self._apply_sound_off, 1.0)
         else:
             self.sfx.set_enabled(True)
-            self.sfx.play("voice_mode_" + self.sound_mode)
+            # 开启提示写死 voice_mode_sfx(「开启中奖音效」): 与按钮上的"音效已开"一致。
+            # 不能再用 "voice_mode_" + sound_mode 拼 —— 模式值叫 on, 没有 voice_mode_on。
+            self.sfx.play("voice_mode_sfx")
         self._refresh_mute_btn()
         self._save_config()
 
     def _apply_sound_off(self, dt):
-        if self.sound_mode == "off":      # 延迟窗口内玩家又切回 voice/sfx 则取消关闭
+        if self.sound_mode == "off":      # 延迟窗口内玩家又切回 on 则取消关闭
             self.sfx.set_enabled(False)
 
     def _refresh_mute_btn(self):
-        # 语音=绿底深字 / 音效=蓝底白字 / 关=深底亮灰字, 三态一眼可辨
-        if self.sound_mode == "voice":
-            self.mute_btn.text = "语音已开"
+        # 开=绿底深字 / 关=深底亮灰字, 两态一眼可辨
+        if self.sound_mode == "on":
+            self.mute_btn.text = "音效已开"
             self.mute_btn.background_color = hex_rgb(COL_GREEN) + (1,)
             self.mute_btn.color = hex_rgb("#0e1524") + (1,)
-        elif self.sound_mode == "sfx":
-            self.mute_btn.text = "音效已开"
-            self.mute_btn.background_color = hex_rgb(COL_BTN) + (1,)
-            self.mute_btn.color = (1, 1, 1, 1)
         else:
             self.mute_btn.text = "音效已关"
             self.mute_btn.background_color = hex_rgb("#3d3828") + (1,)
@@ -4767,7 +4769,7 @@ class RootWidget(BoxLayout):
         self._restyle_selects()
         self._refresh_stats()
         self.sfx.play("click", throttle=0.08)
-        if not silent and self.sound_mode == "voice" and time.time() >= self._result_until:
+        if not silent and self.sound_mode == "on" and time.time() >= self._result_until:
             self.sfx.play("voice_bet_%d" % v, throttle=0.6)
         self._save_config()
 
@@ -4775,7 +4777,7 @@ class RootWidget(BoxLayout):
         self.rtp_target = t
         self._restyle_selects()
         self.sfx.play("click", throttle=0.08)
-        if not silent and self.sound_mode == "voice" and time.time() >= self._result_until:
+        if not silent and self.sound_mode == "on" and time.time() >= self._result_until:
             pct = int(t * 100)
             self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
         if self.state == "ready":
@@ -4810,7 +4812,7 @@ class RootWidget(BoxLayout):
             self.game_area._effects = [e for e in self.game_area._effects if e["kind"] != "toast"]
             Clock.schedule_once(lambda dt: self.game_area.center_toast(
                 "弹珠数量已调整到1000个", hexcolor=COL_GREEN, size=28, life=1.5), 0.05)
-            if self.sound_mode == "voice":
+            if self.sound_mode == "on":
                 self.sfx.play("voice_reset_progress", throttle=1.5)
         # 恢复按钮颜色
         self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
@@ -4820,7 +4822,7 @@ class RootWidget(BoxLayout):
         if self.state != "ready":
             return
         if self.balance < self.bet:
-            if self.sound_mode == "voice":
+            if self.sound_mode == "on":
                 # 语音档: 播报替换 error 嗡声; 语音全长 2.9s, 节流到播完才许重播
                 self.sfx.play("voice_nomoney", throttle=3.0)
             else:
@@ -5055,7 +5057,7 @@ class RootWidget(BoxLayout):
         # 播报。直接调 sfx.play —— set_bet/set_rtp 那类辅助函数会被 _result_until 挡掉
         # (本分支刚把它设成 now+2.5), 走辅助函数会自己把自己抑制掉。
         # 与正常中奖同一套约定: 语音档播语音, 非语音档播 ×2 轻赢琶音(两者同播会互盖)。
-        if self.sound_mode == "voice":
+        if self.sound_mode == "on":
             self.sfx.play("voice_easter_%d" % self.bet, throttle=0.5)
         else:
             self.sfx.play("win1", 0.6)
@@ -5143,8 +5145,8 @@ class RootWidget(BoxLayout):
             with open(self._config_path(), "r") as f:
                 cfg = json.load(f)
             if isinstance(cfg, dict):
-                if cfg.get("sound_mode") in ("voice", "sfx", "off"):
-                    self.sound_mode = cfg["sound_mode"]
+                # sound_mode 不再读档(用户定稿: 声音不持久化, 每次启动都是"音效已开").
+                # 老存档里的 "voice"/"sfx" 两个旧值因此被自然忽略, 不需要迁移代码。
                 if isinstance(cfg.get("max_plays"), int) and cfg["max_plays"] in (20, 50, 100):
                     self.max_plays = cfg["max_plays"]
                 if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.20, 2.00, 3.00):
@@ -5164,15 +5166,13 @@ class RootWidget(BoxLayout):
                     self.hits = cfg["hits"]
         except Exception:
             pass
-        if self.sound_mode == "off":
-            self.sfx.set_enabled(False)
+        # (原来这里按读回的 sound_mode 决定是否 set_enabled(False); 现在不读档, 恒为 on, 删)
         if self.round_plays >= self.max_plays:
             self._auto_reset_on_start = True   # UI还没建, 延后到 _build_ui 之后
 
     def _save_config(self):
         try:
             cfg = {
-                "sound_mode": self.sound_mode,
                 "max_plays": self.max_plays,
                 "rtp_target": self.rtp_target,
                 "bet": self.bet,
@@ -5206,7 +5206,7 @@ class RootWidget(BoxLayout):
 
     def _play_round_end_voice(self, on_done=None):
         """组装并播放轮次结束语音: 模板 + 当前弹珠数 + 后缀。返回总时长(秒)。"""
-        if self.sound_mode != "voice":
+        if self.sound_mode != "on":
             if on_done:
                 Clock.schedule_once(lambda dt: on_done(), 3.0)   # sfx/off 档不念, 3s 后自动重置
             return 0.0
@@ -5340,7 +5340,7 @@ class RootWidget(BoxLayout):
                 b.background_color = hex_rgb(COL_BTN if self.max_plays == v else COL_BTN_OFF) + (1,)
         # toast + 语音提示
         self.game_area.center_toast("每轮已设定为%d次" % val, hexcolor=COL_GREEN, size=20, life=1.5)
-        if self.sound_mode == "voice":
+        if self.sound_mode == "on":
             self.sfx.play("voice_round_set_%d" % val)
         self._save_config()
 
@@ -5391,7 +5391,7 @@ class RootWidget(BoxLayout):
         """
         if m <= 0:
             return
-        if self.sound_mode == "voice":
+        if self.sound_mode == "on":
             # 语音档: "弹珠加xx"替换 win 琶音(语音与琶音同播会互相盖, 见 BUILD 讨论)
             self.sfx.play("voice_win%d" % payout)
             return

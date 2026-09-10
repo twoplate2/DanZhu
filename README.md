@@ -17,7 +17,7 @@ PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
 ## 界面 (6 行全宽上下结构)
 
 ```
-[顶栏]   语音已开(左) + 每轮X次(左) + 标题居中 + 状态(右)
+[顶栏]   音效已开(左) + 每轮X次(左) + 标题居中 + 状态(右)
 [返还]   期望返还比例: [80%] [120%] [200%] [300%]
 [投入]   每次投入珠子: [1个] [10个] [50个] [100个]
 [游戏区] 全宽钉阵 + 竖井 + 倍率槽 + 弹簧凹槽
@@ -41,8 +41,9 @@ PC 版 `plinko.py`(tkinter) 的 Android 移植。Kivy 2.3 重写界面, 竖屏,
 ## 设备能力
 
 切后台自动静音(SoundPool autoPause)、x10+ 大奖滚分/停留 1.2s、
-x2 起中奖震动(45/75/110/150ms)、顶栏声音三态开关(语音已开=绿底,默认 /
-音效已开=蓝底 / 音效已关=深底, 点按循环)。飞行时语音按钮/轮次按钮同步灰化。
+x2 起中奖震动(45/75/110/150ms)、顶栏声音两态开关(音效已开=绿底,默认,含语音播报 /
+音效已关=深底, 点按循环)。**声音设置不持久化**, 每次启动都是"音效已开"。
+飞行时语音按钮/轮次按钮同步灰化。
 
 ## 性能跑分基准(2026-08 实测)
 
@@ -99,7 +100,7 @@ manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而
 若某个横拿方向画面上下颠倒, 翻转 `../tools/android_part_ui.py` 里 `_land_angle()`
 的 90/-90 映射(一行)。
 
-## 语音播报 (edge-tts 预录, voice/*.wav 51 个)
+## 语音播报 (edge-tts 预录, voice/*.wav 57 个)
 
 | 场景 | 语音 | 说明 |
 |------|------|------|
@@ -108,11 +109,11 @@ manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而
 | 轮次结束 | voice_round_end_{N} + 数字朗读 + voice_round_suffix | 队列拼接(5ms间隔), 不拼接 PCM |
 | 轮次设定 | voice_round_set_{N} | 切换后即时播报 |
 | 手动重置 | voice_reset_progress | "珠子数量已重置", throttle=1.5s |
-| 声音切换 | voice_mode_{voice,sfx,off} | 三态切换提示 |
+| 声音切换 | voice_mode_{sfx,off} | 两态切换提示 |
 
 数字朗读: 0~9 / 十百千万 / 两(二/两规则), 共 22 个独立片段, 对标 Clac 项目方案。
 
-生成: `python ../tools/generate_voice.py`。51 个语音文件。
+生成: `python ../tools/generate_voice.py`。57 个语音文件。
 
 ## 构建 APK (GitHub Actions 云构建)
 
@@ -156,7 +157,7 @@ BUILD_APK.md                  # 云构建流程 + 移植弯路集
 how_to_desigin.html           # 多专家协作汇报页面
 icon.png / presplash.png      # 图标 + 启动屏
 fonts/NotoSansSC-Medium.otf   # 中文字体
-voice/*.wav                   # 预录语音 51 个(edge-tts)
+voice/*.wav                   # 预录语音 57 个(edge-tts)
 .github/workflows/build-apk.yml  # 云构建流水线
 ```
 

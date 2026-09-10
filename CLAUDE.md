@@ -54,7 +54,7 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
    - **卡死兜底看位移**: 球位置不动(≤1px/帧)超 MAX_FALL_SEC(4s)才强制 settle
    - **遗传算法优化器**: `scratch/optimize_knobs.py`, 三阶段 GA(每档独立→联合480维→降维arc-only120维+种子初始化), 评分=落袋总体均匀×0.7+首钉总体均匀×0.3
    - **benchmark_trajectories(duration)**: 纯 CPU 性能测试(返回 3 元组 flights/frames/fps_list)
-3. **音效**: 36 合成 PCM + 51 edge-tts 语音(voice/*.wav)。`Sfx.play()`: gain 10档缓存、按名节流
+3. **音效**: 36 合成 PCM + 57 edge-tts 语音(voice/*.wav)。`Sfx.play()`: gain 10档缓存、按名节流
    - **全局语音互斥**: voice_rtp_/voice_bet_/voice_mode_ 3.0s 间隔。click throttle 0.08s。flight 跳过 bake/prime
    - **弧面接触音**: EV_ARC 事件播 rail 0.18(轻金属"擦"声, throttle 0.05)——转向瞬间的听觉反馈
 4. **后端**: `_SoundPoolOut`(Android) > `_WaveOut`(winmm) > `_KivySoundOut` > 静音
@@ -64,7 +64,7 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
    - 发射: frozen_power 保存力度, 音量分级(0.60→0.80), 震动(哑火8ms/正常14ms)
    - 落地: LAND_E=0.42, LAND_BOUNCE_MIN_VY=220, LAND_BOUNCE_MAX_VY=220(回弹vy上限, 删SLOT_BRAKE后防弹越隔板), ±8%随机, 不瞬移
    - 飞行中灰化: `_set_controls_enabled(False)` 时按钮+标签文字统一变暗
-   - 中奖大字: life=3.0s, font_size 仅值变时写
+   - 中奖大字: life=BIG_TEXT_LIFE=1.8s(见 android_part_pile.py 顶部), font_size 仅值变时写
    - 满蓄力: 每0.60s轻响 charge_full(0.40)
    - 防沉迷: balance/round_plays/plays/hits 持久化, 启动自动处理打满状态
    - 返回键拦截(key 27), 声音状态一致, 轮次结束语音兜底 total+3.0s
@@ -72,7 +72,8 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
 
 ## 语音播报
 
-50条语音(43原有+7 RTP/bet切换)。三态开关: 语音已开→音效已开→音效已关。
+57条语音(含若干切换提示与数字片段)。两态开关: 音效已开(含语音播报,默认)→音效已关；
+**声音设置不持久化**(不进配置文件, 每次启动都是已开)。
 voice_lose 有意不接入(合成 lose 音更中性)。
 语音互斥仅对 UI 交互生效, 结果/轮次序列不受影响。
 
