@@ -14,6 +14,8 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.13(2026-09-10): 中奖杯进场/退场改分层动画(压暗与道具错峰 + 整组位移/缩放),
+# 治"突然插入/突然消失"; 退场尾巴内部分配 0.30/0.15 -> 0.20/0.25(和不变, 解锁不动)。
 # 0.5.12(2026-09-10): 修复横屏时弹窗宽度错 —— _popup 的宽度改吃 _veq()(等效竖屏),
 # 原来用 size_hint 取的是裸窗口宽, 横窗时比界面宽 60~80%。
 # 0.5.11(2026-09-10): 彩蛋顺序改为"先播装杯 -> 落定 -> 弹对话框"(原来弹窗在前);
@@ -34,7 +36,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.12
+version = 0.5.13
 
 requirements = python3,kivy==2.3.0,pyjnius
 

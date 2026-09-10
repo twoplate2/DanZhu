@@ -2703,11 +2703,29 @@ TEXT_CY_WIN = 150.0                                 # 中奖大字让位后的�
 BIG_TEXT_LIFE = 1.8
 
 # ---- 时序(秒) ----
+# ⚠️ RESULT_HOLD + RESULT_FADE 的和 = 解锁前的尾巴(0.45s, 用户定案), **不要改和**:
+# expected_sec()/_reveal_deadline()/fx_probe 全按这个和算。内部配比可调。
 WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿灯先被看见
-FADE_IN = 0.20         # 压暗 + 杯子淡入
-RESULT_HOLD = 0.30     # 全部落定 -> 播中奖音 -> 停一拍
-RESULT_FADE = 0.15     # 淡出, 之后才解锁(合计尾巴 0.45s, 用户定案)
+RESULT_HOLD = 0.20     # 全部落定后的静止(0.30 -> 0.20)
+RESULT_FADE = 0.25     # 可见的离开(0.15 -> 0.25)。和仍 = 0.45, 解锁一毫秒不动
 FX_MAX_SEC = 9.0       # 硬兜底: 超过这个时长无条件解锁
+
+# ---- 进场/退场的分层与位移 ----
+# 病根: 整层由**一根 alpha** 统一驱动 -> 进场是"所有东西同时淡入"、退场是"同时淡出",
+# 没有先后层次、没有位移, 读感是"开关"而不是"过程"(用户: "突然插入 / 突然消失")。
+# 这里拆成 压暗/道具 两条曲线, 再给道具组一个整体位移。
+# 进场错峰(相对 settle): 压暗先走, 杯子后到, 0.50 落位正好接上雨钟。
+ENTER_DIM_AT, ENTER_DIM_DUR = 0.30, 0.16   # 压暗: 0.30 起(此时槽位白闪刚走完)
+ENTER_CUP_AT, ENTER_CUP_DUR = 0.34, 0.16   # 杯子: 0.34 起, 0.50 收 == WINDUP
+# 位移方向只能朝**上**: 杯底在逻辑 578, 槽区隔板顶在 606, 只有 28px 余量 ——
+# 往下位移超过 28 就压住倍率槽。所以起手高于落位, 往下落。
+ENTER_RISE = 22.0      # 逻辑px: 起手比落位高这么多
+ENTER_SCALE = 0.97     # 起手略小, 落位 1.0
+# 退场(相对最后一颗落定时刻 T): 先静止 RESULT_HOLD, 然后整组上浮 + 缩小 + 淡出;
+# 压暗层比道具早 EXIT_DIM_LEAD 撤 -> "灯先亮回来, 道具后撤走"。
+EXIT_LIFT = 38.0       # 逻辑px 上浮
+EXIT_SCALE = 0.94
+EXIT_DIM_LEAD = 0.04
 
 # ---- 投放与下落 ----
 SPAWN_TOP = 0.08       # 第一颗的投放时刻
@@ -2909,6 +2927,9 @@ class WinPileFX(Widget):
         self._oyt = 0.0
         self._bx = self._by = 0.0
         self._bw = self._bh = 1.0
+        # 本帧动画用的临时杯矩形(_map 读它; 默认等于基准, _sync_geom 会复位)
+        self._abx = self._aby = 0.0
+        self._abw = self._abh = 1.0
         self._dirty = False
         self.bind(size=self._sync_geom, pos=self._sync_geom)
 
@@ -2918,6 +2939,7 @@ class WinPileFX(Widget):
         """与 GameArea._redraw 同一套映射: 520x660 逻辑画布等比缩放居中。
 
         绝对坐标 —— 子控件 canvas 不平移(见文件头), 所以要带上 self.x/self.y。
+        这里算的是**基准**矩形; 每帧动画用的临时矩形见 _apply_anim_rect。
         """
         s = min(self.width / CW, self.height / CH)
         self._s = s
@@ -2927,13 +2949,33 @@ class WinPileFX(Widget):
         self._bw = CUP_W * s
         self._bh = CUP_H * s
         self._by = self._oyt - (CUP_T + CUP_H) * s     # 杯矩形左下角(屏幕 y 向上)
+        # 动画矩形(默认等于基准) —— _map 读的是它, 所以 _sync_geom 里也要复位,
+        # 免得尺寸变化后残留上一帧的位移/缩放。
+        self._abx, self._aby, self._abw, self._abh = self._bx, self._by, self._bw, self._bh
         self._dirty = True
+
+    def _apply_anim_rect(self, k, dy_design):
+        """按进场/退场的缩放与位移算出本帧的临时杯矩形。
+
+        ⚠️ 只写 _a* 临时字段, **绝不写回 _bx/_by/_bw/_bh** —— 那是球的投影基准,
+        而且 _sync_geom 绑在 size/pos 上, 写回去会和它打架。
+        ⚠️ 缩放必须 bw/bh 同比例: _map 的 x 走 _bw、y 走 _bh、球半径走 _bw,
+        只缩一个会让球变椭圆、或从杯口冒出去。
+        ⚠️ 位移单位是 520x660 逻辑 px, 要乘 self._s; 写成 dp() 在 density 2.5~3 的
+        真机上会放大 2.5 倍, 直接把杯子压到倍率槽上。
+        """
+        s = self._s
+        self._abw = self._bw * k
+        self._abh = self._bh * k
+        # 缩放保持中心不动 + 叠加位移(Kivy y 向上, 正 = 往上)
+        self._abx = self._bx + (self._bw - self._abw) / 2.0
+        self._aby = self._by + (self._bh - self._abh) / 2.0 + dy_design * s
 
     def _map(self, sxd, syd):
         """design px(左上原点, y 向下) -> 屏幕 px; 第三项是半径缩放。"""
-        return (self._bx + sxd / DESIGN_W * self._bw,
-                self._by + (1.0 - syd / DESIGN_H) * self._bh,
-                self._bw / DESIGN_W)
+        return (self._abx + sxd / DESIGN_W * self._abw,
+                self._aby + (1.0 - syd / DESIGN_H) * self._abh,
+                self._abw / DESIGN_W)
 
     def _rain_start_y(self, r):
         """起点整球在覆盖层可见顶边之上(design 空间, 值为负)。"""
@@ -3080,8 +3122,9 @@ class WinPileFX(Widget):
         now = time.time()
         if self.mode == "pending":
             if now < self._t0:
-                if self._dirty:
-                    self._redraw()
+                # 无条件重绘 —— 进场是**错峰动画**(压暗先走/杯子后到 + 位移), 原来这里
+                # 有 `if self._dirty` 掐帧, 整段 pending 只会画一帧, 什么过程都看不到。
+                self._redraw()
                 return
             self.mode = "win"
         if self.mode == "win":
@@ -3165,15 +3208,48 @@ class WinPileFX(Widget):
 
     # ------------------------------ 绘制 ------------------------------
 
-    def _alpha(self, now):
-        """整体不透明度: 淡入 -> 1 -> 淡出(淡出走完才 idle, 所以解锁时已经没有残影)。"""
+    @staticmethod
+    def _eo(u):
+        """ease-out(进场): 快起慢收。u 已 clamp。"""
+        u = max(0.0, min(1.0, u))
+        return 1.0 - (1.0 - u) ** 3
+
+    @staticmethod
+    def _ei(u):
+        """ease-in(退场): 慢起快走 —— 离开要加速, 才有"被收走"的感觉。"""
+        u = max(0.0, min(1.0, u))
+        return u ** 3
+
+    def _layers(self, now):
+        """分层动画曲线 -> (压暗 alpha, 道具 alpha, 缩放 k, 竖直位移 dy)。
+
+        拆两条曲线是为了做出"先后": 进场压暗先走、杯子后到; 退场压暗先撤、道具后走。
+        位移让观感从"贴图叠上去"变成"东西被端上来/收走"。
+
+        ⚠️ 必须按 mode 分支。`_settled_at` 在 play_win 里被置 0.0, 退场曲线若不看 mode
+        就会算出 (now-0)/0.25 这种天文数字 -> clamp 成 1 -> 整场装杯按"退场终态"渲染,
+        一直到 T 那一刻才弹回正常。selftest/fx_probe 都不碰这里, 出错是静默的。
+        """
         if self.mode == "pending":
-            return 0.0
-        a = min(1.0, max(0.0, (now - self._t0) / FADE_IN))
-        if self.mode == "result":
-            left = self._settled_at + RESULT_HOLD + RESULT_FADE - now
-            a = min(a, max(0.0, left / RESULT_FADE))
-        return a
+            # 相对 settle 的秒数(_t0 = settle + WINDUP)
+            ts = now - (self._t0 - WINDUP)
+            a_dim = self._eo((ts - ENTER_DIM_AT) / ENTER_DIM_DUR)
+            a_cup = self._eo((ts - ENTER_CUP_AT) / ENTER_CUP_DUR)
+            k = ENTER_SCALE + (1.0 - ENTER_SCALE) * a_cup
+            dy = ENTER_RISE * (1.0 - a_cup)          # 起手在上方, 落位归 0(正 = 朝上)
+            return a_dim, a_cup, k, dy
+        if self.mode == "win":
+            return 1.0, 1.0, 1.0, 0.0
+        # result: 退场
+        td = now - self._settled_at
+        u_cup = self._ei((td - RESULT_HOLD) / RESULT_FADE)
+        # 压暗层早 EXIT_DIM_LEAD 撤 -> 灯先亮回来, 道具后撤走
+        u_dim = self._eo((td - RESULT_HOLD + EXIT_DIM_LEAD) / RESULT_FADE)
+        a_dim = 1.0 - u_dim
+        a_cup = 1.0 - u_cup
+        k = 1.0 - (1.0 - EXIT_SCALE) * u_cup
+        dy = EXIT_LIFT * u_cup                       # 整组上浮(含已落定的球, 共用同一偏移)
+        return a_dim, a_cup, k, dy
 
     def _draw_bead(self, b, alpha):
         if not b["settled"]:
@@ -3203,39 +3279,42 @@ class WinPileFX(Widget):
         self.canvas.clear()
         if self.mode == "idle":
             return
-        now = time.time()
-        alpha = self._alpha(now)
-        if alpha <= 0.0:
+        a_dim, a_cup, k, dy = self._layers(time.time())
+        if a_dim <= 0.0 and a_cup <= 0.0:
             return
-        bx, by, bw, bh = self._bx, self._by, self._bw, self._bh
+        self._apply_anim_rect(k, dy)
+        bx, by, bw, bh = self._abx, self._aby, self._abw, self._abh
         back_tex, front_tex, fb_tex = _glass_textures()
         with self.canvas:
             # 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点
-            Color(0.02, 0.03, 0.05, DIM_ALPHA * alpha)
-            Rectangle(pos=self.pos, size=self.size)
+            if a_dim > 0.0:
+                Color(0.02, 0.03, 0.05, DIM_ALPHA * a_dim)
+                Rectangle(pos=self.pos, size=self.size)
 
-            # 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
-            fx, fy, _ = self._map(CX, FLOOR_Y)
-            Color(0.02, 0.02, 0.03, alpha * 0.35)
-            Ellipse(pos=(fx - bw * 0.34, fy - bh * 0.045), size=(bw * 0.68, bh * 0.09))
+            if a_cup > 0.0:
+                # 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
+                fx, fy, _ = self._map(CX, FLOOR_Y)
+                Color(0.02, 0.02, 0.03, a_cup * 0.35)
+                Ellipse(pos=(fx - bw * 0.34, fy - bh * 0.045),
+                        size=(bw * 0.68, bh * 0.09))
 
-            if back_tex is not None:
-                Color(1.0, 1.0, 1.0, alpha)
-                Rectangle(texture=back_tex, pos=(bx, by), size=(bw, bh))
+                if back_tex is not None:
+                    Color(1.0, 1.0, 1.0, a_cup)
+                    Rectangle(texture=back_tex, pos=(bx, by), size=(bw, bh))
 
-            # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
-            for b in self._balls:
-                if b["settled"]:
-                    self._draw_bead(b, alpha)
-            # 飞行/弹跳球一律最后画(置顶), 盖掉层间穿插
-            for b in self._balls:
-                if not b["settled"]:
-                    self._draw_bead(b, alpha)
+                # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
+                for b in self._balls:
+                    if b["settled"]:
+                        self._draw_bead(b, a_cup)
+                # 飞行/弹跳球一律最后画(置顶), 盖掉层间穿插
+                for b in self._balls:
+                    if not b["settled"]:
+                        self._draw_bead(b, a_cup)
 
-            tex = front_tex if front_tex is not None else fb_tex
-            if tex is not None:
-                Color(1.0, 1.0, 1.0, alpha)
-                Rectangle(texture=tex, pos=(bx, by), size=(bw, bh))
+                tex = front_tex if front_tex is not None else fb_tex
+                if tex is not None:
+                    Color(1.0, 1.0, 1.0, a_cup)
+                    Rectangle(texture=tex, pos=(bx, by), size=(bw, bh))
 
     # ------------------------------ 启动期预热 ------------------------------
 
