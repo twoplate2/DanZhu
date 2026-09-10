@@ -3687,7 +3687,36 @@ class GameArea(FloatLayout):
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
         self._last_size = None        # 上次尺寸: 变了才清特效
+        # 中奖玻璃杯覆盖层(见 tools/android_part_pile.py)。**必须最先 add_widget**:
+        # Kivy 按 children 逆序绘制, 后加的画在上面 —— 中奖大字是 settle 时才 add
+        # 的 Label, 所以大字天然盖在杯层之上, 杯子压暗盖不住它(用户要的"大字留上方")。
+        self.win_fx = WinPileFX(self, size_hint=(1, 1), pos_hint={"x": 0, "y": 0})
+        self.add_widget(self.win_fx)
         self.bind(size=self._redraw, pos=self._redraw)
+
+    def win_fx_busy(self):
+        """中奖演出是否还在放(锁输入判据, 见 RootWidget._frame 的 landed 分支)。"""
+        return self.win_fx.busy()
+
+    def _restack_overlays(self):
+        """把覆盖层重新挂回画布末尾, 顺序固定为「板面 < 中奖杯 < 中奖大字」。
+
+        ⚠️ 这一步不能省: self.canvas.clear() 会**把子控件的 canvas 一起摘掉** ——
+        子控件的 canvas 是 add_widget 时挂进父 canvas 的, clear 一视同仁。不重挂的话
+        每次换盘面(park_ball)或尺寸变化, 杯子和中奖大字就整个从屏幕上消失, 而它们的
+        canvas.children 看起来完全正常(指令都在, 只是没挂在渲染树上)。实测判据:
+        self.canvas.indexof(w.canvas) 返回 -1 = 已被摘掉。
+        顺序靠**追加次序**保证 —— 后 add 的后画, 所以杯层必须排在大字之前。
+        """
+        chain = [self.win_fx]
+        for e in self._effects:
+            chain.extend(e["ws"])
+        for w in chain:
+            try:
+                self.canvas.remove(w.canvas)
+            except Exception:
+                pass
+            self.canvas.add(w.canvas)
 
     # ---- 坐标换算: 逻辑(x, y向下) -> 控件像素(Kivy y向上); 返回 kwargs 便于 ** 展开 ----
     def _rect(self, x1, y1, x2, y2):
@@ -3814,6 +3843,7 @@ class GameArea(FloatLayout):
                                      size=(2 * BALL_R * BALL_VIEW * s,
                                            2 * BALL_R * BALL_VIEW * s))
             self._ball_pop = PopMatrix()
+        self._restack_overlays()
         self.tick_draw()
 
     # ------------------------------ 特效 ------------------------------
@@ -3883,6 +3913,9 @@ class GameArea(FloatLayout):
     # ------------------------------ 帧驱动 ------------------------------
     def tick_draw(self):
         """每帧只更新动态元素(ball/meter/plunger) + 特效, 不重排 canvas。"""
+        # ⚠️ 必须放在下面的 _ball_e is None 早退**之前**: 否则画布还没建好的那几帧
+        # (启动/尺寸未定)中奖演出不推进, 起播时间会被白白拖后。
+        self.win_fx.tick()
         if self._ball_e is None:
             return
         g = self.game
@@ -4749,6 +4782,10 @@ class RootWidget(BoxLayout):
         self.game_area.pulse_slot(i)
         self._play_result_sound(m, payout)
         self.game_area.big_result_text(m, payout)
+        if m > 0:
+            # 中奖演出: 倍率决定颗数, 投注档决定球色。倍率<=0(未中)不播。
+            # 放在彩蛋分支(本函数开头 return)之外, 彩蛋有自己的弹窗和节奏。
+            self.game_area.win_fx.play_win(m, self.bet)
         self._result_until = time.time() + 2.5   # 结果窗口: 期内抑制UI语音
         if m > 0:                             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
@@ -5552,6 +5589,11 @@ def _smoke():
         shot("06c_mute_off.png")
         app.rootw.toggle_mute()              # 恢复
 
+    def s7c(dt):
+        # 中奖玻璃杯演出途中(杯子 + 正在下落/堆叠的球)。settle 是 s7(15.0),
+        # 杯子在 +WINDUP(0.5s) 后出现, 这里取到的是落珠中段。
+        shot("06d_cup.png")
+
     def s8(dt):
         r = app.rootw
         print("SMOKE s8: state=%s" % r.state)
@@ -5585,6 +5627,7 @@ def _smoke():
     Clock.schedule_once(s6, 13.6)
     Clock.schedule_once(s7, 15.0)
     Clock.schedule_once(s7b, 15.4)
+    Clock.schedule_once(s7c, 16.8)
     Clock.schedule_once(s8, 17.0)
     Clock.schedule_once(s9, 20.0)
     Clock.schedule_once(s9b, 20.5)
