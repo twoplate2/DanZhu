@@ -2773,6 +2773,15 @@ WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿
 # `_last_touch`(第一次触地)。这两个时刻必须分开, 否则球还在弹杯子就开始淡出 ——
 # 玩家: "弹珠落入容器后消失得太快, 没有回味"(实踩, 就是把这俩合成一个造成的)。
 #
+# ---- 揭晓延后(2026-09-10 用户定案) ----
+# 揭晓(中奖音 + "弹珠+xx" 语音 + 大字/余额)原来挂在 `_last_touch`(最后一颗球**第一次触地**)。
+# 但那一刻那颗球还要再弹 0.20~0.32s 才停住, 而中奖琶音是 -1.4dBFS、带混响、最长 1.8s 的全场
+# 最响的音 —— 一进来就把最后两三下落地声全盖住。玩家原话: "珠子还没完全落进容器就弹提示音,
+# 我甚至听不到弹珠落地的声音。"
+# 用户定案: **固定延后 0.3s**(不是跟 `_last_settle` 走 —— 那个每局在 0.196~0.315 之间抖,
+# 固定值更好预期, 也不会在个别局里退化成"揭晓紧跟触地"或者"揭晓拖到球停住之后")。
+REVEAL_DELAY = 0.3     # 揭晓 = _last_touch + 这个值
+#
 # ---- 装满后的静止时长("回味") —— 按倍率分档(用户定案) ----
 # 为什么分档: 大奖更稀有也更值得郑重, 小奖该快走。行业里"庆祝时长随奖额变化"是写进专利的
 # 标准做法(US20070010315A1: 10 分 -> 2s, 100 分 -> 10s), 而它的分档口径就是"赢额/投注" ——
@@ -3065,7 +3074,7 @@ class WinPileFX(Widget):
         self._rng = random.Random()
         self._t0 = 0.0                    # 杯子该出现的时刻(settle + WINDUP)
         self._rain_shift = 0.0            # 本局雨的整场前移量(见 RAIN_ANCHOR), expected_sec 要用
-        self._last_touch = 0.0            # 最后一颗球**第一次触地**(相对 _t0) —— 揭晓用
+        self._last_touch = 0.0            # 最后一颗球**第一次触地**(相对 _t0) —— 揭晓基准
         self._last_settle = 0.0           # 最后一颗球**回弹停住**(相对 _t0) —— 退场计时用
         self._hold = HOLD_BASE            # 本局"装满后静止"时长(play_win 按倍率重设)
         self._done_fired = False          # 揭晓是否已放出去(它比退场早, 要各自触发一次)
@@ -3132,6 +3141,28 @@ class WinPileFX(Widget):
         return VISIBLE_TOP - r * 1.2 - self._rng.uniform(0.0, RAIN_HEADROOM)
 
     # ------------------------------ 出发 ------------------------------
+
+    def reveal_sec(self):
+        """揭晓时刻(相对 _t0 的秒数) = 最后一颗球第一次触地 + REVEAL_DELAY。
+
+        **唯一真源**: `tick()` 的 win 分支拿它判该不该揭晓, `ui` 的 `_reveal_deadline`
+        也拿它算兜底。两边必须同源 —— 曾经 `_reveal_deadline` 自己按 `_last_settle` 算,
+        改揭晓时刻后兜底会比真事件**早**触发(实测最坏早 0.054s), 那就是"数字/语音提前剧透"。
+        没排上球(_balls 为空)时返回 0, 调用方本来也不会走到揭晓路径。
+        """
+        if not self._balls:
+            return 0.0
+        return self._last_touch + REVEAL_DELAY
+
+    def reveal_at(self):
+        """揭晓的**绝对**时刻(time.time() 基准)。给 `ui` 的兜底 deadline 用。
+
+        直接吃 `_t0` 而不是让调用方自己 `time.time() + WINDUP + reveal_sec()` ——
+        少一次"两处各自算同一个绝对时刻"的机会。
+        """
+        if not self._balls:
+            return 0.0
+        return self._t0 + self._last_touch + REVEAL_DELAY
 
     def expected_sec(self, multiplier):
         """本档预计总时长(秒)。给 RootWidget 延长 _result_until 和兜底 deadline 用。
@@ -3292,7 +3323,7 @@ class WinPileFX(Widget):
                 b["t0"] -= self._rain_shift
                 b["end"] -= self._rain_shift
         # 两个收尾时刻, **必须分开**(用户定稿):
-        #   _last_touch  = 最后一颗球第一次触地 -> 揭晓(大字/余额/语音), 越早越跟手
+        #   _last_touch  = 最后一颗球第一次触地 -> **揭晓基准**(揭晓 = 它 + REVEAL_DELAY)
         #   _last_settle = 最后一颗球回弹停住   -> 退场计时起点, 这一刻杯子才装满静止
         # 曾经把这俩合成一个, 结果退场从"最后一颗刚触地"就开始计时 —— 球还在弹,
         # 杯子已经在淡出(玩家: "落进容器后消失得太快, 没有回味")。
@@ -3318,8 +3349,9 @@ class WinPileFX(Widget):
         if self.mode == "win":
             t = now - self._t0
             self._advance_balls(t)
-            # 揭晓: 最后一颗**第一次触地**就放(越早越跟手)
-            if t >= self._last_touch and not self._done_fired:
+            # 揭晓: 最后一颗**第一次触地**之后再等 REVEAL_DELAY(见该常量处: 让最后几下落
+            # 地声先播完, 不被中奖琶音盖掉)。
+            if t >= self.reveal_sec() and not self._done_fired:
                 self._done_fired = True
                 self._fire_done()                  # -> 播中奖音/语音 + 大字/余额
             # 退场: 等最后一颗**回弹停住**(杯子装满静止)才开始计时 —— 见 hold_for 处
@@ -4502,11 +4534,16 @@ class RootWidget(BoxLayout):
         1740x1000 下 1000 / 1462。
         这就是"设备横屏时启动游戏(游戏正确变竖屏), 一开设置窗口宽度就是错的"的根因。
         `_veq()` 会排序, 所以即使弹窗在方向尚未落定前打开, 也能拿到竖构图的那一边。
+
+        `title_align` 默认给 "center": Kivy 的 `Popup.title_align` **默认是 'left'**,
+        不覆盖的话标题会贴左边缘, 而主界面标题栏是严格居中的(左右等 flex 容器) ——
+        玩家报的"弹窗文字没居中"就是它(用户用调用方显式传值仍可覆盖)。
         """
         vw, vh = self._veq()
         kw["size_hint"] = (None, None)
         kw["width"] = hint_w * vw
         kw["height"] = min(dp(h_dp), vh * 0.92)
+        kw.setdefault("title_align", "center")
         return RotPopup(**kw)
 
     def _row_bg(self, row, hexcolor):
@@ -5164,12 +5201,13 @@ class RootWidget(BoxLayout):
                 if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
                     # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
                     _on_settled()
-                # 兜底: 到点还没揭就自己揭(防 tick 停摆)。expected_sec 是整场上界,
-                # 基准 = 退场起点之后的那个尾巴, 所以减的是 (本局停留 + RESULT_FADE)。
-                # ⚠️ 停留**按倍率分档**(hold_for), 必须用同一个函数取值 —— 这里曾经硬编码
-                #    0.45, 尾巴改成 0.60 时静默脱钩 -> 兜底提前触发 -> 数字/语音提前剧透。
-                self._reveal_deadline = time.time() + self.game_area.win_fx.expected_sec(m) - (
-                    hold_for(m) + RESULT_FADE)
+                # 兜底: 到点还没揭就自己揭(防 tick 停摆)。
+                # ⚠️ 基准必须和 tick() 判揭晓用**同一个真源**(`win_fx.reveal_at()`)。
+                #    这里曾经按 `expected_sec - (hold_for + RESULT_FADE)` 反推, 等价于
+                #    "最后一颗球停住 + 0.05s"。揭晓改成"第一次触地 + REVEAL_DELAY(0.3s)"之后,
+                #    那两个时刻只差 0.196~0.315s, 于是兜底会比真事件**早**最多 0.054s 触发 ——
+                #    数字/语音在球停稳前就冒出来, 正是当初要消灭的"提前剧透"。
+                self._reveal_deadline = self.game_area.win_fx.reveal_at() + 0.05
             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         else:
