@@ -2696,6 +2696,11 @@ CUP_L = CW / 2.0 - CUP_W / 2.0                      # -12.5(左右各露 PNG 的
 CUP_BOTTOM = 578.0
 CUP_T = CUP_BOTTOM - CUP_H                          # 264.6
 TEXT_CY_WIN = 150.0                                 # 中奖大字让位后的逻辑 cy
+# 中奖大字的生命。以前是 3.0s —— 那时数字在 t=0 就报, 大字要一路陪完整场装杯。
+# 现在揭晓挪到"最后一颗球落定"(T), 而解锁在 T+0.45: 3.0s 意味着解锁后还要飘 2.55s,
+# 而 TEXT_CY_WIN=150 恰好等于 PEG_TOP=150(下一发首钉那一排)。收成 1.8s:
+# 上浮 38px/s × 1.8s ≈ 68px, 从 150 飘到 82, 不越过钉阵顶, 也不拖进下一局的蓄力期。
+BIG_TEXT_LIFE = 1.8
 
 # ---- 时序(秒) ----
 WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿灯先被看见
@@ -3885,12 +3890,12 @@ class GameArea(FloatLayout):
         shadow.bind(size=lambda w, _: setattr(w, "text_size", w.size))
         self.add_widget(shadow)
         self.add_widget(main)
-        # 中奖时大字上移到杯顶之上(TEXT_CY_WIN=118 逻辑): 中奖玻璃杯占逻辑 y 194.9~465.1,
-        # 3 秒内大字还会上浮 ~55 逻辑 px, 118 起跳留足余量 —— 不然大字压在杯身上。
+        # 中奖时大字上移到杯顶之上(逻辑 cy = TEXT_CY_WIN, 现行值见 android_part_pile.py 顶部常量;
+        # 杯子占逻辑 y ≈264.6~578, 且大字要上浮 38px/s, 起跳点留足余量才不会被杯口压住)。
         # 未中不播杯子, 保持原来的画布中央位置。
         cy_logical = (CH / 2.0 - 80.0) if m <= 0 else TEXT_CY_WIN
         self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
-                              "life": 3.0, "size": size, "rgb": hex_rgb(hexcolor),
+                              "life": BIG_TEXT_LIFE, "size": size, "rgb": hex_rgb(hexcolor),
                               "cx": self._px(CW / 2.0) - self.x,
                               "cy": self._py(cy_logical) - self.y})
 
@@ -4124,6 +4129,17 @@ class RootWidget(BoxLayout):
         self._landing_primed = False   # landing首帧标记(防每帧重置vy)
         self._settle_slot = 0          # 本发物理落格槽(结算延迟到回弹落定后)
         self._settled = False          # 本发是否已结算(防重复)
+        # 彩蛋流程锁: 弹窗关掉前 + 装杯播完前压住 park_ball。
+        # ⚠️ 必须在 __init__ 初始化, 不能只放在 launch() 里 —— 任何"直接进 landed"
+        # 的路径(探针、将来新加的下落分支)都会在 _frame 的 landed 分支读到它而 AttributeError。
+        self._easter_hold = False
+        self._easter_popup = None     # 彩蛋弹窗引用(探针用, 也便于查是否还开着)
+        # 揭晓合流(中奖): 大字/余额滚动/结果语音 全部推迟到"最后一颗球落定"那一刻一起给。
+        # t=0 就报数字 = 提前剧透, 后面整场装杯沦为重播(用户反馈)。
+        self._anim_pending = False    # 为真时余额冻结在扣注后的值, 一帧都不许追平
+        self._reveal_done = True      # 本局是否已揭晓(幂等闸)
+        self._reveal_deadline = 0.0   # 兜底: 到点还没揭就自己揭(防 tick 停摆把数字吞了)
+        self._pending_win = None      # (m, payout), 兜底揭晓时要用
         self._last_motion = 0.0       # flying 帧内刷新; 卡死兜底看"位置不动"而非发射时长
         self._last_ball_xy = (PLUNGER_X, PLUNGER_Y)
         self.landed_at = 0.0
@@ -4755,8 +4771,10 @@ class RootWidget(BoxLayout):
         self.ball = launch_ball(frozen_power)
         self._settled = False                 # 新发射重置结算标记(结算延迟到回弹后)
         self._easter_egg = False              # 新发射重置彩蛋标记(球落回竖井才置 True)
-        self._easter_hold = False             # 彩蛋流程锁: 弹窗+装杯期间压住 park_ball
-        self._easter_popup = None             # 彩蛋弹窗引用(探针用, 也便于将来查是否还开着)
+        # 防御性重置: 正常路径下 launch() 只在 state=ready 时可达, 而 _easter_hold 期间
+        # 状态是 landed, 照理进不来。但 reset_balance() 能强制中断回 ready —— 那之后
+        # 这一发必须能把上一次的彩蛋锁清掉, 否则玩家永远发不出去。留作逃生口。
+        self._easter_hold = False
         self.state = "flying"
         self._accumulator = 0.0
         self.power = 0.0                      # 发射后清除蓄力显示
@@ -4800,35 +4818,83 @@ class RootWidget(BoxLayout):
         if m > 0:
             self.hits += 1
         self._refresh_stats()
-        # 结果只在画布中央报一次(Hero 大字)。槽位上方那行小飘字撤了: 手机屏上两处同时飘
-        # "+50"/"0" 是重复信息, 而且下面那行按场景缩放只有 15sp, 小得只剩干扰。
-        self.status_lbl.text = ("中奖!  +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
-        if m <= 0:    lamp = COL_FIRE
-        else:         lamp = slot_color(m)
+        # 指示灯回答的是"哪一格中了", 所以固定 绿=中 / 红=未中(与 PC 版同一套设计)。
+        # 以前这里是 slot_color(m) 按倍率取色, 有两个毛病:
+        #   1) slot_color(5) 恰好 == COL_FIRE —— x5 中奖的灯和"未中"一模一样, 一眼分不出;
+        #   2) 倍率槽的色块本来就是 slot_color(该格倍率), 灯再按同一个色函数上色是重复信息。
+        lamp = COL_FIRE if m <= 0 else COL_GREEN
         self.game_area.set_lamp(i, lamp)
         self.game_area.pulse_slot(i)
         self._play_pocket_sound(m)
-        self.game_area.big_result_text(m, payout)
-        if m > 0:
-            # 中奖演出: 倍率决定颗数, 投注档决定球色。倍率<=0(未中)不播。
-            # 放在彩蛋分支(本函数开头 return)之外, 彩蛋有自己的弹窗和节奏。
-            # 赢音/中奖语音交给杯子落定那一刻回调(见 _play_win_voice)。
-            self.game_area.win_fx.play_win(
-                m, self.bet, on_done=lambda: self._play_win_voice(m, payout))
-        self._result_until = time.time() + 2.5 + (
-            self.game_area.win_fx.expected_sec(m) if m > 0 else 0.0)
-        if m > 0:                             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
-            _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
-        # 数字滚动动画 + 大奖节奏分档(x10 以上滚更久, 看得清中大奖)
+        # 数字滚动节奏 + 大奖分档(x10 以上滚更久, 看得清中大奖); 实际起滚在 _reveal_win
         big = m >= 10
         self._land_hold = 0.7 if big else max(0.3, LAND_HOLD - 0.5)  # 提前0.5s可发射
         self._anim_dur = 1.2 if big else 0.5
-        self._anim_start_balance = self.display_balance
-        self._anim_target_balance = float(self.balance)
-        self._anim_start_time = time.time()
-        self._coin_until = (time.time() + (1.2 if big else 0.5)) if payout > 0 else 0.0
-        self._coin_start = (time.time() + (0.40 if big else 0.22)) if payout > 0 else 0.0   # 错峰: coin 晚起播
+        if m > 0:
+            # 揭晓合流: 大字/余额/结果语音 全部等到"最后一颗球落定"那一刻(见 _reveal_win)。
+            # 以前 t=0 就报 "+200", 而语音要等装杯播完(×2≈2.0s, ×100≈3.7s)才念 ——
+            # 数字提前剧透, 后面整场装杯沦为重播(用户反馈)。
+            # 账务(上面的 balance/hits/_save_config)一秒都不挪: 中途被杀不能吞奖励。
+            self.status_lbl.text = "命中 x%d · 结算中…" % m   # 中间态: 第一秒不发空, 余额"冻结"不像 bug
+            self._anim_pending = True
+            self._reveal_done = False
+            self._pending_win = (m, payout)
+
+            def _on_settled():
+                # 揭晓 + 语音同拍: 最后一颗球落定的那一刻, 数字和声音一起给。
+                # 顺序不能反 —— 先立大字再响, 语音响起时屏上已经有数了。
+                self._reveal_win(m, payout)      # 幂等, 内部自带 try/except
+                self._play_win_voice(m, payout)
+
+            # 中奖演出: 倍率决定颗数, 投注档决定球色。放在彩蛋分支(本函数开头 return)之外。
+            if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
+                # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
+                _on_settled()
+            # 兜底: 到点还没揭就自己揭(防 tick 停摆)。expected_sec 是 T 的上界(实测偏高
+            # 0.55~0.80s), 减去尾巴 0.45 仍早于 WinPileFX 的 FX_MAX_SEC(9s) 硬解锁。
+            self._reveal_deadline = time.time() + self.game_area.win_fx.expected_sec(m) - 0.45
+            # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
+            _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
+        else:
+            # 未中不播装杯, 保持原来的即时反馈(大字 + 余额滚动照旧)
+            self.status_lbl.text = "未中"
+            self.game_area.big_result_text(m, payout)
+            self._anim_pending = False
+            self._reveal_done = True
+            self._pending_win = None
+            self._anim_start_balance = self.display_balance
+            self._anim_target_balance = float(self.balance)
+            self._anim_start_time = time.time()
+            self._coin_until = 0.0
+            self._coin_start = 0.0
+        self._result_until = time.time() + 2.5 + (
+            self.game_area.win_fx.expected_sec(m) if m > 0 else 0.0)
         self._save_config()
+
+    def _reveal_win(self, m, payout):
+        """揭晓: 装杯最后一颗球落定的那一刻, 大字 + 余额滚动 + coin 一起给。
+
+        语音的挂点不在这里 —— 它挂在 play_win 的 on_done 上(见 settle), 这里只是和它同拍。
+        幂等: play_win 重入时会先补执行旧的 on_done, 兜底 deadline 也可能再调一次。
+        """
+        if self._reveal_done:
+            return
+        self._reveal_done = True
+        try:
+            self._anim_pending = False
+            self.status_lbl.text = ("中奖!  +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
+            self.game_area.big_result_text(m, payout)
+            now = time.time()
+            self._anim_start_balance = self.display_balance
+            self._anim_target_balance = float(self.balance)
+            self._anim_start_time = now
+            # coin 是"计分滚动"的伴音, 必须跟着余额滚。起点让开语音起句(语音长约 0.9~1.5s,
+            # 压在 0.35s 处起播不会盖住开头的"弹珠加二百", 又能撑满整个滚动过程)。
+            self._coin_start = now + 0.35
+            self._coin_until = now + (1.2 if m >= 10 else 0.5)
+        except Exception as exc:
+            # _frame 的 try/except 是静默的, 这里不留痕的话"数字永不出现"会查无对证
+            print("REVEAL FAIL: %s: %s" % (type(exc).__name__, exc))
 
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
@@ -5447,16 +5513,31 @@ class RootWidget(BoxLayout):
         now = time.time()
         if self._coin_start <= now < self._coin_until:
             self.sfx.play("coin", 0.8, 0.055)
-        elapsed = now - self._anim_start_time
-        if elapsed < self._anim_dur:
-            t = elapsed / self._anim_dur
-            ease = 1.0 - (1.0 - t) ** 3
-            noise = (1.0 - t) * random.uniform(-0.15, 0.15) if t < 0.6 else 0
-            f = max(0.0, min(1.0, ease + noise))
-            self.display_balance = (self._anim_start_balance +
-                                    (self._anim_target_balance - self._anim_start_balance) * f)
+        if self._anim_pending:
+            # 揭晓前余额冻结在扣注后的值 —— 一帧都不许动。
+            # 这里不能图省事只把三行赋值搬到 _reveal_win: 不冻结的话, _anim_start_time 还是
+            # 上一局的旧值, elapsed >= _anim_dur 成立 → 走 else 分支 0.1 秒内就追平新余额,
+            # 剧透一点没修、滚动和 coin 全废。
+            pass
         else:
-            self.display_balance += (self.balance - self.display_balance) * 0.5
+            # elapsed 必须 clamp ≥0: 负值时 noise = (1-t)*uniform 里的 (1-t) > 1 反而放大噪声,
+            # 在 t 略小于 0 的那几帧里 ease+noise 可能转正, 抖出一帧偏移(投注大时肉眼可见)。
+            elapsed = max(0.0, now - self._anim_start_time)
+            if elapsed < self._anim_dur:
+                t = elapsed / self._anim_dur
+                ease = 1.0 - (1.0 - t) ** 3
+                noise = (1.0 - t) * random.uniform(-0.15, 0.15) if t < 0.6 else 0
+                f = max(0.0, min(1.0, ease + noise))
+                self.display_balance = (self._anim_start_balance +
+                                        (self._anim_target_balance - self._anim_start_balance) * f)
+            else:
+                self.display_balance += (self.balance - self.display_balance) * 0.5
+        # 兜底揭晓: 正常路径下 on_done 会先到, 这条只在杯子卡住/tick 异常时才用得上。
+        # 必须在 park_ball 之前触发, 否则玩家会看到新盘面上飘着旧局的 +200。
+        if (not self._reveal_done and self._pending_win
+                and self._reveal_deadline and now >= self._reveal_deadline):
+            print("REVEAL 兜底触发: %s" % (self._pending_win,))
+            self._reveal_win(*self._pending_win)
         self.balance_lbl.text = str(int(round(self.display_balance)))
         self.game_area.tick_draw()
 
@@ -5662,7 +5743,8 @@ def _smoke():
     def s7(dt):
         shot("06_win_done.png")
         r = app.rootw
-        # 直接调 settle 定格特效: x20 大奖 -> 金色大字 + 浮字 + 槽闪 + 滚分
+        # 直接调 settle 定格特效: x20 大奖 -> 大字 + 槽闪 + 灯绿 + 滚分。
+        # 注意大字不再立刻出现: 揭晓已挪到"最后一颗球落定"(见 _reveal_win)。
         r.multipliers = [0, 0, 0, 0, 20, 0, 0, 0, 0]
         r.game_area._redraw()
         r.settle(4)
@@ -5724,6 +5806,21 @@ def _smoke():
             Clock.schedule_once(lambda d: poll(d, left - 1), 0.1)
         return poll
 
+    def when_revealed(fn, name, tries=200):
+        """等中奖大字真的立起来再截。
+
+        ⚠️ 揭晓现在挂在"最后一颗球落定"那一刻(×20 约 settle+3.4s), 原来的固定时刻
+        (15.4s)会拍在一只还没揭晓的杯子上 —— 文件在、名字在、覆盖没了, 属于会骗人的绿。
+        """
+        def poll(dt, left=tries):
+            if app.rootw.game_area._effects or left <= 0:
+                if left <= 0:
+                    print("SMOKE %s 等大字超时" % name)
+                fn(dt)
+                return
+            Clock.schedule_once(lambda d: poll(d, left - 1), 0.1)
+        return poll
+
     Clock.schedule_once(s1, 1.5)
     Clock.schedule_once(s2, 2.5)
     Clock.schedule_once(s3, 4.0)
@@ -5731,7 +5828,7 @@ def _smoke():
     Clock.schedule_once(s5, 9.3)
     Clock.schedule_once(s6, 13.6)
     Clock.schedule_once(s7, 15.0)
-    Clock.schedule_once(s7b, 15.4)
+    Clock.schedule_once(when_revealed(s7b, "s7b"), 15.4)
     Clock.schedule_once(s7c, 16.8)
     Clock.schedule_once(when_ready(s8, "s8"), 17.0)
     Clock.schedule_once(when_ready(s9, "s9"), 20.0)
