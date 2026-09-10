@@ -14,6 +14,9 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.30(2026-09-11): 构建日期补上时分, 那一行字号 13sp -> 16sp(玩家: "构建的字太小")。
+# 格式: `v0.5.30 · 构建 2026-09-11 01:29`。`fx_probe [13]` 的格式门禁同步收紧。
+#
 # 0.5.29(2026-09-11): 长按标题的隐藏弹窗加一行"版本 · 构建日期"。
 # 版本走 Android PackageManager 的 versionName(就是 buildozer.spec 的 version);
 # 日期取 main.py 的文件 mtime。
@@ -274,7 +277,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.29
+version = 0.5.30
 
 requirements = python3,kivy==2.3.0,pyjnius
 

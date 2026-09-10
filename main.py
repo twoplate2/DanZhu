@@ -5094,8 +5094,8 @@ class RootWidget(BoxLayout):
         content.add_widget(desc_lbl)
         info = self._build_info()
         if info:
-            ver_lbl = Label(text=info, font_size='13sp', halign='center', valign='middle',
-                            color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
+            ver_lbl = Label(text=info, font_size='16sp', halign='center', valign='middle',
+                            color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
             ver_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(ver_lbl)
         start_btn = Button(text='开始测试', font_size='17sp', bold=True,
@@ -5104,7 +5104,7 @@ class RootWidget(BoxLayout):
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = self._popup(0.84, 405, title='', content=content,
+        popup = self._popup(0.84, 425, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
@@ -5222,7 +5222,7 @@ class RootWidget(BoxLayout):
             t = os.path.getmtime(os.path.abspath(__file__))
             # 1600000000 = 2020-09; 再过掉"未来时间"(设备时钟不对时会取到), 免得显示怪日期
             if 1600000000 < t < time.time() + 86400:
-                parts.append('构建 %s' % time.strftime('%Y-%m-%d', time.localtime(t)))
+                parts.append('构建 %s' % time.strftime('%Y-%m-%d %H:%M', time.localtime(t)))
         except Exception:
             pass
         return ' · '.join(parts)
