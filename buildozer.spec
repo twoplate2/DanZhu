@@ -14,6 +14,24 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.5.22(2026-09-10): 两件事。
+# ① **中奖装杯的落杯音试过换掉, 已回退**(用户定案)。曾经把装杯的 `bounce` 换成 4 个变体的
+#   合成"玻璃音" `cup0..3`(1960~2540Hz 非谐分音 + tau 0.15 长衰减), 动机是实测 `bounce`
+#   96% 能量在 300Hz 以下、过手机喇叭低切掉 15dB。**用户听完的判决: "这个新的是电子音,
+#   而不是小球撞击的声音" -> 全部回退。** 回退面 = plinko.py 的 CUP_TONES/_sfx_cup/
+#   CUP_LAND_TONE/_sfx_cup_land + iter_bank 两条 yield + 试听表 5 条; tools/android_part_pile.py
+#   的 CUP_VARIANTS/CUP_THROTTLE/CUP_HOLD_GAIN/CUP_A*/CUP_G*/_cup_gain/_cup_land + 球里的
+#   cup 字段 + tick() 的落位音; tools/fx_probe.py 的 [9] 段; 删 tools/cup_demo.py。
+#   音效数回到 41, `bounce`(0.110s/峰值 0.500)与改动前逐位一致。
+#   ⚠️ **可复用的教训**(写进两处代码注释了, 别再走一遍): 撞击感来自**攻击瞬间的宽带噪声**,
+#   不是分音 —— 主导成分只要是几个正弦分音 + 长衰减, 无论基频放哪、用不用非谐倍数,
+#   听起来都是"电子音/音调"。要撞击声, 噪声瞬态必须比振铃更响且够宽(到 8kHz), 分音只当尾巴;
+#   库里现役的 `_sfx_tink`(撞钉)就是这个正例, 该照它改。
+# ② **最高档(360%)的盘面有奖格 5/6/7 -> 6/7/8**(K_DIST[3.60]), 实测中奖率 65.6% -> 78.6%。
+#   起因: 300%->360% 那次只改键名、格数没动, 中奖率和 300% 档一模一样, 玩家察觉不到换档。
+#   RTP 仍精确 3.600000(_solve_p2 闭式反解自动配平), 代价是 x2 权重 0.274 -> 0.439,
+#   每次中奖平均赔付 5.475 -> 4.558。中奖率与每次赔付是同一个旋钮的两端。
+#   ⚠️ 另注: 改最高档盘面后必须重跑自测 RTP 门禁(本次已跑, 结果 OK)。
 # 0.5.21(2026-09-10): 最高返还档 300% -> 360%(用户定案)。改动面 = 数值表 + 盘面生成 +
 # UI 按钮 + 语音 + 防沉迷白名单 + 自测门禁, 全部同步(用户要求的"同步其他调整"):
 #   VALUE_SHAPE / K_DIST 的键 3.00 -> 3.60; VALUE_DIST 构建循环; roll_multipliers 的调用方
@@ -86,7 +104,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.5.21
+version = 0.5.22
 
 requirements = python3,kivy==2.3.0,pyjnius
 
