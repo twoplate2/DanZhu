@@ -2921,6 +2921,11 @@ VISIBLE_TOP = -DESIGN_H * CUP_T / CUP_H
 
 _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
 _GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例存
+# 杯口环的**后半个**(远侧那半圈)在 back 贴图里占的高度比例。
+# 生成器里 `rim_back = _half_mask(rim, front=False, split_y=80)`, 环本体是 design y 5..155、
+# 切开线 80 —— 换算到 920 行的贴图就是 10..160; 这里多留 6 行给生成器那层高斯模糊的晕。
+RIM_BACK_FRAC = 166.0 / 920.0
+_GLASS_RIM_TEX = {}     # id(back_tex) -> (back_tex, 子贴图)
 _PILE_CACHE = {}        # (count, seed) -> proj
 _PILE_ORDER = []
 _PILE_CACHE_MAX = 12
@@ -3076,6 +3081,36 @@ def _pile_projected(count, seed):
     return proj
 
 
+def _rim_back_texture(back_tex):
+    """把 back 贴图里**后半个杯口环**那一条切成子贴图 —— 在压暗之上补画一次用。
+
+    为什么需要它: 压暗改到"后层玻璃**之后**"以后, 杯口环的后半圈(杯口**远侧**那半)
+    跟着被压暗 —— 实测峰值 **68.0 -> 29.0(降 57%)**, 而前半圈(在 front 层)纹丝不动,
+    前后对比从 **1.76:1 拉到 4.1:1**。近亮远暗本身是对的(真实玻璃就是远侧暗, 改之前
+    就有), 但拉到 4:1 之后那半圈读起来像"没画出来"(玩家 2026-09-11 报"上边缘的内侧和
+    外侧颜色差异较大")。所以只把**这一条**补到压暗之上 —— 杯体的薄纱仍然留在压暗之下,
+    那层才是"板面被杯子提亮回去"的元凶, 不能一起捞上来。
+
+    ⚠️ 别用"alpha > 60 的像素"来挑: back 里杯体和杯底也有 alpha>60 的像素(各约 1.1 万),
+    那样等于把所有薄纱都捞回来了。必须按**几何**(贴图行段)切。
+    """
+    if back_tex is None:
+        return None
+    ent = _GLASS_RIM_TEX.get(id(back_tex))
+    if ent is not None and ent[0] is back_tex:      # 认对象本身, 防 id 复用拿到过期子贴图
+        return ent[1]
+    try:
+        w, h = back_tex.size
+        hh = max(1, int(round(h * RIM_BACK_FRAC)))
+        tex = back_tex.get_region(0, h - hh, w, hh)   # Kivy 纹理 y 向上 -> 取顶上那一条
+        tex.mag_filter = "linear"
+        tex.min_filter = "linear"
+        _GLASS_RIM_TEX[id(back_tex)] = (back_tex, tex)
+    except Exception:
+        return None
+    return tex
+
+
 class WinPileFX(Widget):
     """中奖覆盖层: 压暗 -> 玻璃后层 -> 已落定球(画家序) -> 飞行球 -> 玻璃前层。
 
@@ -3091,6 +3126,7 @@ class WinPileFX(Widget):
         # 本帧真正画上去的压暗曲线值(0..1), 由 _redraw 每帧写入, 供 HUD 五行取值
         # (见 dim_alpha 的说明: 两边必须是**同一个数**, 不能各取一次时间)。
         self._a_dim_now = 0.0
+        self._glass_prebaked = False     # prebake_step 的一次性开关(玻璃贴图预热)
         self._balls = []
         self._value = DEFAULT_BET
         self._seq = 0
@@ -3616,9 +3652,14 @@ class WinPileFX(Widget):
                 Ellipse(pos=(fx - bw * 0.34, fy - bh * 0.045),
                         size=(bw * 0.68, bh * 0.09))
 
-                if back_tex is not None:
+                # ⚠️ 分层图缺失时(`_glass_textures` 的最后一档回退)把**整图当后层**用。
+                # 原来它是在最后("前层"的位置)画的 —— 那样整张玻璃落在压暗矩形**之上**,
+                # 回退局里杯子比正常局亮一大截、前后遮挡关系也没了(专家 2026-09-11 指出)。
+                # 放到这里它就跟后层一样被压暗, 弹珠照样画在它上面。正常路径一行不受影响。
+                under_tex = back_tex if back_tex is not None else fb_tex
+                if under_tex is not None:
                     Color(1.0, 1.0, 1.0, a_cup)
-                    Rectangle(texture=back_tex, pos=(bx, by), size=(bw, bh))
+                    Rectangle(texture=under_tex, pos=(bx, by), size=(bw, bh))
 
             # 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点。
             # ⚠️ 位置: 在**后层玻璃之后、球之前**。放到后层玻璃之前(原写法)时, 后层玻璃
@@ -3630,6 +3671,15 @@ class WinPileFX(Widget):
                 Rectangle(pos=self.pos, size=self.size)
 
             if a_cup > 0.0:
+                # 后半个杯口环补画一次(在压暗之上、弹珠之前) —— 见 _rim_back_texture。
+                # 放在球之前: 远侧那半圈本来就在珠子后面, 球要能挡住它。
+                rim_tex = _rim_back_texture(back_tex)
+                if rim_tex is not None:
+                    Color(1.0, 1.0, 1.0, a_cup)
+                    Rectangle(texture=rim_tex,
+                              pos=(bx, by + bh * (1.0 - RIM_BACK_FRAC)),
+                              size=(bw, bh * RIM_BACK_FRAC))
+
                 # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
                 for b in self._balls:
                     if b["settled"]:
@@ -3639,15 +3689,19 @@ class WinPileFX(Widget):
                     if not b["settled"]:
                         self._draw_bead(b, a_cup)
 
-                tex = front_tex if front_tex is not None else fb_tex
-                if tex is not None:
+                if front_tex is not None:      # 回退时没有前层, 弹珠就在玻璃之上(可接受的降级)
                     Color(1.0, 1.0, 1.0, a_cup)
-                    Rectangle(texture=tex, pos=(bx, by), size=(bw, bh))
+                    Rectangle(texture=front_tex, pos=(bx, by), size=(bw, bh))
 
     # ------------------------------ 启动期预热 ------------------------------
 
     def prebake_step(self, dt=0):
-        """启动后分帧预热: 先烘**当前投注档**的球纹理, 再补其它档, 最后算 7 档球堆。
+        """启动后分帧预热: 玻璃贴图 -> 当前投注档球纹理 -> 其它档 -> 7 档球堆。
+
+        ⚠️ **玻璃贴图也要预热**(2026-09-11 补): `_glass_textures()` 第一次调用要现场
+        解码两张 PNG + 上传 GL, 桌面实测 **21ms**; 贴图提到 1600x920(2x) 之后平板上是
+        40~80ms 的一次长帧, 而它正好落在**冷启动后的第一次中奖**那一刻(演出起手)。
+        这套分帧预热机制本来就是为"别在中奖那帧现做"存在的, 之前漏了它。
 
         低端机单档 d=128 纯 Python 合成约 100~200ms, 4 档挤在一帧就是 4 个长帧;
         摊开后每帧只多一档。当前档排最前 —— 玩家最可能先看到它。
@@ -3656,6 +3710,14 @@ class WinPileFX(Widget):
         ⚠️ 自链式 Clock.schedule_once 的回调**必须能收 1 个位置参数** —— BUILD_APK.md
         §3.23: 零参签名在真机上启动 0.7s 必闪退, 而桌面 selftest/smoke 测不出来。
         """
+        if not self._glass_prebaked:
+            self._glass_prebaked = True
+            try:
+                _glass_textures()
+            except Exception:
+                pass
+            Clock.schedule_once(self.prebake_step, 0.05)
+            return
         cur = getattr(getattr(self.area, "game", None), "bet", DEFAULT_BET)
         order = [cur] + [b for b in (1, 10, 50, 100) if b != cur]
         todo = [b for b in order if b not in _CUP_BALL_TEX]
@@ -4592,11 +4654,9 @@ class RootWidget(BoxLayout):
         self.target_x = PLUNGER_X
         self.ball = None
         self._last_win_size = None    # 窗口尺寸轮询快照(bind(size) 对程序启动期的 resize 不可靠)
-        # HUD 五行的装杯期压暗块(见 _row_dim / _sync_hud_dim): 板面那块压暗够不到这五行,
-        # 横屏反旋转时它们正好落在画面两侧亮着, 于是"板面已黑、两边还亮"。
-        # ⚠️ 必须在 _build_ui() **之前**初始化 —— _row_dim 是 _build_ui 里调的, 会往里 append。
-        self._hud_dim_cols = []
-        self._hud_dim_last = -1.0
+        # HUD 的装杯期压暗块(见 _build_hud_dim / _sync_hud_dim): 板面那块压暗够不到
+        # GameArea 之外的地方, 横屏反旋转时那几行正好落在画面两侧亮着。
+        # 两个字段由 _build_hud_dim() 建好 —— 它在 _build_ui() 末尾调(那时 game_area 才存在)。
         self._build_ui()
         if self._auto_reset_on_start:
             self.reset_balance(notify=False)  # 上轮打满被kill: UI就绪后静默重置
@@ -4612,7 +4672,7 @@ class RootWidget(BoxLayout):
         # 不会同屏: 跑分要长按标题 3 秒才起, 而装杯期输入是锁的(`_bench_running` 还会
         # 直接拦住 play_win, --smoke 有断言)。真要改其中一个, 记得它们互不影响。
         # ⚠️ 它挂在 `RootWidget.canvas.after` = 盖住**整棵子树**(含 GameArea 里的中奖大字),
-        # 所以不能拿它做装杯期的 HUD 压暗 —— 那会把大字一起压掉(见 _row_dim 的说明)。
+        # 所以不能拿它做装杯期的 HUD 压暗 —— 那会把大字一起压掉(见 _build_hud_dim 的说明)。
         self._bench_dim_shown = False
         with self.canvas.after:
             self._bench_dim_col = Color(0.05, 0.06, 0.09, 0.0)
@@ -4690,43 +4750,79 @@ class RootWidget(BoxLayout):
         row.bind(pos=lambda w, *_: setattr(w._bg_rect, "pos", w.pos),
                  size=lambda w, *_: setattr(w._bg_rect, "size", w.size))
 
-    def _row_dim(self, row):
-        """给一行 HUD 挂"装杯期压暗"块 —— 画在该行自身的**全部子控件之上**。
+    def _build_hud_dim(self):
+        """建"装杯期压暗"的两块矩形 —— **整块界面减去游戏区**, 挂在 `RootWidget.canvas.after`。
 
-        为什么必须挂在这里(三个地方都试过, 只有这个成立):
-          - 挂 `WinPileFX` 里(GameArea 内)不行: 那五行画在 GameArea **之后**
-            (RootWidget.children 顺序 = [顶栏,返奖档,投注档,GameArea,信息行,底行],
-            后 add 的后画), 板面那块压暗够不到它们;
-          - 挂 `RootWidget.canvas.after` 也不行: 它会盖住 GameArea 里的中奖大字
-            ("大字留上方"是用户定案的);
-          - 挂行自己的 `canvas.before` 不行: 那是行底图, 压不到上面的标签/按钮。
-        `canvas.after` 是这一行里最后一个绘制组, 所以背景+文字+按钮一起被压暗。
-        (Kivy 语义已用最小样例实测: 子控件自己的 canvas.after 盖住它自己的 canvas
-         与全部子控件; 父的 canvas.after 盖住整棵子树。)
+        覆盖范围(必须一块不漏, 也别压到游戏区):
+          上块 = 从**游戏区上沿**到本控件上沿(顶栏/返奖档/投注档 + 它们之间与上方的空白)
+          下块 = 从本控件下沿到**游戏区下沿**(信息行/底行 + 它们之间与底部的留白)
+        两块在游戏区处严丝合缝地断开, 所以**碰不到 GameArea 里的中奖大字**
+        ("大字留上方"是用户定案的)。
 
-        坐标沿用 `_row_bg` 那一套(`pos=row.pos`) —— 同一种写法、同一个坐标系,
-        不引入新的坐标假设。**必须在子控件都加完之后调用**(见 _build_ui 里的位置)。
+        ⚠️ 为什么是"整块减去游戏区", 而不是"每行各盖一块"(第一版就是这么写的, 已推翻):
+        五行之间有 `spacing=dp(10)`、底部有 `padding` 12dp, 那些地方是**窗口背景**,
+        没有任何控件去盖。第一版只盖行本身, 于是这 62px 成了全屏最亮的东西
+        (实测缝 20.6 vs 相邻被压暗的行 16.8~19.6; 横屏反旋转时它们是 **6 条贯通全高的
+        竖亮线**, 非常显眼)—— 正是"板面黑了, 但上下有六条亮线"。按区域盖就没有这个
+        算术: 行高/spacing/padding 怎么改都不会漏。
 
-        颜色不在这里写死: 每帧由 `_sync_hud_dim` 从 `WinPileFX._layers()` 取,
-        全屏只有那一条生灭曲线。
+        ⚠️ 也别用"每行盖一块、相邻两块相接"的写法: 块与块一旦重叠, 0.68 叠 0.68 会变成
+        0.90, 缝就从"更亮"翻成"更暗", 只是把问题翻个面。
+
+        **横向要一直铺到视口边**: `_fit_width` 让 `self.width = min(vw, want)`, 宽窗口下
+        RootWidget 比视口窄(左右留深色边), 只盖 `self.width` 的话演出期两侧会留两条亮带
+        (玩家的 Y700 平板正是这种情况, 横屏时那两条落在物理屏幕的最上/最下)。本控件的
+        原点就是画布原点, 所以视口横向 = `[-self.x, self.width + self.x]`。
         """
-        with row.canvas.after:
-            col = Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], 0.0)
-            rect = Rectangle(pos=row.pos, size=row.size)
-        row.bind(pos=lambda w, *_: setattr(rect, "pos", w.pos),
-                 size=lambda w, *_: setattr(rect, "size", w.size))
-        self._hud_dim_cols.append(col)
-        # 挂上新块就把短路判据作废: `_sync_hud_dim` 只缓存 alpha, 新加的 Color 初值是 0.0,
-        # 若当前恰好也是 0.0 就会被"值没变"跳过 —— 等演出开始时才第一次写, 那一帧是黑的。
+        with self.canvas.after:
+            self._hud_dim_col_top = Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], 0.0)
+            self._hud_dim_top = Rectangle(pos=(0.0, 0.0), size=(0.0, 0.0))
+            self._hud_dim_col_bot = Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], 0.0)
+            self._hud_dim_bot = Rectangle(pos=(0.0, 0.0), size=(0.0, 0.0))
+            # Kivy 的 Color 是**全局状态**: 块里的近黑+alpha0 会泄漏给之后画的兄弟/子控件。
+            # 本作目前每条绘制路径都自己先写 Color, 所以没发作; 这里补一刀白色打底,
+            # 以后谁新增一条"不自己设色"的绘制也不会静默变成全黑。
+            Color(1.0, 1.0, 1.0, 1.0)
+        self._hud_dim_cols = [self._hud_dim_col_top, self._hud_dim_col_bot]
         self._hud_dim_last = -1.0
+        self.bind(pos=self._relayout_hud_dim, size=self._relayout_hud_dim)
+        self.game_area.bind(pos=self._relayout_hud_dim, size=self._relayout_hud_dim)
+        self._relayout_hud_dim()
+
+    def _relayout_hud_dim(self, *_):
+        """把两块压暗矩形摆到"整块**屏幕**减去游戏区"的位置(尺寸一变就跟着走)。
+
+        ⚠️ 视口取 **`self.parent`(App.build 里那个 AnchorLayout)**, 不按 self 的 pos/width 反推。
+        Kivy 是**单一 window 坐标系**(`LandLayer._to_eq` 的注释写得很清楚: 整棵树的 pos 数值
+        本来就是"等效竖屏物理坐标"), 那个 AnchorLayout 的矩形**恰好就是等效视口** ——
+        横屏反旋转时它铺满整块物理屏。直接读它就没有"留白多宽"这类算术, 也就不会再算错。
+
+        实测踩过(2026-09-11): 上一版按 `x0=-self.x, w=self.width+2*self.x` 反推, 在
+        1400x1000 横屏窗上差分对比 base/装杯两张截图 —— 压暗只盖住物理 x∈[0,1277],
+        **右边 122px 和顶边 56px 原样亮着**; 而且那个窗口里 `game_area.y = -78 < 0`,
+        下块的 `max(0.0, ga.y)` 直接算成 **高度 0**, 游戏区**下方**那两行整个没盖。
+        换成读父容器矩形之后两个毛病一起消失(下块的纵向范围也跟着视口走, 不再被 0 截断)。
+        """
+        vp = self.parent
+        if vp is None or vp.width <= 1.0 or vp.height <= 1.0:
+            vp = self                       # 未挂父/尺寸未定: 退回自身(探针夹具走这条)
+        ga = self.game_area
+        x0, y0, w, h = vp.x, vp.y, vp.width, vp.height
+        ga_lo = min(max(ga.y, y0), y0 + h)
+        ga_hi = min(max(ga.y + ga.height, y0), y0 + h)
+        self._hud_dim_top.pos = (x0, ga_hi)
+        self._hud_dim_top.size = (w, max(0.0, y0 + h - ga_hi))
+        self._hud_dim_bot.pos = (x0, y0)
+        self._hud_dim_bot.size = (w, max(0.0, ga_lo - y0))
 
     def _sync_hud_dim(self):
-        """每帧把 HUD 五行的压暗块对齐到装杯演出的生灭曲线。
+        """每帧把压暗块对齐到装杯演出的生灭曲线。
 
-        真源只有一个: `WinPileFX._layers()`(经 `dim_alpha()`)。这里**不重算任何曲线** ——
-        两边各写一份必然脱钩(这个仓库已经踩过一次: `_reveal_deadline` 硬编码 0.45,
-        尾巴从 0.45 改到 0.60 时静默脱钩, 兜底提前触发把数字剧透了)。
-        `_hud_dim_last` 短路是性能考虑: 演出之外这一层恒为 0, 不必每帧去动 5 个 Color。
+        真源只有一个: `WinPileFX.dim_alpha()`(它读的是板面本帧真正画上去的那个数)。
+        这里**不重算任何曲线** —— 两边各写一份必然脱钩(这个仓库已经踩过一次:
+        `_reveal_deadline` 硬编码 0.45, 尾巴从 0.45 改到 0.60 时静默脱钩, 兜底提前
+        触发把数字剧透了)。
+        `_hud_dim_last` 短路是性能考虑: 演出之外这一层恒为 0, 不必每帧去动那两个 Color。
         """
         a = self.game_area.win_fx.dim_alpha(HUD_ALPHA)
         if a == self._hud_dim_last:
@@ -4766,7 +4862,6 @@ class RootWidget(BoxLayout):
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
         right_box.add_widget(self.status_lbl)
         top.add_widget(right_box)
-        self._row_dim(top)            # 子控件加完之后再挂压暗块(canvas.after 必须在最上)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
@@ -4785,7 +4880,6 @@ class RootWidget(BoxLayout):
             self.rtp_btns[val] = b
             rtp.add_widget(b)
         rtp.add_widget(Widget())   # 右侧留空(和投入弹珠行一致)
-        self._row_dim(rtp)
         self.add_widget(rtp)
         # 投入行: 投入弹珠单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
@@ -4802,7 +4896,6 @@ class RootWidget(BoxLayout):
             self.bet_btns[v] = b
             bets.add_widget(b)
         bets.add_widget(Widget())   # 右侧留空
-        self._row_dim(bets)
         self.add_widget(bets)
         # 游戏区(全宽)
         self.game_area = GameArea(self)
@@ -4821,7 +4914,6 @@ class RootWidget(BoxLayout):
         self.stats_lbl = self._mk_label("", "15sp", COL_TEXT, "center", True,
                                         size_hint_x=0.70)
         info.add_widget(self.stats_lbl)
-        self._row_dim(info)
         self.add_widget(info)
         # 底行: [重置 96] —长距离— [力度 100] [蓄力发射 弹性]
         fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
@@ -4847,9 +4939,11 @@ class RootWidget(BoxLayout):
                            on_release=lambda _b: self.launch())
         fire.add_widget(self.fire_btn)
         fire.add_widget(Widget(size_hint_x=0.05))                 # 右侧弹簧(蓄力左移≈2dp)
-        self._row_dim(fire)
         self.add_widget(fire)
         self.padding = [0, 0, 0, dp(12)]  # 底部留白
+        # 压暗块放在最后建: 它要读 game_area 的 pos/size, 且 canvas.after 必须排在
+        # 全部子控件之后(见 _build_hud_dim 的说明)。
+        self._build_hud_dim()
         self._refresh_stats()
 
     # ------------------------------ 控件状态 ------------------------------
@@ -6120,7 +6214,7 @@ class RootWidget(BoxLayout):
             self._settle_cb()
         self.balance_lbl.text = str(int(round(self.display_balance)))
         self.game_area.tick_draw()
-        # 装杯期把 HUD 五行一起压暗(板面那块覆盖不到它们, 见 _row_dim)。
+        # 装杯期把整块界面(减去游戏区)压暗 —— 板面那块覆盖不到 GameArea 之外, 见 _build_hud_dim。
         # ⚠️ 位置: 必须在 `tick_draw()` **之后**。演出由 tick_draw -> win_fx.tick() ->
         #    _redraw() 推进, 而 `_redraw` 会把**本帧真正画上去的** a_dim 存进 `_a_dim_now`;
         #    HUD 从这里取值 ⇒ 两边永远是同一个数(同帧同值)。放在前面的话 HUD 读到的是
