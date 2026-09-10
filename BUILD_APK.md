@@ -106,6 +106,8 @@ plinko.py (tkinter版)
                                                   ↓ build_android_main.py
 tools/android_part_head.py     (kivy imports/中文字体注册/hex_rgb)
 tools/android_part_backends.py (SoundPool/SoundLoader 后端 + Sfx 总线)
+tools/pile3d.py                (中奖杯的生成期球堆: 解析式 3D 密堆, 纯 stdlib 零 Kivy)
+tools/android_part_pile.py     (中奖杯覆盖层 WinPileFX: 压暗/玻璃/落珠回放)
 tools/android_part_ui.py       (GameArea/RootWidget/App/冒烟)
                                                   ↓
                                         android/main.py (生成物, 勿手改)
@@ -120,9 +122,20 @@ tools/android_part_ui.py       (GameArea/RootWidget/App/冒烟)
 |---|---|
 | 物理/几何/盘面/音效配方/自测 | `../plinko.py` 然后重跑生成器 |
 | Kivy 界面/布局/帧循环 | `tools/android_part_ui.py` |
+| 中奖玻璃杯的球堆/堆形参数 | `tools/pile3d.py` |
+| 中奖玻璃杯的表现/时序/杯子位置 | `tools/android_part_pile.py` |
 | 音效后端(SoundPool 等) | `tools/android_part_backends.py` |
 | 字体/参数解析/入口 | `tools/android_part_head.py` |
 | 语音播报文案/词条 | `tools/generate_voice.py` 重跑 → 提交 `voice/*.wav`(加载侧零改动) |
+
+⚠️ **`tools/` 与 `../wingui/` 都不在 git 里**。仓库里只有生成物 `android/main.py`,
+所以"改了 tools 忘记重跑生成器"会静默丢改动。为此生成器带了一个门禁:
+
+```
+python ../tools/build_android_main.py --check   # 与已提交的 main.py 不一致就退非零
+```
+
+提交前跑一次, 过不了就说明该重跑生成器了。
 
 ### 桌面测试循环(打包前必跑)
 
@@ -131,7 +144,11 @@ python main.py --selftest   # 物理/RTP/哑火/音效体检(抽自 plinko.py, �
 python main.py --smoke      # 自动蓄力/发射/必中盘/哑火/余额不足飘字 + 截图到 %TEMP%/plinko_smoke
 python main.py              # 手动玩(540×960 窗口, 16:9)
 python main.py --nosound    # 静音
+python ../tools/fx_probe.py # 中奖玻璃杯自检(纹理/堆形/缓存/Clock 回调签名/时长)
 ```
+
+**测中奖要多切到 300% 档**: 默认 80% 档的盘面根本抽不出 x50/x100, 拿固定盘面测等于
+没测到真正会出问题的高倍率(颗数最多、锁输入最久、最容易掉帧)。所以进游戏先点 300%。
 
 窗口尺寸回归: `python ../scratch/archive/screen_16x10.py`(1920×1200)/ `screen_narrow.py`(360×740)。
 
@@ -379,6 +396,60 @@ platform 分支、try/except 保险毫无关系——保险在屋里, 人死在�
 真机排查成本提示: 闪退类问题别猜, 装 platform-tools 抓 `adb logcat -d -b crash`
 + 附近 main 缓冲的 python 段(本项目 Python traceback 打在 `I python` 标签里),
 一眼定位, 比盲改两轮构建快得多。
+
+### 3.24 `canvas.clear()` 会把子控件的 canvas 一起摘掉(2026-09-10 中奖杯实修)
+
+**症状**: 中奖杯的指令全都建好了(`win_fx.canvas.children` 有 100+ 条, 坐标也对),
+屏幕上一个像素都不显示, 而且**不报任何错**。
+
+**根因**: 子控件的 canvas 是 `add_widget()` 时挂进父控件 canvas 列表的, 而
+`self.canvas.clear()` 一视同仁清空整个列表 —— 包括那些子 canvas。于是"板面重画一次"
+(park_ball 换盘面、尺寸变化)就把叠加层从渲染树上摘掉了, 但指令对象还在, 打印出来
+一切正常。**判据**: `parent.canvas.indexof(child.canvas)` 返回 `-1` = 已被摘掉。
+
+**解法**(`GameArea._restack_overlays()`): 每次重画板面后, 按「板面 < 中奖杯 < 中奖大字」
+的次序把叠加层的 canvas 重新 `add` 回末尾。顺序靠**追加次序**保证 —— 后 add 的后画。
+
+**同类坑**: 中奖大字(也是子控件 Label)同样会被摘掉, 所以 `_restack_overlays` 一起重挂。
+
+### 3.25 子控件的 canvas 是**绝对(窗口)坐标**, 父级不做平移
+
+`Widget.add_widget` 是把子 canvas 直接 `add` 进父 canvas 的, 中间**没有 Translate**。
+实测: 把子控件摆到 (30,40)、父容器 padding [100,50], 在子 canvas 里画
+`Rectangle(pos=(0,0))`, 红块落在**窗口原点**而不是父容器原点。
+
+推论: 子控件里画东西要用 `self.x/self.y + 偏移`(与 `GameArea._redraw` 的
+`_ox = self.x + ...` 同一套写法), **不要**按"父级局部帧"去减父容器坐标。
+(Kivy 自己的 `Widget.export_as_image` 里那句 `Translate(-self.x, -self.y - self.height)`
+就是这个语义的旁证。)
+
+### 3.26 生成器不做去重: 同名模块级变量会**静默覆盖**
+
+`build_android_main.py` 是纯字符串拼接, 没有 AST、没有 import 合并、没有重名检查。
+新段里的模块级名字若和已有段撞名, 后来者获胜、前面那个变成死代码 —— **不报错**。
+
+实踩: 新分片里写 `_BALL_TEX = {}`, 而 `android_part_ui.py` 末尾有 `_BALL_TEX = None`,
+ui 段排在后面 → 全局被重置成 `None` → 首次中奖 `AttributeError`。
+
+**规矩**: 新段的模块级名字一律加前缀(`_CUP_*` / `CUP_*`), 或逐字 grep 确认不撞。
+生成后可以跑一遍模块级重名扫描(见 `tools/fx_probe.py` 的做法)。
+
+### 3.27 中奖杯的资产与目录
+
+三张 `assets/glass_tumbler{,_back,_front}.png`(800×460 RGBA)是**预生成**的, 直接提交进仓库:
+- 生成器 `wingui/assets/generate_glass_tumbler.py` 依赖 **Pillow, Android 上跑不了**
+  (见 §3.8), 所以只在 PC 上重出图、把 PNG 提交进来, **不要**把生成器塞进 app。
+- `source.include_exts` 白名单本来就含 `png`, 理论上不用改 spec; `include_patterns`
+  里补的 `assets/*.png` 是双保险(文档有"子目录资源必须显式列"的历史经验)。
+  **真伪以出包后解 `assets/private.tar` 为准**:
+  ```
+  unzip -p plinko-<版本>.apk assets/private.tar > p.tar
+  tar -tf p.tar | grep '^assets/glass_tumbler'   # 期望 3 张
+  ```
+- 玻璃图的贝塞尔壁与 `tools/pile3d.py` 的 `_WALL_BEZ` **强耦合**: 球堆"贴"的壁就是
+  PNG"画"出来的壁。改壁形必须同时重出三张 PNG, 否则球会穿出画出来的杯壁。
+- 杯子加载失败是**静默**的(会画出一个"没有杯子的压暗框"), 所以 `_glass_textures()`
+  落到空三元组时显式 `print("CUP-TEX MISSING")`; 真机首跑 `adb logcat | grep CUP-TEX` 确认。
 
 
 ## 四、运维小贴士

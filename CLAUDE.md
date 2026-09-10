@@ -16,13 +16,23 @@ python main.py --selftest   # 无界面门禁自测(改完必跑; 偶发 3σ 假
 python main.py --smoke      # 自动冒烟 + 截图到 %TEMP%/plinko_smoke
 python main.py --nosound    # 静音启动
 python -m py_compile main.py
+python ../tools/fx_probe.py # 中奖玻璃杯自检(纹理/堆形/缓存/Clock 回调签名/时长)
+python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源同步
 ```
+
+**测中奖务必先切 300% 档**: 默认 80% 档盘面抽不出 x50/x100, 拿固定盘面测等于没测到
+真正会出问题的高倍率(颗数最多、锁输入最久、最容易掉帧)。
 
 ## main.py 是生成物
 
 `main.py` 由**父项目** `tools/build_android_main.py` 生成:
 - 常量/几何/物理/音效合成/selftest **原样抽取**自父项目 `plinko.py`
+- 中奖杯球堆 `tools/pile3d.py`(纯 stdlib) + 表现层 `tools/android_part_pile.py`
 - Kivy 手写段来自 `tools/android_part_{head,backends,ui}.py`
+
+顺序: `[head, b1..b7, backends, pile3d, android_part_pile, ui]`(新两段插在 `ui` 之前,
+因为 GameArea/RootWidget 要用到它们)。**`tools/` 与 `../wingui/` 都不在 git 里**,
+仓库里只有生成物, 所以改完必须重跑生成器 —— 用 `--check` 兜底。
 
 本仓库只含生成结果, **不含生成器和源文件**。因此:
 - **在父项目环境里**: 改源文件 → `python tools/build_android_main.py` → `python android/main.py --selftest` → 回本仓库 commit。**不要手改 main.py**。
@@ -68,6 +78,22 @@ voice_lose 有意不接入(合成 lose 音更中性)。
 
 > **RTP 语音已补齐（2026-08-16）**：`voice_rtp_80/120/200/300` 四条齐全，孤儿 `voice_rtp_100` 已删。切档四档都有语音。
 
+## 中奖玻璃杯表现
+
+中奖时结算后停 0.5s(让槽位白闪/绿灯先被看见)→ 整块游戏区压暗 → 玻璃杯浮在画面
+**中下部**、弹珠从板面上方雨点般落下堆满杯子 → 全部落定播中奖音 → 停 0.45s 淡出 →
+解锁。倍率 = 颗数, 投注档 = 球色(1绿/10蓝/50红/100紫)。
+
+- `WinPileFX` 是 `GameArea` 的子控件(_restack_overlays 每帧重画的次序保证它是
+  「板面 < 杯子 < 中奖大字」三层里的中间层)。帧推进由 `GameArea.tick_draw()` 调,
+  **自己不持有任何 Clock** —— 切后台回来动画直接跳终态而不是卡住(busy 立刻转 False)。
+- 运行期零物理: 球堆由 `pile3d.build_pile` 在生成期一次算完, 运行期只做斜投影 + 纯时基插值。
+- **绝不软锁**: `busy()` 有 `FX_MAX_SEC=9s` 硬兜底, `play_win` 全程 try/except。
+  输入锁一旦卡住玩家只能杀进程, 这是本模块唯一能出线上事故的地方。
+- 时序: ×2 约 2.7s, ×100 约 4.2s(含 0.5s 起播延迟与 0.45s 尾巴)。
+- 球纹理 d=128 纯 Python 合成, 由 `prebake_step` 启动后分帧预烘(当前投注档优先);
+  球堆缓存 LRU 上限 12。
+
 ## 验证标准
 
 RTP≈档位±0.05、卡死=0、撞钉音>90%、哑火零泄漏、
@@ -89,6 +115,10 @@ GUI 真发验证: 落格==结算槽 0 穿帮。
 - **弧面碰撞半径必须=视觉半径(ARC_VISUAL=1.4)**：球渲染 12.6 比碰撞 9 大，弧面不用视觉半径会看到球"嵌进"弧面。
 - **修订注入必须在累加器循环内逐物理帧消费 events(清位), 不能等 tick 末 _play_events**：events 是位或累积, 一次 tick 推进多物理帧时残留位会让撞钉计数虚高, 注入点错位 → 落格偏差(实测 35%)。正确做法: 循环内每帧 `tick_ev |= b.events` 收集给音效 + 计数/注入 + `b.events=0; b.amp.clear()`(与预演 `_sim_flight` 同构)。(注: 修订机制已删, 此条为历史教训, 事件消费约定仍有效)
 - **plinko.py 与 main.py 架构不同**：plinko.py 用 `tkinter.after(FIXED_DT)` 定时间隔（无累加器），改物理/引导逻辑时两边要分别评估是否受影响。改物理/音效/selftest → 改 plinko.py 再重跑生成器; 改 Android GUI(每轮/弹簧/弧面绘制) → 改 tools/android_part_ui.py(不经过 plinko.py)。两版 GUI 差异(PC 无防沉迷、Android 有)是设计使然, 不是漂移。
+- **`GameArea._redraw()` 的 `canvas.clear()` 会把子控件的 canvas 一起摘掉**（叠加层"指令都在、屏幕没有"，不报错）。每次重画板面后必须 `_restack_overlays()` 把中奖杯与大字的 canvas 按序重新 add 回末尾。判据: `canvas.indexof(child.canvas) == -1`。详见 BUILD_APK.md §3.24。
+- **Kivy 子控件的 canvas 是绝对(窗口)坐标，父级不做平移**：子控件里画东西要用 `self.x/self.y + 偏移`，不要按"父级局部帧"减父容器坐标。详见 §3.25。
+- **生成器不做任何去重，同名模块级变量静默覆盖**：新分片的名字一律加前缀。实踩: `_BALL_TEX` 撞上 ui 段的同名变量被重置成 `None` → 首次中奖 AttributeError。详见 §3.26。
+- **测中奖先切 300% 档**：80% 档的盘面抽不出 x50/x100，用固定盘面测会漏掉高倍率（颗数最多、锁最久、最易掉帧）的真实场景。
 
 ## git commit 注意
 

@@ -2886,7 +2886,6 @@ class WinPileFX(Widget):
         self._value = DEFAULT_BET
         self._seq = 0
         self._rng = random.Random()
-        self._interval = SPAWN_CAP
         self._t0 = 0.0                    # 杯子该出现的时刻(settle + WINDUP)
         self._settled_at = 0.0
         self._deadline = 0.0
@@ -2959,7 +2958,6 @@ class WinPileFX(Widget):
         try:
             self._value = bet if bet in BET_COLORS else DEFAULT_BET
             self._seq += 1
-            self._interval = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / multiplier))
             self._make_balls(multiplier, self._value, self._seq)
         except Exception as exc:               # build_pile 的断言/任何意外
             print("CUP-PILE FAIL: %s" % exc)
@@ -3048,11 +3046,15 @@ class WinPileFX(Widget):
                 "sq1": squash_1, "sq2": squash_1 * u(0.35, 0.55)})
             idx += 1
         self._balls.sort(key=lambda bb: -bb["z"])       # 画家序: 远先画
+        # 投放节奏就地从颗数推: 高倍率球多, 间隔压到 SPAWN_MIN 免得堆成一团"喷射球云";
+        # 低倍率球少, 封顶 SPAWN_CAP 免得白等。总窗口 SPAWN_WINDOW 是上界。
+        # ⚠️ 只在这里算一次 —— 之前 play_win 另算一份塞进 self._interval, 两处会漂移。
+        interval = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / max(1, len(self._balls))))
         cursor = SPAWN_TOP
-        jitter = min(0.035, self._interval * 0.75)
+        jitter = min(0.035, interval * 0.75)
         for b in sorted(self._balls, key=lambda bb: bb["i"]):
             b["t0"] = cursor
-            cursor += max(0.012, self._interval + u(-jitter, jitter))
+            cursor += max(0.012, interval + u(-jitter, jitter))
             b["end"] = b["t0"] + b["f"] + b["t1"] + b["t2"]
 
     # ------------------------------ 帧推进 ------------------------------
@@ -3229,18 +3231,24 @@ class WinPileFX(Widget):
     # ------------------------------ 启动期预热 ------------------------------
 
     def prebake_step(self, dt=0):
-        """启动后每帧烘一档球纹理, 避免中奖那一帧现算掉帧(低端机单档 100~200ms)。
+        """启动后分帧预热: 先烘**当前投注档**的球纹理, 再补其它档, 最后算 7 档球堆。
+
+        低端机单档 d=128 纯 Python 合成约 100~200ms, 4 档挤在一帧就是 4 个长帧;
+        摊开后每帧只多一档。当前档排最前 —— 玩家最可能先看到它。
+        球堆便宜得多(7 档合计桌面 30ms), 放最后。
 
         ⚠️ 自链式 Clock.schedule_once 的回调**必须能收 1 个位置参数** —— BUILD_APK.md
         §3.23: 零参签名在真机上启动 0.7s 必闪退, 而桌面 selftest/smoke 测不出来。
         """
-        todo = [b for b in (1, 10, 50, 100) if b not in _CUP_BALL_TEX]
+        cur = getattr(getattr(self.area, "game", None), "bet", DEFAULT_BET)
+        order = [cur] + [b for b in (1, 10, 50, 100) if b != cur]
+        todo = [b for b in order if b not in _CUP_BALL_TEX]
         if todo:
             try:
                 _ball_texture(todo[0])
             except Exception:
                 pass
-            Clock.schedule_once(self.prebake_step, 0.02)
+            Clock.schedule_once(self.prebake_step, 0.05)
             return
         for n in (2, 3, 5, 10, 20, 50, 100):
             if (n, 1) not in _PILE_CACHE:
@@ -3248,7 +3256,7 @@ class WinPileFX(Widget):
                     _pile_projected(n, 1)
                 except Exception:
                     pass
-                Clock.schedule_once(self.prebake_step, 0.02)
+                Clock.schedule_once(self.prebake_step, 0.03)
                 return
 
 # ======================= Kivy UI 层 =======================
@@ -4138,6 +4146,10 @@ class RootWidget(BoxLayout):
             self._bench_dim_rect = Rectangle(pos=(0, 0), size=(0, 0))
         self.bind(size=self._relayout_bench_dim, pos=self._relayout_bench_dim)
         Clock.schedule_interval(self._frame, FIXED_DT)
+        # 中奖杯的球纹理/球堆预热: 分帧摊在启动后做, 别等中奖那一刻现算(低端机单档
+        # d=128 纯 Python 合成要 100~200ms, 一次做完就是几个长帧, 而这动画的全部意义
+        # 就是丝滑)。排在 _frame 之后, 不影响冷启动的建界面/烘音效。
+        Clock.schedule_once(self.game_area.win_fx.prebake_step, 0.05)
 
     def _veq(self):
         """等效竖屏窗口尺寸: 横屏反旋转时 = (短边, 长边), 画面构图与竖拿时一致。
@@ -5553,6 +5565,11 @@ class PlinkoApp(App):
     def on_stop(self):
         try:
             self.rootw.sfx.close()
+        except Exception:
+            pass
+        try:
+            # 预热是自链式 schedule_once, 退出时可能还挂在 Clock 上(幂等, 没链就无操作)
+            Clock.unschedule(self.rootw.game_area.win_fx.prebake_step)
         except Exception:
             pass
         return True
