@@ -2728,22 +2728,53 @@ FX_MAX_SEC = 9.0       # 硬兜底: 超过这个时长无条件解锁
 # 这里拆成 压暗/道具 两条曲线, 再给道具组一个整体位移。
 # 进场错峰(相对 settle): 压暗先走, 杯子后到, 0.50 落位正好接上雨钟。
 ENTER_DIM_AT, ENTER_DIM_DUR = 0.30, 0.16   # 压暗: 0.30 起(此时槽位白闪刚走完)
-ENTER_CUP_AT, ENTER_CUP_DUR = 0.34, 0.16   # 杯子: 0.34 起, 0.50 收 == WINDUP
+# ⚠️ ENTER_CUP_AT + ENTER_CUP_DUR **必须 <= WINDUP(0.50)**。tick() 在 now >= _t0 处
+# 硬切到 win 分支并返回常量 (1,1,1,0) —— 进场曲线没跑完就被当场截断成瞬移。
+# 0.32+0.18 = 0.50, 曲线终点与 win 分支严丝合缝。
+ENTER_CUP_AT, ENTER_CUP_DUR = 0.32, 0.18   # 杯子: 0.32 起, 0.50 收 == WINDUP
 # 位移方向只能朝**上**: 杯底在逻辑 578, 槽区隔板顶在 606, 只有 28px 余量 ——
 # 往下位移超过 28 就压住倍率槽。所以起手高于落位, 往下落。
-ENTER_RISE = 22.0      # 逻辑px: 起手比落位高这么多
-ENTER_SCALE = 0.97     # 起手略小, 落位 1.0
+# 22 -> 56: 实测玻璃贴图本身极透(后层 alpha 上限 81/255、前层 147/255), **透明度这条
+# 通道天生传不了多少信息**, 位移才是唯一能让它"降下来"而不是"贴上去"的通道。
+# 22px 只有杯高的 7%(313.4), 低于可读阈值 —— 玩家看到的就是"亮板面上忽然多了个轮廓"。
+# 56px 时起手杯底在逻辑 522(离隔板顶 606 还有 84px), 安全。
+ENTER_RISE = 56.0      # 逻辑px: 起手比落位高这么多
+ENTER_SCALE = 0.92     # 起手略小, 落位 1.0(0.97 时总宽只差 16px, 也读不出来)
 # 退场(相对最后一颗落定时刻 T): 先静止 RESULT_HOLD, 然后整组上浮 + 缩小 + 淡出;
 # 压暗层比道具早 EXIT_DIM_LEAD 撤 -> "灯先亮回来, 道具后撤走"。
-EXIT_LIFT = 38.0       # 逻辑px 上浮
-EXIT_SCALE = 0.94
+# ⚠️ 这里是"突然消失"的病根, 别再改回三次缓入:
+#   原实现 a_cup = 1 - ((td-0.20)/0.25)**3 —— 三次缓入到窗口 79% 处才走完一半,
+#   实测 td=0.30 时 alpha 还有 0.936、只上浮 2.4px, 然后最后 0.15s 从 0.90 崩到 0。
+#   观感 = "杵着不动 -> 啪一下没了", 不是淡出。两个改法:
+#     1) alpha 改**线性** —— 每帧均匀掉 1/15, 低帧率上也不会出现"最后一帧崩 35%";
+#        (文献本身打架: GitLab 主张透明度用线性, Material 给淡入淡出各配缓动。
+#         这里必须用线性 —— 病就是"前 60% 的窗口只走了 10% 的变化量"。)
+#     2) 位移/缩放改**二次缓出**而不是缓入: 规范说"退场用加速"的前提是元素全程可见,
+#        而这里 alpha 同步在掉, 加速的尾巴正好落在看不见的时候, 等于白给。**感知优先于语义**。
+EXIT_LIFT = 52.0       # 逻辑px 上浮(38 时起点只有 4.9px/帧, 读不出"被收走")
+EXIT_SCALE = 0.90
 EXIT_DIM_LEAD = 0.04
+# 让道具在解锁前 EXIT_ALPHA_TAIL 就已经全透明: 免得低帧率设备上"最后一帧还剩一点,
+# 被整块 canvas.clear() 直接擦掉", 又把尾巴变成硬切。别去动压暗的 lead 来达到同样目的。
+EXIT_ALPHA_TAIL = 0.03
 
 # ---- 投放与下落 ----
 SPAWN_TOP = 0.08       # 第一颗的投放时刻
 SPAWN_WINDOW = 1.6     # 投放总窗口上限(秒)
 SPAWN_MIN, SPAWN_CAP = 0.016, 0.16
 RAIN_HEADROOM = 420.0  # design px: 起点抬到覆盖层可见顶边之上, 保住重力落差
+# ---- 整场雨前移(消"空杯静止") ----
+# 病根: 杯子在 settle+WINDUP(0.50) 就位, 但第一颗球要到 settle + t0 + f_enter 才被画出来
+# (_draw_bead 里 tt < f_enter 直接 return), 七档实测都在 0.94~1.05 —— 中间**0.44~0.55s
+# 屏幕上没有任何像素在动**。26~33 帧的完全静止会被读成"演出结束了", 然后弹珠再出现
+# 就是"另一件事" —— 这正是玩家说的"突然插入"。
+# 解法不是删画面, 而是把**整条时间轴一起前移**, 让"首球露头"落在一个固定锚点上:
+# 杯子刚就位, 球已经在半空往下掉了。
+# 为什么不用调 RAIN_HEADROOM / FALL_GRAVITY 来达到同样效果: 那两个在**动画面**
+# (前者会把每颗球入画时刻的随机分散压平、雨点变整齐球阵; 后者把雨从"飘"改成"砸"),
+# 而平移一帧画面都不动。实测压到 0 也只到 0.30s, 消不掉(球从可见顶边之上落下来本身要时间)。
+RAIN_ANCHOR = 0.12     # 首球"露头"的时刻(相对 _t0)。0.06(3.6帧)太挤, 会和"杯子落位"黏成一件事
+RAIN_SHIFT_MAX = 0.55  # 前移上限: 再往前整场缩水太多
 FALL_GRAVITY = 1900.0  # 原型 2400 是按"960dp 高窗"调的, 嵌进 660 高板面必须降
 FALL_MIN, FALL_MAX = 0.55, 1.30
 ENTER_FADE = 0.08      # 越过覆盖层顶边后的渐入
@@ -2931,6 +2962,7 @@ class WinPileFX(Widget):
         self._seq = 0
         self._rng = random.Random()
         self._t0 = 0.0                    # 杯子该出现的时刻(settle + WINDUP)
+        self._rain_shift = 0.0            # 本局雨的整场前移量(见 RAIN_ANCHOR), expected_sec 要用
         self._settled_at = 0.0
         self._deadline = 0.0
         self._on_done = None
@@ -2996,11 +3028,24 @@ class WinPileFX(Widget):
     # ------------------------------ 出发 ------------------------------
 
     def expected_sec(self, multiplier):
-        """本档预计总时长(秒)。给 RootWidget 延长 _result_until 用。"""
+        """本档预计总时长(秒)。给 RootWidget 延长 _result_until 和兜底 deadline 用。
+
+        ⚠️ 以前这里按 FALL_MAX 估, 注释写着"是 T 的上界" —— **那句不成立**:
+        _make_balls 给每颗球的落袋时长带了 ×u(0.88,1.12) 的随机, 可以超过 FALL_MAX。
+        实测 2000 局/档, x100 有 3.9%、x50 有 1.6% 的局里 est < 真实总时长(最大超出 3.4%)。
+        后果是兜底 deadline 会在最后一颗球落定**之前**触发 -> 大字/余额/语音提前冒出来,
+        正是当初把揭晓挪到 T 想消灭的"数字提前剧透", 只是概率低没人发现。
+        现在直接读 **本局真实的球数据**(play_win 已经把 _make_balls 跑完了, 调用顺序有保证:
+        ui 的 settle 是 play_win -> expected_sec, fx_probe 也是先 _make_balls 再算)。
+        b["end"] 已经是前移过的值, 所以**不要**在这里再减一次 _rain_shift。
+        """
         n = max(1, int(multiplier))
-        iv = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / n))
-        return (WINDUP + SPAWN_TOP + (n - 1) * iv
-                + FALL_MAX + 0.33 + RESULT_HOLD + RESULT_FADE)
+        if self._balls:
+            tail = max(b["end"] for b in self._balls) + 0.05   # 0.05 留一帧, 免得兜底和真事件同毫秒打架
+        else:                                                   # 还没排上(球堆异常): 退回估算
+            iv = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / n))
+            tail = SPAWN_TOP + (n - 1) * iv + FALL_MAX + 0.33
+        return WINDUP + tail + RESULT_HOLD + RESULT_FADE
 
     def play_win(self, multiplier, bet, on_done=None):
         """排定一场中奖演出。返回 False 表示没排上(调用方照常解锁)。
@@ -3029,6 +3074,7 @@ class WinPileFX(Widget):
         except Exception as exc:               # build_pile 的断言/任何意外
             print("CUP-PILE FAIL: %s" % exc)
             self._balls = []
+            self._rain_shift = 0.0
             self.mode = "idle"
             self._dirty = True
             return False
@@ -3122,6 +3168,19 @@ class WinPileFX(Widget):
             b["t0"] = cursor
             cursor += max(0.012, interval + u(-jitter, jitter))
             b["end"] = b["t0"] + b["f"] + b["t1"] + b["t2"]
+        # ---- 整场雨前移(见 RAIN_ANCHOR 处的说明) ----
+        # 必须**按本局实测的最早入画时刻**来算, 不能钉死一个值: 每局的 min(t0+f_enter)
+        # 在 0.29~0.86 之间波动(实测 1200 局), 钉死会让一部分局把球"还没开局就放进场",
+        # 那就是"凭空出现在半空" —— 犯的正是要修的那个毛病。
+        # 安全性: shift <= min(t0+f_enter) 恒成立, 所以 t=0 时**没有任何一颗球已经落袋**,
+        # 不会出现"开局第一帧就补播一串落地音"。
+        self._rain_shift = 0.0
+        if self._balls:
+            s = min(b["t0"] + b["f_enter"] for b in self._balls) - RAIN_ANCHOR
+            self._rain_shift = max(0.0, min(RAIN_SHIFT_MAX, s))
+            for b in self._balls:
+                b["t0"] -= self._rain_shift
+                b["end"] -= self._rain_shift
 
     # ------------------------------ 帧推进 ------------------------------
 
@@ -3226,11 +3285,10 @@ class WinPileFX(Widget):
         u = max(0.0, min(1.0, u))
         return 1.0 - (1.0 - u) ** 3
 
-    @staticmethod
-    def _ei(u):
-        """ease-in(退场): 慢起快走 —— 离开要加速, 才有"被收走"的感觉。"""
-        u = max(0.0, min(1.0, u))
-        return u ** 3
+    # 这里原来有个 _ei(u) = u**3 的"三次缓入", 注释写着"退场: 慢起快走 —— 离开要加速"。
+    # **已删**: 那个选择让退场 79% 的窗口空转(实测 td=0.30 时 alpha 还有 0.936),
+    # 是"突然消失"的直接来源。现在退场里位移走二次缓出、透明度走线性, 都用不到它。
+    # 不要因为"进出场曲线看着该对称"再把它加回来。
 
     def _layers(self, now):
         """分层动画曲线 -> (压暗 alpha, 道具 alpha, 缩放 k, 竖直位移 dy)。
@@ -3254,13 +3312,17 @@ class WinPileFX(Widget):
             return 1.0, 1.0, 1.0, 0.0
         # result: 退场
         td = now - self._settled_at
-        u_cup = self._ei((td - RESULT_HOLD) / RESULT_FADE)
+        u = max(0.0, min(1.0, (td - RESULT_HOLD) / RESULT_FADE))
+        # 位移/缩放: 二次缓出 —— 运动必须发生在还看得见的时候(见 EXIT_LIFT 处的说明)
+        u_pos = 1.0 - (1.0 - u) ** 2
+        # 透明度: 线性, 且在解锁前 EXIT_ALPHA_TAIL 就归零
+        u_a = max(0.0, min(1.0, (td - RESULT_HOLD) / (RESULT_FADE - EXIT_ALPHA_TAIL)))
         # 压暗层早 EXIT_DIM_LEAD 撤 -> 灯先亮回来, 道具后撤走
         u_dim = self._eo((td - RESULT_HOLD + EXIT_DIM_LEAD) / RESULT_FADE)
         a_dim = 1.0 - u_dim
-        a_cup = 1.0 - u_cup
-        k = 1.0 - (1.0 - EXIT_SCALE) * u_cup
-        dy = EXIT_LIFT * u_cup                       # 整组上浮(含已落定的球, 共用同一偏移)
+        a_cup = 1.0 - u_a
+        k = 1.0 - (1.0 - EXIT_SCALE) * u_pos
+        dy = EXIT_LIFT * u_pos                       # 整组上浮(含已落定的球, 共用同一偏移)
         return a_dim, a_cup, k, dy
 
     def _draw_bead(self, b, alpha):
