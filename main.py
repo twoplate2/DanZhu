@@ -2963,6 +2963,7 @@ class WinPileFX(Widget):
         self._rng = random.Random()
         self._t0 = 0.0                    # 杯子该出现的时刻(settle + WINDUP)
         self._rain_shift = 0.0            # 本局雨的整场前移量(见 RAIN_ANCHOR), expected_sec 要用
+        self._last_touch = 0.0            # 最后一颗球**第一次触地**的时刻(相对 _t0) —— T 的判据
         self._settled_at = 0.0
         self._deadline = 0.0
         self._on_done = None
@@ -3041,7 +3042,9 @@ class WinPileFX(Widget):
         """
         n = max(1, int(multiplier))
         if self._balls:
-            tail = max(b["end"] for b in self._balls) + 0.05   # 0.05 留一帧, 免得兜底和真事件同毫秒打架
+            # T 是"最后一颗**触地**"(见 _last_touch), 不再是"最后一颗弹完" —— 所以基准跟着换,
+            # 否则会高估整场时长, 兜底 deadline 白等一路。
+            tail = self._last_touch + 0.05     # 0.05 留一帧, 免得兜底和真事件同毫秒打架
         else:                                                   # 还没排上(球堆异常): 退回估算
             iv = max(SPAWN_MIN, min(SPAWN_CAP, SPAWN_WINDOW / n))
             tail = SPAWN_TOP + (n - 1) * iv + FALL_MAX + 0.33
@@ -3181,6 +3184,10 @@ class WinPileFX(Widget):
             for b in self._balls:
                 b["t0"] -= self._rain_shift
                 b["end"] -= self._rain_shift
+        # T(整场演出的收尾时刻)的判据 = 最后一颗球**第一次触地**(用户定稿)。
+        # 以前用的是 max(end) —— 那要把每颗球的两次落地弹跳都等完, 整场白长 0.22~0.31s
+        # (实测 x2 1.71->1.46s, x100 3.30->3.08s), 而弹跳只是装饰。
+        self._last_touch = max((b["t0"] + b["f"] for b in self._balls), default=0.0)
 
     # ------------------------------ 帧推进 ------------------------------
 
@@ -3200,33 +3207,42 @@ class WinPileFX(Widget):
             self.mode = "win"
         if self.mode == "win":
             t = now - self._t0
-            done = True
-            for b in self._balls:
-                if b["settled"]:
-                    continue
-                tt = t - b["t0"]
-                b["tt"] = tt
-                if tt < 0.0:
-                    done = False
-                    continue
-                if tt >= b["f"] and not b["a1"]:
-                    b["a1"] = True
-                    self._bounce(0.42 + 0.30 * min(1.0, b["a1_amp"] / b["r_d"]))
-                if tt >= b["f"] + b["t1"] and not b["a2"]:
-                    b["a2"] = True
-                    self._bounce(0.25 + 0.20 * min(1.0, b["a2_amp"] / b["r_d"]))
-                if t < b["end"]:
-                    done = False
-                else:
-                    b["settled"] = True
-            if done:
+            self._advance_balls(t)
+            # T = 最后一颗球**第一次触地**的那一刻(用户定稿), 不再等它弹完。
+            if t >= self._last_touch:
                 self._settled_at = now
                 self.mode = "result"
-                self._fire_done()                  # 全部落定 -> 播中奖音/语音
-        if self.mode == "result" and now >= self._settled_at + RESULT_HOLD + RESULT_FADE:
-            self.mode = "idle"
-            self._balls = []
+                self._fire_done()                  # 最后一颗触地 -> 播中奖音/语音
+        if self.mode == "result":
+            # 尾巴: 没弹完的球继续把弹跳播完(用户定稿"球继续弹, 只提前 T")。
+            # ⚠️ 这一段**不能停** —— _ball_screen 对未落定的球是按 tt 插值的, 不推进的话
+            # 它们会冻在半空(而不是落到堆里)。
+            self._advance_balls(now - self._t0)
+            if now >= self._settled_at + RESULT_HOLD + RESULT_FADE:
+                self.mode = "idle"
+                self._balls = []
         self._redraw()
+
+    def _advance_balls(self, t):
+        """逐球插值推进 + 落地音。win 和 result 两段都要调(见 result 里的说明)。"""
+        for b in self._balls:
+            if b["settled"]:
+                continue
+            tt = t - b["t0"]
+            b["tt"] = tt
+            if tt < 0.0:
+                continue
+            if tt >= b["f"] and not b["a1"]:
+                b["a1"] = True
+                self._bounce(0.42 + 0.30 * min(1.0, b["a1_amp"] / b["r_d"]))
+            if tt >= b["f"] + b["t1"] and not b["a2"]:
+                b["a2"] = True
+                self._bounce(0.25 + 0.20 * min(1.0, b["a2_amp"] / b["r_d"]))
+            # ⚠️ 判据是 **t**(相对 _t0 的绝对时刻), 不是 tt —— b["end"] 是
+            # "t0 + f + t1 + t2" 算出来的绝对时刻, 拿 tt(已经减过 t0)去比会永远比不到,
+            # 球就永远落不定(会一直按未落定插值画, 停在空中)。
+            if t >= b["end"]:
+                b["settled"] = True
 
     def _bounce(self, gain):
         """落地音(逐颗)。只靠节流限速, 不按颗数截断 —— 见 BOUNCE_THROTTLE 处的说明。"""
@@ -5606,12 +5622,23 @@ class RootWidget(BoxLayout):
                 i = max(0, min(NUM_SLOTS - 1,              # 物理落格结算(球落到哪算哪)
                                int((b.x - FIELD_L) / SLOT_W)))
                 self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
-                self._settle_slot = i              # 记录落格槽, 结算延迟到回弹落定后(用户定稿)
+                self._settle_slot = i
                 self.landed_at = time.time()
                 self.state = "landing"
                 self._accumulator = 0.0
                 self._landing_primed = True   # 首帧补初速, 之后交给物理
-                # 不立即 settle: 先做落地回弹展示(回弹→停留→再结算), 结算槽=物理落格槽零穿帮
+                # 回弹改**纯竖直**(用户定稿): 第一次触地就把横向速度清零。
+                # 病根: landing 循环里只有重力/横向弹簧/地板, **没有隔板碰撞**, 而球带着
+                # 飞行末段的横速入槽 —— 回弹期它能横着滑过隔板停到隔壁槽里(结算槽仍是本槽,
+                # 于是"钱算对了、球停错地方")。清零横速后球只在本槽原地上下弹; 横向只剩
+                # LAND_K 弹簧, 而弹簧只会把球拉向**本槽中心**, 拉不出去。
+                b.vx = 0.0
+                # 结算提前到"第一次触地"这一刻(用户定稿): 以前要等回弹落定, 而实测 88.7%
+                # 的落定是走 0.5s 超时兜底(平均比触地晚 0.3~0.5s)。回弹照播(landing 状态
+                # 只是不再拦着结算), 但中奖演出/揭晓从触地就开始排, 整场更利索。
+                if not self._settled:
+                    self._settled = True
+                    self.settle(i)
             if tick_ev:
                 self._play_events(tick_ev, tick_amp, self.ball)
         elif self.state == "misfire":
@@ -5657,18 +5684,12 @@ class RootWidget(BoxLayout):
                 b.vy = 0.0
                 self.state = "landed"
                 self.landed_at = time.time()
-                if not self._settled:          # 回弹落定后结算(用户定稿: 先回弹强调槽位, 再弹结算)
-                    self._settled = True
-                    self.settle(self._settle_slot)
             elif time.time() - self.landed_at >= 0.5:
                 b.y = floor_y
                 b.vx = 0.0
                 b.vy = 0.0
                 self.state = "landed"
                 self.landed_at = time.time()
-                if not self._settled:          # 超时兜底也结算(防永不落定)
-                    self._settled = True
-                    self.settle(self._settle_slot)
         elif self.state == "landed":
             # 中奖玻璃杯演出期间不放行: 否则 park_ball 会在杯子播到一半时重掷盘面、
             # 恢复按钮, 杯子就盖在一个已经换过的盘面上, 玩家还能同时发下一颗。
