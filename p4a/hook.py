@@ -101,12 +101,26 @@ def _inject_theme(self):
     **只改底色**, 其余属性全部沿用 —— 改动面越小越不容易把 app 弄起不来。
 
     ⚠️ `parent` 必须和 p4a 原来那个一致(NoTitleBar), 否则会在别处改变行为;
-    ⚠️ 图标**故意不动**: 系统会把图标从小放大到内容区, 那本身就是一段动画; 换成透明图标反而会让
-       棋盘"凭空出现"(那也是突变)。底色对齐之后, "同一个图案放大"就是最顺的接法。"""
+    ⚠️ 图标**必须换成透明的**(`plinko_blank`)。不换的话这层会画**应用图标**(白圆角方块里一个
+       迷你棋盘), 玩家先后两次报「打开 app 后有一个**奇怪的图标**」(2026-09-11 真机录屏: 它亮
+       约 1 秒、再变灰淡出, 然后才是那行字)。那个图标的尺寸由平台定死(288dp), 跟我们那行字
+       对不上, 所以**没法**把它改成"标题" —— 只能让它什么都不画, 整层就是一片 #0b1220,
+       与系统 presplash / 加载页三处同色。"""
     res_dir = os.path.join('src', 'main', 'res', 'values')
+    drw_dir = os.path.join('src', 'main', 'res', 'drawable')
     try:
-        if not os.path.isdir(res_dir):
-            os.makedirs(res_dir)
+        for d in (res_dir, drw_dir):
+            if not os.path.isdir(d):
+                os.makedirs(d)
+        # 一张**全透明**的 1dp 方块 —— 拿它顶掉系统启动图上那个应用图标。
+        with open(os.path.join(drw_dir, 'plinko_blank.xml'), 'w', encoding='utf-8') as f:
+            f.write(
+                '<?xml version="1.0" encoding="utf-8"?>\n'
+                '<shape xmlns:android="http://schemas.android.com/apk/res/android"\n'
+                '    android:shape="rectangle">\n'
+                '    <solid android:color="#00000000"/>\n'
+                '    <size android:width="1dp" android:height="1dp"/>\n'
+                '</shape>\n')
         styles = os.path.join(res_dir, 'styles.xml')
         with open(styles, 'w', encoding='utf-8') as f:
             f.write(
@@ -115,9 +129,10 @@ def _inject_theme(self):
                 '    <style name="PlinkoTheme" parent="@android:style/Theme.NoTitleBar">\n'
                 '        <item name="android:windowSplashScreenBackground">#0b1220</item>\n'
                 '        <item name="android:windowSplashScreenIconBackgroundColor">#0b1220</item>\n'
+                '        <item name="android:windowSplashScreenAnimatedIcon">@drawable/plinko_blank</item>\n'
                 '    </style>\n'
                 '</resources>\n')
-        info('[hook] 主题 res/values/styles.xml 已写入')
+        info('[hook] 主题 res/values/styles.xml + 透明图标已写入')
     except Exception as e:
         info('[hook] 主题写入失败(跳过): %r' % (e,))
         return 0

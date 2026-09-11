@@ -661,7 +661,21 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #      要么"空白 2 秒", 要么"交接闪一下" —— 玩家选了前者。
 #      想真解决只能让 **Kivy 早一点画第一帧**(缩短那 2 秒), 那是另一件事(优化启动耗时)。
 #   `fx_probe` 的 presplash 门禁跟着回到"**还是那张纯色图**"(尺寸 1080x1920 + 体积 <= 32KB)。
-version = 0.6.40
+# 0.6.41(2026-09-11): 关掉系统启动图上那个**应用图标**(玩家报「打开 app 后有一个奇怪的图标」)。
+#   真机录屏(xiaotu.mp4, 1200x2608)逐帧量: 点开 app 后屏幕上先出现一个 **415~426px 的方块**
+#   (白色圆角方块里一个迷你棋盘 = 我们的 launcher 图标), 亮约 1 秒 -> 变灰淡出 -> 一片空暗
+#   -> 才轮到那行字。那就是 Android 12+ **强制**的系统启动图(`targetSdk=33` + 没自定义
+#   `windowSplashScreen*` 时, 平台默认画应用图标)。
+#   改法: `p4a/hook.py` 注入的主题里再加一条 ——
+#     `<item name="android:windowSplashScreenAnimatedIcon">@drawable/plinko_blank</item>`
+#   并在 `res/drawable/plinko_blank.xml` 写一张**全透明的 1dp 方块**。图标不画了, 整层就是
+#   一片 `windowSplashScreenBackground`(#0b1220) —— 与系统 presplash、加载页三处同色。
+#   ⚠️ **为什么不用它来显示"标题"**: 那个图标的尺寸由平台定死(288dp), 跟我们那行字对不上;
+#      而且 0.6.39 已经证明了"两个渲染器画同一行字"必然闪(PIL vs Kivy)。所以只能是透明。
+#   ⚠️ 风险: 主题写错会让 app 起不来。这里 parent 沿用 p4a 原来那个 `Theme.NoTitleBar`,
+#      只加 3 条 item, 改动面压到最小。hook 已离线单测(产物 XML 可解析 + 幂等)。
+version = 0.6.41
+
 
 
 
