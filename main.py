@@ -7084,8 +7084,10 @@ class RootWidget(BoxLayout):
 # =============================================================================
 # App 入口 / 冒烟
 # =============================================================================
-# 加载页那张图的进场动画参数。图**和系统 presplash 是同一个文件**(见 _loadveil_src),
+# 加载页那张图的动画参数。图**和系统 presplash 是同一个文件**(见 _loadveil_src),
 # 所以"系统 splash -> 加载页"的交接是连续的; 这一段只是在那张图上加一点"活气"。
+# ⚠️ `LOADVEIL_ASPECT` 现在**只当"资产对不对"的交叉校验**用(_veil_fit 已改成"给整窗,
+#    摆放交给 fit_mode"); 画出去多大由 `fit_mode` + 贴图原生尺寸决定, 不由它决定。
 LOADVEIL_ASPECT = 1080.0 / 1920.0   # presplash.png 的宽高比
 # ⚠️ 加载页底色必须**等于 presplash.png 自己的底色**(实测四角全是 #0b1220), 否则那张图会在
 #    屏幕上显示成一个"方块"; 用了它, 图溢出屏幕的部分也看不出来。
@@ -7107,19 +7109,34 @@ def _loadveil_src():
 
 
 def _veil_fit(w, h):
-    """加载图在 w×h 页面里的基准尺寸 —— **cover: 铺满整屏**(超出的部分裁掉), 保持原图比例。
+    """加载图的基准尺寸 —— **就是整窗**(不裁不缩), 怎么摆放交给 `fit_mode`。返回 (宽, 高)。
 
-    ⚠️ **必须是 cover, 不能是 contain。** 系统 presplash 是 Android 拿这张图当
-    `windowBackground` **铺满整屏**画的 ⇒ "打开 app"看到的第一眼就是铺满那一版。
-    我们这边如果只做 contain(把整张图完整放下), 就会**比它小一圈**, 玩家看到的是:
-    「打开app显示一个最大的加载, **然后迅速变小**」(2026-09-11 原话)。
-    铺满之后两者大小一致, 交接处没有尺寸跳变 —— 溢出裁掉的本来就是它自己的底色。
-    返回 (宽, 高), 宽高比恒等于 LOADVEIL_ASPECT。"""
+    ⚠️ **这里原来是 cover(铺满整屏), 已推翻。** 依据是上一版 docstring 里那句
+    「系统 presplash 是 Android 拿这张图当 `windowBackground` **铺满整屏**画的」——
+    **那句是错的**: p4a v2024.01.21 的 `PythonActivity.getLoadingScreen()` 建的是
+    `ImageView` + `FILL_PARENT` + **`setScaleType(ImageView.ScaleType.FIT_CENTER)`**,
+    位图走 `openRawResource` + `BitmapFactory.decodeStream`(不按密度缩放), 留白填
+    `presplash_color`。也就是**等比缩放、居中、留白**(= contain), 全树 grep `windowBackground`
+    零命中(没有"主题把 presplash 拉伸"的另一层)。v0.6.29 照那句错注释从 contain 改回 cover,
+    **方向反了**。
+
+    ⚠️⚠️ **只改这一个函数是空操作, 必须与 `fit_mode="contain"` 同时成立。**
+    Kivy 真正画出去的矩形是 `norm_image_size`, 不是控件 `size`(`kivy/data/style.kv` 的
+    `<Image,AsyncImage>` 规则), 而 `AsyncImage` 的 `fit_mode` **默认 `"scale-down"`**(只许缩不许放):
+    只要盒子在某一维超过贴图原生 1080x1920, 画出去就被**夹死在 1080x1920**。实测(真 Kivy
+    主循环读渲染指令): 盒 1200x2608 与 1467x2608 画出来**都是** 1080x1920 @ (60,344)。
+      · 只给整窗、不加 contain -> cover 盒照样被夹, **改了等于没改**(1200 宽屏上 contain 盒
+        与 cover 盒画出去是同一个 1080x1920 —— 这正是 v0.6.27/29/32 三次改动全部"无效"的原因);
+      · 只加 contain、盒子仍是 cover -> 画成"放大 1.25 倍再裁掉两边", 把 PC 那台唯一正常的
+        机器改坏。
+    两件一起做, 画出去的矩形才逐像素等于系统那张 FIT_CENTER(实测算例: 1200x2608 -> 两边都是
+    1200x2133.3)。
+
+    ⚠️ 呼吸(±1.8%)也依赖这条: 盒子要小于贴图, 缩放才传得到画面上。盒子以前恒大于贴图,
+    呼吸被夹成 **0 像素** —— 手机上的表现就是"完全静止不动"(玩家 2026-09-11 报的)。
+    真机上那一页到底能活多久还没测过, 但"改完能不能看见动"取决于这两条一起成立。"""
     try:
-        bw = h * LOADVEIL_ASPECT
-        if bw < w:          # 比屏幕"瘦"(如平板 15:10) -> 按宽度顶满, 高度溢出
-            bw = w
-        return bw, bw / LOADVEIL_ASPECT
+        return float(w), float(h)
     except Exception:
         return 0.0, 0.0
 
@@ -7191,18 +7208,32 @@ class _LoadVeil(Widget):
         self._img = None
         self._base_w = 0.0
         self._base_h = 0.0
+        # 贴图到位了没有 —— 没到位时 `tick()` **不写 size**(把它归零), 见那里的注释。
+        # ⚠️ 判据用 `AsyncImage` 的 `on_load` 事件, **不能**用 `texture.size == (32,32)`:
+        #    那是 Kivy 内部占位图的实现细节(`kivy/loader.py` 的 image-loading.zip), 换版本就静默失效。
+        self._tex_ok = False
         self._t0 = time.time()
         try:
             from kivy.uix.image import AsyncImage
             _src = _loadveil_src()
             if _src:
+                # ⚠️ **`fit_mode="contain"` 与 `_veil_fit` 返回整窗是一对, 缺一个就白改**:
+                #    默认是 `"scale-down"`(只许缩不许放), 盒子一旦在某一维超过贴图原生 1080x1920,
+                #    画出去就被夹死在 1080x1920 —— 而系统那张是 `FIT_CENTER`(= contain)。
+                #    完整实测数据与"三次改动为什么全废"的复盘都在 `_veil_fit` 的 docstring 里。
                 # ⚠️ 不写 allow_stretch/keep_ratio: 这两个在 Kivy 2.3 的 AsyncImage 上**已弃用**
-                #    (会刷两条 DeprecationWarning)。用不着它们 —— 我们把 size 按原图比例算好
-                #    (见 _sync 里的 LOADVEIL_ASPECT), 宽高比本来就严丝合缝。
-                self._img = AsyncImage(source=_src, size_hint=(None, None), mipmap=True)
+                #    (会刷两条 DeprecationWarning)。用不着它们 —— contain 自己就保持原图比例。
+                self._img = AsyncImage(source=_src, size_hint=(None, None), mipmap=True,
+                                       fit_mode="contain")
                 # ⚠️ 尺寸算出来之前**藏起来**(0x0) —— AsyncImage 的默认尺寸是 100x100,
                 #    不藏的话布局落定前会先闪一个 100x100 的小方块(就是玩家报的"突然变成小图")。
                 self._img.size = (0, 0)
+                self._img.bind(on_load=self._on_img_load)   # 解码完就放行(见 tick 的门)
+                # ⚠️ 兜底: `source` 是在 `super().__init__` 里赋的, `_load_source()` **那时已经跑过**——
+                #    若命中的是 Loader 缓存, `on_load` 可能在我们绑上之前就派发完了, 那就永远收不到。
+                #    所以再直接查一次代理图的状态(`ProxyImage.loaded`, 实测解码前后 False -> True)。
+                self._tex_ok = bool(getattr(getattr(self._img, "_coreimage", None),
+                                            "loaded", False))
                 self.add_widget(self._img)     # 先加 = 在下层, 文字盖在它上面
         except Exception:
             self._img = None
@@ -7212,6 +7243,10 @@ class _LoadVeil(Widget):
         self._lbl.bind(texture_size=self._sync)   # 文字一变就重排版(结果页会换字号/换内容)
         self._sub.bind(texture_size=self._sync)
         self._sync()
+
+    def _on_img_load(self, *_):
+        """贴图真的解码完了 —— 这一刻之前 `tick()` 一律不写 size(理由见 tick 里的门)。"""
+        self._tex_ok = True
 
     def set_title(self, text):
         try:
@@ -7277,6 +7312,17 @@ class _LoadVeil(Widget):
         后面未必有第二次机会。"""
         try:
             if self._img is None:
+                return
+            if not self._tex_ok:
+                # 贴图还没到位: **把尺寸归零**, 这一帧什么都不画。
+                # ⚠️ 必须"归零"而不是直接 `return`: Kivy 画的是 `norm_image_size`, 它由**控件 size**
+                #    算出来 —— 直接 return 只会让控件**停在上一层写下的尺寸**上, 于是一张 32x32 的
+                #    占位图在 contain 下会被放大成 **1200x1200 的一整屏糊斑**(实测; 它还是 8 帧动画,
+                #    会抽动), 在 scale-down 下则是屏幕正中一个 32px 的点(现状)。归零两种都不画。
+                # ⚠️ 空出来的那几帧屏幕上只有纯 `VEIL_BG`(#0b1220) —— 和 presplash 自己的底色
+                #    一模一样, 看不出"图没了"。它**不影响摘页**(摘页只看 `sfx.audio_ready`),
+                #    绝不会因为图没加载完就卡在加载页(项目红线: 绝不软锁)。
+                self._img.size = (0.0, 0.0)
                 return
             bx, by, bw, bh = self._veil_box()
             if bw <= 1.0 or bh <= 1.0:

@@ -523,7 +523,34 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   现在的面板(安卓): 音效就绪 / 语音就绪 / 音频后端 / 启动方式 / 音效等待
 #   fx_probe: 相关断言全部改成**行为断言**(直接问"产出的行里有没有它")—— 文本断言在这条上
 #   被自己的注释/文档串绊红了两次, 那是本轮的一个真实教训。
-version = 0.6.34
+# 0.6.35(2026-09-11): 修**加载页那张图的大小与"不动"**。
+#   玩家真机原话:「固定一个启动画面静止不动一段时间, **突然变成小图**, 然后突然就进游戏了」,
+#   以及「重放冷启动, 整个画面也不会缩放」。K90 Pro Max(屏 1200 宽)上实测的病根是两层:
+#   ① **画出去的不是我们设的尺寸**。Kivy 的 `<Image,AsyncImage>` 画的是 `norm_image_size`
+#      (`kivy/data/style.kv`), 而 `AsyncImage.fit_mode` **默认 `"scale-down"`(只许缩不许放)**:
+#      只要盒子在某一维超过贴图原生 1080x1920, 画出去就被**夹死在 1080x1920**。而 `_veil_fit`
+#      给的是 cover 盒(1467x2608) ⇒ 系统那张(FIT_CENTER = 1200x2133)与我们的差 **0.90 倍**,
+#      交接那一下就是"突然变小 10%"。
+#   ② **呼吸被夹成 0 像素**。呼吸只是把盒子 ×1.018, 盒子本来就大于贴图 ⇒ 放大缩小都被夹回
+#      1080x1920 ⇒ 画出去的矩形一个像素都不变 = 玩家说的"静止不动"。
+#   改法(**必须两件一起做, 缺一个都是空操作**):
+#      · `_veil_fit` 返回**整窗**(摆放交给 fit_mode);
+#      · `AsyncImage(..., fit_mode="contain")` —— 与系统那层 `FILL_PARENT + setScaleType(FIT_CENTER)`
+#        同规则。
+#      只改 `_veil_fit` = cover 盒照样被夹(这就是 v0.6.27/29/32 三次改动全部"无效"的原因:
+#      在 1200 宽的屏上 contain 盒与 cover 盒画出去是**同一个** 1080x1920);
+#      只加 contain = 放大 1.25 倍再裁掉两边, 把 PC 那台唯一正常的机器改坏。
+#   附带修掉解码期的占位图: AsyncImage 贴图到位前画的是 Kivy 的 32x32 占位图(`image-loading.zip`),
+#      改成 contain 后它会被放大成 **1200x1200 的一整屏糊斑**(实测), 所以在原尺寸下就是屏幕正中
+#      一个 32px 的点。现在加了 `_tex_ok` 门(`on_load` + `_proxy.loaded` 兜底): 没到位就把
+#      `_img.size` **归零**(不是裸 return —— 画的是 `norm_image_size`, 控件 size 不归零它照画)。
+#   已知不治(留作待办): ① 安卓 12+ 的**系统启动图**那一层(targetSdk=33 + 零自定义主题 ⇒ 平台
+#      默认图标 splash), 它与 `_veil_fit` 怎么改无关; ② **横拿冷启动**时加载页在 `LandLayer` 里
+#      被 `Rotate(90)`, 而系统那张是正的 —— 真机上没人验过。
+#   实测(src/工具链侧, 桌面): `--selftest` OK; `fx_probe` 新增的**几何门禁**(真 Image + 真
+#      presplash.png, 10 档机型断言"画出去的矩形逐像素等于系统 FIT_CENTER")全绿, 阴性对照
+#      (改回 cover + 默认 fit_mode)红 3 项, 其中 `K90: 画 1080x1920, 系统 1200x2133` 正是玩家那一跳。
+version = 0.6.35
 
 requirements = python3,kivy==2.3.0,pyjnius
 
