@@ -1828,6 +1828,9 @@ class Sfx:
         self.out = None
         self.bank = {}
         self.named = set()          # named 后端里已经可播的音效名
+        self._failed = []           # 加载失败的 (name, path): 后台重试, 见 _retry_failed
+        self._retry_wait = 0.6      # 重试间隔(秒)
+        self._retry_rounds = 12     # 重试轮数(≈7s), 还不成功就认命
         self.bake_ms = 0.0
         self.cached = False         # 本次启动是否命中磁盘缓存(没现场合成)
         self._scaled = {}
@@ -1885,6 +1888,7 @@ class Sfx:
         if self._load_cached(d, stamp, tag):
             self.cached = True
             self._prime_voice()
+            self._retry_failed()          # 缓存命中也可能有个别没加载上(语音是每次重载的)
             return
         _wav_wipe(d)
         lines = []
@@ -1896,6 +1900,7 @@ class Sfx:
                 _wav_write(path, pcm)
                 self.out.prime(name, path)
             except Exception:
+                self._failed.append((name, path))
                 continue
             self.named.add(name)
             lines.append("%s:%d" % (name, os.path.getsize(path)))
@@ -1905,7 +1910,43 @@ class Sfx:
                 f.write(tag + "\n" + "\n".join(lines))
         except Exception:
             pass
-        time.sleep(0.5)   # 等 SoundPool 异步解码完第一批音效, 否则首次运行必然全静音
+        time.sleep(0.5)   # 先给 SoundPool 的解码线程一点时间(load 是异步的, 没解码完 play 会返回 0)
+        self._retry_failed()
+
+    def _retry_failed(self):
+        """把加载失败的音效丢到后台重试几轮。
+
+        玩家 2026-09-11 报: 「有时候, 初次安装的时候必然没有声音, 关掉 app 再打开就有了」。
+        首装走的是**冷路径**: 先把整库合成一遍(纯 Python 浮点循环, 好几秒), SoundPool 的解码
+        线程被抢 CPU, `load()` 很容易返回 0; 而 `named` 是 play 的闸门(play 里
+        `elif name not in self.named: return False`), 不在里面就直接跳过 —— 于是**整局一声不响**,
+        只有重启(走缓存、解码快)才恢复。这里把失败的收进来后台重试, 通常一两轮内就齐了。
+        ⚠️ 不要退回"把上面那个 0.5s 调大": 既拖慢启动, 又救不了已经返回 0 的那批(那是**永久**失败)。
+        ⚠️ 也不要用 SoundPool.setOnLoadCompleteListener 当闸门 —— 那个 PythonJavaClass 代理是从
+        SoundPool 自己的线程回调过来的, 一旦失灵/被 GC 就是全库永久静音(见 __init__ 的注释)。
+        重试是"多试几次", 没有单点故障。"""
+        todo, self._failed = self._failed, []
+        if not todo:
+            return
+
+        def _worker(items):
+            for _ in range(self._retry_rounds):
+                time.sleep(self._retry_wait)
+                left = []
+                for name, path in items:
+                    try:
+                        self.out.prime(name, path)
+                        self.named.add(name)
+                    except Exception:
+                        left.append((name, path))
+                items = left
+                if not items:
+                    return
+
+        try:
+            threading.Thread(target=_worker, args=(todo,), daemon=True).start()
+        except Exception:
+            pass
 
     def _prime_voice(self):
         """预录语音直接 prime APK 内原文件(voice/*.wav), 不落缓存不进 stamp 指纹:
@@ -1914,6 +1955,7 @@ class Sfx:
             try:
                 self.out.prime(name, path)
             except Exception:
+                self._failed.append((name, path))
                 continue
             self.named.add(name)
 

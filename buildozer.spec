@@ -358,7 +358,10 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 0.6.8(2026-09-11): 修「玩的时候插耳机, 耳机里没声音(关掉 app 重开才有)」—— SoundPool 的输出路由
 #   是建流那一刻定下的, 插耳机不会搬过去。加了 ACTION_HEADSET_PLUG 监听, 插耳机也重建一次
 #   (原来只处理拔耳机的 ACTION_AUDIO_BECOMING_NOISY)。
-version = 0.6.8
+# 0.6.9(2026-09-11): 修「初次安装必然没声音, 关掉 app 再打开就有了」—— 首装走冷路径(先合成整库,
+#   好几秒), SoundPool 解码线程被抢 CPU, load() 返回 0; 而 named 是播放闸门, 失败是永久的, 整局
+#   一声不响。改成把加载失败的记下来后台重试(0.6s × 12 轮)。
+version = 0.6.9
 
 requirements = python3,kivy==2.3.0,pyjnius
 
