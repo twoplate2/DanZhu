@@ -5143,7 +5143,8 @@ def _pick_box(parent_box, self_box):
 
 def _startup_title():
     """「启动信息」那个弹窗的**标题**。玩家 2026-09-11 定稿:
-    「启动信息调整  从启动信息改为 跳跳的弹珠机v0.x.x」。
+    「启动信息调整  从启动信息改为 跳跳的弹珠机v0.x.x」, 随后补一句「**加一个空格**」
+    ⇒ 现在是「跳跳的弹珠机 v0.x.x」(游戏名与版本号之间留一个空格)。
 
     ⚠️ 版本号**全工程只在这里出现一次** —— 玩家同时要求「去掉其他地方的版本号」, 原先正文里
     那行 `v0.6.30 · 于 … 制作` 的版本前缀已经删掉, 只留制作时刻(见 `_build_info`)。
@@ -5152,7 +5153,7 @@ def _startup_title():
         v = _app_version()
     except Exception:
         v = ""
-    return ("跳跳的弹珠机%s" % v) if v else "跳跳的弹珠机"
+    return ("跳跳的弹珠机 %s" % v) if v else "跳跳的弹珠机"
 
 
 class RootWidget(BoxLayout):
