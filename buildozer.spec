@@ -550,7 +550,23 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   实测(src/工具链侧, 桌面): `--selftest` OK; `fx_probe` 新增的**几何门禁**(真 Image + 真
 #      presplash.png, 10 档机型断言"画出去的矩形逐像素等于系统 FIT_CENTER")全绿, 阴性对照
 #      (改回 cover + 默认 fit_mode)红 3 项, 其中 `K90: 画 1080x1920, 系统 1200x2133` 正是玩家那一跳。
-version = 0.6.35
+# 0.6.36(2026-09-11): 加载页**去掉所有动效, 固定显示一张图**(玩家定稿)。
+#   原话:「这样吧, 不折腾了, 启动的时候固定显示一个图片。**不做任何变化**」。
+#   删掉的是 v0.6.29~35 那一段"呼吸"(`LOADVEIL_BREATH_SEC/AMP` + `_veil_scale` 里的
+#   `sin` + `_LoadVeil._t0`)。它本意是"让这一页看着是活的", 但在真机上被 `fit_mode` 的
+#   夹断冻成 **0 像素**(玩家报的「静止不动」); v0.6.35 把夹断修好之后它才第一次真的动起来 ——
+#   而玩家的结论是**不要动**。
+#   现在这一页只做两件事: 尺寸与系统 presplash **逐像素一致**(v0.6.35 修的, 交接处看不见)
+#   + 盖住整屏吞掉触摸。图是死的, 从抬起到进游戏一个像素都不变。
+#   实测(src/工具链侧, 桌面): 逐帧读渲染真正用的矩形, 全程恒为 `540x960`(改之前是 530~548 在摆);
+#   `--selftest` OK; `fx_probe` 全绿, 其中"动作"那组门禁改成 **一个动效都没有** ——
+#   `LOADVEIL_GROW_*` 与 `LOADVEIL_BREATH_*` 都必须不存在、`_veil_scale` 在 10 秒里恒等于 1.0、
+#   `_LoadVeil` 不许再持有 `_t0`。
+#   ⚠️ **已知还在的一跳**(与本版无关, 不折腾): Android 12+ 那一层**系统启动图**(应用图标居中,
+#   实测 208x208) → p4a presplash(满屏棋盘), 约 2 倍放大。它由 targetSdk=33 + 零自定义主题决定,
+#   改 `_veil_fit`/`fit_mode` 永远动不了它; 要关掉只能给 app 换自定义主题
+#   (`windowSplashScreenBackground=#0b1220` + 透明图标), 玩家 2026-09-11 决定不做。
+version = 0.6.36
 
 requirements = python3,kivy==2.3.0,pyjnius
 

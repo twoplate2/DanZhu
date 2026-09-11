@@ -7093,8 +7093,10 @@ LOADVEIL_ASPECT = 1080.0 / 1920.0   # presplash.png 的宽高比
 #    屏幕上显示成一个"方块"; 用了它, 图溢出屏幕的部分也看不出来。
 #    (buildozer.spec 里 `android.presplash_color` 也是同一个值, 系统那层同样不闪。)
 VEIL_BG = "#0b1220"
-LOADVEIL_BREATH_SEC = 1.9           # 呼吸周期
-LOADVEIL_BREATH_AMP = 0.018         # 呼吸幅度(±1.8%)
+# ⚠️ 加载页**只有这一张图, 而且它是静止的** —— 历代动效(进场从小到大 v0.6.26~28 / 呼吸
+#    v0.6.29~35)都已删除, 玩家 2026-09-11 定稿:「启动的时候固定显示一个图片, **不做任何变化**」。
+#    详细留档(为什么两代动效都被打回)见 `_veil_scale` 的 docstring。这一页现在只做两件事:
+#    尺寸与系统 presplash **逐像素一致**(交接处什么都看不见) + 盖住整屏吞掉触摸。
 
 
 def _loadveil_src():
@@ -7142,25 +7144,21 @@ def _veil_fit(w, h):
 
 
 def _veil_scale(t):
-    """加载图在"这一页开了 t 秒"时的缩放系数: **只有呼吸**(±AMP, 周期 BREATH_SEC)。
+    """**已废弃, 恒定返回 1.0** —— 加载页现在是一张**完全静止**的图, 不做任何变化。
 
-    ⚠️ 这里原来还有一段"进场从小到大"(0.72 → 1.0 / 0.55s), **已删**。两个理由:
-      ① 它和系统 splash **冲突**: presplash 是铺满的, 进场从 0.72 起步就等于"先缩一圈再长大",
-         而玩家睁眼看到的第一眼正好是那个"缩" —— 原话:「打开app显示一个最大的加载, 然后
-         迅速变小」。
-      ② 它在真机上**根本来不及播**: `_t0` 从构造算起, 而第一帧要等 presplash 撤掉才画出来,
-         中间可能早过了 0.55 秒 ⇒ 一睁眼就是终态 ⇒ 玩家原话里的「**然后啥也没有动**」。
-    现在: 铺满 + 直接呼吸, 交接处没有任何尺寸跳变, 动的东西从头到尾都看得见。
+    ⚠️ 玩家 2026-09-11 定稿: 「启动的时候固定显示一个图片, **不做任何变化**」。
+    这一页存在的全部意义就是"接住系统那张 presplash", 而系统那张是**死的**; 我们这边只要
+    尺寸与它逐像素一致, 交接处就什么都看不见 —— 那才是"不折腾"。
 
-    ⚠️ 为什么不是"循环进度条"(玩家问过"和 windows 一样搞个循环进度条…感觉不太合适?"):
-    进度条承诺的是"我能告诉你还剩多少", 而这个等待**没有可报的进度**(热启动半秒 / 冷启动几秒,
-    没有中间态)。呼吸只传达"我在", 尺寸有终态, 不承诺任何剩余时间。"""
-    try:
-        import math
-        return 1.0 + LOADVEIL_BREATH_AMP * math.sin(
-            2.0 * math.pi * t / LOADVEIL_BREATH_SEC)
-    except Exception:
-        return 1.0
+    删掉的历代动效(留档, 别再往回加):
+      · "进场从小到大" `LOADVEIL_GROW_FROM=0.72 / _SEC=0.55`(v0.6.26~28) —— 与系统那张铺满的
+        尺寸冲突(起点一定比它小), 且真机上根本来不及播;
+      · "呼吸" `LOADVEIL_BREATH_AMP=0.018 / _SEC=1.9`(v0.6.29~35) —— 本意是"让这一页看着是活的",
+        但在真机上被 `fit_mode` 的夹断冻成 **0 像素**, 玩家报的是「**静止不动**」; 修好夹断之后
+        它才第一次真的动起来 —— 而玩家的结论是**不要动**。
+    ⚠️ 保留这个函数名(而不是整段删掉)只是为了让老调用点/探针改起来最小; 它现在没有时间参数
+    的语义了(`t` 被忽略)。`__init__` 里那个 `self._t0` 一并删除。"""
+    return 1.0
 
 
 class _LoadVeil(Widget):
@@ -7212,7 +7210,6 @@ class _LoadVeil(Widget):
         # ⚠️ 判据用 `AsyncImage` 的 `on_load` 事件, **不能**用 `texture.size == (32,32)`:
         #    那是 Kivy 内部占位图的实现细节(`kivy/loader.py` 的 image-loading.zip), 换版本就静默失效。
         self._tex_ok = False
-        self._t0 = time.time()
         try:
             from kivy.uix.image import AsyncImage
             _src = _loadveil_src()
@@ -7303,13 +7300,16 @@ class _LoadVeil(Widget):
             return 0.0, 0.0, 0.0, 0.0
 
     def tick(self):
-        """每帧: **重算基准尺寸 + 推进动画**。由 `RootWidget._frame` 调 —— 自己不持有 Clock:
+        """每帧: **重算尺寸**并把图摆正。由 `RootWidget._frame` 调 —— 自己不持有 Clock:
         切后台回来直接跳终态(和 WinPileFX 同一条纪律)。
 
+        ⚠️ 它**不再是动画推进器**: 这一页现在是一张静止的图(玩家 2026-09-11 定稿
+        「不做任何变化」)。留着"每帧算"只是为了跟上窗口尺寸变化(`_enter_immersive` 那一跳),
+        不是为了动效。
+
         ⚠️ 尺寸**每帧现算**, 不依赖"布局什么时候通知我"。那是个时序依赖, 而**桌面和真机的时序
-        不一样** —— 玩家 2026-09-11 实测:「PC 上会缩放, 是个动态的」, 而真机上那页不动。
-        绑在 `_sync`(pos/size 变化)上就只在"尺寸真的变了"时才算一次, 真机上一旦第一枪打歪,
-        后面未必有第二次机会。"""
+        不一样**。绑在 `_sync`(pos/size 变化)上就只在"尺寸真的变了"时才算一次, 真机上一旦第一枪
+        打歪, 后面未必有第二次机会。"""
         try:
             if self._img is None:
                 return
@@ -7328,9 +7328,7 @@ class _LoadVeil(Widget):
             if bw <= 1.0 or bh <= 1.0:
                 return                    # 尺寸还没落定 -> 图保持藏着(0x0), 不闪方块
             self._base_w, self._base_h = _veil_fit(bw, bh)
-            k = _veil_scale(time.time() - self._t0)
-            w = self._base_w * k
-            h = self._base_h * k
+            w, h = self._base_w, self._base_h    # **静止**: 不做任何变化(见 `_veil_scale`)
             self._img.size = (w, h)
             self._img.pos = (bx + bw * 0.5 - w * 0.5, by + bh * 0.5 - h * 0.5)
         except Exception:
