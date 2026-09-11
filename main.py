@@ -1948,27 +1948,39 @@ class Sfx:
             pass
         self._audio_ready = True
 
-    def audio_status(self):
-        """隐藏菜单里的一行音频体检(长按标题那个弹窗里显示)。
+    def audio_detail(self):
+        """隐藏菜单里"音频体检"那几行(每行一个字段)。
 
-        玩家报的那个 bug 的**所有候选原因在产物里长得一模一样**(静默/不抛异常/不留痕),
-        所以先把真值摆到能一眼看到的地方。
-        ⚠️ 关键: 报 **后端真的握着几个 sid**(`out._ids`) 和**闸门放行了几个**(`named`)两个数。
-        病灶正是"闸门满、后端缺"—— 只报闸门会显示全绿, 那比不显示更有害。
-        ⚠️ 整段 try/except: 这只是隐藏功能里的一行, 绝不把弹窗带崩。"""
+        玩家 2026-09-11 报的「初次安装必然没声音」—— 它的**所有候选原因在产物里长得一模一样**
+        (静默 / 不抛异常 / 不留痕), 没有 adb 就只能把真值按字段摆开, 一次截图定位到哪一支。
+        ⚠️ 最要紧的是"音效就绪": 报的是**后端真的握着几个 sampleId**, 不是闸门放行了几个 ——
+        病灶正是两者不等(闸门满、后端缺), 只报闸门会显示全绿, 那比不显示更有害。
+        ⚠️ 整段 try/except: 这只是隐藏菜单里的几行, 绝不把弹窗带崩。"""
         try:
             n_gate = len(self.named)
             cnt = getattr(self.out, "loaded_count", None)
             n_back = cnt() if cnt is not None else n_gate
-            s = "音效 %d/%d" % (n_back, n_gate)
-            if n_back < n_gate:
-                s += "(后端缺 %d)" % (n_gate - n_back)
-            return "%s · %s · %s启动 %.0fms · 重建%d" % (
-                s, getattr(self.out, "name", "静音"),
-                "热" if self.cached else "冷", self.bake_ms,
-                getattr(self.out, "rebuild_count", 0))
+            backend = getattr(self.out, "name", "静音")
+            if getattr(self.out, "mode", "") != "named":
+                # PCM 后端(PC 的 winmm / Kivy-SoundLoader)不走"按名字加载"那套, named 本来就是空的
+                # —— 报 "0/0" 会把人吓一跳, 直接说清楚这个字段对它不适用。
+                ready = "不适用(该后端不走 sampleId)"
+            elif n_back < n_gate:
+                ready = "%d / %d   后端缺 %d" % (n_back, n_gate, n_gate - n_back)
+            else:
+                ready = "%d / %d" % (n_back, n_gate)
+            return [
+                "音频后端　%s" % backend,
+                "音效就绪　%s" % ready,
+                "启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms),
+                "后端重建　%d 次" % getattr(self.out, "rebuild_count", 0),
+            ]
         except Exception:
-            return ""
+            return []
+
+    def audio_status(self):
+        """上面那几行的一行版(日志与门禁用; 界面上显示的是分栏)。"""
+        return "  |  ".join(self.audio_detail())
 
     def _bake_pcm(self):
         self.bank = bake_bank()             # 整体赋值(引用切换), 读侧只会看到空或全量
@@ -5418,30 +5430,35 @@ class RootWidget(BoxLayout):
                             color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
             ver_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(ver_lbl)
-        # 音频体检(2026-09-11 加): 玩家报的「初次安装必然没声音」—— 它的所有候选原因在产物里
-        # **长得一模一样**(静默/不抛异常/不留痕), 没有 adb 就只能靠这一行把真值摆出来。
-        # 关键读数是 **后端真的握着几个 sampleId** 与 **闸门放行了几个**, 两者不等就是病灶所在
-        # (只报闸门会显示"全绿", 那比不显示更有害)。
-        # ⚠️ 必须是**独立的一行**: 实测把它并进上面那行是 658px, 而弹窗内容区只有 422px ——
-        #    会折成两行而标签高度只有 28dp, 第二行被裁掉、玩家看到的是一句缺尾巴的话。
-        #    单独一行 334px, 放得下。
+        # 音频体检(2026-09-11 加): 玩家报的「初次安装必然没声音」—— 它的**所有候选原因在产物里
+        # 长得一模一样**(静默 / 不抛异常 / 不留痕), 没有 adb 就只能靠这几行把真值摆出来。
+        # 玩家 2026-09-11 定稿: 「这个界面布局可以改改, 可以有更多空白来显示, 信息可以多, 高度有空间」
+        #   → 所以不再挤成一行, 改成一块带标题的字段栏, 弹窗高度跟着加。
+        # ⚠️ **绝不能并进版本那一行**: 实测合并后 658px > 弹窗内容区 422px, Kivy 会折成两行,
+        #    而那个标签固定 dp(28) —— 第二行被裁掉, 玩家看到的是一句缺尾巴的话(实测踩到, 见 v0.6.12)。
         # ⚠️ 只在隐藏菜单(长按标题 3 秒)显示, 不进成绩面板 —— 成绩面板只放成绩(用户定稿)。
         try:
-            _audio = self.sfx.audio_status()
+            _lines = self.sfx.audio_detail()
         except Exception:
-            _audio = ""
-        if _audio:
-            aud_lbl = Label(text=_audio, font_size='16sp', halign='center', valign='middle',
-                            color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
-            aud_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-            content.add_widget(aud_lbl)
+            _lines = []
+        if _lines:
+            _head = Label(text='音频体检', font_size='16sp', bold=True, halign='center',
+                          valign='middle', color=hex_rgb(COL_SUB) + (1,),
+                          size_hint_y=None, height=dp(24))
+            _head.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+            content.add_widget(_head)
+            for _ln in _lines:
+                _l = Label(text=_ln, font_size='15sp', halign='left', valign='middle',
+                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(24))
+                _l.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+                content.add_widget(_l)
         start_btn = Button(text='开始测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = self._popup(0.84, 468, title='', content=content,
+        popup = self._popup(0.84, 620, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
