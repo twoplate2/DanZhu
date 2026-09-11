@@ -1632,6 +1632,7 @@ class _SoundPoolOut:
         self._voices = voices
         self._ids = {}
         self._paths = {}              # name -> wav 路径(拔耳机后重建时重新 load 用)
+        self.rebuild_count = 0        # 重建次数(隐藏菜单的诊断行要显示; 正常局应当恒为 0)
         self._sp = self._build_sp()
         self._receiver = None
         self._register_noisy_receiver()
@@ -1683,8 +1684,16 @@ class _SoundPoolOut:
                     try:
                         if str(intent.getAction()) == _plug_action:
                             st = intent.getIntExtra("state", -1)
+                            if self._plugged is None:
+                                # ⚠️ ACTION_HEADSET_PLUG 是 **sticky** 广播: registerReceiver 会
+                                # 立刻回放一次"当前状态"。这一条**只记初值、绝不重建**。
+                                # 旧代码写的是 `if st == self._plugged: return`, 而初值是 None、
+                                # st 恒为 0/1/-1 ⇒ 恒假、那个 return 永不生效 ⇒ **每次启动都白重建
+                                # 一次 SoundPool**(还会在冷路径烘焙中途清掉 _ids, 见 _rebuild)。
+                                self._plugged = st
+                                return
                             if st == self._plugged:
-                                return            # sticky 回放(启动那一次)/无关抖动: 不动
+                                return            # 真·状态没变: 不动
                             self._plugged = st
                     except Exception:
                         pass
@@ -1698,15 +1707,24 @@ class _SoundPoolOut:
             self._receiver = None
 
     def prime(self, name, path):
-        sid = self._sp.load(path, 1)
-        if not sid:                          # 0 = 加载失败(文件坏了/格式不对)
+        self._paths[name] = path             # ⚠️ 先记"应到", 再 load
+        sid = self._sp.load(path, 1)         # (写在 load 之后的话, load 失败的名字永远进不了
+        if not sid:                          #   _paths, 后面任何一次重建都救不回它)
             raise RuntimeError("SoundPool.load failed: " + path)
         self._ids[name] = sid
-        self._paths[name] = path
 
     def _rebuild(self):
-        """耳机拔出后底层音频流被系统断开: release 旧的, 重建新 SoundPool 并重新 load。"""
+        """路由变了(插/拔耳机)后重建: release 旧的, 建新池, 把**应到清单**全部重新 load。
+
+        ⚠️ 遍历必须用**快照**: 冷路径下烘焙线程正在往 `_paths` 里塞东西, 直接迭代它会在"字典
+        在迭代中被改"时抛 `RuntimeError`, 被外层 `except` 吞掉 → 循环当场中断、`_ids` 停在
+        半路 —— 而 `Sfx.named` 早已被烘焙线程填满 ⇒ **闸门放行、后端没有 sid ⇒ 整局静默**。
+        ⚠️ 收尾还要对账: 中断点之后那批名字在 `_paths` 里有、`_ids` 里没有, 在这里补一次;
+        仍补不上的交给 Sfx 的 _retry_failed 去重试。
+        ⚠️ 注意 _rebuild 跑在 Android **主线程**(onReceive 默认线程): 持锁/长循环会卡 UI,
+        所以这里只做"重建 + 一轮对账", 不做等待。"""
         try:
+            self.rebuild_count += 1
             old = self._sp
             self._ids = {}
             self._sp = self._build_sp()
@@ -1714,13 +1732,43 @@ class _SoundPoolOut:
                 old.release()
             except Exception:
                 pass
-            for name, path in self._paths.items():
+            for name, path in list(self._paths.items()):
                 try:
                     self.prime(name, path)
                 except Exception:
                     pass
         except Exception:
             pass
+
+    def loaded_count(self):
+        """后端**真的**握着几个能播的 sampleId(隐藏菜单的诊断行要用)。
+        ⚠️ 不能拿 Sfx.named 冒充它 —— 病灶正是"闸门满、后端缺"。"""
+        return len(self._ids)
+
+    def probe_all(self):
+        """所有已加载的 sample 是不是**真的能播**了(0 增益试播当探针)。
+
+        `SoundPool.load()` 返回了 sampleId **不等于**解码完了; 没解码完 `play()` 返回 0、
+        静默什么都不做 —— 这就是"音效都在、就是不响"的形态。而 SDK 只给了这一个办法去问
+        "现在能播了吗"(不走 setOnLoadCompleteListener: 那个跨线程 JNI 代理一旦失灵/被 GC
+        就是全库永久静音, 见 __init__ 的注释)。
+        返回 True = 全部能播(或没东西可探)。
+        ⚠️ 探针自己出错一律当"能播": 它只是个护栏, 绝不允许反过来把玩家锁在加载页。"""
+        ids = list(self._ids.values())       # 快照: 烘焙线程可能正在往里加
+        if not ids:
+            return True
+        try:
+            for sid in ids:
+                st = self._sp.play(sid, 0.0, 0.0, 1, 0, 1.0)   # 0 增益 → 听不见
+                if not st:
+                    return False
+                try:
+                    self._sp.stop(st)        # 立刻收流, 别占满 maxStreams
+                except Exception:
+                    pass
+        except Exception:
+            return True
+        return True
 
     def play_named(self, name, gain01):
         sid = self._ids.get(name)
@@ -1829,6 +1877,8 @@ class Sfx:
         self.bank = {}
         self.named = set()          # named 后端里已经可播的音效名
         self.baked = False          # 整库烘焙是否收工(UI 的冷启动加载页按它收尾, 见 _LoadVeil)
+        self._audio_ready = False   # 烘完 + **探到真的能播** 才为真(见 _await_ready)。默认 False:
+                                    # 但 !enabled / 后端探测不可用时一律放行 —— 绝不软锁
         self._failed = []           # 加载失败的 (name, path): 后台重试, 见 _retry_failed
         self._retry_wait = 0.6      # 重试间隔(秒)
         self._retry_rounds = 12     # 重试轮数(≈7s), 还不成功就认命
@@ -1862,6 +1912,63 @@ class Sfx:
             pass
         self.bake_ms = (time.perf_counter() - t0) * 1000.0
         self.baked = True               # ⚠️ 放在 except 之后: 烘失败了也要放行, 否则加载页永不消失(软锁)
+        self._await_ready()             # 再等"真的能播"(带硬超时), 见该方法的注释
+
+    # ---- 冷启动"真的能播了吗"的护栏(首次安装必然没声音的正面修复) -------------
+    SFX_READY_TIMEOUT = 6.0             # 最多等这么久, 到点无条件放行(绝不软锁 —— 项目红线)
+    SFX_READY_POLL = 0.15               # 探测间隔
+
+    def audio_ready(self):
+        """加载页什么时候可以摘: 音效关了(没什么可等) 或 烘完且探到真能播。"""
+        return (not self.enabled) or self._audio_ready
+
+    def _await_ready(self):
+        """等"真的能播"再放行 —— 这是冷启动加载页的摘页判据。
+
+        ⚠️ 为什么不是"烘完就放行": `SoundPool.load()` 是异步的。它**返回了 sampleId 不代表
+        解码完了**; 没解码完 `play()` 返回 0(静默什么都不做), 而 `named` 闸门早就放行了 ——
+        于是"所有音效都在、就是不响", 且不抛异常、不留痕。这正是 `BUILD_APK.md` 里记着的
+        「**首次安装打开 App 必然全静音**, 第二次打开走缓存、速度快所以能响」的根因
+        (玩家 2026-09-11 原话: 「初次安装的时候必然没有声音, 重开就有了」)。
+        以前扛这件事的只有一行 `time.sleep(0.5)`; 而且 v0.6.10 把烘焙挪到后台线程之后,
+        加载页在 `baked` 那一刻就摘 —— 连那 0.5 秒的缓冲也没了(sync=True 时代后面还有
+        "整棵界面建完"的自然缓冲)。所以改成探到真值再摘。
+        ⚠️ 硬超时: 探不到也放行。**这是这条路的唯一出口, 不许去掉**(探针本身也可能失灵)。"""
+        try:
+            probe = getattr(self.out, "probe_all", None)
+            if probe is None:                 # 后端没有探针(桌面/wavesound/静音) → 不等
+                self._audio_ready = True
+                return
+            t0 = time.time()
+            while time.time() - t0 < self.SFX_READY_TIMEOUT:
+                if probe():
+                    break
+                time.sleep(self.SFX_READY_POLL)
+        except Exception:
+            pass
+        self._audio_ready = True
+
+    def audio_status(self):
+        """隐藏菜单里的一行音频体检(长按标题那个弹窗里显示)。
+
+        玩家报的那个 bug 的**所有候选原因在产物里长得一模一样**(静默/不抛异常/不留痕),
+        所以先把真值摆到能一眼看到的地方。
+        ⚠️ 关键: 报 **后端真的握着几个 sid**(`out._ids`) 和**闸门放行了几个**(`named`)两个数。
+        病灶正是"闸门满、后端缺"—— 只报闸门会显示全绿, 那比不显示更有害。
+        ⚠️ 整段 try/except: 这只是隐藏功能里的一行, 绝不把弹窗带崩。"""
+        try:
+            n_gate = len(self.named)
+            cnt = getattr(self.out, "loaded_count", None)
+            n_back = cnt() if cnt is not None else n_gate
+            s = "音效 %d/%d" % (n_back, n_gate)
+            if n_back < n_gate:
+                s += "(后端缺 %d)" % (n_gate - n_back)
+            return "%s · %s · %s启动 %.0fms · 重建%d" % (
+                s, getattr(self.out, "name", "静音"),
+                "热" if self.cached else "冷", self.bake_ms,
+                getattr(self.out, "rebuild_count", 0))
+        except Exception:
+            return ""
 
     def _bake_pcm(self):
         self.bank = bake_bank()             # 整体赋值(引用切换), 读侧只会看到空或全量
@@ -5442,6 +5549,16 @@ class RootWidget(BoxLayout):
                              % time.strftime(BUILD_TIME_FMT, time.localtime(t)))
         except Exception:
             pass
+        # 音频体检(2026-09-11 加): 玩家报的「初次安装必然没声音」—— 它的所有候选原因在产物里
+        # **长得一模一样**(静默/不抛异常/不留痕), 没有 adb 就只能靠这一行把真值摆出来。
+        # 关键读数是 **后端真的握着几个 sid** 与 **闸门放行了几个**, 两者不等就是病灶所在。
+        # ⚠️ 只在隐藏菜单(长按标题)显示, 不进成绩面板 —— 成绩面板只放成绩(用户定稿)。
+        try:
+            _st = self.sfx.audio_status()
+            if _st:
+                parts.append(_st)
+        except Exception:
+            pass
         return ' · '.join(parts)
 
     def _bench_done(self, flights, frames, fps_list):
@@ -6332,11 +6449,13 @@ class RootWidget(BoxLayout):
 
     def _frame(self, dt):
         self._check_title_hold()
-        # 冷启动加载页收尾: 音效库烘完就摘掉(见 _LoadVeil)。
-        # ⚠️ 判据只看 `baked`(由 Sfx._bake 在**成功和失败两条路**上都置位), 不看"加载了几个" ——
-        #    万一某个音效永远加载不上, 这里也绝不能把玩家永久锁在加载页(绝不软锁那条红线)。
+        # 冷启动加载页收尾: 音效库**真的能播**了就摘掉(见 _LoadVeil / Sfx.audio_ready)。
+        # ⚠️ 判据是"烘完 **且** 探到真能播(或硬超时)", 不是"烘完就摘" —— `SoundPool.load()`
+        #    返回 sampleId ≠ 解码完, 没解码完 play() 返回 0 静默跳过。这正是 BUILD_APK.md 里
+        #    记的「首次安装打开 App 必然全静音」的根因。
+        # ⚠️ 绝不软锁: audio_ready() 里 `!enabled` 与"探针不可用"都直接放行, 且等待有硬超时。
         _veil = getattr(self, "_load_veil", None)
-        if _veil is not None and getattr(self.sfx, "baked", True):
+        if _veil is not None and self.sfx.audio_ready():
             self._load_veil = None
             try:
                 if _veil.parent is not None:
@@ -6630,7 +6749,7 @@ class PlinkoApp(App):
         # 冷启动加载页: 音效库没烘完就盖住整屏(不盖的话首装前几秒是黑的, 而且能按发射出哑球)。
         # 后 add 的在上层, 所以它就是最上面那层。烘完由 RootWidget._frame 摘掉。
         self.veil = None
-        if sfx.enabled and not getattr(sfx, "baked", True):
+        if not sfx.audio_ready():
             self.veil = _LoadVeil(size_hint=(1, 1))
             anchor.add_widget(self.veil)
             self.rootw._load_veil = self.veil      # 交给 _frame 收尾

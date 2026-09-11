@@ -364,7 +364,11 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 0.6.10(2026-09-11): 冷启动加"正在准备音效…"加载页。原来 Sfx(..., sync=True) 是在建 UI **之前**
 #   在主线程把整库烘完的 —— 首装那几秒玩家看到的是一块黑屏(窗口在、控件一个没有)。现在改成后台
 #   烘焙 + 加载页盖住整屏并吞掉触摸(不吞的话 state 还是 ready, 能按发射出一颗没音效的球)。
-version = 0.6.10
+# 0.6.11(2026-09-11): 正面修「首次安装必然没声音」—— BUILD_APK.md 早就记过根因: SoundPool.load()
+#   是异步的, 返回 sampleId ≠ 解码完, 没解码完 play() 返回 0(静默)。现在加载页改成"探到真的能播
+#   再摘"(0 增益试播当探针 + 6s 硬超时), 不再"烘完就摘"; 顺带修 sticky 广播的死守卫(旧代码拿
+#   0/1 比 None 恒假 ⇒ 每次启动白重建一次 SoundPool); 隐藏菜单加一行音频体检。
+version = 0.6.11
 
 requirements = python3,kivy==2.3.0,pyjnius
 
