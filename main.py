@@ -1828,6 +1828,7 @@ class Sfx:
         self.out = None
         self.bank = {}
         self.named = set()          # named 后端里已经可播的音效名
+        self.baked = False          # 整库烘焙是否收工(UI 的冷启动加载页按它收尾, 见 _LoadVeil)
         self._failed = []           # 加载失败的 (name, path): 后台重试, 见 _retry_failed
         self._retry_wait = 0.6      # 重试间隔(秒)
         self._retry_rounds = 12     # 重试轮数(≈7s), 还不成功就认命
@@ -1860,6 +1861,7 @@ class Sfx:
         except Exception:
             pass
         self.bake_ms = (time.perf_counter() - t0) * 1000.0
+        self.baked = True               # ⚠️ 放在 except 之后: 烘失败了也要放行, 否则加载页永不消失(软锁)
 
     def _bake_pcm(self):
         self.bank = bake_bank()             # 整体赋值(引用切换), 读侧只会看到空或全量
@@ -6330,6 +6332,17 @@ class RootWidget(BoxLayout):
 
     def _frame(self, dt):
         self._check_title_hold()
+        # 冷启动加载页收尾: 音效库烘完就摘掉(见 _LoadVeil)。
+        # ⚠️ 判据只看 `baked`(由 Sfx._bake 在**成功和失败两条路**上都置位), 不看"加载了几个" ——
+        #    万一某个音效永远加载不上, 这里也绝不能把玩家永久锁在加载页(绝不软锁那条红线)。
+        _veil = getattr(self, "_load_veil", None)
+        if _veil is not None and getattr(self.sfx, "baked", True):
+            self._load_veil = None
+            try:
+                if _veil.parent is not None:
+                    _veil.parent.remove_widget(_veil)
+            except Exception:
+                pass
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
             self._last_win_size = ws
@@ -6552,6 +6565,46 @@ class RootWidget(BoxLayout):
 # =============================================================================
 # App 入口 / 冒烟
 # =============================================================================
+class _LoadVeil(Widget):
+    """冷启动"音效库烘焙中"的加载页: 盖住整屏 + 吞掉所有触摸。
+
+    玩家 2026-09-11 要求: 「初次安装时如果音效库还没合成完, 就一直卡在加载界面, 而不是主界面」。
+    原来 `Sfx(..., sync=True)` 是在**建 UI 之前**在主线程把整库烘完的 —— 玩家看到的是几秒钟的
+    **黑屏**(窗口已经在了, 但一个控件都还没建), 而且那几秒 Kivy 主循环被阻塞, 什么都画不出来。
+    现在改成后台烘焙 + 这一页盖住: 窗口立刻有内容, 而且这一页是活的。
+    ⚠️ 触摸必须吞掉: 不吞的话 state 还是 ready, 玩家能按发射 —— 球飞出去了音效却没就绪,
+       又是一次"没声音", 正是换掉 sync=True 想避免的那件事。
+    ⚠️ 必须是 Widget 而不是"只画个矩形": 矩形不吞触摸, 挡不住下面那层。
+    ⚠️ 它是整个 App 最早出现的东西, 只依赖 sp()/hex_rgb()/COL_BG, 不碰任何游戏状态。"""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        with self.canvas.before:
+            Color(*hex_rgb(COL_BG) + (1,))
+            self._bg = Rectangle(pos=self.pos, size=self.size)
+        self._lbl = Label(text="正在准备音效…", font_size=sp(20), bold=True,
+                          color=hex_rgb("#eef2ff") + (1,),
+                          halign="center", valign="middle")
+        self.add_widget(self._lbl)
+        self.bind(pos=self._sync, size=self._sync)
+        self._sync()
+
+    def _sync(self, *_):
+        self._bg.pos = self.pos
+        self._bg.size = self.size
+        self._lbl.pos = self.pos
+        self._lbl.size = self.size
+
+    def on_touch_down(self, touch):
+        return True
+
+    def on_touch_move(self, touch):
+        return True
+
+    def on_touch_up(self, touch):
+        return True
+
+
 class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
@@ -6560,7 +6613,11 @@ class PlinkoApp(App):
             # --landscape: 模拟横屏反旋转(Y700 横窗比例), 验证"画面保持竖拿构图"用
             Window.size = (1740, 1000) if "--landscape" in sys.argv else (540, 960)
         self.title = "跳跳的弹珠机"
-        sfx = Sfx(SOUND_ENABLED, sync=True)   # 同步烘焙: 全部音效就绪后才建 UI, 冷启动不空窗
+        # 音效库**放后台烘**: 首装要把整库用纯 Python 合成一遍(好几秒)。以前这里是
+        # sync=True —— 那是在建 UI **之前**、在主线程上烘完, 于是这几秒钟玩家看到的是一块
+        # 黑屏(窗口已经在, 控件一个都没有), 而且 Kivy 主循环被阻塞、什么都画不出来。
+        # 现在: 窗口立刻有内容, 由 _LoadVeil 盖住整屏挡输入, 烘完由 _frame 收掉。
+        sfx = Sfx(SOUND_ENABLED)
         # 横屏反旋转层: 内容在等效竖屏窗口里布局, 横拿时整体旋转 90 度铺满横屏,
         # 画面构图与竖拿一致(玩家扭头看/转回竖屏玩)。竖屏时透明无感(零回归)。
         self.layer = LandLayer()
@@ -6570,6 +6627,13 @@ class PlinkoApp(App):
         self.layer.add_widget(anchor)
         self.rootw = RootWidget(sfx=sfx, size_hint_x=None)
         anchor.add_widget(self.rootw)
+        # 冷启动加载页: 音效库没烘完就盖住整屏(不盖的话首装前几秒是黑的, 而且能按发射出哑球)。
+        # 后 add 的在上层, 所以它就是最上面那层。烘完由 RootWidget._frame 摘掉。
+        self.veil = None
+        if sfx.enabled and not getattr(sfx, "baked", True):
+            self.veil = _LoadVeil(size_hint=(1, 1))
+            anchor.add_widget(self.veil)
+            self.rootw._load_veil = self.veil      # 交给 _frame 收尾
         self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
