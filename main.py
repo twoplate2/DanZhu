@@ -5123,6 +5123,24 @@ def _app_version():
     return ""
 
 
+def _pick_box(parent_box, self_box):
+    """加载图该铺哪块矩形 —— **父容器优先**(只要它看着已经落定), 否则退回自己。
+
+    ⚠️ 这是 2026-09-11 那个"突然变成小图"的正面修复点。Kivy 里控件**被布局之前**
+    `self.size` 是默认值 `(100, 100)`、`self.pos` 是 `(0, 0)`; 而 `_sync()` 在 `__init__`
+    结尾就会跑一次(那时还没进树) ⇒ 拿它算会得到 **100x178 的小图**。
+    父容器的尺寸由 `LandLayer.apply_orientation()` 在 `App.build` 里就写好了, **比第一帧早**。
+    实测(432x936 窗口): 构造后 `base=(100,177.8) img=(100,178)`; 第一帧后 `base=(526.5,936)`。
+    玩家真机原话:「固定一个启动画面静止不动一段时间, **突然变成小图**, 然后突然就进游戏了」。
+    (抽成纯函数是为了 fx_probe 能直接测 —— Kivy 的 `parent` 在夹具里不好造。)"""
+    try:
+        if parent_box is not None and parent_box[2] > 1 and parent_box[3] > 1:
+            return parent_box
+    except Exception:
+        pass
+    return self_box
+
+
 def _startup_title():
     """「启动信息」那个弹窗的**标题**。玩家 2026-09-11 定稿:
     「启动信息调整  从启动信息改为 跳跳的弹珠机v0.x.x」。
@@ -7170,6 +7188,9 @@ class _LoadVeil(Widget):
                 #    (会刷两条 DeprecationWarning)。用不着它们 —— 我们把 size 按原图比例算好
                 #    (见 _sync 里的 LOADVEIL_ASPECT), 宽高比本来就严丝合缝。
                 self._img = AsyncImage(source=_src, size_hint=(None, None), mipmap=True)
+                # ⚠️ 尺寸算出来之前**藏起来**(0x0) —— AsyncImage 的默认尺寸是 100x100,
+                #    不藏的话布局落定前会先闪一个 100x100 的小方块(就是玩家报的"突然变成小图")。
+                self._img.size = (0, 0)
                 self.add_widget(self._img)     # 先加 = 在下层, 文字盖在它上面
         except Exception:
             self._img = None
@@ -7211,17 +7232,49 @@ class _LoadVeil(Widget):
         except Exception:
             pass
 
-    def tick(self):
-        """每帧推进加载图的动画。由 `RootWidget._frame` 调 —— **自己不持有 Clock**:
-        切后台回来直接跳终态, 而不是冻在半路(和 WinPileFX 同一条纪律)。"""
+    def _veil_box(self):
+        """加载图该铺的那块矩形 `(x, y, w, h)`。
+
+        ⚠️ **优先父容器, 不用 `self`** —— 控件在**被布局之前** `self.size` 是 Kivy 的默认值
+        `(100, 100)`、`self.pos` 是 `(0, 0)`, 拿它算会得到一个 **100x178 的小图画在左下角**,
+        而那一帧正好是"系统 splash 撤掉后玩家看到的第一眼"(玩家 2026-09-11 原话:
+        「固定一个启动画面静止不动一段时间, **突然变成小图**, 然后突然就进游戏了」)。
+        实测(桌面夹具, 432x936 窗口): 刚构造时 `self.size=100x100` -> 图 100x178;
+        第一帧之后 `self.size=432x936` -> 图 527x937。
+        父容器(anchor)的尺寸由 `LandLayer.apply_orientation()` 在 `App.build` 里就写好了,
+        **从一开始就是对的**。"""
         try:
-            if self._img is None or self._base_h <= 0.0:
+            p = self.parent
+            if p is not None:
+                return _pick_box((p.x, p.y, p.width, p.height),
+                                 (self.x, self.y, self.width, self.height))
+        except Exception:
+            pass
+        try:
+            return self.x, self.y, self.width, self.height
+        except Exception:
+            return 0.0, 0.0, 0.0, 0.0
+
+    def tick(self):
+        """每帧: **重算基准尺寸 + 推进动画**。由 `RootWidget._frame` 调 —— 自己不持有 Clock:
+        切后台回来直接跳终态(和 WinPileFX 同一条纪律)。
+
+        ⚠️ 尺寸**每帧现算**, 不依赖"布局什么时候通知我"。那是个时序依赖, 而**桌面和真机的时序
+        不一样** —— 玩家 2026-09-11 实测:「PC 上会缩放, 是个动态的」, 而真机上那页不动。
+        绑在 `_sync`(pos/size 变化)上就只在"尺寸真的变了"时才算一次, 真机上一旦第一枪打歪,
+        后面未必有第二次机会。"""
+        try:
+            if self._img is None:
                 return
+            bx, by, bw, bh = self._veil_box()
+            if bw <= 1.0 or bh <= 1.0:
+                return                    # 尺寸还没落定 -> 图保持藏着(0x0), 不闪方块
+            self._base_w, self._base_h = _veil_fit(bw, bh)
             k = _veil_scale(time.time() - self._t0)
             w = self._base_w * k
             h = self._base_h * k
             self._img.size = (w, h)
-            self._img.pos = (self.center_x - w * 0.5, self.center_y - h * 0.5)
+            self._img.pos = (bx + bw * 0.5 - w * 0.5, by + bh * 0.5 - h * 0.5)
         except Exception:
             pass
 
@@ -7242,12 +7295,15 @@ class _LoadVeil(Widget):
         self._lbl.pos = (self.x, top - lh)
         self._sub.size = (self.width, sh)
         self._sub.pos = (self.x, top - lh - gap - sh)
-        # 加载图: **铺满整屏**(cover, 见 _veil_fit) —— 和系统 presplash 一样大, 所以"系统 splash
-        # 撤掉 -> 本页接上"看不出尺寸变化; 溢出裁掉的部分是它自己的底色 #0b1220, 而背景矩形也
-        # 是同一个颜色 ⇒ 连边界都看不见。
+        # 加载图的尺寸**在这里也算一次**(布局驱动), `tick()` 每帧**还会再算**(帧驱动)。
+        # ⚠️ 两条路是有意的: 任何一条通就够, 不会出现"图永远不显示"。原因见 `_veil_box()` 的注释
+        #    —— 绑在 pos/size 上是个时序依赖, 真机上第一枪打歪就未必有第二次机会; 而只靠每帧算,
+        #    万一 `_frame` 起得晚(安卓要等 presplash 撤掉)就会缺图。
         if self._img is not None:
-            self._base_w, self._base_h = _veil_fit(self.width, self.height)
-            self.tick()
+            _bx, _by, _bw, _bh = self._veil_box()
+            if _bw > 1.0 and _bh > 1.0:
+                self._base_w, self._base_h = _veil_fit(_bw, _bh)
+                self.tick()
 
     def on_touch_down(self, touch):
         # 普通加载页: 吞掉所有触摸(不让玩家在音效没就绪时按发射)。
