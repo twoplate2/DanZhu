@@ -7072,11 +7072,17 @@ def _veil_fit(w, h):
     ⚠️ **不能"只按高度铺"**: 手机的屏幕比这张图更瘦长(典型 1080x2340 = 0.46, 而图是 0.5625),
     只按高度算出来的宽度会**超出屏幕**, 图的两侧被裁掉。contain 之后上下各留一条边 ——
     而那条边正好是它自己的底色, 所以肉眼看不出来。
+
+    ⚠️ 返回值**已经预留了呼吸的余量**: `base * (1 + BREATH_AMP)` 也仍然完整放得下。
+    不留的话, 呼吸涨到最大时图会比屏幕大一圈 —— 溢出的虽然只是背景色(看不出), 但那是
+    "碰巧看不出来", 不该靠它; 以后换一张边缘有内容的图就会当场露馅。
     返回 (宽, 高), 宽高比恒等于 LOADVEIL_ASPECT。"""
     try:
-        bw = h * LOADVEIL_ASPECT
+        room = 1.0 + LOADVEIL_BREATH_AMP
+        bw = (h * LOADVEIL_ASPECT)
         if bw > w:
             bw = w
+        bw /= room
         return bw, bw / LOADVEIL_ASPECT
     except Exception:
         return 0.0, 0.0
