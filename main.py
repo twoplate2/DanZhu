@@ -6784,9 +6784,12 @@ class RootWidget(BoxLayout):
                     sfx = self.sfx
                     n = len(sfx.named)
                     wait = time.time() - (getattr(self, "_load_veil_t0", 0.0) or time.time())
+                    # ⚠️ 报的是"这一页已经开了多久", **不是**探针等待时长 —— 探针要等烘焙完了才
+                    #    开始跑(见 Sfx._await_ready), 所以合成那几秒全算在这里面。以前这行写的是
+                    #    "等待能播", 而真机上手测: 这里显示 3.4 秒、最终结果却是「音效等待 95 ms」——
+                    #    同一个词指两个数, 正是这块面板最不该犯的错。
                     if sfx._expected:
-                        _veil.set_status("已加载 %d / %d　·　等待能播 %.1f / %.0f 秒"
-                                         % (n, sfx._expected, wait, sfx.SFX_READY_TIMEOUT))
+                        _veil.set_status("已加载 %d / %d　·　已用 %.1f 秒" % (n, sfx._expected, wait))
                     else:
                         _veil.set_status("正在合成…　已加载 %d 个　·　%.1f 秒" % (n, wait))
                 except Exception:
