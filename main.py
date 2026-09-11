@@ -1879,6 +1879,7 @@ class Sfx:
         self.baked = False          # 整库烘焙是否收工(UI 的冷启动加载页按它收尾, 见 _LoadVeil)
         self._audio_ready = False   # 烘完 + **探到真的能播** 才为真(见 _await_ready)。默认 False:
                                     # 但 !enabled / 后端探测不可用时一律放行 —— 绝不软锁
+        self.ready_ms = 0.0         # 等"真的能播"花了多久(0 = 不适用/没探针)
         self._failed = []           # 加载失败的 (name, path): 后台重试, 见 _retry_failed
         self._retry_wait = 0.6      # 重试间隔(秒)
         self._retry_rounds = 12     # 重试轮数(≈7s), 还不成功就认命
@@ -1944,6 +1945,7 @@ class Sfx:
                 if probe():
                     break
                 time.sleep(self.SFX_READY_POLL)
+            self.ready_ms = (time.time() - t0) * 1000.0   # 等"真的能播"花了多久(诊断要显示)
         except Exception:
             pass
         self._audio_ready = True
@@ -1973,6 +1975,11 @@ class Sfx:
                 "音频后端　%s" % backend,
                 "音效就绪　%s" % ready,
                 "启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms),
+                # 等"真的能播"花了多久: 接近上限(6s)就说明解码一直没跟上 —— 那正是
+                # 「首次安装必然没声音」的正面证据, 也是决定要不要做"语音懒加载"的依据。
+                # (getattr 兜底: 探针/门禁会拿 __new__ 造半成品对象, 少一个字段不该整块消失)
+                "音效等待　%s" % ("不适用" if getattr(self, "ready_ms", 0.0) <= 0 else
+                                  "%.0f ms　(上限 %.0f)" % (self.ready_ms, self.SFX_READY_TIMEOUT)),
                 "后端重建　%d 次" % getattr(self.out, "rebuild_count", 0),
             ]
         except Exception:
@@ -5424,46 +5431,74 @@ class RootWidget(BoxLayout):
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         desc_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(desc_lbl)
-        info = self._build_info()
-        if info:
-            ver_lbl = Label(text=info, font_size='16sp', halign='center', valign='middle',
-                            color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
-            ver_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-            content.add_widget(ver_lbl)
-        # 音频体检(2026-09-11 加): 玩家报的「初次安装必然没声音」—— 它的**所有候选原因在产物里
-        # 长得一模一样**(静默 / 不抛异常 / 不留痕), 没有 adb 就只能靠这几行把真值摆出来。
-        # 玩家 2026-09-11 定稿: 「这个界面布局可以改改, 可以有更多空白来显示, 信息可以多, 高度有空间」
-        #   → 所以不再挤成一行, 改成一块带标题的字段栏, 弹窗高度跟着加。
-        # ⚠️ **绝不能并进版本那一行**: 实测合并后 658px > 弹窗内容区 422px, Kivy 会折成两行,
-        #    而那个标签固定 dp(28) —— 第二行被裁掉, 玩家看到的是一句缺尾巴的话(实测踩到, 见 v0.6.12)。
-        # ⚠️ 只在隐藏菜单(长按标题 3 秒)显示, 不进成绩面板 —— 成绩面板只放成绩(用户定稿)。
-        try:
-            _lines = self.sfx.audio_detail()
-        except Exception:
-            _lines = []
-        if _lines:
-            _head = Label(text='音频体检', font_size='16sp', bold=True, halign='center',
-                          valign='middle', color=hex_rgb(COL_SUB) + (1,),
-                          size_hint_y=None, height=dp(24))
-            _head.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-            content.add_widget(_head)
-            for _ln in _lines:
-                _l = Label(text=_ln, font_size='15sp', halign='left', valign='middle',
-                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(24))
-                _l.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-                content.add_widget(_l)
+        # ⚠️ 版本/制作日期 与 音频体检**不在这里** —— 它们搬去「启动信息」独立弹窗了。
+        #    用户 2026-09-11 定稿: 这里是跑分菜单, 那两样是启动信息, 不该混在一起。
         start_btn = Button(text='开始测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = self._popup(0.84, 620, title='', content=content,
+        info_btn = Button(text='启动信息', font_size='17sp', bold=True,
+                          background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                          size_hint_y=None, height=dp(52))
+        popup = self._popup(0.84, 470, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
+        info_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_startup_info()))
         content.add_widget(start_btn)
         content.add_widget(hist_btn)
+        content.add_widget(info_btn)
+        popup.open()
+
+    def _show_startup_info(self):
+        """「启动信息」弹窗: 版本/制作日期 + 音频体检。
+
+        用户 2026-09-11 定稿: 这两样不该塞在性能测试菜单里 —— 那里是跑分, 这是启动信息,
+        所以从那个菜单里搬出来、单开一个按钮(主菜单: 开始测试 / 查看历史 / 启动信息)。
+
+        音频体检是给「初次安装必然没声音」那个 bug 用的: 它的**所有候选原因在产物里长得
+        一模一样**(静默 / 不抛异常 / 不留痕), 没有 adb 就只能靠这几行把真值摆出来 ——
+        尤其"音效就绪"报的是**后端真的握着几个 sampleId**, 不是闸门放行了几个(病灶正是
+        两者不等; 只报闸门会显示全绿, 那比不显示更有害)。
+        ⚠️ 逐行分栏, **绝不并成一行**: 实测合并后 658px > 内容区 422px, 会折行而被定高标签
+        裁掉, 玩家看到的是一句缺尾巴的话(见 v0.6.12)。
+        ⚠️ 纯只读 —— 这个弹窗**不许**放任何会动音频栈或游戏状态的按钮(那是"绝不软锁"的前提)。"""
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
+        title_lbl = Label(text='启动信息', font_size='20sp', bold=True, halign='center',
+                          color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
+        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        content.add_widget(title_lbl)
+        rows = []
+        try:
+            _info = self._build_info()
+        except Exception:
+            _info = ""
+        if _info:                       # 版本/日期居中
+            _v = Label(text=_info, font_size='16sp', halign='center', valign='middle',
+                       color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
+            _v.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+            content.add_widget(_v)
+        try:
+            rows.extend(self.sfx.audio_detail())
+        except Exception:
+            pass
+        # ⚠️ 字段行一律**左对齐**: 标签都是等宽的 4 个汉字(音频后端/音效就绪/…), 左对齐才会
+        #    排成一列; 各自居中的话长短不一的数值会让每行错开, 读起来是散的(用户 2026-09-11
+        #    反馈过"布局太乱")。
+        for _ln in rows:
+            _l = Label(text=_ln, font_size='16sp', halign='left', valign='middle',
+                       color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
+            _l.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+            content.add_widget(_l)
+        ok_btn = Button(text='确定', font_size='17sp', bold=True,
+                        background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                        size_hint_y=None, height=dp(52))
+        content.add_widget(ok_btn)
+        popup = self._popup(0.84, 420, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
+        ok_btn.bind(on_release=lambda *_: popup.dismiss())
         popup.open()
 
     def _start_bench_test(self):
