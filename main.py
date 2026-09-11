@@ -1851,27 +1851,43 @@ class _KivySoundOut:
         self._sounds.clear()
 
 
+_BACKEND_ERRORS = []     # [(名字, 异常文本)] —— open_output 降级链每一级失败都记一笔
+
+
+def _backend_error(name):
+    """取某个后端构造失败的原文(诊断用)。"""
+    for _n, _e in _BACKEND_ERRORS:
+        if _n == name:
+            return _e
+    return ""
+
+
 def open_output():
     """按优先级选后端: Android SoundPool > winmm > Kivy SoundLoader > 静音。
     环境变量 PLINKO_SFX_BACKEND=kivy|winmm|none 可在桌面强制指定 —— 安卓走的是 named
-    这条路径(缓存/落盘/按名播), 桌面默认走 winmm 的 pcm 路径, 不强制就没法在开发机上验它。"""
+    这条路径(缓存/落盘/按名播), 桌面默认走 winmm 的 pcm 路径, 不强制就没法在开发机上验它。
+
+    ⚠️ 降级链每一级**都要把异常原文记进 `_BACKEND_ERRORS`**。2026-09-11 之前这里全是
+    `except Exception: pass` —— 结果是玩家的安卓设备上 SoundPool **一直构造失败、静默降到
+    Kivy-SoundLoader 上跑**, 而面板只能显示"后端是 Kivy-SoundLoader", 说不出**为什么**。
+    一块专门用来抓静默的面板, 自己却在做静默降级(专家原话): 这就是那一处。"""
     want = os.environ.get("PLINKO_SFX_BACKEND", "").lower()
     if want == "none":
         return None
     if platform == "android" and want not in ("kivy", "winmm"):
         try:
             return _SoundPoolOut()
-        except Exception:
-            pass
+        except Exception as exc:
+            _BACKEND_ERRORS.append(("SoundPool", "%s: %s" % (type(exc).__name__, exc)))
     if want != "kivy":
         try:
             return _WaveOut()
-        except Exception:
-            pass
+        except Exception as exc:
+            _BACKEND_ERRORS.append(("winmm", "%s: %s" % (type(exc).__name__, exc)))
     try:
         return _KivySoundOut()
-    except Exception:
-        pass
+    except Exception as exc:
+        _BACKEND_ERRORS.append(("Kivy-SoundLoader", "%s: %s" % (type(exc).__name__, exc)))
     return None
 
 
@@ -2047,6 +2063,11 @@ class Sfx:
             #    模拟器上又栽了一次: 等效宽度只有桌面的一半)。
             if deviated:
                 rows.append("　　　　　安卓上应为 SoundPool，静默降级了")
+                _err = _backend_error("SoundPool")
+                if _err:
+                    # 把 SoundPool 构造失败的**原文**摆出来 —— 没有它就只能知道"降级了",
+                    # 不知道"为什么降级", 而这正是这块面板当初存在的理由。
+                    rows.append("　　　　　%s" % _err[:64])
             rows.append(mode_row)
 
             # 3) 音效等待 —— 等"真的能播"花了多久。⚠️ 安卓上"没有探针"是**护栏缺失**

@@ -405,7 +405,11 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   所以不能靠写短字符串躲, 只能让行高跟着实际排版走 + 开完弹窗再按真实排版高度对一次。
 #   另: 期望值(安卓应为 SoundPool)改成**单独占一行**, 不再并进上一行充宽度。
 #   重放页实时进度行字号 13 -> 17(玩家: 这个字体太小)。
-version = 0.6.20
+# 0.6.21(2026-09-11): **把降级链的异常原文记下来并显示**。玩家的安卓真机上, 面板实测显示
+#   音频后端 = Kivy-SoundLoader ⇒ **SoundPool 构造失败、一直静默降级在跑** —— 而原有的
+#   `except Exception: pass` 让失败原因一个字都没留下(一块专门用来抓静默的面板, 自己也在
+#   做静默降级)。现在每一级失败都记进 _BACKEND_ERRORS, 安卓上非预期后端时把那句原文摆出来。
+version = 0.6.21
 
 requirements = python3,kivy==2.3.0,pyjnius
 
