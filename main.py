@@ -6709,8 +6709,7 @@ class RootWidget(BoxLayout):
                     # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙 1.2 秒、
                     # 探针一过就摘, 那几行数字等于闪一下。
                     _veil._hold = True
-                    _veil.set_title("重放完成，点一下继续")
-                    _veil.set_status(self._replay_summary())
+                    _veil.set_result(self._replay_summary())   # 结果页: 字号放大 + 摆出结论
                     _veil._on_tap = self._finish_replay_veil
                 elif not _veil._hold:
                     self._load_veil = None
@@ -7001,6 +7000,20 @@ class _LoadVeil(Widget):
     def set_title(self, text):
         try:
             self._lbl.text = text
+        except Exception:
+            pass
+
+    def set_result(self, text):
+        """把这一页从「进度」切成「结果」: **字号放大**。
+
+        ⚠️ 两行用不同字号是有意的: 烘焙进度那行(sp(13))是"赶时间瞥一眼"的信息 —— 玩家这时
+        只想赶紧进游戏; 而重放结果是**专门停下来给人读的**(玩家 2026-09-11: 「挺好 就是字太小了」),
+        13sp 在平板上根本读不清。同一个标签分两档字号, 比新加一个标签省事, 也不会改变布局。"""
+        try:
+            self._lbl.text = "重放完成，点一下继续"
+            self._lbl.font_size = sp(28)
+            self._sub.font_size = sp(24)
+            self._sub.text = text
         except Exception:
             pass
 

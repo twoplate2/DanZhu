@@ -394,7 +394,9 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   现在: ①先建结果页、成功之后才动音频状态; ②任何失败都 toast 出原因(绝不静默) + 立刻放行。
 #   另: 收拾我上一步搬方法时把 _replay_summary/_finish_replay_veil 塞进 _LoadVeil 的错误;
 #   新增 hasattr 门禁"关键方法必须长在 RootWidget 上"(这种错能编译, 静态检查拦不住)。
-version = 0.6.17
+# 0.6.18(2026-09-11): 重放结果页字号放大(标题 20->28, 正文 13->24)。玩家: 「挺好 就是字太小了」。
+#   两行**刻意用不同字号**: 烘焙进度那行 sp(13) 是赶时间瞥一眼的; 重放结果是专门停下来给人读的。
+version = 0.6.18
 
 requirements = python3,kivy==2.3.0,pyjnius
 
