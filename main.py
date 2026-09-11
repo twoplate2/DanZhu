@@ -1576,6 +1576,26 @@ def _sfx_code_tag():
         return "%d.%d.nofile" % (SFX_SEED, SR)
 
 
+def _android_output_rate():
+    """设备**首选输出采样率**(Hz); 拿不到返回 0。
+
+    ⚠️ 这不是"顺便报个参数" —— 它是**跨设备可比性的前提**。源音频统一是 SR=22050Hz,
+    设备若跑 48000 就要重采样放大 **2.18 倍**, 而这是整条解码链路里最大的一块计算量。
+    两台机器这个数不同 ⇒ 它们的「音效等待」压根不是在回答同一道题, 并排比会得出反向结论。
+
+    2026-09-11 实测: PC 模拟器报 372ms、真机报 711ms, 而模拟器的跑分只有真机一半 ——
+    "会不会是没走重采样"正是当时的候选解释之一。没有这一行, 那组数据无法判读。
+
+    静态方法, 不需要 Context; 拿不到就安静返回 0(绝不把面板带崩)。"""
+    try:
+        from jnius import autoclass
+        AudioTrack = autoclass("android.media.AudioTrack")
+        AudioManager = autoclass("android.media.AudioManager")
+        return int(AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_MUSIC))
+    except Exception:
+        return 0
+
+
 def _wav_write(path, pcm):
     """原子写: 先写 .tmp 再 replace。半截文件绝不能留在缓存里被下次启动当成有效音效。"""
     tmp = path + ".tmp"
@@ -1918,6 +1938,8 @@ class Sfx:
         self._audio_ready = False   # 烘完 + **探到真的能播** 才为真(见 _await_ready)。默认 False:
                                     # 但 !enabled / 后端探测不可用时一律放行 —— 绝不软锁
         self.ready_ms = 0.0         # 等"真的能播"花了多久(0 = 不适用/没探针)
+        self._out_rate = -1         # 设备首选输出采样率(Hz)。-1=还没问过, 0=问不到。
+                                    # 懒问 + 缓存(见 audio_detail 里那一行); 只在安卓上报
         self.n_attempt = 0          # 过了全部闸门、真的向后端要过声音的次数
         self.n_missed = 0           # 上面那些里**后端仍说没播成**的次数(静默的正面计数)
         self._expected = 0          # 满编音效数(烘焙时顺手记, 见 _expected_total 为什么不能现算)
@@ -2081,6 +2103,21 @@ class Sfx:
                     # 不知道"为什么降级", 而这正是这块面板当初存在的理由。
                     rows.append("　　　　　%s" % _err[:64])
             rows.append(mode_row)
+
+            # 2.5) 设备输出采样率 —— 「**这道题有多难**」。放在"后端"与"等待"之间, 因为它正是
+            #      那两行之间的桥: 后端决定谁来解, 它决定要解多少, 等待才是结果。
+            # ⚠️ 只在安卓上出现: PCM 后端(PC 的 winmm)送的是 SR=22050 的 PCM 给声卡,
+            #    "设备输出采样率"在那个后端上不是同一个概念, 印出来反而误导。
+            # ⚠️ 值只问一次(缓存): 这是个不变的系统属性, 每次开面板都查一遍没有意义。
+            # ⚠️ 必须 getattr 兜底: `fx_probe` 的夹具走 `Sfx.__new__` 绕开 `__init__`,
+            #    直接读 `self._out_rate` 会 AttributeError → 被外层的 except 吞成**空列表**,
+            #    整个面板静默变成空白(这正是本项目栽过好几次的形状)。
+            if platform == "android":
+                _rate = getattr(self, "_out_rate", -1)
+                if _rate < 0:
+                    _rate = _android_output_rate()
+                    self._out_rate = _rate
+                rows.append("输出采样率　%s" % ("%d Hz" % _rate if _rate > 0 else "未知"))
 
             # 3) 音效等待 —— 等"真的能播"花了多久。⚠️ 安卓上"没有探针"是**护栏缺失**
             #    (那 6 秒形同虚设, 而这正是那个 bug 的成因), 不能写成中性的"不适用"。
