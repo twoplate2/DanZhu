@@ -2011,7 +2011,13 @@ class Sfx:
                 sw = "音效开关　已关（本次不会有任何声音）"
             else:
                 sw = "音效开关　无后端（本次全静音，非玩家操作）"
-            mode_row = "启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms)
+            # ⚠️ 「冷/热」这个词**只在 named 后端上成立**: 磁盘缓存(stamp)整个机制都活在
+            #    `_bake_named`/`_load_cached` 里, PCM 后端(_bake_pcm)根本不写缓存 ⇒ 它**每次
+            #    启动都是现场合成**, "冷启动"在那个后端上恒为真、零信息量。(2026-09-11 玩家:
+            #    「是不是每次都必然显示冷启动」—— PC 上确实是, 但那是后端性质, 不是故障。)
+            #    所以 PCM 上只报耗时, 不报冷热。
+            mode_row = ("启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms)
+                        if named_mode else "合成耗时　%.0f ms" % self.bake_ms)
             n_rc = getattr(out, "rebuild_count", 0)
 
             # ⚠️ PCM 后端(PC 的 winmm / Kivy-SoundLoader): 下面三项对它**结构上就不适用**
