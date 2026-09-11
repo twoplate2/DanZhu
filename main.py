@@ -7066,6 +7066,22 @@ def _loadveil_src():
         return None
 
 
+def _veil_fit(w, h):
+    """加载图在 w×h 的页面里的**基准尺寸**(contain: 整张图完整放进去, 绝不裁切)。
+
+    ⚠️ **不能"只按高度铺"**: 手机的屏幕比这张图更瘦长(典型 1080x2340 = 0.46, 而图是 0.5625),
+    只按高度算出来的宽度会**超出屏幕**, 图的两侧被裁掉。contain 之后上下各留一条边 ——
+    而那条边正好是它自己的底色, 所以肉眼看不出来。
+    返回 (宽, 高), 宽高比恒等于 LOADVEIL_ASPECT。"""
+    try:
+        bw = h * LOADVEIL_ASPECT
+        if bw > w:
+            bw = w
+        return bw, bw / LOADVEIL_ASPECT
+    except Exception:
+        return 0.0, 0.0
+
+
 def _veil_scale(t):
     """加载图在"这一页开了 t 秒"时应有的缩放系数: 先进场从小到大, 长满之后轻轻呼吸。
 
@@ -7214,11 +7230,10 @@ class _LoadVeil(Widget):
         self._lbl.pos = (self.x, top - lh)
         self._sub.size = (self.width, sh)
         self._sub.pos = (self.x, top - lh - gap - sh)
-        # 加载图: 按屏高铺满(宽度按原图比例), 两侧留出来的边正好是**它自己的底色** #0b1220,
-        # 而背景矩形也是同一个颜色 ⇒ 看不出图片边界, 只有内容在长大。
+        # 加载图: **contain**(整张图完整放得下, 绝不裁切), 两侧/上下留出来的边正好是**它自己的
+        # 底色** #0b1220, 而背景矩形也是同一个颜色 ⇒ 看不出图片边界, 只有内容在长大。
         if self._img is not None:
-            self._base_h = self.height
-            self._base_w = self.height * LOADVEIL_ASPECT
+            self._base_w, self._base_h = _veil_fit(self.width, self.height)
             self.tick()
 
     def on_touch_down(self, touch):
