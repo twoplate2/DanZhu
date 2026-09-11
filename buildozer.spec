@@ -409,7 +409,12 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   音频后端 = Kivy-SoundLoader ⇒ **SoundPool 构造失败、一直静默降级在跑** —— 而原有的
 #   `except Exception: pass` 让失败原因一个字都没留下(一块专门用来抓静默的面板, 自己也在
 #   做静默降级)。现在每一级失败都记进 _BACKEND_ERRORS, 安卓上非预期后端时把那句原文摆出来。
-version = 0.6.21
+# 0.6.22(2026-09-11): ①**修 SoundPool 从来没建起来过**: 内部类改用 pyjnius 的规范写法
+#   `autoclass('Outer$Inner')`(属性访问 `Outer.Inner` 的解析并不可靠), 两条路都试;
+#   真机上面板实测后端一直是 Kivy-SoundLoader ⇒ 降级链第一级就没成过。
+#   ②重放结果页: 标题与正文改成**按内容各自撑高、上下排开**, 不再两个满屏标签叠在一起
+#   (真机截图: 6 行数据把标题盖住了)。
+version = 0.6.22
 
 requirements = python3,kivy==2.3.0,pyjnius
 

@@ -1639,13 +1639,25 @@ class _SoundPoolOut:
 
     def _build_sp(self):
         from jnius import autoclass
-        SoundPool = autoclass("android.media.SoundPool")
+
+        def _inner(outer_name, inner):
+            """取 Java **内部类**, 优先 `Outer$Inner` 这种规范写法。
+
+            ⚠️ pyjnius 对 `Outer.Inner` 那种属性访问的解析**并不可靠**, 而它一旦抛异常就会被
+            `open_output` 的 except 吞掉 —— 后果是**整台设备静默降级到 Kivy 后端**。
+            2026-09-11 玩家真机实测: 面板显示后端是 `Kivy-SoundLoader`, 也就是 SoundPool
+            **从来没建起来过**, 而此前所有关于声音的猜测都建立在 SoundPool 上。两条路都试。"""
+            try:
+                return autoclass("%s$%s" % (outer_name, inner))
+            except Exception:
+                return getattr(autoclass(outer_name), inner)
+
         AudioAttributes = autoclass("android.media.AudioAttributes")
-        attrs = (AudioAttributes.Builder()
+        attrs = (_inner("android.media.AudioAttributes", "Builder")()
                  .setUsage(AudioAttributes.USAGE_GAME)
                  .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                  .build())
-        return (SoundPool.Builder()
+        return (_inner("android.media.SoundPool", "Builder")()
                 .setMaxStreams(self._voices)
                 .setAudioAttributes(attrs)
                 .build())
@@ -7038,6 +7050,8 @@ class _LoadVeil(Widget):
         self.add_widget(self._lbl)
         self.add_widget(self._sub)
         self.bind(pos=self._sync, size=self._sync)
+        self._lbl.bind(texture_size=self._sync)   # 文字一变就重排版(结果页会换字号/换内容)
+        self._sub.bind(texture_size=self._sync)
         self._sync()
 
     def set_status(self, text):
@@ -7078,11 +7092,20 @@ class _LoadVeil(Widget):
     def _sync(self, *_):
         self._bg.pos = self.pos
         self._bg.size = self.size
-        # 主标题在上半, 诊断行在它下面一点(视觉上是一块, 不是两行散字)
-        self._lbl.size = self.size
-        self._lbl.pos = (self.x, self.y + self.height * 0.06)
-        self._sub.size = self.size
-        self._sub.pos = (self.x, self.y - self.height * 0.06)
+        # ⚠️ 标题与正文必须**按内容高度各自撑开、上下排开** —— 不能让两个满屏标签叠在一起。
+        #    结果页有 6 行、字号又放大到 24 时, 两块会在画面中间重叠, 上面那段就糊掉了
+        #    (玩家 2026-09-11 真机截图: 「重放完成…」和第一行数据叠在一起)。
+        self._lbl.text_size = (self.width, None)
+        self._sub.text_size = (self.width, None)
+        lh = max(sp(34), self._lbl.texture_size[1] + sp(8))
+        sh = max(sp(24), self._sub.texture_size[1] + sp(8))
+        gap = sp(14) if self._sub.text else 0
+        total = lh + gap + sh
+        top = self.center_y + total / 2.0
+        self._lbl.size = (self.width, lh)
+        self._lbl.pos = (self.x, top - lh)
+        self._sub.size = (self.width, sh)
+        self._sub.pos = (self.x, top - lh - gap - sh)
 
     def on_touch_down(self, touch):
         # 普通加载页: 吞掉所有触摸(不让玩家在音效没就绪时按发射)。
