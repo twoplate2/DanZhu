@@ -5742,6 +5742,49 @@ class RootWidget(BoxLayout):
                 pass
         Clock.schedule_once(_refit, 0.06)
 
+    def _show_replay_detail(self):
+        """「重放冷启动」完成后点屏幕: 把**详细统计**摆出来(带确认按钮的独立窗口)。
+
+        ⚠️ 玩家 2026-09-11 定稿: 「重放冷启动界面不应该显示各种文字 …… **完成之后点击屏幕
+        任意位置, 弹出的是详细统计信息**, 有个新窗口专门展示(带确认按钮的这种)」——
+        所以那些数从加载页搬到了这里, 加载页上只剩「跳跳的弹珠机」+ 底部一行「测试已经完成」。
+        ⚠️ 内容仍然复用 `_replay_summary()`(`audio_detail()` 那一个真源), 不另写一套格式化。
+        ⚠️ 整段 try/except + 给默认高度: 弹窗起不来也绝不能让玩家卡在加载页(项目红线)。"""
+        try:
+            content = BoxLayout(orientation="vertical", spacing=dp(10), padding=dp(14))
+            head = Label(text="重放冷启动 · 详细统计", font_size="19sp", bold=True,
+                         color=hex_rgb(COL_TEXT) + (1,),
+                         halign="center", valign="middle", size_hint_y=None, height=dp(34))
+            head.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            content.add_widget(head)
+            body = Label(text=self._replay_summary(), font_size="16sp",
+                         color=hex_rgb(COL_SUB) + (1,),
+                         halign="left", valign="top", size_hint_y=None, height=dp(26))
+            # ⚠️ 行高按**真实排版**撑开: 手机上可用宽度更窄, 同一串字会折行 ——
+            #    写死高度就会把折出来的第二行裁掉(这块面板栽在"文字被裁掉"上两次了)。
+            body.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+            body.bind(texture_size=lambda w, ts: setattr(w, "height", max(dp(26), ts[1] + dp(4))))
+            content.add_widget(body)
+            ok_btn = Button(text='确定', font_size='17sp', bold=True,
+                            background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                            size_hint_y=None, height=dp(52))
+            content.add_widget(ok_btn)
+            popup = self._popup(0.86, 420, title='', content=content,
+                                auto_dismiss=True, separator_height=0)
+            ok_btn.bind(on_release=lambda *_: popup.dismiss())
+            popup.open()
+
+            # 开完再按真实排版高度对一次(同「启动信息」那块面板的做法: 先给个估高, 再校正)。
+            def _refit(*_):
+                try:
+                    _vw, _vh = self._veq()
+                    popup.height = min(content.minimum_height + dp(64), _vh * 0.92)
+                except Exception:
+                    pass
+            Clock.schedule_once(_refit, 0.06)
+        except Exception:
+            pass
+
     def _replay_cold_start(self):
         """**不丢存档**地重放一次冷启动 —— 按需复现「初次安装」那种局, 用来抓现场。
 
@@ -5815,12 +5858,17 @@ class RootWidget(BoxLayout):
             return ""
 
     def _finish_replay_veil(self):
-        """玩家点掉了"重放完成"那一屏。幂等; 绝不在这里动音频栈。"""
+        """玩家点掉了「重放冷启动」那一屏: **摘页 + 弹出详细统计**。幂等; 绝不在这里动音频栈。
+
+        玩家 2026-09-11: 「完成之后点击屏幕任意位置, 弹出的是**详细统计信息**, 有个新窗口专门
+        展示(带确认按钮的这种)」—— 所以摘页和弹窗是一件事, 顺序是先摘页(别让弹窗盖在加载页上,
+        那样关掉弹窗会露出一个已经没用的加载页)。"""
         v = getattr(self, "_replay_veil", None)
         self._replay_veil = None
         self._load_veil = None
         if v is not None:
             v.drop()
+        self._show_replay_detail()
 
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
@@ -6837,7 +6885,7 @@ class RootWidget(BoxLayout):
                     # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙 1.2 秒、
                     # 探针一过就摘, 那几行数字等于闪一下。
                     _veil._hold = True
-                    _veil.set_result(self._replay_summary())   # 结果页: 字号放大 + 摆出结论
+                    _veil.set_done()      # 只在最下面亮一行「测试已经完成」(统计去弹窗)
                     _veil._on_tap = self._finish_replay_veil
                 elif not _veil._hold:
                     self._load_veil = None
@@ -7095,7 +7143,6 @@ VEIL_TITLE_MIN_SEC = 1.9            # **最短停留**: 再快也要让动画走
 VEIL_TITLE_MAX_SEC = 6.0            # **最长停留**(玩家定稿「反正最多 6 秒钟」)。
 #                                     ⚠️ 与 `Sfx.SFX_READY_TIMEOUT` 同值: 那条是"等音效就绪"的硬超时,
 #                                     两个 6 秒一起兜底 —— 改一个记得看另一个。
-VEIL_TITLE_FADE_OUT = 0.40          # 整页淡出时长(摘页前的最后一笔)
 # 每一轮的**暗色 / 亮色** —— KTV 歌词那条"填充线"扫过去, 就是把字从暗色变成亮色
 # (玩家 2026-09-11: 「跳跳的弹珠机刚开始是都能看到的, 然后逐渐改变颜色」「效果类似KTV歌词的
 # 变化效果」)。一轮扫完再扫一轮, **每一轮的亮色比上一轮更亮更冷** = "从高级渲染变成超高级渲染"。
@@ -7190,15 +7237,16 @@ class _LoadVeil(Widget):
     def __init__(self, text="", **kw):
         super().__init__(**kw)
         with self.canvas.before:
-            # ⚠️ 存下来: 整页淡出时要按帧改它的 alpha(见 `_apply`)
-            self._bg_col = Color(*hex_rgb(VEIL_BG) + (1,))
+            Color(*hex_rgb(VEIL_BG) + (1,))
             self._bg = Rectangle(pos=self.pos, size=self.size)
-        self._lbl = Label(text=text, font_size=sp(20), bold=True,
-                          color=hex_rgb("#eef2ff") + (1,),
-                          halign="center", valign="middle")
-        # 第二行: **只服务「重放冷启动」的结果页**(set_result 往里写结论)。
-        # ⚠️ 普通启动路径**绝不写它** —— 那一页只有游戏名那五个大字(见 `_build_title`),
-        #    没有第二行。这里原来印的是实时诊断(「已加载 42 / 97 · 已用 1.0 秒」), 那种数
+        # ⚠️ 这里原来还有一个 `_lbl`(印"正在重放冷启动…"那种进度文字), **已整段删除**:
+        #    玩家 2026-09-11 定稿「重放冷启动界面**不应该显示各种文字**, 只显示 跳跳的弹珠机
+        #    和 最下面的 测试已经完成」。所以这一页现在只有两块东西 —— 正中的标题 + 贴底那行。
+        #    构造参数 `text` 仍然保留, 但它现在**只当"这是不是重放页"的标记**用(见 `_is_replay`),
+        #    一个字都不显示。
+        # 贴底那行状态字: **只服务「重放冷启动」**(`set_done` 往里写「测试已经完成」)。
+        # ⚠️ 普通启动路径**绝不写它** —— 那一页只有游戏名那六个大字(见 `_build_title`),
+        #    底下什么都没有。这里原来印的是实时诊断(「已加载 42 / 97 · 已用 1.0 秒」), 那种数
         #    在「启动信息」里全都有, 而且更全, 不需要在启动页上再占一行。
         self._sub = Label(text="", font_size=sp(17),
                           color=hex_rgb(COL_SUB) + (1,),
@@ -7215,7 +7263,6 @@ class _LoadVeil(Widget):
         self._title_fs = 0.0                     # 这一页当前的字号(圆点大小按它算)
         self._t0 = 0.0            # 动画起点 —— **第一帧才盖章**: 构造时刻这一页还没上屏, 从那里
         #                           算会让动画"没开始就过半"(v0.6.26~28 的进场就是这么废的)
-        self._fade_t0 = 0.0       # 整页淡出的起点, 0 = 还没开始淡出
         # ⚠️ 这一页**没有任何图**了(玩家 2026-09-11 定稿: 「黑屏+汉字」「不用之前的背景图了」)。
         #    以前它挂一张=系统 presplash 的棋盘图, 为的是"和系统那张逐像素一致" ⇒ 交接处看不见;
         #    现在**一致性由颜色保证**: 系统 presplash 那张图本身已经是纯 `#0b1220`(同一个值),
@@ -7224,14 +7271,12 @@ class _LoadVeil(Widget):
         #    ⚠️ 三个地方的值**必须永远相同**(它们现在是"没有突变"的唯一保证, `fx_probe` 钉着):
         #       `VEIL_BG` == `buildozer.spec` 的 `android.presplash_color`
         #                 == `p4a/hook.py` 注入的 `windowSplashScreenBackground`。
-        self.add_widget(self._lbl)
         self.add_widget(self._sub)
         # ⚠️「重放冷启动」那一页**也要演这一行字**(玩家 2026-09-11: 「启动信息中的冷启动, 仍然可以
         #    无限播放这个启动界面 跳跳的弹珠机的 播放歌词版本」) —— 所以文案带不带进来都建。
         self._is_replay = bool(text)
         self._build_title()
         self.bind(pos=self._sync, size=self._sync)
-        self._lbl.bind(texture_size=self._sync)   # 文字一变就重排版(结果页会换字号/换内容)
         self._sub.bind(texture_size=self._sync)
         self._sync()
 
@@ -7267,23 +7312,16 @@ class _LoadVeil(Widget):
         except Exception:
             self._title_on = False    # 纯装饰: 建不出来就退化成"只有底色", 绝不把启动带崩
 
-    def set_title(self, text):
-        try:
-            self._lbl.text = text
-        except Exception:
-            pass
+    def set_done(self):
+        """「重放冷启动」跑完了: 只在**最下面**亮出一行「测试已经完成」。
 
-    def set_result(self, text):
-        """把这一页从「进度」切成「结果」: **字号放大**。
-
-        ⚠️ 两行用不同字号是有意的: 烘焙进度那行(sp(13))是"赶时间瞥一眼"的信息 —— 玩家这时
-        只想赶紧进游戏; 而重放结果是**专门停下来给人读的**(玩家 2026-09-11: 「挺好 就是字太小了」),
-        13sp 在平板上根本读不清。同一个标签分两档字号, 比新加一个标签省事, 也不会改变布局。"""
+        ⚠️ 玩家 2026-09-11 定稿: 「重放冷启动界面不应该显示各种文字, 只显示 跳跳的弹珠机 和
+        最下面的 测试已经完成(**如果没有完成, 就不显示**)」—— 所以这一行只在完成时才出现,
+        而那些统计数挪去了点击之后的弹窗(`RootWidget._show_replay_detail`)。
+        ⚠️ 没完成时这行是空的(构造时默认 `text=""`), 不需要额外的"隐藏"逻辑。"""
         try:
-            self._lbl.text = "重放完成，点一下继续"
-            self._lbl.font_size = sp(28)
-            self._sub.font_size = sp(24)
-            self._sub.text = text
+            self._sub.text = "测试已经完成"
+            self._sub.font_size = sp(22)
         except Exception:
             pass
 
@@ -7295,32 +7333,29 @@ class _LoadVeil(Widget):
         except Exception:
             pass
 
-    def _apply(self, t, fade=0.0):
-        """把这一帧该有的颜色/不透明度写下去(唯一的写入口)。
+    def _apply(self, t):
+        """把这一帧该有的颜色写下去(唯一的写入口)。
 
-        `fade` = 整页淡出的进度(0 = 不淡, 1 = 全透明)。底色和每个字都要乘它, 少乘一个就是
-        "淡出一半露一块"。
+        ⚠️ 这一页**没有淡出、也不该有**: 到点就整页摘掉, 底下直接是游戏。
+        玩家 2026-09-11 报的 bug: 「成功打开游戏后, 游戏界面有一个发光效果(原来的启动界面
+        loading 界面的, 跳跳的弹珠机的文字的**覆盖发光**), 没有立即消失, 持续了0.x秒。
+        **这里应该是啥都看不见, 消失得干干净净, 而不是有淡出**」——
+        字压在游戏画面上这件事, 一帧都不能有。
         ⚠️ **只改 `color`**, 绝不碰 `font_size`(那会每帧重烘文字纹理, 手机上掉帧),
         也不加描边/阴影/辉光(玩家定稿: 「高级不是土味审美」「别tmd加奇怪的描边了 阴影了」)。"""
-        k = 1.0 - fade
-        try:
-            self._bg_col.a = k
-        except Exception:
-            pass
         if not self._title_on:
             return
         lit, fill, grade, _rl = _veil_title_state(t)
-        # ⚠️ 圈次**取模**(演完最后一种颜色回到第一种), 不是夹断 —— 玩家要的就是"无限演"。
         # 底下那层 = **上一轮**的颜色(起点是**银色**), 上面那层 = 这一轮要扫成的颜色。
         # 圈次**取模**不是夹断 —— 三种颜色循环, 玩家要的就是"无限演"。
         _n_col = len(VEIL_TITLE_COLORS)
         gi = grade % _n_col
         dim_rgb = VEIL_TITLE_COLORS[gi]
         hi_rgb = VEIL_TITLE_COLORS[(gi + 1) % _n_col]
-        a = lit * k
+        a = lit
         # ⚠️ **只在颜色真的变了才赋值**: Kivy 的 `Label.color` 一变就要重烘文字纹理(6 个汉字在
         #    手机上不便宜)。这里一轮才换一次色, 每帧赋值是白烧 —— 挡一道。
-        #    alpha(`a`)在淡入/淡出那两小段里逐帧变, 那两段很短, 无所谓。
+        #    alpha(`a`)只在开头那 0.22s 的淡入里逐帧变, 很短, 无所谓。
         _want = (dim_rgb, hi_rgb, round(a, 3))
         if _want != getattr(self, "_last_col", None):
             self._last_col = _want
@@ -7338,8 +7373,10 @@ class _LoadVeil(Widget):
         """每帧推进。由 `RootWidget._frame` 调 —— 自己不持有 Clock(切后台回来直接跳终态)。
 
         返回 **True = 这一页可以摘了**:
-          · 普通启动页: 动画至少走 `VEIL_TITLE_MIN_SEC` + 音效就绪 -> 整页淡出 -> 淡完了才 True;
+          · 普通启动页: 动画至少走 `VEIL_TITLE_MIN_SEC` + 音效就绪 -> **立刻摘**(零淡出);
           · 「重放冷启动」页: 老行为(音效就绪即 True; 结果页靠 `_hold` 停住等玩家点一下)。
+        ⚠️ **到点就整页消失, 没有任何淡出**(玩家 2026-09-11: 「这里应该是啥都看不见,
+           消失得干干净净, 而不是有淡出」)—— 详见 `_apply` 的注释。
         ⚠️ `_t0` 在**第一个 tick** 才盖章 —— 构造时刻这一页还没上屏(安卓要等 presplash 撤掉),
            从那里算会让动画"没开始就过半"。
         ⚠️ 出任何意外一律返回 True 放行: 绝不能因为动画把玩家卡在启动页(项目红线: 绝不软锁)。"""
@@ -7348,44 +7385,31 @@ class _LoadVeil(Widget):
             if self._t0 == 0.0:
                 self._t0 = now
             t = now - self._t0
-            if not self._title_on:
-                self._apply(t, 0.0)
-                return bool(audio_ready)
+            self._apply(t)
             if self._is_replay:
-                # 「重放冷启动」: **无限演下去**(圆点扫完一轮再扫一轮), 就绪也不自己淡出 ——
+                # 「重放冷启动」: **无限演下去**(扫完一轮再扫一轮), 就绪也不自己摘 ——
                 # 摘不摘由 `_frame` 按 `_hold` 决定(那一屏要停住等玩家点一下)。
-                self._apply(t, 0.0)
                 return bool(audio_ready)
-            if self._fade_t0 == 0.0 and audio_ready and t >= VEIL_TITLE_MIN_SEC:
-                self._fade_t0 = now
-            fade = 0.0
-            if self._fade_t0 != 0.0:
-                fade = (now - self._fade_t0) / VEIL_TITLE_FADE_OUT
-                fade = 0.0 if fade < 0.0 else (1.0 if fade > 1.0 else fade)
-            self._apply(t, fade)
-            return self._fade_t0 != 0.0 and fade >= 1.0
+            return bool(audio_ready) and t >= VEIL_TITLE_MIN_SEC
         except Exception:
             return True
 
     def _sync(self, *_):
         self._bg.pos = self.pos
         self._bg.size = self.size
-        # ⚠️ 标题与正文必须**按内容高度各自撑开、上下排开** —— 不能让两个满屏标签叠在一起。
-        #    结果页有 6 行、字号又放大到 24 时, 两块会在画面中间重叠, 上面那段就糊掉了
-        #    (玩家 2026-09-11 真机截图: 「重放完成…」和第一行数据叠在一起)。
-        self._lbl.text_size = (self.width, None)
+        # 底部那行状态字(只有「重放冷启动」用)。
+        # ⚠️ 玩家 2026-09-11 定稿: 「重放冷启动界面**不应该显示各种文字**, 只显示 **跳跳的弹珠机**
+        #    和**最下面的 测试已经完成**(如果没有完成, 就不显示)」⇒ 所以这一页只有两块:
+        #    正中的标题 + 贴底的一行状态; 详细统计挪到**点击之后的弹窗**里(见 `_show_replay_detail`)。
         self._sub.text_size = (self.width, None)
-        lh = max(sp(34), self._lbl.texture_size[1] + sp(8))
         sh = max(sp(24), self._sub.texture_size[1] + sp(8))
-        gap = sp(14) if self._sub.text else 0
-        total = lh + gap + sh
+        self._sub.size = (self.width, sh)
+        self._sub.pos = (self.x, self.y + sp(30))        # **贴最下面**
         # 那一行字的排版。⚠️ 字号**只在这里改**(窗口尺寸变了才动): 逐帧改字号会让 Kivy 每帧
         #    重烘文字纹理, 手机上直接掉帧; 逐帧动的是 `color`(见 `_apply`)。
         # ⚠️ 字号跟着**这一页的宽度**走, 所以是裸数值(不是 sp()) —— 标题要占满宽度, 与屏幕密度无关;
         #    横向 n 个字 ≈ n x 字号宽, 所以取 0.86 / n 再拿高度 0.17 兜一道(别撑出屏)。
-        th = sp(20)                                   # 标题与文字块之间的间距
-        has_text = bool(self._lbl.text or self._sub.text)
-        ty = self.center_y
+        # ⚠️ 标题**永远在正中**: 两块一上一下, 不需要"有文字就把标题顶上去"那套算术了。
         if self._title_on:
             n = max(1, len(VEIL_TITLE))
             fs = min(self.width * 0.86 / n, self.height * 0.17)
@@ -7397,21 +7421,12 @@ class _LoadVeil(Widget):
             #    尺寸取两层的最大值(理论上一样, 取 max 是防字体回退那类意外)。
             w = max(self._dim_lb.texture_size[0], self._hi_lb.texture_size[0], fs)
             h = max(self._dim_lb.texture_size[1], self._hi_lb.texture_size[1], fs)
-            # ⚠️ 有文字块的时候标题**让到上面去**: 两块都居中会直接叠在一起
-            #    (2026-09-11 踩过一次: 「重放完成…」压在数据行上, 上面那段全糊了)。
-            #    「重放冷启动」那一页正是"标题 + 结果文字"同时存在的那种。
-            ty = (self.center_y + (total + th + h) / 2.0 - h / 2.0) if has_text else self.center_y
             x0 = self.center_x - w / 2.0
-            y0 = ty - h / 2.0
+            y0 = self.center_y - h / 2.0
             for lb in (self._dim_lb, self._hi_lb):
                 lb.size = (w, h)
                 lb.pos = (x0, y0)
             self._title_box = (x0, y0, w, h)
-        top = ty + (th + total) / 2.0 if (self._title_on and has_text) else self.center_y + total / 2.0
-        self._lbl.size = (self.width, lh)
-        self._lbl.pos = (self.x, top - lh)
-        self._sub.size = (self.width, sh)
-        self._sub.pos = (self.x, top - lh - gap - sh)
         # ⚠️ 这里**绝不能调 `tick()`**: 它会用 `time.time()` 给动画盖章 `_t0`, 而 `_sync` 在
         #    `__init__` 结尾就会跑一次(那时这一页还没上屏) ⇒ 动画"没开始就过半"。
         #    排版只做上面那一段(字号/位置), 逐帧的颜色/缩放由 `tick() -> _apply()` 写。
