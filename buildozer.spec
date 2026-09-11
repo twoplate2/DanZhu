@@ -479,7 +479,17 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #      规则: 有唯一预期值的只在偏离时才有信息)。
 #   fx_probe: 采样率那 4 条换成 1 条"已删除"; 加载页门禁改成 cover 口径 + "t=0 就是 1.0" +
 #   "进场那一段已删除"; 比例区间门禁(15:10~21:9)保留, 判据由"放得下"改成"铺满"。
-version = 0.6.29
+# 0.6.30(2026-09-11): PC 上的「启动信息」补齐玩家要的东西 —— 原话:「我在pc上也需要知道版本号
+#   也需要知道那几个时间 别tmd自作主张」。
+#   ① 版本号: PC 没有 PackageManager, 改成**读 main.py 旁边的 buildozer.spec** —— 和出货打包
+#      用的是同一个文件, 不另抄一份(抄的那份早晚忘改)。安卓继续走包信息(buildozer.spec 不进
+#      APK), 两边用 `if not parts:` 兜底, 互不干扰。
+#   ② 「启动方式」PC 上也用「冷启动 XXXX ms」(原先印「合成耗时 …」)。PCM 后端不写磁盘缓存
+#      ⇒ cached 恒为 False ⇒ PC 上永远显示冷启动 —— 那是**事实**, 不是标签错。
+#   ③ PC 上补「音效等待 0 ms」一行。winmm 没有 probe_all、`_await_ready` 见到就放行, 所以这个 0
+#      是**真的**(PC 上根本不存在"等解码"这件事), 耗时全在上一行的「冷启动 XXXX ms」里。
+#   fx_probe: PC 那两条断言从"三项都不出现"改成"必须有那几个时间"; [13] 的版本号从可选变必选。
+version = 0.6.30
 
 requirements = python3,kivy==2.3.0,pyjnius
 

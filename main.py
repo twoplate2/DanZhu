@@ -2038,13 +2038,12 @@ class Sfx:
                 sw = "音效开关　已关（本次不会有任何声音）"
             else:
                 sw = "音效开关　无后端（本次全静音，非玩家操作）"
-            # ⚠️ 「冷/热」这个词**只在 named 后端上成立**: 磁盘缓存(stamp)整个机制都活在
-            #    `_bake_named`/`_load_cached` 里, PCM 后端(_bake_pcm)根本不写缓存 ⇒ 它**每次
-            #    启动都是现场合成**, "冷启动"在那个后端上恒为真、零信息量。(2026-09-11 玩家:
-            #    「是不是每次都必然显示冷启动」—— PC 上确实是, 但那是后端性质, 不是故障。)
-            #    所以 PCM 上只报耗时, 不报冷热。
-            mode_row = ("启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms)
-                        if named_mode else "合成耗时　%.0f ms" % self.bake_ms)
+            # ⚠️ 玩家 2026-09-11 定稿: **PC 上也用「冷启动」这个格式** —— 原话「我在pc上也需要
+            #    知道版本号 也需要知道那几个时间 别tmd自作主张」。
+            #    PCM 后端(_bake_pcm)不写磁盘缓存 ⇒ `cached` 恒为 False ⇒ PC 上永远显示「冷启动」。
+            #    那是**事实**, 不是标签错。(原先为了回避"冷启动在 PC 上恒真"而印成「合成耗时 …」,
+            #    玩家要的是两边同一个口径, 所以统一。)
+            mode_row = "启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms)
             n_rc = getattr(out, "rebuild_count", 0)
 
             # ⚠️ PCM 后端(PC 的 winmm / Kivy-SoundLoader): 下面三项对它**结构上就不适用**
@@ -2052,7 +2051,11 @@ class Sfx:
             #    玩家 2026-09-11 反馈「这几个不适用听起来有点奇怪」—— 三行"不适用"既是纯噪音,
             #    又把真正有内容的两行淹掉了。所以**不适用的行直接不出现**, 而不是印成"不适用"。
             if not named_mode:
-                rows = [sw, "音频后端　%s" % bname, mode_row]
+                # ⚠️ 玩家 2026-09-11 定稿: PC 上也要看到**那几个时间**。
+                #    「音效等待」在 PC 上是**真的 0 ms**, 不是"测不到": winmm 后端没有 probe_all
+                #    (`_await_ready` 见到就立刻放行), 根本不存在"等解码"这件事。
+                #    PC 的耗时全在上一行的「冷启动 XXXX ms」里。
+                rows = [sw, "音频后端　%s" % bname, mode_row, "音效等待　0 ms"]
                 if n_rc:
                     rows.append("后端重建　%d 次" % n_rc)
                 return rows
@@ -5861,6 +5864,24 @@ class RootWidget(BoxLayout):
                 pi = act.getPackageManager().getPackageInfo(act.getPackageName(), 0)
                 if pi.versionName:
                     parts.append('v%s' % pi.versionName)
+            except Exception:
+                pass
+        # ⚠️ PC 上没有 PackageManager —— 但 `buildozer.spec` 就躺在 main.py 旁边, **直接读它**。
+        #    读的是**出货打包时用的同一个文件**, 不是在这里再抄一份版本号(抄的那份早晚忘改)。
+        #    安卓上 buildozer.spec 不进 APK、open 会失败, 而那时上面的分支已经把版本填好了,
+        #    所以这里用 `if not parts:` 兜底, 两边互不干扰。
+        #    (玩家 2026-09-11: 「我在pc上也需要知道版本号 也需要知道那几个时间 别tmd自作主张」。)
+        if not parts:
+            try:
+                import re as _re
+                _spec = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "buildozer.spec")
+                with open(_spec, "r", encoding="utf-8", errors="ignore") as _f:
+                    for _line in _f:
+                        _m = _re.match(r"\s*version\s*=\s*(\S+)", _line)
+                        if _m:
+                            parts.append("v%s" % _m.group(1))
+                            break
             except Exception:
                 pass
         try:
