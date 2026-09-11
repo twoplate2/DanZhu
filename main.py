@@ -2029,15 +2029,16 @@ class Sfx:
             named_mode = getattr(out, "mode", "") == "named"
             bname = getattr(out, "name", "静音")
             deviated = platform == "android" and named_mode and bname != "SoundPool"
-            # 1) 音效开关 —— **必须排第一**: 它是全表的前提, 前提不成立时下面每一行都在描述一个
-            #    不会发生的世界。而且 `enabled=False` 有两张完全不同的脸: **玩家自己关的** vs
-            #    **后端压根没建起来**(--nosound 和后端构造失败在代码里都是 enabled=False)。
-            if self.enabled:
-                sw = "音效开关　已开"
-            elif out is not None:
-                sw = "音效开关　已关（本次不会有任何声音）"
-            else:
-                sw = "音效开关　无后端（本次全静音，非玩家操作）"
+            # ⚠️ 这里原来有一行「音效开关　已开/已关/无后端」(v0.6.5 就有, 一直排在最前)。
+            #    **玩家 2026-09-11 定稿删除**: 「去掉音效开关： xx 这个行 没有意义」。
+            #    理由是它属于这块面板自己那条成文规则里的反面 —— **有唯一预期值的, 只在偏离时
+            #    才有信息**; 而"音效已开"是常态, 每次打开都印一行不变的"已开"就是纯噪音
+            #    (同「后端重建」只在非 0 时出现)。
+            #    剩下的信息没有丢: 真出问题时「音频后端」那行会变 ——
+            #    静默降级会印出 `Kivy-SoundLoader` 并附「安卓上应为 SoundPool」, 彻底没后端时
+            #    会印 `音频后端　静音`。
+            # ⚠️ 唯一的代价: **玩家自己点了静音** 时, 面板看起来是全正常的(后端名照旧) ——
+            #    那条路只有玩家自己知道。真要补, 正确形状是"偏离才印"而不是恢复常显。
             # ⚠️ 玩家 2026-09-11 定稿: **PC 上也用「冷启动」这个格式** —— 原话「我在pc上也需要
             #    知道版本号 也需要知道那几个时间 别tmd自作主张」。
             #    PCM 后端(_bake_pcm)不写磁盘缓存 ⇒ `cached` 恒为 False ⇒ PC 上永远显示「冷启动」。
@@ -2055,7 +2056,7 @@ class Sfx:
                 #    「音效等待」在 PC 上是**真的 0 ms**, 不是"测不到": winmm 后端没有 probe_all
                 #    (`_await_ready` 见到就立刻放行), 根本不存在"等解码"这件事。
                 #    PC 的耗时全在上一行的「冷启动 XXXX ms」里。
-                rows = [sw, "音频后端　%s" % bname, mode_row, "音效等待　0 ms"]
+                rows = ["音频后端　%s" % bname, mode_row, "音效等待　0 ms"]
                 if n_rc:
                     rows.append("后端重建　%d 次" % n_rc)
                 return rows
@@ -2072,7 +2073,17 @@ class Sfx:
                 #    只在偏离时显示(常态印它只是噪音)。
                 if self._expected and n_gate < self._expected:
                     ready += "（满编 %d）" % self._expected
-            rows = [sw, "音效就绪　%s" % ready, "音频后端　%s" % bname]
+            # ⚠️ 「语音就绪」**紧跟在音效就绪后面**(玩家 2026-09-11 定稿: 「把加载失败 x个
+            #    语音xx/xx 改为 语音就绪：xx/yy, 放在音效就绪的后面」)。
+            #    它原来是最后一行的「加载失败　N 个　·　语音 XX / YY」: 那一行把两件事挤在一起,
+            #    而"加载失败几个"这个数在**语音就绪**里其实已经体现(分母就是满编数)。
+            #    和「音效就绪」成对摆开, "音效响、语音不响"这种半死状态一眼可见 —— 单看
+            #    「音效就绪 97 / 97」它是隐形的(那个数含语音)。
+            _n_voice = sum(1 for _n in self.named if _n.startswith("voice_"))
+            _n_voice_all = max(0, self._expected - self._n_bank)
+            rows = ["音效就绪　%s" % ready,
+                    "语音就绪：%d / %d" % (_n_voice, _n_voice_all),
+                    "音频后端　%s" % bname]
             # ⚠️ 期望值**单独占一行**, 不并进上一行: 并进去会让那行超宽折行 —— 而折行是这里
             #    最容易出事的地方(v0.6.12 就栽在被定高标签裁掉了尾巴; 2026-09-11 在手机密度的
             #    模拟器上又栽了一次: 等效宽度只有桌面的一半)。
@@ -2103,11 +2114,10 @@ class Sfx:
             else:
                 rows.append("音效等待　0 ms（未等待）")
 
-            # 4) 加载失败 —— `_failed` 就是"哪些音效真的没加载上"的正面答案, 已经躺在内存里。
-            #    和语音分开报, 否则"音效响、语音不响"这种半死状态在面板上完全隐形。
-            n_voice = sum(1 for n in self.named if n.startswith("voice_"))
-            rows.append("加载失败　%d 个　·　语音 %d / %d"
-                        % (len(self._failed), n_voice, max(0, self._expected - self._n_bank)))
+            # ⚠️ 这里原来是最后一行「加载失败　%d 个　·　语音 %d / %d」—— 已按玩家 2026-09-11
+            #    的要求拆掉: 语音那半挪到「音效就绪」后面成了「语音就绪：XX / YY」(见上面),
+            #    "加载失败几个"那半不再单列(它已经体现在语音就绪的分母上)。
+            #    如果将来"某个音效没加载上"要单独看, `self._failed` 仍然躺在内存里, 随时能印。
 
             # 5) 后端重建 —— **只在非 0 时出现**(唯一预期值是 0, 常态印它只是噪音)
             if n_rc:
@@ -5810,10 +5820,11 @@ class RootWidget(BoxLayout):
         ⚠️ 直接**复用 `audio_detail()`** —— 不许另写一套格式化: 那样 PC 上又会冒出
         `音效就绪 0 / 0`(PCM 后端压根不用 sampleId), 而这个数在那边是**没有意义的**,
         看着却像全军覆没。复用同一处真源, 两个地方才不会各说各话(项目里 hold_for 那次教训)。
-        去掉「音效开关」那行(玩家刚点完按钮, 开关状态不需要再告诉他一遍)。"""
+        去掉「音效开关」那行(玩家刚点完按钮, 开关状态不需要再告诉他一遍)。
+        ⚠️ 后来(2026-09-11)玩家把「音效开关」从 `audio_detail()` 里**整段删掉**了, 所以这里
+        那道 `if not r.startswith("音效开关")` 过滤已成**死代码**, 一并删除。"""
         try:
-            rows = [r for r in self.sfx.audio_detail() if not r.startswith("音效开关")]
-            return "\n".join(rows)
+            return "\n".join(self.sfx.audio_detail())
         except Exception:
             return ""
 
