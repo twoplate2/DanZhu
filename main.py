@@ -3943,6 +3943,15 @@ def _vibrate_tick(gain):
 
 
 
+# "弹珠落容器"(装杯演出)的**触发**延后多少秒(用户 2026-09-11 定案)。
+# 用户给的规格:
+#   当前   —— 第0秒进倍率槽: 立即播声音 + **立即(第0秒)触发落容器事件**
+#   调整后 —— 第0秒进倍率槽: 立即播声音, **第0.15秒才触发落容器事件**
+# 所以动的不是任何声音, 也不是球的运动, 是 `settle()` 里那句 `win_fx.play_win(...)` 的**调用时刻**。
+# 演出内部的时间轴(WINDUP / 压暗 0.30 / 杯子 0.32 / 落珠 / 回味 / 退场)一律不动,
+# 于是整场只是起点后移 0.15s, 总时长不变。
+CUP_TRIGGER_DELAY = 0.15
+
 # 隐藏弹窗里"制作时刻"的格式。
 # ⚠️ 时间**必须是 24 小时制(%H)**, 玩家定稿。用 %I 会变成"下午 1:49"那种 12 小时制,
 #    跟其余界面的时间口径不一致(历史记录里也是 `%Y-%m-%d %H:%M`, 24 小时制)。
@@ -5607,16 +5616,34 @@ class RootWidget(BoxLayout):
             #    (废弃的旧理由, 留档: 1) 装杯会画满游戏区盖住置灰层; 2) 装杯最多画 100 颗球,
             #     开销会污染正在采样的帧率 —— 第 2 条就是上面写的那个代价, 现在接受它。
             #     第 1 条已不成立: 置灰层在 RootWidget.canvas.after, 本来就盖在装杯之上。)
-            if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
-                # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
-                _on_settled()
-            # 兜底: 到点还没揭就自己揭(防 tick 停摆)。
-            # ⚠️ 基准必须和 tick() 判揭晓用**同一个真源**(`win_fx.reveal_at()`)。
-            #    这里曾经按 `expected_sec - (hold_for + RESULT_FADE)` 反推, 等价于
-            #    "最后一颗球停住 + 0.05s"。揭晓改成"第一次触地 + REVEAL_DELAY(0.3s)"之后,
-            #    那两个时刻只差 0.196~0.315s, 于是兜底会比真事件**早**最多 0.054s 触发 ——
-            #    数字/语音在球停稳前就冒出来, 正是当初要消灭的"提前剧透"。
-            self._reveal_deadline = self.game_area.win_fx.reveal_at() + 0.05
+            # ⚠️ **"弹珠落容器"事件的触发时刻延后 `CUP_TRIGGER_DELAY` 秒**(用户 2026-09-11 定案)。
+            #    账务/指示灯/槽位白闪/入袋音全部留在 t=0(上面那些行一个字没挪),
+            #    只有下面这句 `play_win` 后移 —— 见常量处的规格说明。
+            #
+            # ⚠️⚠️ `_reveal_deadline` **必须先归零再调度**。兜底判据(见 _frame 的 landed 分支)是
+            #    `... and self._reveal_deadline and now >= self._reveal_deadline` —— 不归零的话,
+            #    **上一轮残留的非零 deadline** 会在这 0.15s 窗口里让兜底提前开火:
+            #    大字/语音/余额在演出还没开始时就冒出来(= 提前剧透, 正是当初费大力气消灭的东西)。
+            # ⚠️ Clock 回调收 1 个位置参数 —— BUILD_APK.md §3.23 红线, 零参签名真机启动即闪退。
+            # ⚠️ deadline 与 play_win **必须同拍**: `reveal_at()` 读的是 play_win 写好的 `_t0`。
+            # ⚠️ `park_ball` 不会在这 0.15s 里抢跑: landed 分支要求 `landed_at + _land_hold` 已过,
+            #    而 `_land_hold` 的最小值是 max(0.3, LAND_HOLD-0.5) = 0.3s > 0.15s。
+            #    **以后谁把 `_land_hold` 调到 0.15 以下, 就会在演出触发前重掷盘面。**
+            self._reveal_deadline = 0.0
+
+            def _start_cup():
+                if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
+                    # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
+                    _on_settled()
+                # 兜底: 到点还没揭就自己揭(防 tick 停摆)。
+                # ⚠️ 基准必须和 tick() 判揭晓用**同一个真源**(`win_fx.reveal_at()`)。
+                #    这里曾经按 `expected_sec - (hold_for + RESULT_FADE)` 反推, 等价于
+                #    "最后一颗球停住 + 0.05s"。揭晓改成"第一次触地 + REVEAL_DELAY(0.3s)"之后,
+                #    那两个时刻只差 0.196~0.315s, 于是兜底会比真事件**早**最多 0.054s 触发 ——
+                #    数字/语音在球停稳前就冒出来, 正是当初要消灭的"提前剧透"。
+                self._reveal_deadline = self.game_area.win_fx.reveal_at() + 0.05
+
+            Clock.schedule_once(lambda dt: _start_cup(), CUP_TRIGGER_DELAY)
             # 只要中奖就震, 按倍率分档(x2/x3 轻点一下)
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         else:
@@ -6589,31 +6616,39 @@ def _smoke():
         r._easter_popup = None
         r._easter_hold = False
         r._bench_running = True
-        try:
-            r.multipliers = [0] * 9
-            r.multipliers[4] = 50
-            r.state = "landing"
-            r._settled = False
-            r.settle(4)                       # 跑分中中奖
-            print("SMOKE bench-win: cup=%s reveal=%s busy=%s"
-                  % (r.game_area.win_fx.mode, r._reveal_done, r.game_area.win_fx.busy()))
-            # ⚠️ 2026-09-11 用户定案反过来了: 跑分期间**应该**照常播装杯
-            #    (玩家报"你丢掉了落袋动画", 要求保留)。以前这条断言是"不该播"。
-            if r.game_area.win_fx.mode == "idle":
-                print("SMOKE-FAIL: 跑分中应该照常播装杯(用户定案保留落袋动画), 实际已回 idle")
-            r.state = "landing"
-            r._settled = False
-            r._easter_egg = True
-            r.settle(4)                       # 跑分中彩蛋
-            if r._easter_popup is not None or r._easter_hold:
-                print("SMOKE-FAIL: 跑分中弹了彩蛋窗或软锁住了 (hold=%s)" % r._easter_hold)
-        finally:
-            r._bench_running = False
-            r._easter_hold = False
-            r._easter_popup = None
-        print("SMOKE-OK state=%s cup=%s -> %s"
-              % (r.state, r.game_area.win_fx.mode, outdir))
-        App.get_running_app().stop()
+        r.multipliers = [0] * 9
+        r.multipliers[4] = 50
+        r.state = "landing"
+        r._settled = False
+        r.settle(4)                       # 跑分中中奖
+        print("SMOKE bench-win: cup=%s reveal=%s busy=%s"
+              % (r.game_area.win_fx.mode, r._reveal_done, r.game_area.win_fx.busy()))
+        # ⚠️ 2026-09-11: "落容器"事件的**触发**延后了 CUP_TRIGGER_DELAY 秒, 所以 settle 刚
+        #    返回这一刻 mode 本来就该是 idle —— 断言必须等过了那一段再看(下面用 Clock 推迟)。
+        if r.game_area.win_fx.mode != "idle":
+            print("SMOKE-FAIL: 落容器事件不该在触地那一帧就触发(应延后 %.2fs)" % CUP_TRIGGER_DELAY)
+
+        def _cup_then_easter(dt):
+            try:
+                # ⚠️ 2026-09-11 用户定案反过来了: 跑分期间**应该**照常播装杯
+                #    (玩家报"你丢掉了落袋动画", 要求保留)。以前这条断言是"不该播"。
+                if r.game_area.win_fx.mode == "idle":
+                    print("SMOKE-FAIL: 跑分中应该照常播装杯(用户定案保留落袋动画), 实际已回 idle")
+                r.state = "landing"
+                r._settled = False
+                r._easter_egg = True
+                r.settle(4)                       # 跑分中彩蛋
+                if r._easter_popup is not None or r._easter_hold:
+                    print("SMOKE-FAIL: 跑分中弹了彩蛋窗或软锁住了 (hold=%s)" % r._easter_hold)
+            finally:
+                r._bench_running = False
+                r._easter_hold = False
+                r._easter_popup = None
+            print("SMOKE-OK state=%s cup=%s -> %s"
+                  % (r.state, r.game_area.win_fx.mode, outdir))
+            App.get_running_app().stop()
+
+        Clock.schedule_once(_cup_then_easter, CUP_TRIGGER_DELAY + 0.12)
 
     def when_ready(fn, name, tries=120):
         """等状态机真正回到 ready 再执行, 超时(默认 12s)则打日志后强制执行。

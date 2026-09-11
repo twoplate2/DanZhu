@@ -14,6 +14,22 @@ source.include_exts = py,png,jpg,kv,atlas,ttf,otf,wav,mp3
 # "子目录资源必须显式列"的历史经验, 加它无害, 真伪由出包后解 private.tar 验证。
 source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 
+# 0.6.6(2026-09-11): "弹珠落容器"(装杯演出)的**触发时刻延后 0.15s**(用户定案)。
+# 用户给的规格:
+#   当前   —— 第0秒进倍率槽: 立即播声音 + **立即(第0秒)触发落容器事件**
+#   调整后 —— 第0秒进倍率槽: 立即播声音, **第0.15秒才触发落容器事件**
+# 改动面: `RootWidget.settle()` 中奖分支里那句 `win_fx.play_win(...)` 连同紧跟的
+#   `_reveal_deadline` 计算一起挪进 `Clock.schedule_once(..., CUP_TRIGGER_DELAY)`。
+#   账务 / 指示灯 / 槽位白闪 / **入袋音** 全部留在 t=0 不动 —— 用户明确要求"立即播声音"。
+#   演出内部时间轴(WINDUP / 压暗 0.30 / 杯子 0.32 / 落珠 / 回味 / 退场)一律不动,
+#   所以整场只是起点后移 0.15s, **总时长不变**。
+# ⚠️ `_reveal_deadline` 必须先归零再调度: 兜底判据里带 `and self._reveal_deadline`,
+#   不归零的话上一轮残留的非零 deadline 会在这 0.15s 窗口里让兜底提前开火(提前剧透)。
+# ⚠️ `park_ball` 不会抢跑: `_land_hold` 最小值 0.3s > 0.15s(注释里写死了这条依赖)。
+# 实测(探针): 触地 -> 演出起点 = **0.648s**(= WINDUP 0.50 + 0.15), 阴性对照把延迟改成 0
+#   量到 0.507s, 证明探针有分辨力; 触发前 mode 仍是 idle、窗口内 `_reveal_done` 始终 False。
+# 冒烟同步更新: settle 那一刻断言 cup==idle(未触发), 过延迟后再断言 cup!=idle(已触发)。
+#
 # 0.6.5(2026-09-11): 装杯落珠的音量调大(玩家: "弹珠掉落容器的声音, 音量太小了")。
 # 病根不是波形, 是装杯这边自己把音量掐窄了:
 #   主游戏(球落倍率槽)给的是 clamp(vy/500, 0.3, **1.0**) —— 同一个波形能到满幅;
@@ -332,7 +348,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 线程直调被安卓线程检查静默拦截, 改投递 UI 线程(runOnUiThread)执行, 转屏自愈
 # 的假象消失, 竖屏打开即全屏。0.5.3 是闪退真凶修复(零参签名)。
 # ⚠️ 每次出包必须 bump: 版本号是"装的是哪个包"的唯一肉眼证据(APK 文件名含版本)。
-version = 0.6.5
+version = 0.6.6
 
 requirements = python3,kivy==2.3.0,pyjnius
 
