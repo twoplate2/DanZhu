@@ -2903,6 +2903,18 @@ HUD_ALPHA = DIM_ALPHA
 #   3. 实测代价(删之前): ×20 后半段静音 1.4s、×50 静音 1.8s、×100 静音 2.3s ——
 #      弹珠还在往下落, 声音却没了(用户报的就是这个)。
 BOUNCE_THROTTLE = 0.10
+# ---- 装杯落珠的音量(玩家 2026-09-11: "弹珠掉落容器的声音, 音量太小了") ----
+# 原来这里对 gain 做了 `max(0.20, min(0.75, gain))` 的收窄, 而两颗球的原始 gain 是
+#   第一跳 0.42~0.72 / 第二跳 0.25~0.45 → 实际落在 0.42~0.72 和 0.25~0.45。
+# 同一个 `bounce` 波形**主游戏也在用**(球落进倍率槽), 那边给的是 `clamp(vy/500, 0.3, 1.0)`
+# —— **能到 1.0**, 说明这个波形满幅播放不削波(`Sfx.play` 的 lvl=10 就是原始 PCM, 峰值
+# 16383/32767 = -6dBFS, 还有 6dB 余量)。所以装杯这边明显偏小, 现在提到与主游戏同档。
+# ⚠️ **只在这里乘** —— 别去动 `_sfx_bounce()` 的合成增益, 那个波形主游戏共用, 一改就是
+#    连主游戏一起变响。也别为了这个去改 `SFX_MASTER`(全局)。
+BOUNCE_GAIN_BOOST = 1.8                          # 装杯落珠的音量倍率
+BOUNCE_GAIN_LO, BOUNCE_GAIN_HI = 0.35, 1.00      # 乘完之后再夹到这个区间
+BOUNCE_A1_BASE, BOUNCE_A1_AMP = 0.42, 0.30       # 第一跳 gain = base + amp * 撞击强度比
+BOUNCE_A2_BASE, BOUNCE_A2_AMP = 0.25, 0.20       # 第二跳
 
 # ---- 2026-09-10: 试过换掉装杯音, 已回退, 别再走这条路 ----
 # 曾把装杯的 `bounce` 换成 4 个变体的合成"玻璃音" `cup0..3`(1960~2540Hz 非谐分音,
@@ -3528,10 +3540,10 @@ class WinPileFX(Widget):
                 continue
             if tt >= b["f"] and not b["a1"]:
                 b["a1"] = True
-                self._bounce(0.42 + 0.30 * min(1.0, b["a1_amp"] / b["r_d"]))
+                self._bounce(BOUNCE_A1_BASE + BOUNCE_A1_AMP * min(1.0, b["a1_amp"] / b["r_d"]))
             if tt >= b["f"] + b["t1"] and not b["a2"]:
                 b["a2"] = True
-                self._bounce(0.25 + 0.20 * min(1.0, b["a2_amp"] / b["r_d"]))
+                self._bounce(BOUNCE_A2_BASE + BOUNCE_A2_AMP * min(1.0, b["a2_amp"] / b["r_d"]))
             # ⚠️ 判据是 **t**(相对 _t0 的绝对时刻), 不是 tt —— b["end"] 是
             # "t0 + f + t1 + t2" 算出来的绝对时刻, 拿 tt(已经减过 t0)去比会永远比不到,
             # 球就永远落不定(会一直按未落定插值画, 停在空中)。
@@ -3551,7 +3563,10 @@ class WinPileFX(Widget):
         sfx = getattr(g, "sfx", None)
         if sfx is None:
             return
-        if sfx.play("bounce", max(0.20, min(0.75, gain)), BOUNCE_THROTTLE):
+        if sfx.play("bounce",
+                     max(BOUNCE_GAIN_LO,
+                         min(BOUNCE_GAIN_HI, gain * BOUNCE_GAIN_BOOST)),
+                     BOUNCE_THROTTLE):
             _vibrate_tick(gain)
 
     # ------------------------------ 逐球插值 ------------------------------
@@ -5506,15 +5521,16 @@ class RootWidget(BoxLayout):
             self.round_plays -= 1
             self._refresh_stats()
             # 不设 status_lbl: 这条路径的结果全交给弹窗说(用户定稿, 状态栏那行已删)
+            # (跑分期间不弹窗 —— 那时也没有文字说明, 但那是测试流程, 玩家知道自己在跑分)
             _vibrate_double(35)                   # 短促双震=惊喜, 非长震大奖
             self._result_until = time.time() + 2.5
             self._anim_start_balance = self.display_balance
             self._anim_target_balance = float(self.balance)
             self._anim_start_time = time.time()
             self._save_config()
-            # 性能测试期间不表演: 不播装杯、不弹彩蛋窗。用户报"跑分时弹珠回到发射槽弹了
-            # 个提示窗, 打断了灰屏" —— 弹窗会盖住跑分置灰层, 而且多一个模态窗口就多一份
-            # 渲染开销, 会污染正在采样的帧率。账务照走(余额/统计都不吞), 单局照常结束。
+            # ⚠️ 跑分期间不表演: 不播装杯、不弹彩蛋窗(用户 2026-09-11 定案: "benchmark 的时候
+            #    不弹, 其他时间还是需要弹的")。弹窗会盖住跑分置灰层。账务照走(余额/统计都不吞),
+            #    单局照常结束。
             if getattr(self, "_bench_running", False):
                 self._land_hold = max(0.3, LAND_HOLD - 0.5)
                 return
@@ -5670,13 +5686,13 @@ class RootWidget(BoxLayout):
         """
         if not self._easter_hold:
             return
-        # 兜底防线: 性能测试期间绝不弹窗(会盖住跑分置灰层)。这里**不能只 return** ——
-        # 那样 _easter_hold 永远不放, 玩家会被软锁死; 必须走 _easter_finish 解锁。
-        # (正常路径上 settle() 的彩蛋分支已经拦掉了, 这只是第二道防线。)
+        # ⚠️ 跑分期间**不弹窗**(用户定案: "benchmark的时候不弹, 其他时间还是需要弹的")。
+        #    这里**不能只 return** —— 那样 _easter_hold 永远不放, 玩家会被软锁死;
+        #    必须走 _easter_finish 解锁。
         if getattr(self, "_bench_running", False):
             self._easter_finish()
             return
-        # ⚠️ 这个回调现在挂在"最后一颗球**第一次触地**"(揭晓用), 而装杯的退场还要再跑
+        # ⚠️ 这个回调挂在"最后一颗球**第一次触地**"(揭晓用), 而装杯的退场还要再跑
         # 0.6s 左右。用户定稿是"先播完装杯、全部落定再弹对话框" —— 所以这里必须等到
         # win_fx 真正回到 idle, 否则弹窗会在杯子还在淡出的时候盖上来。
         # (轮询有上界: win_fx 自己有 FX_MAX_SEC=9s 硬兜底, 不会空转。)
@@ -5692,12 +5708,15 @@ class RootWidget(BoxLayout):
         ("弹珠数量已调整到一千个" / "弹珠返还比例调整到百分之三百")保持一致,
         量词统一用「个弹珠」(对齐"每次投入弹珠: 1个/10个/50个/100个"那排按钮)。
         金额报的是**总返还** 2×bet(按确定后余额确实 +2×bet); 净赚仍是 bet。
+
+        ⚠️ **跑分期间不弹**(用户 2026-09-11 定案: "benchmark的时候不弹, 其他时间还是需要弹的"),
+        防线在 `_on_easter_settled` 里(那里必须走 _easter_finish 解锁, 不能只 return)。
         """
         content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
         title = Label(text="弹珠返回发射槽", font_size="28sp", bold=True, halign="center",
                       color=hex_rgb(COL_METER) + (1,), size_hint_y=None, height=dp(44))
-        msg = Label(text="弹珠未落入倍率槽, 已回到发射槽。\n本局按 ×2 结算, 返还 %d 个弹珠。"
-                         % (2 * self.bet),
+        msg = Label(text="弹珠未落入倍率槽, 已回到发射槽。" + chr(10)
+                         + "本局按 ×2 结算, 返还 %d 个弹珠。" % (2 * self.bet),
                     font_size="16sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,))
         msg.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
