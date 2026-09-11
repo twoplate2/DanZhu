@@ -1813,6 +1813,16 @@ class _KivySoundOut:
         self._loader = SoundLoader
         self._sounds = {}
 
+    def loaded_count(self):
+        """后端**真的**握着几个可播对象。
+
+        ⚠️ 这个方法必须有。缺了它, `Sfx.backend_count()` 返回 None → 面板显示「未知」;
+        而在 2026-09-11 之前, 缺它的后果是**悄悄退回闸门值**(`len(named)`) ⇒ 面板报出一片
+        `97 / 97` 全绿 —— 而这块面板存在的唯一理由就是抓这种静默。
+        实测(专家用三个假后端跑真代码): 缺 `loaded_count` 的后端, 面板三行假绿,
+        只有「音频后端」那一行说真话。"""
+        return len(self._sounds)
+
     def prime(self, name, path):
         snd = self._loader.load(path)
         if snd is None:
@@ -1880,6 +1890,10 @@ class Sfx:
         self._audio_ready = False   # 烘完 + **探到真的能播** 才为真(见 _await_ready)。默认 False:
                                     # 但 !enabled / 后端探测不可用时一律放行 —— 绝不软锁
         self.ready_ms = 0.0         # 等"真的能播"花了多久(0 = 不适用/没探针)
+        self.n_attempt = 0          # 过了全部闸门、真的向后端要过声音的次数
+        self.n_missed = 0           # 上面那些里**后端仍说没播成**的次数(静默的正面计数)
+        self._expected = 0          # 满编音效数(烘焙时顺手记, 见 _expected_total 为什么不能现算)
+        self._n_bank = 0            # 满编的合成音数(不含语音); 也是烘焙时数出来的
         self._failed = []           # 加载失败的 (name, path): 后台重试, 见 _retry_failed
         self._retry_wait = 0.6      # 重试间隔(秒)
         self._retry_rounds = 12     # 重试轮数(≈7s), 还不成功就认命
@@ -1950,38 +1964,111 @@ class Sfx:
             pass
         self._audio_ready = True
 
+    def backend_count(self):
+        """后端**真的**握着几个可播对象; None = 这个后端不报数(或压根没有后端)。
+
+        ⚠️ 这里**绝不能**在拿不到时退回闸门值(`len(self.named)`) —— 2026-09-11 之前就是那么写的,
+        而它正是这块面板存在的理由被反噬: 安卓上 SoundPool 若构造失败、静默降级到 `_KivySoundOut`,
+        面板会报 `97 / 97` **全绿**(专家用三个假后端跑真代码实测: 那个分支里四行有三行假绿,
+        只有「音频后端」那一行说真话)。兜底只能是"不知道" —— 用一个类型上分得开的返回值(None),
+        而不是靠"记得别写回退"。"""
+        fn = getattr(self.out, "loaded_count", None)
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:
+            return None
+
     def audio_detail(self):
-        """隐藏菜单里"音频体检"那几行(每行一个字段)。
+        """「启动信息」里那几行(每行一个字段)。
 
         玩家 2026-09-11 报的「初次安装必然没声音」—— 它的**所有候选原因在产物里长得一模一样**
         (静默 / 不抛异常 / 不留痕), 没有 adb 就只能把真值按字段摆开, 一次截图定位到哪一支。
-        ⚠️ 最要紧的是"音效就绪": 报的是**后端真的握着几个 sampleId**, 不是闸门放行了几个 ——
-        病灶正是两者不等(闸门满、后端缺), 只报闸门会显示全绿, 那比不显示更有害。
+
+        设计规则(两轮专家评审 + 玩家本人定稿, 三条都是踩过坑才有的):
+        1. **顺序 = 排查优先级**, 不是"变不变": 前提(音效开关) → 结论(就绪) → 入参(启动方式/等待)
+           → 计数(加载失败/重建)。作者抱怨过"布局太乱", 根因是行序没按"出问题先看谁"排。
+        2. **有唯一预期值的, 只在偏离时才有信息; 没有唯一预期值的(冷/热、等待时长)才需要常显。**
+        3. **恒定值降权、不删除** —— 出事那张截图里它们就是基线。
+        ⚠️ 行数有硬预算: 实测弹窗内容区只有 376px、每行 38px。加行必须同时加弹窗高度,
+           而合并行几乎免费(宽度只用到 295/421px)——所以"后端名"并进了"音效就绪"那一行。
         ⚠️ 整段 try/except: 这只是隐藏菜单里的几行, 绝不把弹窗带崩。"""
         try:
+            out = self.out
             n_gate = len(self.named)
-            cnt = getattr(self.out, "loaded_count", None)
-            n_back = cnt() if cnt is not None else n_gate
-            backend = getattr(self.out, "name", "静音")
-            if getattr(self.out, "mode", "") != "named":
-                # PCM 后端(PC 的 winmm / Kivy-SoundLoader)不走"按名字加载"那套, named 本来就是空的
-                # —— 报 "0/0" 会把人吓一跳, 直接说清楚这个字段对它不适用。
-                ready = "不适用(该后端不走 sampleId)"
-            elif n_back < n_gate:
-                ready = "%d / %d   后端缺 %d" % (n_back, n_gate, n_gate - n_back)
+            n_back = self.backend_count()
+            named_mode = getattr(out, "mode", "") == "named"
+            rows = []
+
+            # 1) 音效开关 —— **必须排第一**: 它是全表的前提, 前提不成立时下面每一行都在描述一个
+            #    不会发生的世界。而且 `enabled=False` 有两张完全不同的脸: **玩家自己关的** vs
+            #    **后端压根没建起来**("--nosound" 和后端构造失败在代码里都是 enabled=False)。
+            #    只报"已关"会把事故读成"我关的"。
+            if self.enabled:
+                rows.append("音效开关　已开")
+            elif out is not None:
+                rows.append("音效开关　已关（本次不会有任何声音）")
+            else:
+                rows.append("音效开关　无后端（本次全静音，非玩家操作）")
+
+            # 2) 音效就绪
+            if out is None:
+                # ⚠️ 这一支**必须**和"PC 的 PCM 后端"分开说: 一个是"全没了"(真故障), 一个是
+                #    "本来就该这样"(正常)。2026-09-11 之前两者共用一句话, 是面板上最容易误读的地方。
+                ready = "无后端（本次全静音）"
+            elif not named_mode:
+                ready = "不适用（本后端播放不走 sampleId）"
+            elif n_back is None:
+                ready = "未知（该后端不报数）"
             else:
                 ready = "%d / %d" % (n_back, n_gate)
-            return [
-                "音频后端　%s" % backend,
-                "音效就绪　%s" % ready,
-                "启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms),
-                # 等"真的能播"花了多久: 接近上限(6s)就说明解码一直没跟上 —— 那正是
-                # 「首次安装必然没声音」的正面证据, 也是决定要不要做"语音懒加载"的依据。
-                # (getattr 兜底: 探针/门禁会拿 __new__ 造半成品对象, 少一个字段不该整块消失)
-                "音效等待　%s" % ("不适用" if getattr(self, "ready_ms", 0.0) <= 0 else
-                                  "%.0f ms　(上限 %.0f)" % (self.ready_ms, self.SFX_READY_TIMEOUT)),
-                "后端重建　%d 次" % getattr(self.out, "rebuild_count", 0),
-            ]
+                if n_back < n_gate:
+                    ready += "　后端缺 %d" % (n_gate - n_back)
+                # ⚠️「满编」只在**闸门自己就短了**的时候才印 —— 玩家定稿的规则: 有唯一预期值的,
+                #    只在偏离时显示(常态印 97 只是噪音)。
+                if self._expected and n_gate < self._expected:
+                    ready += "（满编 %d）" % self._expected
+            rows.append("音效就绪　%s" % ready)
+
+            # 3) 音频后端 —— 单独一行: 它降级路径的唯一见证者(降级时上面那行可能全绿, 只有它说真话)。
+            #    安卓上"不是 SoundPool"是一条**独立的异常轴**, 而作者不会天然知道该是什么 ——
+            #    所以必须把期望值印出来, 否则"藏它"和"留它"在那个分支里结果都是全绿。
+            bname = getattr(out, "name", "静音")
+            if platform == "android" and named_mode and bname != "SoundPool":
+                bname += "（非预期：安卓应为 SoundPool）"
+            rows.append("音频后端　%s" % bname)
+
+            # 4) 启动方式 —— 它和"首次安装"是同一个条件的两面, 是唯一能认出"这次就是那种局"的字段
+            rows.append("启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms))
+
+            # 5) 音效等待 —— 等"真的能播"花了多久。⚠️ "没有探针"在 PC 上是中性的, 在安卓上是
+            #    **护栏缺失**(那 6 秒形同虚设, 而这正是那个 bug 的成因), 两者不能共用一句话。
+            if self.ready_ms > 0:
+                rows.append("音效等待　%.0f ms（上限 %.0f）"
+                            % (self.ready_ms, self.SFX_READY_TIMEOUT * 1000.0))
+            elif getattr(out, "probe_all", None) is None:
+                rows.append("音效等待　无法确认能播（本后端无探针）" if platform == "android"
+                            else "音效等待　不适用（PC 后端无需探针）")
+            else:
+                rows.append("音效等待　0 ms（未等待）")
+
+            # 6) 加载失败 —— `_failed` 就是"哪些音效真的没加载上"的正面答案, 已经躺在内存里。
+            #    和语音分开报, 否则"音效响、语音不响"这种半死状态在面板上完全隐形。
+            #    ⚠️ PCM 后端(PC)不走"按名字加载"那套, 这两个数对它没有意义 —— 报 0 / 0 会被
+            #    读成"全军覆没", 所以直接说清本项不适用。
+            if not named_mode:
+                rows.append("加载失败　不适用（本后端不走 sampleId）")
+            else:
+                n_voice = sum(1 for n in self.named if n.startswith("voice_"))
+                rows.append("加载失败　%d 个　·　语音 %d / %d"
+                            % (len(self._failed), n_voice, max(0, self._expected - self._n_bank)))
+
+            # 7) 后端重建 —— **只在非 0 时出现**(玩家定稿的规则: 唯一预期值是 0, 常态印它只是噪音)
+            n_rc = getattr(out, "rebuild_count", 0)
+            if n_rc:
+                rows.append("后端重建　%d 次" % n_rc)
+            return rows
         except Exception:
             return []
 
@@ -2015,14 +2102,17 @@ class Sfx:
         stamp = os.path.join(d, "stamp")
         if self._load_cached(d, stamp, tag):
             self.cached = True
-            self._prime_voice()
+            n_voice = self._prime_voice()
+            self._expected = self._n_bank + n_voice     # 满编 = 合成音 + 语音(两个都是数据源)
             self._retry_failed()          # 缓存命中也可能有个别没加载上(语音是每次重载的)
             return
         _wav_wipe(d)
         lines = []
+        n_bank = 0
         for name, pcm in iter_bank():
             if name == "flight":           # flight 音效已移除, 但 iter_bank 必须保留(顺序即音色)
                 continue
+            n_bank += 1                    # 满编数从这里数 —— 它是数据源, 与"加载成功几个"无关
             path = os.path.join(d, name + ".wav")
             try:
                 _wav_write(path, pcm)
@@ -2032,7 +2122,8 @@ class Sfx:
                 continue
             self.named.add(name)
             lines.append("%s:%d" % (name, os.path.getsize(path)))
-        self._prime_voice()
+        self._n_bank = n_bank
+        self._expected = n_bank + self._prime_voice()
         try:
             with open(stamp, "w") as f:
                 f.write(tag + "\n" + "\n".join(lines))
@@ -2078,14 +2169,18 @@ class Sfx:
 
     def _prime_voice(self):
         """预录语音直接 prime APK 内原文件(voice/*.wav), 不落缓存不进 stamp 指纹:
-        每次启动都重新加载, 语音文件更新即生效; play() 对未加载完的 sample 本来就返回 0。"""
+        每次启动都重新加载, 语音文件更新即生效; play() 对未加载完的 sample 本来就返回 0。
+        返回语音条数(满编数要用它 —— 它是数据源, 不是"加载成功几个")。"""
+        n = 0
         for name, path in _voice_files().items():
+            n += 1
             try:
                 self.out.prime(name, path)
             except Exception:
                 self._failed.append((name, path))
                 continue
             self.named.add(name)
+        return n
 
     def _load_cached(self, d, stamp, tag):
         """缓存有效(指纹一致 + 每个 WAV 大小对得上)则全部加载并返回 True。"""
@@ -2112,6 +2207,7 @@ class Sfx:
             want.append((name, path))
         if not want:
             return False
+        self._n_bank = len(want)      # 满编的合成音数(缓存路径也要记, 面板的"满编"靠它)
         for name, path in want:
             try:
                 self.out.prime(name, path)
@@ -2164,7 +2260,15 @@ class Sfx:
                 self._scaled[key] = data
             self.out.play_pcm(data)
             return True
-        return self.out.play_named(name, lvl / 10.0)
+        # ⚠️ 必须把这个返回值存下来再返回: 它和上面那几个"设计内静默"的 return False 长得一模一样,
+        #    但语义完全不同 —— 这一条是"过了 enabled/互斥/已加载/增益/节流五道闸门之后,
+        #    后端仍然说没播成", 也就是 README 里那个"首次安装必然没声音"的**正面计数**。
+        #    节流那一支在它上面提前 return, 根本走不到这里, 所以天然被排除, 不用额外判断。
+        ok = self.out.play_named(name, lvl / 10.0)
+        self.n_attempt += 1
+        if not ok:
+            self.n_missed += 1
+        return ok
 
     def impact(self, bit, sp):
         """碰撞音: 撞得越猛越响越亮; 低于阈值不发声。"""
@@ -5495,11 +5599,69 @@ class RootWidget(BoxLayout):
         ok_btn = Button(text='确定', font_size='17sp', bold=True,
                         background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                         size_hint_y=None, height=dp(52))
+        # 「重放冷启动」: 不丢存档地按需复现"初次安装那种局"(见 _replay_cold_start)。
+        # 玩家 2026-09-11 提的 —— 那个 bug 一年犯一次、"关掉重开"就自愈, 想抓现场只能卸载重装,
+        # 而卸载会清掉余额/轮次。它不新建 Sfx 对象, 所以不碰任何接线, 也不动游戏状态。
+        replay_btn = Button(text='重放冷启动', font_size='17sp', bold=True,
+                            background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                            size_hint_y=None, height=dp(52))
         content.add_widget(ok_btn)
-        popup = self._popup(0.84, 420, title='', content=content,
+        content.add_widget(replay_btn)
+        # ⚠️ 高度必须**按内容算**: 实测弹窗内容区 = 弹窗高 − 44px(Kivy 标题栏, 即使 title='' 也吃),
+        #    每行 38px(行高 26 + spacing 12)。写死高度的话加一行就会被裁掉尾巴 —— v0.6.12 踩过。
+        n_lbl = 1 + (1 if _info else 0) + len(rows)
+        n_btn = 2
+        need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(32)
+                + dp(12) * (n_lbl + n_btn - 1))
+        popup = self._popup(0.84, need + dp(64), title='', content=content,
                             auto_dismiss=True, separator_height=0)
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
+        replay_btn.bind(on_release=lambda *_: (popup.dismiss(), self._replay_cold_start()))
         popup.open()
+
+    def _replay_cold_start(self):
+        """**不丢存档**地重放一次冷启动 —— 按需复现「初次安装」那种局, 用来抓现场。
+
+        玩家 2026-09-11 提的需求。那个 bug 一年犯一次、而且"关掉 app 再打开"就自愈,
+        想抓现场只能卸载重装 —— 而卸载会清掉余额/轮次, 没人愿意为调试反复清自己的存档。
+        这里做的是**原地重放**: 清掉音效缓存目录 + 把同一个 Sfx 对象的状态按回启动前, 再烘一次。
+        ⚠️ 绝不新建 Sfx 对象: 新建会让 GameArea / WinPileFX 里持有的旧引用全部接错。
+        ⚠️ 绝不软锁: 烘焙全程在后台线程; 失败也会置 baked, 而探针本身有 6 秒硬超时
+           (见 Sfx._await_ready) —— 所以加载页一定会被 _frame 摘掉。
+        ⚠️ 只在 state == "ready" 时允许: 球在飞的时候重烘 = 那一刻所有音效都播不出来。
+        ⚠️ 它只是"近似"初装: 真初装还多两件事 —— app 目录刚解包(文件缓存是冷的)、进程刚启动
+           (模块导入是冷的)。所以重放会比真初装快一些, 数字对上了不等于 bug 一定复现。"""
+        try:
+            if self.state != "ready":
+                self.game_area.center_toast("先等这一发落定")
+                return
+            import shutil
+            sfx = self.sfx
+            shutil.rmtree(_sfx_cache_dir(), ignore_errors=True)   # 缓存整目录清掉 = 真·冷路径
+            sfx.baked = False
+            sfx._audio_ready = False
+            sfx.cached = False
+            sfx.ready_ms = 0.0
+            sfx.named.clear()
+            sfx._failed = []
+            try:
+                sfx._last.clear()
+            except Exception:
+                pass
+            # 复用启动时那一页(它吞触摸 + 由 _frame 在 audio_ready 后摘掉, 现成的)
+            if self.veil is None or self.veil.parent is None:
+                self.veil = _LoadVeil(text="正在重放冷启动…", size_hint=(1, 1))
+                host = getattr(self, "_load_veil_host", None) or self.parent
+                if host is not None:
+                    host.add_widget(self.veil)
+            self._load_veil = self.veil
+            self._load_veil_t0 = time.time()
+            import threading
+            threading.Thread(target=sfx._bake, daemon=True).start()
+        except Exception:
+            # 出任何问题都必须让游戏继续能玩: 摘掉加载页, 不留悬挂状态
+            self._load_veil = None
+            self.veil = None
 
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
@@ -6514,13 +6676,29 @@ class RootWidget(BoxLayout):
         #    记的「首次安装打开 App 必然全静音」的根因。
         # ⚠️ 绝不软锁: audio_ready() 里 `!enabled` 与"探针不可用"都直接放行, 且等待有硬超时。
         _veil = getattr(self, "_load_veil", None)
-        if _veil is not None and self.sfx.audio_ready():
-            self._load_veil = None
-            try:
-                if _veil.parent is not None:
-                    _veil.parent.remove_widget(_veil)
-            except Exception:
-                pass
+        if _veil is not None:
+            if self.sfx.audio_ready():
+                self._load_veil = None
+                try:
+                    if _veil.parent is not None:
+                        _veil.parent.remove_widget(_veil)
+                except Exception:
+                    pass
+            else:
+                # 实时诊断: 加载页**吞掉所有触摸**, 所以音效没就绪的那几秒里作者根本长按不到标题、
+                # 打不开「启动信息」—— 而那一刻正是那个 bug 唯一能被观察到的时刻。把他要的数直接
+                # 印在他唯一看得见的那一屏上。整段 try/except: 一行字, 绝不把启动带崩。
+                try:
+                    sfx = self.sfx
+                    n = len(sfx.named)
+                    wait = time.time() - (getattr(self, "_load_veil_t0", 0.0) or time.time())
+                    if sfx._expected:
+                        _veil.set_status("已加载 %d / %d　·　等待能播 %.1f / %.0f 秒"
+                                         % (n, sfx._expected, wait, sfx.SFX_READY_TIMEOUT))
+                    else:
+                        _veil.set_status("正在合成…　已加载 %d 个　·　%.1f 秒" % (n, wait))
+                except Exception:
+                    pass
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
             self._last_win_size = ws
@@ -6755,23 +6933,41 @@ class _LoadVeil(Widget):
     ⚠️ 必须是 Widget 而不是"只画个矩形": 矩形不吞触摸, 挡不住下面那层。
     ⚠️ 它是整个 App 最早出现的东西, 只依赖 sp()/hex_rgb()/COL_BG, 不碰任何游戏状态。"""
 
-    def __init__(self, **kw):
+    def __init__(self, text="正在准备音效…", **kw):
         super().__init__(**kw)
         with self.canvas.before:
             Color(*hex_rgb(COL_BG) + (1,))
             self._bg = Rectangle(pos=self.pos, size=self.size)
-        self._lbl = Label(text="正在准备音效…", font_size=sp(20), bold=True,
+        self._lbl = Label(text=text, font_size=sp(20), bold=True,
                           color=hex_rgb("#eef2ff") + (1,),
                           halign="center", valign="middle")
+        # 第二行: 实时诊断(见 _frame 里的 set_status)。
+        # ⚠️ 它存在的理由是: 这块加载页**吞掉所有触摸**, 所以音效没就绪的那几秒里作者根本
+        #    长按不到标题、打不开「启动信息」—— 而那一刻正是那个 bug 唯一能被观察到的时刻。
+        #    把他要的诊断直接印在他唯一看得见的那一屏上, 是全场唯一覆盖"事发那一刻"的观察点。
+        self._sub = Label(text="", font_size=sp(13),
+                          color=hex_rgb(COL_SUB) + (1,),
+                          halign="center", valign="middle")
         self.add_widget(self._lbl)
+        self.add_widget(self._sub)
         self.bind(pos=self._sync, size=self._sync)
         self._sync()
+
+    def set_status(self, text):
+        """更新第二行的实时诊断。整段 try/except: 它只是加载页上一行字, 绝不把启动带崩。"""
+        try:
+            self._sub.text = text
+        except Exception:
+            pass
 
     def _sync(self, *_):
         self._bg.pos = self.pos
         self._bg.size = self.size
-        self._lbl.pos = self.pos
+        # 主标题在上半, 诊断行在它下面一点(视觉上是一块, 不是两行散字)
         self._lbl.size = self.size
+        self._lbl.pos = (self.x, self.y + self.height * 0.06)
+        self._sub.size = self.size
+        self._sub.pos = (self.x, self.y - self.height * 0.06)
 
     def on_touch_down(self, touch):
         return True
@@ -6812,6 +7008,8 @@ class PlinkoApp(App):
             self.veil = _LoadVeil(size_hint=(1, 1))
             anchor.add_widget(self.veil)
             self.rootw._load_veil = self.veil      # 交给 _frame 收尾
+            self.rootw._load_veil_host = anchor    # 重放冷启动时要往这里再挂一页
+            self._load_veil_t0 = time.time()
         self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
