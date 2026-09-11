@@ -5736,7 +5736,6 @@ class RootWidget(BoxLayout):
             host.add_widget(veil)
             self._load_veil = veil
             self._replay_veil = veil          # _frame 靠它把这一页改成"停住等点击"
-            self._load_veil_t0 = time.time()
             # ② 再动音频状态
             import shutil
             shutil.rmtree(_sfx_cache_dir(), ignore_errors=True)   # 缓存整目录清掉 = 真·冷路径
@@ -6802,6 +6801,7 @@ class RootWidget(BoxLayout):
         # ⚠️ 绝不软锁: audio_ready() 里 `!enabled` 与"探针不可用"都直接放行, 且等待有硬超时。
         _veil = getattr(self, "_load_veil", None)
         if _veil is not None:
+            _veil.tick()          # 加载图"从小到大 + 呼吸"(它自己不持有 Clock, 由这里驱动)
             if self.sfx.audio_ready():
                 if _veil is getattr(self, "_replay_veil", None) and not _veil._hold:
                     # 「重放冷启动」完成: **不自动摘页** —— 摆出结果等玩家点一下。
@@ -6813,23 +6813,12 @@ class RootWidget(BoxLayout):
                 elif not _veil._hold:
                     self._load_veil = None
                     _veil.drop()
-            else:
-                # 实时诊断: 加载页**吞掉所有触摸**, 所以音效没就绪的那几秒里作者根本长按不到标题、
-                # 打不开「启动信息」—— 而那一刻正是那个 bug 唯一能被观察到的时刻。把他要的数直接
-                # 印在他唯一看得见的那一屏上。整段 try/except: 一行字, 绝不把启动带崩。
-                # ⚠️ 该不该印、印什么, 全部由 `_veil_status_line()` 决定(纯函数, fx_probe 直接测)。
-                #    这里只负责把"这一页开了多久"算出来喂给它。
-                try:
-                    # ⚠️ 报的是"这一页已经开了多久", **不是**探针等待时长 —— 探针要等烘焙完了才
-                    #    开始跑(见 Sfx._await_ready), 所以合成那几秒全算在这里面。以前这行写的是
-                    #    "等待能播", 而真机上手测: 这里显示 3.4 秒、最终结果却是「音效等待 95 ms」——
-                    #    同一个词指两个数, 正是这块面板最不该犯的错。
-                    wait = time.time() - (getattr(self, "_load_veil_t0", 0.0) or time.time())
-                    _line = _veil_status_line(self.sfx, wait)
-                    if _line is not None:
-                        _veil.set_status(_line)
-                except Exception:
-                    pass
+            # ⚠️ 这里原来有一段"实时诊断": 往加载页印第二行「已加载 42 / 97　·　已用 1.0 秒」。
+            #    玩家 2026-09-11 定稿: 「我要的是只显示一个加载界面即可」「这个加载页面 啥字都没有」
+            #    —— 整段删除, 加载页**一个字都不印**。
+            #    那些数一个都没丢: 同样的信息「启动信息」里全有(启动方式/冷启动 XXXX ms、
+            #    音效就绪 97 / 97、加载失败 0 个), 启动完长按标题就能看, 而且更全。旧立意是
+            #    "这块页吞掉所有触摸, 那几秒长按不到标题" —— 但等一下它就过去了。
 
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
@@ -7053,38 +7042,50 @@ class RootWidget(BoxLayout):
 # =============================================================================
 # App 入口 / 冒烟
 # =============================================================================
-# 加载页第二行(实时诊断)**最早什么时候才准出现**。
-# ⚠️ 它不是审美参数, 是"消闪"用的: 缓存判定完成之前 `Sfx.cached` 还是 False、`_expected`
-#    还是 0, 那一两帧会闪出「正在合成… 已加载 0 个」; 而冷启动前 0.5 秒本来也没什么可看的
-#    (玩家那时只知道"要等一下")。
-VEIL_STATUS_MIN_SEC = 0.5
+# 加载页那张图的进场动画参数。图**和系统 presplash 是同一个文件**(见 _loadveil_src),
+# 所以"系统 splash -> 加载页"的交接是连续的; 这一段只是在那张图上加一点"活气"。
+LOADVEIL_ASPECT = 1080.0 / 1920.0   # presplash.png 的宽高比
+# ⚠️ 加载页底色必须**等于 presplash.png 自己的底色**(实测四角全是 #0b1220), 否则那张图会在
+#    屏幕上显示成一个"方块"; 用了它, 图的边界就完全看不见, 只剩内容在长大。
+#    和游戏里的 COL_BG(#0e1524)差 3 个色阶 —— 摘页时那一下几乎看不出来, 而"图有边框"是一眼可见的。
+VEIL_BG = "#0b1220"
+LOADVEIL_GROW_SEC = 0.55            # 从小到大用多久
+LOADVEIL_GROW_FROM = 0.72           # 起手是最终尺寸的几成
+LOADVEIL_BREATH_SEC = 1.9           # 长满之后的呼吸周期
+LOADVEIL_BREATH_AMP = 0.018         # 呼吸幅度(±1.8%)
 
 
-def _veil_status_line(sfx, wait):
-    """加载页那第二行该不该印、印什么; 返回 None = **这一行整个不出现**。
-
-    ⚠️ 抽成纯函数是为了**能被门禁直接测**: 它以前是 `_frame` 里的一段内联代码, 而 `_frame`
-    要跑起来得先有整个 App(rootw / game_area / 时钟), fx_probe 造不出来 —— 于是这块逻辑
-    **零自动覆盖**, 改坏了完全静默, 而"加载页显示错字"恰恰是本项目最典型的静默故障形态。
-
-    两条闸门(玩家 2026-09-11 原话: 「热加载的时候应该只显示加载界面, 但是额外显示了音频
-    载入时间什么的 必现」):
-      ① 热启动(`sfx.cached`)一律不印 —— 它走磁盘缓存, 烘焙不到 0.1 秒, 这一页纯属"等探针",
-         没有任何进度可报; 印出来就是一块「已加载 97 / 97　·　已用 0.0 秒」却还杵着不走的屏。
-         ⚠️ 这一行原本的立意("加载页吞掉所有触摸, 作者长按不到标题, 所以把诊断印在他唯一
-            看得见的那一屏上")**本来就只在冷启动那几秒里成立** —— 热启动半秒, 没人来得及
-            长按。收窄到冷启动不伤立意。
-      ② 太早(`wait < VEIL_STATUS_MIN_SEC`)不印 —— 见该常量的注释。"""
+def _loadveil_src():
+    """加载页那张图的路径 —— **和系统 presplash 是同一个文件**, 交接才连续。
+    找不到就返回 None(退化成纯色页面) —— **绝不因为一张装饰图把启动带崩**。"""
     try:
-        if getattr(sfx, "cached", False) or wait < VEIL_STATUS_MIN_SEC:
-            return None
-        n = len(getattr(sfx, "named", ()))
-        exp = getattr(sfx, "_expected", 0) or 0
-        if exp:
-            return "已加载 %d / %d　·　已用 %.1f 秒" % (n, exp, wait)
-        return "正在合成…　已加载 %d 个　·　%.1f 秒" % (n, wait)
+        import os
+        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presplash.png")
+        return p if os.path.exists(p) else None
     except Exception:
         return None
+
+
+def _veil_scale(t):
+    """加载图在"这一页开了 t 秒"时应有的缩放系数: 先进场从小到大, 长满之后轻轻呼吸。
+
+    ⚠️ 为什么不是"循环进度条"(玩家问过"和 windows 一样搞个循环进度条…感觉不太合适?"):
+    进度条承诺的是"我能告诉你还剩多少" —— 而这个等待**没有可报的进度**: 热启动半秒、冷启动
+    几秒, 差一个数量级, 中间一个台阶都没有。转圈却不前进只会持续提醒"还没好"; 而且它多半
+    只出现半秒, 转半圈就被摘掉, 纯属闪一下。
+    一张"从小到大"的图传达的是"正在醒来": 尺寸**有终态**, 长满就停, 不承诺任何剩余时间。"""
+    try:
+        if t <= 0.0:
+            return LOADVEIL_GROW_FROM
+        if t < LOADVEIL_GROW_SEC:
+            u = t / LOADVEIL_GROW_SEC
+            # 三次缓出: 起手快、落位稳(和退场那套"感知优先"同款理由)。
+            return LOADVEIL_GROW_FROM + (1.0 - LOADVEIL_GROW_FROM) * (1.0 - (1.0 - u) ** 3)
+        import math
+        return 1.0 + LOADVEIL_BREATH_AMP * math.sin(
+            2.0 * math.pi * (t - LOADVEIL_GROW_SEC) / LOADVEIL_BREATH_SEC)
+    except Exception:
+        return 1.0
 
 
 class _LoadVeil(Widget):
@@ -7099,18 +7100,21 @@ class _LoadVeil(Widget):
     ⚠️ 必须是 Widget 而不是"只画个矩形": 矩形不吞触摸, 挡不住下面那层。
     ⚠️ 它是整个 App 最早出现的东西, 只依赖 sp()/hex_rgb()/COL_BG, 不碰任何游戏状态。"""
 
-    def __init__(self, text="正在准备音效…", **kw):
+    # ⚠️ 默认**一个字都不印**(玩家 2026-09-11 定稿: 「我要的是只显示一个加载界面即可」
+    #    「这个加载页面 啥字都没有」)。它盖住整屏、吞掉触摸、就绪就把自己摘掉 —— 就这些。
+    #    只有「重放冷启动」那条路会带文字进来(那是作者主动点开、专门停下来读的一屏)。
+    def __init__(self, text="", **kw):
         super().__init__(**kw)
         with self.canvas.before:
-            Color(*hex_rgb(COL_BG) + (1,))
+            Color(*hex_rgb(VEIL_BG) + (1,))
             self._bg = Rectangle(pos=self.pos, size=self.size)
         self._lbl = Label(text=text, font_size=sp(20), bold=True,
                           color=hex_rgb("#eef2ff") + (1,),
                           halign="center", valign="middle")
-        # 第二行: 实时诊断(见 _frame 里的 set_status)。
-        # ⚠️ 它存在的理由是: 这块加载页**吞掉所有触摸**, 所以音效没就绪的那几秒里作者根本
-        #    长按不到标题、打不开「启动信息」—— 而那一刻正是那个 bug 唯一能被观察到的时刻。
-        #    把他要的诊断直接印在他唯一看得见的那一屏上, 是全场唯一覆盖"事发那一刻"的观察点。
+        # 第二行: **只服务「重放冷启动」的结果页**(set_result 往里写结论)。
+        # ⚠️ 普通启动路径**绝不写它** —— 玩家 2026-09-11 定稿: 加载页一个字都不印。
+        #    这里原来印的是实时诊断(「已加载 42 / 97 · 已用 1.0 秒」), 那种数在「启动信息」里
+        #    全都有, 而且更全, 不需要在加载页上再占一行。
         self._sub = Label(text="", font_size=sp(17),
                           color=hex_rgb(COL_SUB) + (1,),
                           halign="center", valign="middle")
@@ -7120,19 +7124,33 @@ class _LoadVeil(Widget):
         #    普通冷启动**不用**这个(那里玩家要的是赶紧进游戏, 不是看数据)。
         self._hold = False
         self._on_tap = None
+        # 加载图: 就是系统 presplash 那张(同一个文件), 于是"系统 splash 撤掉 -> 本页接上"
+        # 中间没有跳变: 底色是同一个 #0b1220, 内容也是同一份。
+        # ⚠️ 用 **AsyncImage** 而不是 Image: Image 在**首次绘制时同步解码**, 1080x1920 那一张
+        #    会把第一帧顶后几十~几百毫秒 —— 而这块页存在的全部意义就是"第一帧别是黑屏"。
+        #    AsyncImage 先把背景色画出来, 图解码完自己长出来。
+        # ⚠️ 整段 try/except: 它只是一张装饰图, 拿不到就退化成纯色页面 —— 绝不把启动带崩。
+        self._img = None
+        self._base_w = 0.0
+        self._base_h = 0.0
+        self._t0 = time.time()
+        try:
+            from kivy.uix.image import AsyncImage
+            _src = _loadveil_src()
+            if _src:
+                # ⚠️ 不写 allow_stretch/keep_ratio: 这两个在 Kivy 2.3 的 AsyncImage 上**已弃用**
+                #    (会刷两条 DeprecationWarning)。用不着它们 —— 我们把 size 按原图比例算好
+                #    (见 _sync 里的 LOADVEIL_ASPECT), 宽高比本来就严丝合缝。
+                self._img = AsyncImage(source=_src, size_hint=(None, None), mipmap=True)
+                self.add_widget(self._img)     # 先加 = 在下层, 文字盖在它上面
+        except Exception:
+            self._img = None
         self.add_widget(self._lbl)
         self.add_widget(self._sub)
         self.bind(pos=self._sync, size=self._sync)
         self._lbl.bind(texture_size=self._sync)   # 文字一变就重排版(结果页会换字号/换内容)
         self._sub.bind(texture_size=self._sync)
         self._sync()
-
-    def set_status(self, text):
-        """更新第二行的实时诊断。整段 try/except: 它只是加载页上一行字, 绝不把启动带崩。"""
-        try:
-            self._sub.text = text
-        except Exception:
-            pass
 
     def set_title(self, text):
         try:
@@ -7151,6 +7169,9 @@ class _LoadVeil(Widget):
             self._lbl.font_size = sp(28)
             self._sub.font_size = sp(24)
             self._sub.text = text
+            # 结果页有 6 行字要读, 图退成背景 —— 否则字压在盘面上根本看不清。
+            if self._img is not None:
+                self._img.opacity = 0.22
         except Exception:
             pass
 
@@ -7159,6 +7180,20 @@ class _LoadVeil(Widget):
         try:
             if self.parent is not None:
                 self.parent.remove_widget(self)
+        except Exception:
+            pass
+
+    def tick(self):
+        """每帧推进加载图的动画。由 `RootWidget._frame` 调 —— **自己不持有 Clock**:
+        切后台回来直接跳终态, 而不是冻在半路(和 WinPileFX 同一条纪律)。"""
+        try:
+            if self._img is None or self._base_h <= 0.0:
+                return
+            k = _veil_scale(time.time() - self._t0)
+            w = self._base_w * k
+            h = self._base_h * k
+            self._img.size = (w, h)
+            self._img.pos = (self.center_x - w * 0.5, self.center_y - h * 0.5)
         except Exception:
             pass
 
@@ -7179,6 +7214,12 @@ class _LoadVeil(Widget):
         self._lbl.pos = (self.x, top - lh)
         self._sub.size = (self.width, sh)
         self._sub.pos = (self.x, top - lh - gap - sh)
+        # 加载图: 按屏高铺满(宽度按原图比例), 两侧留出来的边正好是**它自己的底色** #0b1220,
+        # 而背景矩形也是同一个颜色 ⇒ 看不出图片边界, 只有内容在长大。
+        if self._img is not None:
+            self._base_h = self.height
+            self._base_w = self.height * LOADVEIL_ASPECT
+            self.tick()
 
     def on_touch_down(self, touch):
         # 普通加载页: 吞掉所有触摸(不让玩家在音效没就绪时按发射)。
@@ -7228,14 +7269,6 @@ class PlinkoApp(App):
             anchor.add_widget(self.veil)
             self.rootw._load_veil = self.veil      # 交给 _frame 收尾
             self.rootw._load_veil_host = anchor    # 重放冷启动时要往这里再挂一页
-            # ⚠️ 计时起点必须挂在 **rootw** 上(不是 App 上) —— 读它的是 `RootWidget._frame`。
-            #    曾经写的是 `self._load_veil_t0`(= 挂在 App 上), 而 _frame 里是
-            #    `getattr(self, "_load_veil_t0", 0.0) or time.time()` ⇒ rootw 上取不到 ⇒ 兜到
-            #    `or time.time()` ⇒ **wait 恒等于 0.0** ⇒ 加载页永远显示「已用 0.0 秒」。
-            #    玩家 2026-09-11: 「热加载的时候应该只显示加载界面, 但是额外显示了音频载入时间
-            #    什么的 必现」—— "0.0 秒"就是这个 bug 的正面证据(重放路径有自己的赋值, 所以它
-            #    显示的是真数, 这也是为什么以前没被发现)。
-            self.rootw._load_veil_t0 = time.time()
         self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
