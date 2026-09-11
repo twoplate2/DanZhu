@@ -388,7 +388,13 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 # 0.6.16(2026-09-11): ① 「重放冷启动」完成后**停住等玩家点一下**(玩家: 「成功之后没有暂停, 直接回去
 #   了, 我啥都没有看清」—— PC 上烘焙 1.2 秒, 自动摘页等于闪一下)。② PCM 后端下那三项**结构上
 #   不适用**的行直接不出现, 不再印三行「不适用」(玩家: 「这几个不适用听起来有点奇怪」)。
-version = 0.6.16
+# 0.6.17(2026-09-11): 修「重放冷启动点下去完全没有反馈」(Windows 与安卓都有)。根因: _replay_cold_start
+#   里读的 self.veil 是 **App** 的属性, 而它在 RootWidget 上不存在 ⇒ AttributeError ⇒ 被外层 except
+#   静默吞掉; 而且异常发生在"已经删缓存、已经清 named"之后, 所以游戏其实已经哑了却一声不吭。
+#   现在: ①先建结果页、成功之后才动音频状态; ②任何失败都 toast 出原因(绝不静默) + 立刻放行。
+#   另: 收拾我上一步搬方法时把 _replay_summary/_finish_replay_veil 塞进 _LoadVeil 的错误;
+#   新增 hasattr 门禁"关键方法必须长在 RootWidget 上"(这种错能编译, 静态检查拦不住)。
+version = 0.6.17
 
 requirements = python3,kivy==2.3.0,pyjnius
 

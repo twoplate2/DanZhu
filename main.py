@@ -5625,8 +5625,21 @@ class RootWidget(BoxLayout):
             if self.state != "ready":
                 self.game_area.center_toast("先等这一发落定")
                 return
-            import shutil
             sfx = self.sfx
+            # ① **先把结果页建起来再动音频状态**。顺序是要紧的: 建页失败就直接返回, 绝不能先把
+            #    named 清掉 —— 那会留下一个"闸门是空的、也不会重烘"的静默状态, 而这正是这块
+            #    面板要抓的那种故障。(2026-09-11 就踩了一次: 见下面那条 AttributeError。)
+            host = getattr(self, "_load_veil_host", None) or self.parent
+            if host is None:
+                self.game_area.center_toast("重放失败：找不到挂载点")
+                return
+            veil = _LoadVeil(text="正在重放冷启动…", size_hint=(1, 1))
+            host.add_widget(veil)
+            self._load_veil = veil
+            self._replay_veil = veil          # _frame 靠它把这一页改成"停住等点击"
+            self._load_veil_t0 = time.time()
+            # ② 再动音频状态
+            import shutil
             shutil.rmtree(_sfx_cache_dir(), ignore_errors=True)   # 缓存整目录清掉 = 真·冷路径
             sfx.baked = False
             sfx._audio_ready = False
@@ -5638,21 +5651,43 @@ class RootWidget(BoxLayout):
                 sfx._last.clear()
             except Exception:
                 pass
-            # 复用启动时那一页(它吞触摸 + 由 _frame 在 audio_ready 后摘掉, 现成的)
-            if self.veil is None or self.veil.parent is None:
-                self.veil = _LoadVeil(text="正在重放冷启动…", size_hint=(1, 1))
-                host = getattr(self, "_load_veil_host", None) or self.parent
-                if host is not None:
-                    host.add_widget(self.veil)
-            self._load_veil = self.veil
-            self._replay_veil = self.veil      # 这一页完成后要**停住等点**, 见 _frame
-            self._load_veil_t0 = time.time()
+            # ③ 后台重烘
             import threading
             threading.Thread(target=sfx._bake, daemon=True).start()
+        except Exception as exc:
+            # ⚠️ **绝不静默**: 上一次这里一句都不说, 玩家点下去"完全没有反馈", 而音频状态其实
+            #    已经被清掉了。现在起不来就立刻放行 + 把原因说出来(toast)。项目红线是绝不软锁。
+            try:
+                sfx.baked = True
+                sfx._audio_ready = True
+            except Exception:
+                pass
+            self._finish_replay_veil()
+            try:
+                self.game_area.center_toast("重放失败：%s" % exc)
+            except Exception:
+                pass
+
+    def _replay_summary(self):
+        """重放结束后摆在加载页上的结论。
+
+        ⚠️ 直接**复用 `audio_detail()`** —— 不许另写一套格式化: 那样 PC 上又会冒出
+        `音效就绪 0 / 0`(PCM 后端压根不用 sampleId), 而这个数在那边是**没有意义的**,
+        看着却像全军覆没。复用同一处真源, 两个地方才不会各说各话(项目里 hold_for 那次教训)。
+        去掉「音效开关」那行(玩家刚点完按钮, 开关状态不需要再告诉他一遍)。"""
+        try:
+            rows = [r for r in self.sfx.audio_detail() if not r.startswith("音效开关")]
+            return "\n".join(rows)
         except Exception:
-            # 出任何问题都必须让游戏继续能玩: 摘掉加载页, 不留悬挂状态
-            self._load_veil = None
-            self.veil = None
+            return ""
+
+    def _finish_replay_veil(self):
+        """玩家点掉了"重放完成"那一屏。幂等; 绝不在这里动音频栈。"""
+        v = getattr(self, "_replay_veil", None)
+        self._replay_veil = None
+        self._load_veil = None
+        if v is not None:
+            v.drop()
 
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
@@ -6929,28 +6964,6 @@ class _LoadVeil(Widget):
        又是一次"没声音", 正是换掉 sync=True 想避免的那件事。
     ⚠️ 必须是 Widget 而不是"只画个矩形": 矩形不吞触摸, 挡不住下面那层。
     ⚠️ 它是整个 App 最早出现的东西, 只依赖 sp()/hex_rgb()/COL_BG, 不碰任何游戏状态。"""
-
-    def _replay_summary(self):
-        """重放结束后摆在加载页上的结论(比实时进度那行更全)。"""
-        try:
-            sfx = self.sfx
-            n = len(sfx.named)
-            return ("音效就绪　%d / %d　·　%s\n冷启动 %.0f ms　·　等待能播 %.0f ms"
-                    % (n, sfx._expected or n, getattr(sfx.out, "name", "静音"),
-                       sfx.bake_ms, sfx.ready_ms))
-        except Exception:
-            return ""
-
-    def _finish_replay_veil(self):
-        """玩家点掉了"重放完成"那一屏。幂等; 绝不在这里动音频栈。"""
-        self._replay_veil = None
-        self._load_veil = None
-        try:
-            if self.veil is not None:
-                self.veil.drop()
-        except Exception:
-            pass
-        self.veil = None
 
     def __init__(self, text="正在准备音效…", **kw):
         super().__init__(**kw)
