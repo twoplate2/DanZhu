@@ -2000,8 +2000,7 @@ class Sfx:
             n_back = self.backend_count()
             named_mode = getattr(out, "mode", "") == "named"
             bname = getattr(out, "name", "静音")
-            if platform == "android" and named_mode and bname != "SoundPool":
-                bname += "（非预期：安卓应为 SoundPool）"
+            deviated = platform == "android" and named_mode and bname != "SoundPool"
             # 1) 音效开关 —— **必须排第一**: 它是全表的前提, 前提不成立时下面每一行都在描述一个
             #    不会发生的世界。而且 `enabled=False` 有两张完全不同的脸: **玩家自己关的** vs
             #    **后端压根没建起来**(--nosound 和后端构造失败在代码里都是 enabled=False)。
@@ -2042,7 +2041,13 @@ class Sfx:
                 #    只在偏离时显示(常态印它只是噪音)。
                 if self._expected and n_gate < self._expected:
                     ready += "（满编 %d）" % self._expected
-            rows = [sw, "音效就绪　%s" % ready, "音频后端　%s" % bname, mode_row]
+            rows = [sw, "音效就绪　%s" % ready, "音频后端　%s" % bname]
+            # ⚠️ 期望值**单独占一行**, 不并进上一行: 并进去会让那行超宽折行 —— 而折行是这里
+            #    最容易出事的地方(v0.6.12 就栽在被定高标签裁掉了尾巴; 2026-09-11 在手机密度的
+            #    模拟器上又栽了一次: 等效宽度只有桌面的一半)。
+            if deviated:
+                rows.append("　　　　　安卓上应为 SoundPool，静默降级了")
+            rows.append(mode_row)
 
             # 3) 音效等待 —— 等"真的能播"花了多久。⚠️ 安卓上"没有探针"是**护栏缺失**
             #    (那 6 秒形同虚设, 而这正是那个 bug 的成因), 不能写成中性的"不适用"。
@@ -5575,23 +5580,30 @@ class RootWidget(BoxLayout):
             _info = self._build_info()
         except Exception:
             _info = ""
-        if _info:                       # 版本/日期居中
-            _v = Label(text=_info, font_size='16sp', halign='center', valign='middle',
-                       color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
-            _v.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-            content.add_widget(_v)
+        def _mk_lbl(_text, _align, _size='16sp', _h0=26):
+            """自动撑高的行标签 —— **折行不再等于裁切**。
+
+            ⚠️ 为什么必须是这个形状: 这块面板栽在"文字被裁掉"上两次了(v0.6.12 把两行并一行;
+            2026-09-11 在**手机密度**的模拟器上, `音频后端 …（非预期…）` 那行又折了行, 而标签是
+            定高 dp(26) —— 第二行直接看不见)。根因是**可用宽度取决于设备密度**: 桌面等效宽 540
+            (可用 421px), 而手机密度下等效宽可能只有 360(可用 ~270px), 同一条字符串在桌面上不折、
+            在手机上折。所以不能靠"把字符串写短"来躲, 只能让行高跟着实际排版走。
+            绑 width → 先让 Kivy 按可用宽度算出真正的 text_size(text_size 第二位给 None 才自动换行),
+            再把 texture_size[1](排版后的真实高度)写回 height。"""
+            lb = Label(text=_text, font_size=_size, halign=_align, valign='middle',
+                       color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(_h0))
+            lb.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+            lb.bind(texture_size=lambda w, ts: setattr(w, 'height', max(dp(_h0), ts[1] + dp(4))))
+            return lb
+
         try:
             rows.extend(self.sfx.audio_detail())
         except Exception:
             pass
-        # ⚠️ 字段行一律**左对齐**: 标签都是等宽的 4 个汉字(音频后端/音效就绪/…), 左对齐才会
-        #    排成一列; 各自居中的话长短不一的数值会让每行错开, 读起来是散的(用户 2026-09-11
-        #    反馈过"布局太乱")。
-        for _ln in rows:
-            _l = Label(text=_ln, font_size='16sp', halign='left', valign='middle',
-                       color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
-            _l.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-            content.add_widget(_l)
+        if _info:                       # 版本/日期居中
+            content.add_widget(_mk_lbl(_info, 'center'))
+        for _ln in rows:                # 字段行一律左对齐(标签等宽 4 个汉字, 左对齐才排得成一列)
+            content.add_widget(_mk_lbl(_ln, 'left'))
         ok_btn = Button(text='确定', font_size='17sp', bold=True,
                         background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                         size_hint_y=None, height=dp(52))
@@ -5614,6 +5626,17 @@ class RootWidget(BoxLayout):
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
         replay_btn.bind(on_release=lambda *_: (popup.dismiss(), self._replay_cold_start()))
         popup.open()
+
+        # 上面那个高度是**按单行估的**; 一旦有行折了(设备越窄越容易折), 内容就比弹窗高。
+        # 所以开完再按**真实排版高度**对一次 —— 这样"折行"永远只让弹窗长高, 不会把内容顶出去。
+        # ⚠️ 必须等一帧: minimum_height 要等子控件的高度都落定才算得准。
+        def _refit(*_):
+            try:
+                _vw, _vh = self._veq()
+                popup.height = min(content.minimum_height + dp(64), _vh * 0.92)
+            except Exception:
+                pass
+        Clock.schedule_once(_refit, 0.06)
 
     def _replay_cold_start(self):
         """**不丢存档**地重放一次冷启动 —— 按需复现「初次安装」那种局, 用来抓现场。
@@ -6982,7 +7005,7 @@ class _LoadVeil(Widget):
         # ⚠️ 它存在的理由是: 这块加载页**吞掉所有触摸**, 所以音效没就绪的那几秒里作者根本
         #    长按不到标题、打不开「启动信息」—— 而那一刻正是那个 bug 唯一能被观察到的时刻。
         #    把他要的诊断直接印在他唯一看得见的那一屏上, 是全场唯一覆盖"事发那一刻"的观察点。
-        self._sub = Label(text="", font_size=sp(13),
+        self._sub = Label(text="", font_size=sp(17),
                           color=hex_rgb(COL_SUB) + (1,),
                           halign="center", valign="middle")
         # ⚠️ `_hold`: "重放冷启动"完成时置真 —— 那一屏**不自动摘**, 摆出结果等玩家点一下。
