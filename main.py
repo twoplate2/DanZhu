@@ -5418,13 +5418,30 @@ class RootWidget(BoxLayout):
                             color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
             ver_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(ver_lbl)
+        # 音频体检(2026-09-11 加): 玩家报的「初次安装必然没声音」—— 它的所有候选原因在产物里
+        # **长得一模一样**(静默/不抛异常/不留痕), 没有 adb 就只能靠这一行把真值摆出来。
+        # 关键读数是 **后端真的握着几个 sampleId** 与 **闸门放行了几个**, 两者不等就是病灶所在
+        # (只报闸门会显示"全绿", 那比不显示更有害)。
+        # ⚠️ 必须是**独立的一行**: 实测把它并进上面那行是 658px, 而弹窗内容区只有 422px ——
+        #    会折成两行而标签高度只有 28dp, 第二行被裁掉、玩家看到的是一句缺尾巴的话。
+        #    单独一行 334px, 放得下。
+        # ⚠️ 只在隐藏菜单(长按标题 3 秒)显示, 不进成绩面板 —— 成绩面板只放成绩(用户定稿)。
+        try:
+            _audio = self.sfx.audio_status()
+        except Exception:
+            _audio = ""
+        if _audio:
+            aud_lbl = Label(text=_audio, font_size='16sp', halign='center', valign='middle',
+                            color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
+            aud_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+            content.add_widget(aud_lbl)
         start_btn = Button(text='开始测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
         hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = self._popup(0.84, 425, title='', content=content,
+        popup = self._popup(0.84, 468, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
@@ -5547,16 +5564,6 @@ class RootWidget(BoxLayout):
                 # 全数字写法在中文语境下容易被读反(有人按 日/月 读), 带上「年月日」就没有歧义。
                 parts.append('于 %s 制作'
                              % time.strftime(BUILD_TIME_FMT, time.localtime(t)))
-        except Exception:
-            pass
-        # 音频体检(2026-09-11 加): 玩家报的「初次安装必然没声音」—— 它的所有候选原因在产物里
-        # **长得一模一样**(静默/不抛异常/不留痕), 没有 adb 就只能靠这一行把真值摆出来。
-        # 关键读数是 **后端真的握着几个 sid** 与 **闸门放行了几个**, 两者不等就是病灶所在。
-        # ⚠️ 只在隐藏菜单(长按标题)显示, 不进成绩面板 —— 成绩面板只放成绩(用户定稿)。
-        try:
-            _st = self.sfx.audio_status()
-            if _st:
-                parts.append(_st)
         except Exception:
             pass
         return ' · '.join(parts)
