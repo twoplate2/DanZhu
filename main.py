@@ -25,7 +25,9 @@ from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.text import LabelBase, Label as CoreLabel
 from kivy.core.window import Window
-from kivy.graphics import Color, Rectangle, Line, Ellipse, RoundedRectangle, PushMatrix, PopMatrix, Rotate
+from kivy.graphics import (Color, Rectangle, Line, Ellipse, RoundedRectangle,
+                            PushMatrix, PopMatrix, Rotate,
+                            StencilPush, StencilPop, StencilUse, StencilUnUse)
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
 from kivy.uix.anchorlayout import AnchorLayout
@@ -5133,24 +5135,6 @@ def _app_version():
     return ""
 
 
-def _pick_box(parent_box, self_box):
-    """加载图该铺哪块矩形 —— **父容器优先**(只要它看着已经落定), 否则退回自己。
-
-    ⚠️ 这是 2026-09-11 那个"突然变成小图"的正面修复点。Kivy 里控件**被布局之前**
-    `self.size` 是默认值 `(100, 100)`、`self.pos` 是 `(0, 0)`; 而 `_sync()` 在 `__init__`
-    结尾就会跑一次(那时还没进树) ⇒ 拿它算会得到 **100x178 的小图**。
-    父容器的尺寸由 `LandLayer.apply_orientation()` 在 `App.build` 里就写好了, **比第一帧早**。
-    实测(432x936 窗口): 构造后 `base=(100,177.8) img=(100,178)`; 第一帧后 `base=(526.5,936)`。
-    玩家真机原话:「固定一个启动画面静止不动一段时间, **突然变成小图**, 然后突然就进游戏了」。
-    (抽成纯函数是为了 fx_probe 能直接测 —— Kivy 的 `parent` 在夹具里不好造。)"""
-    try:
-        if parent_box is not None and parent_box[2] > 1 and parent_box[3] > 1:
-            return parent_box
-    except Exception:
-        pass
-    return self_box
-
-
 def _startup_title():
     """「启动信息」那个弹窗的**标题**。玩家 2026-09-11 定稿:
     「启动信息调整  从启动信息改为 跳跳的弹珠机v0.x.x」, 随后补一句「**加一个空格**」
@@ -5731,8 +5715,10 @@ class RootWidget(BoxLayout):
         replay_btn = Button(text='重放冷启动', font_size='17sp', bold=True,
                             background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                             size_hint_y=None, height=dp(52))
-        content.add_widget(ok_btn)
+        # ⚠️ 顺序 = 屏幕上的上下顺序(纵向 BoxLayout)。玩家 2026-09-11: 「把确定按钮放在重放冷启动
+        #    下面」⇒ **重放冷启动在上、确定在下**。别按"添加顺序像主次"去调, 它就是几何顺序。
         content.add_widget(replay_btn)
+        content.add_widget(ok_btn)
         # ⚠️ 高度必须**按内容算**: 实测弹窗内容区 = 弹窗高 − 44px(Kivy 标题栏, 即使 title='' 也吃),
         #    每行 38px(行高 26 + spacing 12)。写死高度的话加一行就会被裁掉尾巴 —— v0.6.12 踩过。
         n_lbl = 1 + (1 if _info else 0) + len(rows)
@@ -6843,8 +6829,9 @@ class RootWidget(BoxLayout):
         # ⚠️ 绝不软锁: audio_ready() 里 `!enabled` 与"探针不可用"都直接放行, 且等待有硬超时。
         _veil = getattr(self, "_load_veil", None)
         if _veil is not None:
-            _veil.tick()          # 加载图"从小到大 + 呼吸"(它自己不持有 Clock, 由这里驱动)
-            if self.sfx.audio_ready():
+            # ⚠️ 就绪判据现在由 `_LoadVeil.tick()` 给 —— 它还要负责开场动画、最短停留和整页淡出,
+            #    所以这里只问"能摘了吗", 不再自己看 `audio_ready()`。它自己不持有 Clock, 由这里驱动。
+            if _veil.tick(self.sfx.audio_ready()):
                 if _veil is getattr(self, "_replay_veil", None) and not _veil._hold:
                     # 「重放冷启动」完成: **不自动摘页** —— 摆出结果等玩家点一下。
                     # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙 1.2 秒、
@@ -6856,11 +6843,9 @@ class RootWidget(BoxLayout):
                     self._load_veil = None
                     _veil.drop()
             # ⚠️ 这里原来有一段"实时诊断": 往加载页印第二行「已加载 42 / 97　·　已用 1.0 秒」。
-            #    玩家 2026-09-11 定稿: 「我要的是只显示一个加载界面即可」「这个加载页面 啥字都没有」
-            #    —— 整段删除, 加载页**一个字都不印**。
-            #    那些数一个都没丢: 同样的信息「启动信息」里全有(启动方式/冷启动 XXXX ms、
-            #    音效就绪 97 / 97、加载失败 0 个), 启动完长按标题就能看, 而且更全。旧立意是
-            #    "这块页吞掉所有触摸, 那几秒长按不到标题" —— 但等一下它就过去了。
+            #    玩家 2026-09-11 定稿: 「我要的是只显示一个加载界面即可」—— 整段删除。
+            #    (现在这一页印的是**游戏名那五个字**, 见 `_LoadVeil._build_title`; 诊断数一个都没丢:
+            #     同样的信息「启动信息」里全有, 而且更全, 启动完长按标题就能看。)
 
         ws = (Window.width, Window.height)
         if ws != self._last_win_size:
@@ -7084,81 +7069,104 @@ class RootWidget(BoxLayout):
 # =============================================================================
 # App 入口 / 冒烟
 # =============================================================================
-# 加载页那张图的动画参数。图**和系统 presplash 是同一个文件**(见 _loadveil_src),
-# 所以"系统 splash -> 加载页"的交接是连续的; 这一段只是在那张图上加一点"活气"。
-# ⚠️ `LOADVEIL_ASPECT` 现在**只当"资产对不对"的交叉校验**用(_veil_fit 已改成"给整窗,
-#    摆放交给 fit_mode"); 画出去多大由 `fit_mode` + 贴图原生尺寸决定, 不由它决定。
-LOADVEIL_ASPECT = 1080.0 / 1920.0   # presplash.png 的宽高比
-# ⚠️ 加载页底色必须**等于 presplash.png 自己的底色**(实测四角全是 #0b1220), 否则那张图会在
-#    屏幕上显示成一个"方块"; 用了它, 图溢出屏幕的部分也看不出来。
-#    (buildozer.spec 里 `android.presplash_color` 也是同一个值, 系统那层同样不闪。)
+# ⚠️ 启动页的底色 —— **它现在是"没有突变"的唯一保证**, 三个地方必须是同一个值:
+#      `VEIL_BG`(这一页) == `buildozer.spec` 的 `android.presplash_color`(系统那层图片的底色)
+#                      == `p4a/hook.py` 注入的 `windowSplashScreenBackground`(应用窗口的底色)。
+#    `fx_probe` 会去另外两个文件里把值读出来对 —— 改一个忘一个就会在一次启动里露出两种颜色,
+#    那正是玩家说的"突变"。
+#    ⚠️ 这一页**没有任何图**(玩家 2026-09-11 定稿: 「黑屏+汉字」「不用之前的背景图了」「棋盘图
+#    没有用了 可以删了」): 系统那张 presplash 本身也已经换成纯 #0b1220, 于是从"点图标"到
+#    "进游戏"整条链路上一直是一片同色, 本来就没有可跳的东西。
 VEIL_BG = "#0b1220"
-# ⚠️ 加载页**只有这一张图, 而且它是静止的** —— 历代动效(进场从小到大 v0.6.26~28 / 呼吸
-#    v0.6.29~35)都已删除, 玩家 2026-09-11 定稿:「启动的时候固定显示一个图片, **不做任何变化**」。
-#    详细留档(为什么两代动效都被打回)见 `_veil_scale` 的 docstring。这一页现在只做两件事:
-#    尺寸与系统 presplash **逐像素一致**(交接处什么都看不见) + 盖住整屏吞掉触摸。
+# =============================================================================
+# 启动页那六个字(玩家 2026-09-11 定稿: 「启动的时候逐渐渲染五个比较大的汉字:
+# **跳跳的弹珠机**。渲染完成后, 再次重复渲染 或从高级渲染变成超高级渲染, 反正最多 6 秒钟」,
+# 总纲一句是「**总之这个东西不能是突变**」)。
+#
+# 整段是这样一条链(**一个突变都不许有**, 全程只有渐变):
+#   一片 VEIL_BG(系统启动窗口 -> 系统 presplash -> 这一页, 同一个颜色)
+#   -> 六个字从左到右逐个点亮
+#   -> 一轮走完再走一轮, **一轮比一轮"高级"**(冷白 -> 亮白 -> 金 -> 亮金 + 光晕)
+#   -> 音效就绪(最多 `VEIL_TITLE_MAX_SEC` 秒) -> 整页淡出, 露出底下的游戏
+VEIL_TITLE = "跳跳的弹珠机"          # 六个字(逐字渲染的粒度就是它; 玩家口述"五个"不影响)
+VEIL_TITLE_ROUND_GAP = 0.50         # 一轮扫完到下一轮之间的停顿(秒)
+VEIL_TITLE_MIN_SEC = 1.9            # **最短停留**: 再快也要让动画走完一轮多(项目红线只禁"软锁",
+#                                     这是个固定上界, 不会永久卡住)
+VEIL_TITLE_MAX_SEC = 6.0            # **最长停留**(玩家定稿「反正最多 6 秒钟」)。
+#                                     ⚠️ 与 `Sfx.SFX_READY_TIMEOUT` 同值: 那条是"等音效就绪"的硬超时,
+#                                     两个 6 秒一起兜底 —— 改一个记得看另一个。
+VEIL_TITLE_FADE_OUT = 0.40          # 整页淡出时长(摘页前的最后一笔)
+# 每一轮的**暗色 / 亮色** —— KTV 歌词那条"填充线"扫过去, 就是把字从暗色变成亮色
+# (玩家 2026-09-11: 「跳跳的弹珠机刚开始是都能看到的, 然后逐渐改变颜色」「效果类似KTV歌词的
+# 变化效果」)。一轮扫完再扫一轮, **每一轮的亮色比上一轮更亮更冷** = "从高级渲染变成超高级渲染"。
+# ⚠️ 这里**只有颜色**: 没有描边、没有阴影、没有辉光、没有缩放(玩家: 「高级不是土味审美」
+#    「别tmd加奇怪的描边了 阴影了」—— 第一版做的"金色 + 厚光晕"就是这么被打回的)。
+#    ⚠️ 三个色都取**低饱和**的莫兰迪调(玩家 2026-09-11: 「当前颜色肯定不行, 应该银色.黄色.红色
+#    可以用那个**性冷淡的颜色**」)—— 亮金/正红在暗底上就是土, 沙金和砖红才是那个味道。
+# ⚠️ 语义是**「从这一种颜色扫成下一种颜色」**(玩家 2026-09-11: 「应该是**默认是银色的**,
+#    **第1次变为黄色**, 再变是红色, 再变是银色」)—— **不是**「暗 -> 亮」两个明暗层次:
+#      · 圆点**左边** = 这一轮的颜色, 圆点**右边** = 上一轮的颜色(起点是**银色**);
+#      · 一轮扫完, 整行都是新颜色, 停一下, 再扫向下一种; 三种颜色循环, 第 3 种之后回第 1 种。
+#    所以这里只是一张**色表**, 顺序就是「变色的顺序」。
+#    三个色都取**低饱和的莫兰迪调**(玩家: 「可以用那个性冷淡的颜色」)—— 亮金/正红在暗底上就是土
+#    (第一版「金色 + 厚光晕」就是这么被打回的)。
+VEIL_TITLE_COLORS = (
+    (0.86, 0.88, 0.91),   # 银(默认)
+    (0.88, 0.75, 0.44),   # 黄(沙金 —— 偏绿就成橄榄了)
+    (0.56, 0.76, 0.60),   # 绿(灰绿/鼠尾草绿 —— 玩家 2026-09-11: 「这个红色不是很好, 是不是绿色更好?」)
+)
+# ⚠️ 那一页**只许看见这六个字** —— 曾经在填充线的头上画过一个小圆点, 玩家打回:
+#    「扫描的时候, 那个小球应该是隐藏的啊, 这个界面中, 只能看到那6个字」。别再加回来。
+VEIL_TITLE_LEAD = 0.35
+VEIL_TITLE_IN_SEC = 0.22             # 整行**一起**淡入的时长 —— 六个字一上来就都在, 只是别硬蹦出来
 
 
-def _loadveil_src():
-    """加载页那张图的路径 —— **和系统 presplash 是同一个文件**, 交接才连续。
-    找不到就返回 None(退化成纯色页面) —— **绝不因为一张装饰图把启动带崩**。"""
+# 那条填充线**扫完整行**要多久(秒)。
+# ⚠️ 它只决定「整行扫完要多久」, **粒度仍是像素级的**(靠那条裁剪, 不是逐字跳) ——
+#    所以圆点能停在某个字的中间。
+#    0.62s / 6 个字 ≈ **每 0.1s 走过一个字**, 这是玩家 2026-09-11 给的节奏
+#    (「以字为单位快速改动 每0.1s改1个字的颜色」)。
+VEIL_TITLE_SWEEP = 0.62
+
+
+def _veil_title_round_len():
+    """一轮(**先停一下** -> 填充线从左扫到右 -> 再停一下)有多长。"""
+    return VEIL_TITLE_LEAD + VEIL_TITLE_SWEEP + VEIL_TITLE_ROUND_GAP
+
+
+def _veil_title_state(t):
+    """开场动画在"这一页开了 t 秒"时, 六个字各自的状态 —— **纯函数**(探针直接钉它)。
+
+    效果就是**KTV 歌词**那一种(玩家 2026-09-11: 「这个东西的效果类似KTV歌词的变化效果 你懂的」
+    「跳跳的弹珠机 跳.跳的弹珠机 跳跳.的弹珠机 应该是这个效果, **圆点左边的字体是新颜色**
+    甚至颗粒度可以很细什么的」): 六个字一上来就都在(暗色), 然后一个**圆点**从左往右走,
+    **圆点左边的字是这一轮的新颜色、右边还是旧的**; 走到头再从左边重来一轮,
+    而**每一轮的新颜色比上一轮更亮更冷**(= "从高级渲染变成超高级渲染")。
+
+    返回 `(lit, fill, grade, rl)`:
+      · `lit` = 整行**一起**淡入的进度(0->1, 只走一次) —— 六个字同时到齐, 只是别硬蹦出来;
+      · `fill` = 这条填充线扫到**整行的百分之几**(0->1 单调, 本轮内) —— 行级而不是逐字级,
+        所以它能停在某个字的中间: 那个字左半边新色、右半边旧色(玩家要的"颗粒度可以很细");
+      · `grade` = 第几轮(0 起) —— 调用方拿它去 `VEIL_TITLE_COLORS` 取"这一轮的颜色";
+      · `rl` = 一轮多长(秒), 顺手带出来给调用方/探针用。"""
+    n = len(VEIL_TITLE)
+    rl = _veil_title_round_len()
     try:
-        import os
-        p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "presplash.png")
-        return p if os.path.exists(p) else None
+        k = int(t / rl) if t > 0.0 else 0
     except Exception:
-        return None
-
-
-def _veil_fit(w, h):
-    """加载图的基准尺寸 —— **就是整窗**(不裁不缩), 怎么摆放交给 `fit_mode`。返回 (宽, 高)。
-
-    ⚠️ **这里原来是 cover(铺满整屏), 已推翻。** 依据是上一版 docstring 里那句
-    「系统 presplash 是 Android 拿这张图当 `windowBackground` **铺满整屏**画的」——
-    **那句是错的**: p4a v2024.01.21 的 `PythonActivity.getLoadingScreen()` 建的是
-    `ImageView` + `FILL_PARENT` + **`setScaleType(ImageView.ScaleType.FIT_CENTER)`**,
-    位图走 `openRawResource` + `BitmapFactory.decodeStream`(不按密度缩放), 留白填
-    `presplash_color`。也就是**等比缩放、居中、留白**(= contain), 全树 grep `windowBackground`
-    零命中(没有"主题把 presplash 拉伸"的另一层)。v0.6.29 照那句错注释从 contain 改回 cover,
-    **方向反了**。
-
-    ⚠️⚠️ **只改这一个函数是空操作, 必须与 `fit_mode="contain"` 同时成立。**
-    Kivy 真正画出去的矩形是 `norm_image_size`, 不是控件 `size`(`kivy/data/style.kv` 的
-    `<Image,AsyncImage>` 规则), 而 `AsyncImage` 的 `fit_mode` **默认 `"scale-down"`**(只许缩不许放):
-    只要盒子在某一维超过贴图原生 1080x1920, 画出去就被**夹死在 1080x1920**。实测(真 Kivy
-    主循环读渲染指令): 盒 1200x2608 与 1467x2608 画出来**都是** 1080x1920 @ (60,344)。
-      · 只给整窗、不加 contain -> cover 盒照样被夹, **改了等于没改**(1200 宽屏上 contain 盒
-        与 cover 盒画出去是同一个 1080x1920 —— 这正是 v0.6.27/29/32 三次改动全部"无效"的原因);
-      · 只加 contain、盒子仍是 cover -> 画成"放大 1.25 倍再裁掉两边", 把 PC 那台唯一正常的
-        机器改坏。
-    两件一起做, 画出去的矩形才逐像素等于系统那张 FIT_CENTER(实测算例: 1200x2608 -> 两边都是
-    1200x2133.3)。
-
-    ⚠️ 呼吸(±1.8%)也依赖这条: 盒子要小于贴图, 缩放才传得到画面上。盒子以前恒大于贴图,
-    呼吸被夹成 **0 像素** —— 手机上的表现就是"完全静止不动"(玩家 2026-09-11 报的)。
-    真机上那一页到底能活多久还没测过, 但"改完能不能看见动"取决于这两条一起成立。"""
-    try:
-        return float(w), float(h)
-    except Exception:
-        return 0.0, 0.0
-
-
-def _veil_scale(t):
-    """**已废弃, 恒定返回 1.0** —— 加载页现在是一张**完全静止**的图, 不做任何变化。
-
-    ⚠️ 玩家 2026-09-11 定稿: 「启动的时候固定显示一个图片, **不做任何变化**」。
-    这一页存在的全部意义就是"接住系统那张 presplash", 而系统那张是**死的**; 我们这边只要
-    尺寸与它逐像素一致, 交接处就什么都看不见 —— 那才是"不折腾"。
-
-    删掉的历代动效(留档, 别再往回加):
-      · "进场从小到大" `LOADVEIL_GROW_FROM=0.72 / _SEC=0.55`(v0.6.26~28) —— 与系统那张铺满的
-        尺寸冲突(起点一定比它小), 且真机上根本来不及播;
-      · "呼吸" `LOADVEIL_BREATH_AMP=0.018 / _SEC=1.9`(v0.6.29~35) —— 本意是"让这一页看着是活的",
-        但在真机上被 `fit_mode` 的夹断冻成 **0 像素**, 玩家报的是「**静止不动**」; 修好夹断之后
-        它才第一次真的动起来 —— 而玩家的结论是**不要动**。
-    ⚠️ 保留这个函数名(而不是整段删掉)只是为了让老调用点/探针改起来最小; 它现在没有时间参数
-    的语义了(`t` 被忽略)。`__init__` 里那个 `self._t0` 一并删除。"""
-    return 1.0
+        k = 0
+    # ① **整行一起**淡入(不分先后 —— 玩家定稿「刚开始是都能看到的」): 六个字同时到齐,
+    #    只是别在第 0 帧硬蹦出来(那一下也算"突变")。
+    u = t / VEIL_TITLE_IN_SEC
+    lit = 0.0 if u <= 0.0 else (1.0 if u >= 1.0 else u)
+    lit = lit * lit * (3.0 - 2.0 * lit)                  # smoothstep
+    # ② KTV 那条"填充线"扫到整行的百分之几 —— **行级**的一条连续进度(不是逐字的),
+    #    所以它可以停在某个字的中间: 那个字左半边是新颜色、右半边还是旧的。
+    #    一轮之内 0 -> 1 **单调**; 下一轮从 0 重新扫。
+    p = (t - k * rl - VEIL_TITLE_LEAD) / VEIL_TITLE_SWEEP
+    p = 0.0 if p <= 0.0 else (1.0 if p >= 1.0 else p)
+    p = p * p * (3.0 - 2.0 * p)                          # smoothstep
+    return lit, p, k, rl
 
 
 class _LoadVeil(Widget):
@@ -7173,21 +7181,25 @@ class _LoadVeil(Widget):
     ⚠️ 必须是 Widget 而不是"只画个矩形": 矩形不吞触摸, 挡不住下面那层。
     ⚠️ 它是整个 App 最早出现的东西, 只依赖 sp()/hex_rgb()/COL_BG, 不碰任何游戏状态。"""
 
-    # ⚠️ 默认**一个字都不印**(玩家 2026-09-11 定稿: 「我要的是只显示一个加载界面即可」
-    #    「这个加载页面 啥字都没有」)。它盖住整屏、吞掉触摸、就绪就把自己摘掉 —— 就这些。
-    #    只有「重放冷启动」那条路会带文字进来(那是作者主动点开、专门停下来读的一屏)。
+    # ⚠️ 普通启动路径印的是**游戏名那五个字**(玩家 2026-09-11 定稿: 「启动的时候逐渐渲染五个
+    #    比较大的汉字: 跳跳的弹珠机 …… 反正最多 6 秒钟」), 见 `_build_title` / `_apply`。
+    #    底下那张棋盘是**接住系统 presplash** 用的(同图/同尺寸/同位 ⇒ 交接处什么都看不见),
+    #    然后自己淡成背景水印给字让位。
+    #    只有「重放冷启动」那条路会带文字进来(那是作者主动点开、专门停下来读的一屏),
+    #    那条路**不参与开场动画**(没有大字、不淡入淡出)。
     def __init__(self, text="", **kw):
         super().__init__(**kw)
         with self.canvas.before:
-            Color(*hex_rgb(VEIL_BG) + (1,))
+            # ⚠️ 存下来: 整页淡出时要按帧改它的 alpha(见 `_apply`)
+            self._bg_col = Color(*hex_rgb(VEIL_BG) + (1,))
             self._bg = Rectangle(pos=self.pos, size=self.size)
         self._lbl = Label(text=text, font_size=sp(20), bold=True,
                           color=hex_rgb("#eef2ff") + (1,),
                           halign="center", valign="middle")
         # 第二行: **只服务「重放冷启动」的结果页**(set_result 往里写结论)。
-        # ⚠️ 普通启动路径**绝不写它** —— 玩家 2026-09-11 定稿: 加载页一个字都不印。
-        #    这里原来印的是实时诊断(「已加载 42 / 97 · 已用 1.0 秒」), 那种数在「启动信息」里
-        #    全都有, 而且更全, 不需要在加载页上再占一行。
+        # ⚠️ 普通启动路径**绝不写它** —— 那一页只有游戏名那五个大字(见 `_build_title`),
+        #    没有第二行。这里原来印的是实时诊断(「已加载 42 / 97 · 已用 1.0 秒」), 那种数
+        #    在「启动信息」里全都有, 而且更全, 不需要在启动页上再占一行。
         self._sub = Label(text="", font_size=sp(17),
                           color=hex_rgb(COL_SUB) + (1,),
                           halign="center", valign="middle")
@@ -7197,53 +7209,63 @@ class _LoadVeil(Widget):
         #    普通冷启动**不用**这个(那里玩家要的是赶紧进游戏, 不是看数据)。
         self._hold = False
         self._on_tap = None
-        # 加载图: 就是系统 presplash 那张(同一个文件), 于是"系统 splash 撤掉 -> 本页接上"
-        # 中间没有跳变: 底色是同一个 #0b1220, 内容也是同一份。
-        # ⚠️ 用 **AsyncImage** 而不是 Image: Image 在**首次绘制时同步解码**, 1080x1920 那一张
-        #    会把第一帧顶后几十~几百毫秒 —— 而这块页存在的全部意义就是"第一帧别是黑屏"。
-        #    AsyncImage 先把背景色画出来, 图解码完自己长出来。
-        # ⚠️ 整段 try/except: 它只是一张装饰图, 拿不到就退化成纯色页面 —— 绝不把启动带崩。
-        self._img = None
-        self._base_w = 0.0
-        self._base_h = 0.0
-        # 贴图到位了没有 —— 没到位时 `tick()` **不写 size**(把它归零), 见那里的注释。
-        # ⚠️ 判据用 `AsyncImage` 的 `on_load` 事件, **不能**用 `texture.size == (32,32)`:
-        #    那是 Kivy 内部占位图的实现细节(`kivy/loader.py` 的 image-loading.zip), 换版本就静默失效。
-        self._tex_ok = False
-        try:
-            from kivy.uix.image import AsyncImage
-            _src = _loadveil_src()
-            if _src:
-                # ⚠️ **`fit_mode="contain"` 与 `_veil_fit` 返回整窗是一对, 缺一个就白改**:
-                #    默认是 `"scale-down"`(只许缩不许放), 盒子一旦在某一维超过贴图原生 1080x1920,
-                #    画出去就被夹死在 1080x1920 —— 而系统那张是 `FIT_CENTER`(= contain)。
-                #    完整实测数据与"三次改动为什么全废"的复盘都在 `_veil_fit` 的 docstring 里。
-                # ⚠️ 不写 allow_stretch/keep_ratio: 这两个在 Kivy 2.3 的 AsyncImage 上**已弃用**
-                #    (会刷两条 DeprecationWarning)。用不着它们 —— contain 自己就保持原图比例。
-                self._img = AsyncImage(source=_src, size_hint=(None, None), mipmap=True,
-                                       fit_mode="contain")
-                # ⚠️ 尺寸算出来之前**藏起来**(0x0) —— AsyncImage 的默认尺寸是 100x100,
-                #    不藏的话布局落定前会先闪一个 100x100 的小方块(就是玩家报的"突然变成小图")。
-                self._img.size = (0, 0)
-                self._img.bind(on_load=self._on_img_load)   # 解码完就放行(见 tick 的门)
-                # ⚠️ 兜底: `source` 是在 `super().__init__` 里赋的, `_load_source()` **那时已经跑过**——
-                #    若命中的是 Loader 缓存, `on_load` 可能在我们绑上之前就派发完了, 那就永远收不到。
-                #    所以再直接查一次代理图的状态(`ProxyImage.loaded`, 实测解码前后 False -> True)。
-                self._tex_ok = bool(getattr(getattr(self._img, "_coreimage", None),
-                                            "loaded", False))
-                self.add_widget(self._img)     # 先加 = 在下层, 文字盖在它上面
-        except Exception:
-            self._img = None
+        # ---- 开场那五个字(只有**普通启动页**有; 「重放冷启动」那页带文字进来, 不参与动画) ----
+        self._title_on = False
+        self._title_box = (0.0, 0.0, 0.0, 0.0)   # 那一行字的外接框(x, y, w, h), 裁剪按它算
+        self._title_fs = 0.0                     # 这一页当前的字号(圆点大小按它算)
+        self._t0 = 0.0            # 动画起点 —— **第一帧才盖章**: 构造时刻这一页还没上屏, 从那里
+        #                           算会让动画"没开始就过半"(v0.6.26~28 的进场就是这么废的)
+        self._fade_t0 = 0.0       # 整页淡出的起点, 0 = 还没开始淡出
+        # ⚠️ 这一页**没有任何图**了(玩家 2026-09-11 定稿: 「黑屏+汉字」「不用之前的背景图了」)。
+        #    以前它挂一张=系统 presplash 的棋盘图, 为的是"和系统那张逐像素一致" ⇒ 交接处看不见;
+        #    现在**一致性由颜色保证**: 系统 presplash 那张图本身已经是纯 `#0b1220`(同一个值),
+        #    主题那层的底色也是它, 这一页的底色还是它 ⇒ 整条链路上一直是同一个颜色, 本来就没有
+        #    可跳的东西, 那张图自然就多余了。
+        #    ⚠️ 三个地方的值**必须永远相同**(它们现在是"没有突变"的唯一保证, `fx_probe` 钉着):
+        #       `VEIL_BG` == `buildozer.spec` 的 `android.presplash_color`
+        #                 == `p4a/hook.py` 注入的 `windowSplashScreenBackground`。
         self.add_widget(self._lbl)
         self.add_widget(self._sub)
+        # ⚠️「重放冷启动」那一页**也要演这一行字**(玩家 2026-09-11: 「启动信息中的冷启动, 仍然可以
+        #    无限播放这个启动界面 跳跳的弹珠机的 播放歌词版本」) —— 所以文案带不带进来都建。
+        self._is_replay = bool(text)
+        self._build_title()
         self.bind(pos=self._sync, size=self._sync)
         self._lbl.bind(texture_size=self._sync)   # 文字一变就重排版(结果页会换字号/换内容)
         self._sub.bind(texture_size=self._sync)
         self._sync()
 
-    def _on_img_load(self, *_):
-        """贴图真的解码完了 —— 这一刻之前 `tick()` 一律不写 size(理由见 tick 里的门)。"""
-        self._tex_ok = True
+    def _build_title(self):
+        """建那一行字 —— **两个字叠着 + 一条裁剪**:
+        底下那层是这一轮的"暗色"(整行都在), 上面那层是"亮色", 但只**裁剪出圆点左边那一段**露出来。
+        圆点走到哪儿, 哪儿就换成新颜色 —— 粒度是**像素级**的, 可以切在某个字的中间
+        (玩家 2026-09-11: 「圆点左边的字体是新颜色 甚至颗粒度可以很细什么的」)。
+
+        ⚠️ 没有描边、没有阴影、没有辉光、没有缩放 —— **只有颜色**(玩家: 「高级不是土味审美」
+        「别tmd加奇怪的描边了 阴影了」)。
+        ⚠️ 字号**只在 `_sync` 里改**(窗口尺寸变了才动): 逐帧改字号会让 Kivy 每帧重烘文字纹理;
+        逐帧动的只有 `color` 和那条裁剪矩形的宽度。"""
+        try:
+            self._dim_lb = Label(text=VEIL_TITLE, color=(0.0, 0.0, 0.0, 0.0),
+                                 size_hint=(None, None))
+            self._hi_lb = Label(text=VEIL_TITLE, color=(0.0, 0.0, 0.0, 0.0),
+                                size_hint=(None, None))
+            self.add_widget(self._dim_lb)
+            self.add_widget(self._hi_lb)          # 亮色那层压在上面
+            # 裁剪 = 从整行左边缘到圆点的一条矩形(Kivy 的 Stencil 三连, 和 style.kv 里
+            # Image 那套是同一个写法)。圆点右边的亮色被裁掉, 露出底下的暗色。
+            with self._hi_lb.canvas.before:
+                StencilPush()
+                self._clip_a = Rectangle(pos=(0.0, 0.0), size=(0.0, 0.0))
+                StencilUse()
+            with self._hi_lb.canvas.after:
+                StencilUnUse()
+                self._clip_b = Rectangle(pos=(0.0, 0.0), size=(0.0, 0.0))
+                StencilPop()
+            self._dim_lb.bind(texture_size=self._sync)
+            self._title_on = True
+        except Exception:
+            self._title_on = False    # 纯装饰: 建不出来就退化成"只有底色", 绝不把启动带崩
 
     def set_title(self, text):
         try:
@@ -7262,9 +7284,6 @@ class _LoadVeil(Widget):
             self._lbl.font_size = sp(28)
             self._sub.font_size = sp(24)
             self._sub.text = text
-            # 结果页有 6 行字要读, 图退成背景 —— 否则字压在盘面上根本看不清。
-            if self._img is not None:
-                self._img.opacity = 0.22
         except Exception:
             pass
 
@@ -7276,63 +7295,77 @@ class _LoadVeil(Widget):
         except Exception:
             pass
 
-    def _veil_box(self):
-        """加载图该铺的那块矩形 `(x, y, w, h)`。
+    def _apply(self, t, fade=0.0):
+        """把这一帧该有的颜色/不透明度写下去(唯一的写入口)。
 
-        ⚠️ **优先父容器, 不用 `self`** —— 控件在**被布局之前** `self.size` 是 Kivy 的默认值
-        `(100, 100)`、`self.pos` 是 `(0, 0)`, 拿它算会得到一个 **100x178 的小图画在左下角**,
-        而那一帧正好是"系统 splash 撤掉后玩家看到的第一眼"(玩家 2026-09-11 原话:
-        「固定一个启动画面静止不动一段时间, **突然变成小图**, 然后突然就进游戏了」)。
-        实测(桌面夹具, 432x936 窗口): 刚构造时 `self.size=100x100` -> 图 100x178;
-        第一帧之后 `self.size=432x936` -> 图 527x937。
-        父容器(anchor)的尺寸由 `LandLayer.apply_orientation()` 在 `App.build` 里就写好了,
-        **从一开始就是对的**。"""
+        `fade` = 整页淡出的进度(0 = 不淡, 1 = 全透明)。底色和每个字都要乘它, 少乘一个就是
+        "淡出一半露一块"。
+        ⚠️ **只改 `color`**, 绝不碰 `font_size`(那会每帧重烘文字纹理, 手机上掉帧),
+        也不加描边/阴影/辉光(玩家定稿: 「高级不是土味审美」「别tmd加奇怪的描边了 阴影了」)。"""
+        k = 1.0 - fade
         try:
-            p = self.parent
-            if p is not None:
-                return _pick_box((p.x, p.y, p.width, p.height),
-                                 (self.x, self.y, self.width, self.height))
+            self._bg_col.a = k
         except Exception:
             pass
+        if not self._title_on:
+            return
+        lit, fill, grade, _rl = _veil_title_state(t)
+        # ⚠️ 圈次**取模**(演完最后一种颜色回到第一种), 不是夹断 —— 玩家要的就是"无限演"。
+        # 底下那层 = **上一轮**的颜色(起点是**银色**), 上面那层 = 这一轮要扫成的颜色。
+        # 圈次**取模**不是夹断 —— 三种颜色循环, 玩家要的就是"无限演"。
+        _n_col = len(VEIL_TITLE_COLORS)
+        gi = grade % _n_col
+        dim_rgb = VEIL_TITLE_COLORS[gi]
+        hi_rgb = VEIL_TITLE_COLORS[(gi + 1) % _n_col]
+        a = lit * k
+        # ⚠️ **只在颜色真的变了才赋值**: Kivy 的 `Label.color` 一变就要重烘文字纹理(6 个汉字在
+        #    手机上不便宜)。这里一轮才换一次色, 每帧赋值是白烧 —— 挡一道。
+        #    alpha(`a`)在淡入/淡出那两小段里逐帧变, 那两段很短, 无所谓。
+        _want = (dim_rgb, hi_rgb, round(a, 3))
+        if _want != getattr(self, "_last_col", None):
+            self._last_col = _want
+            self._dim_lb.color = (dim_rgb[0], dim_rgb[1], dim_rgb[2], a)
+            self._hi_lb.color = (hi_rgb[0], hi_rgb[1], hi_rgb[2], a)
+        # 裁剪: 从整行左边缘到圆点。fill 是"扫到整行的百分之几" ⇒ 可以停在字的中间。
+        x0, y0, w, h = self._title_box
+        cut = max(x0, min(x0 + w, x0 + w * fill))
+        sw = cut - x0
+        for _r in (self._clip_a, self._clip_b):
+            _r.pos = (x0, y0)
+            _r.size = (sw, h)
+
+    def tick(self, audio_ready=False):
+        """每帧推进。由 `RootWidget._frame` 调 —— 自己不持有 Clock(切后台回来直接跳终态)。
+
+        返回 **True = 这一页可以摘了**:
+          · 普通启动页: 动画至少走 `VEIL_TITLE_MIN_SEC` + 音效就绪 -> 整页淡出 -> 淡完了才 True;
+          · 「重放冷启动」页: 老行为(音效就绪即 True; 结果页靠 `_hold` 停住等玩家点一下)。
+        ⚠️ `_t0` 在**第一个 tick** 才盖章 —— 构造时刻这一页还没上屏(安卓要等 presplash 撤掉),
+           从那里算会让动画"没开始就过半"。
+        ⚠️ 出任何意外一律返回 True 放行: 绝不能因为动画把玩家卡在启动页(项目红线: 绝不软锁)。"""
         try:
-            return self.x, self.y, self.width, self.height
+            now = time.time()
+            if self._t0 == 0.0:
+                self._t0 = now
+            t = now - self._t0
+            if not self._title_on:
+                self._apply(t, 0.0)
+                return bool(audio_ready)
+            if self._is_replay:
+                # 「重放冷启动」: **无限演下去**(圆点扫完一轮再扫一轮), 就绪也不自己淡出 ——
+                # 摘不摘由 `_frame` 按 `_hold` 决定(那一屏要停住等玩家点一下)。
+                self._apply(t, 0.0)
+                return bool(audio_ready)
+            if self._fade_t0 == 0.0 and audio_ready and t >= VEIL_TITLE_MIN_SEC:
+                self._fade_t0 = now
+            fade = 0.0
+            if self._fade_t0 != 0.0:
+                fade = (now - self._fade_t0) / VEIL_TITLE_FADE_OUT
+                fade = 0.0 if fade < 0.0 else (1.0 if fade > 1.0 else fade)
+            self._apply(t, fade)
+            return self._fade_t0 != 0.0 and fade >= 1.0
         except Exception:
-            return 0.0, 0.0, 0.0, 0.0
-
-    def tick(self):
-        """每帧: **重算尺寸**并把图摆正。由 `RootWidget._frame` 调 —— 自己不持有 Clock:
-        切后台回来直接跳终态(和 WinPileFX 同一条纪律)。
-
-        ⚠️ 它**不再是动画推进器**: 这一页现在是一张静止的图(玩家 2026-09-11 定稿
-        「不做任何变化」)。留着"每帧算"只是为了跟上窗口尺寸变化(`_enter_immersive` 那一跳),
-        不是为了动效。
-
-        ⚠️ 尺寸**每帧现算**, 不依赖"布局什么时候通知我"。那是个时序依赖, 而**桌面和真机的时序
-        不一样**。绑在 `_sync`(pos/size 变化)上就只在"尺寸真的变了"时才算一次, 真机上一旦第一枪
-        打歪, 后面未必有第二次机会。"""
-        try:
-            if self._img is None:
-                return
-            if not self._tex_ok:
-                # 贴图还没到位: **把尺寸归零**, 这一帧什么都不画。
-                # ⚠️ 必须"归零"而不是直接 `return`: Kivy 画的是 `norm_image_size`, 它由**控件 size**
-                #    算出来 —— 直接 return 只会让控件**停在上一层写下的尺寸**上, 于是一张 32x32 的
-                #    占位图在 contain 下会被放大成 **1200x1200 的一整屏糊斑**(实测; 它还是 8 帧动画,
-                #    会抽动), 在 scale-down 下则是屏幕正中一个 32px 的点(现状)。归零两种都不画。
-                # ⚠️ 空出来的那几帧屏幕上只有纯 `VEIL_BG`(#0b1220) —— 和 presplash 自己的底色
-                #    一模一样, 看不出"图没了"。它**不影响摘页**(摘页只看 `sfx.audio_ready`),
-                #    绝不会因为图没加载完就卡在加载页(项目红线: 绝不软锁)。
-                self._img.size = (0.0, 0.0)
-                return
-            bx, by, bw, bh = self._veil_box()
-            if bw <= 1.0 or bh <= 1.0:
-                return                    # 尺寸还没落定 -> 图保持藏着(0x0), 不闪方块
-            self._base_w, self._base_h = _veil_fit(bw, bh)
-            w, h = self._base_w, self._base_h    # **静止**: 不做任何变化(见 `_veil_scale`)
-            self._img.size = (w, h)
-            self._img.pos = (bx + bw * 0.5 - w * 0.5, by + bh * 0.5 - h * 0.5)
-        except Exception:
-            pass
+            return True
 
     def _sync(self, *_):
         self._bg.pos = self.pos
@@ -7346,20 +7379,42 @@ class _LoadVeil(Widget):
         sh = max(sp(24), self._sub.texture_size[1] + sp(8))
         gap = sp(14) if self._sub.text else 0
         total = lh + gap + sh
-        top = self.center_y + total / 2.0
+        # 那一行字的排版。⚠️ 字号**只在这里改**(窗口尺寸变了才动): 逐帧改字号会让 Kivy 每帧
+        #    重烘文字纹理, 手机上直接掉帧; 逐帧动的是 `color`(见 `_apply`)。
+        # ⚠️ 字号跟着**这一页的宽度**走, 所以是裸数值(不是 sp()) —— 标题要占满宽度, 与屏幕密度无关;
+        #    横向 n 个字 ≈ n x 字号宽, 所以取 0.86 / n 再拿高度 0.17 兜一道(别撑出屏)。
+        th = sp(20)                                   # 标题与文字块之间的间距
+        has_text = bool(self._lbl.text or self._sub.text)
+        ty = self.center_y
+        if self._title_on:
+            n = max(1, len(VEIL_TITLE))
+            fs = min(self.width * 0.86 / n, self.height * 0.17)
+            self._title_fs = fs
+            for lb in (self._dim_lb, self._hi_lb):
+                lb.font_size = fs
+                lb.text_size = (None, None)           # 单行, 不折行
+            # ⚠️ 两层必须**逐像素同尺寸同位置**, 否则裁剪出来的边会和字错位。
+            #    尺寸取两层的最大值(理论上一样, 取 max 是防字体回退那类意外)。
+            w = max(self._dim_lb.texture_size[0], self._hi_lb.texture_size[0], fs)
+            h = max(self._dim_lb.texture_size[1], self._hi_lb.texture_size[1], fs)
+            # ⚠️ 有文字块的时候标题**让到上面去**: 两块都居中会直接叠在一起
+            #    (2026-09-11 踩过一次: 「重放完成…」压在数据行上, 上面那段全糊了)。
+            #    「重放冷启动」那一页正是"标题 + 结果文字"同时存在的那种。
+            ty = (self.center_y + (total + th + h) / 2.0 - h / 2.0) if has_text else self.center_y
+            x0 = self.center_x - w / 2.0
+            y0 = ty - h / 2.0
+            for lb in (self._dim_lb, self._hi_lb):
+                lb.size = (w, h)
+                lb.pos = (x0, y0)
+            self._title_box = (x0, y0, w, h)
+        top = ty + (th + total) / 2.0 if (self._title_on and has_text) else self.center_y + total / 2.0
         self._lbl.size = (self.width, lh)
         self._lbl.pos = (self.x, top - lh)
         self._sub.size = (self.width, sh)
         self._sub.pos = (self.x, top - lh - gap - sh)
-        # 加载图的尺寸**在这里也算一次**(布局驱动), `tick()` 每帧**还会再算**(帧驱动)。
-        # ⚠️ 两条路是有意的: 任何一条通就够, 不会出现"图永远不显示"。原因见 `_veil_box()` 的注释
-        #    —— 绑在 pos/size 上是个时序依赖, 真机上第一枪打歪就未必有第二次机会; 而只靠每帧算,
-        #    万一 `_frame` 起得晚(安卓要等 presplash 撤掉)就会缺图。
-        if self._img is not None:
-            _bx, _by, _bw, _bh = self._veil_box()
-            if _bw > 1.0 and _bh > 1.0:
-                self._base_w, self._base_h = _veil_fit(_bw, _bh)
-                self.tick()
+        # ⚠️ 这里**绝不能调 `tick()`**: 它会用 `time.time()` 给动画盖章 `_t0`, 而 `_sync` 在
+        #    `__init__` 结尾就会跑一次(那时这一页还没上屏) ⇒ 动画"没开始就过半"。
+        #    排版只做上面那一段(字号/位置), 逐帧的颜色/缩放由 `tick() -> _apply()` 写。
 
     def on_touch_down(self, touch):
         # 普通加载页: 吞掉所有触摸(不让玩家在音效没就绪时按发射)。
