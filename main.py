@@ -6817,18 +6817,17 @@ class RootWidget(BoxLayout):
                 # 实时诊断: 加载页**吞掉所有触摸**, 所以音效没就绪的那几秒里作者根本长按不到标题、
                 # 打不开「启动信息」—— 而那一刻正是那个 bug 唯一能被观察到的时刻。把他要的数直接
                 # 印在他唯一看得见的那一屏上。整段 try/except: 一行字, 绝不把启动带崩。
+                # ⚠️ 该不该印、印什么, 全部由 `_veil_status_line()` 决定(纯函数, fx_probe 直接测)。
+                #    这里只负责把"这一页开了多久"算出来喂给它。
                 try:
-                    sfx = self.sfx
-                    n = len(sfx.named)
-                    wait = time.time() - (getattr(self, "_load_veil_t0", 0.0) or time.time())
                     # ⚠️ 报的是"这一页已经开了多久", **不是**探针等待时长 —— 探针要等烘焙完了才
                     #    开始跑(见 Sfx._await_ready), 所以合成那几秒全算在这里面。以前这行写的是
                     #    "等待能播", 而真机上手测: 这里显示 3.4 秒、最终结果却是「音效等待 95 ms」——
                     #    同一个词指两个数, 正是这块面板最不该犯的错。
-                    if sfx._expected:
-                        _veil.set_status("已加载 %d / %d　·　已用 %.1f 秒" % (n, sfx._expected, wait))
-                    else:
-                        _veil.set_status("正在合成…　已加载 %d 个　·　%.1f 秒" % (n, wait))
+                    wait = time.time() - (getattr(self, "_load_veil_t0", 0.0) or time.time())
+                    _line = _veil_status_line(self.sfx, wait)
+                    if _line is not None:
+                        _veil.set_status(_line)
                 except Exception:
                     pass
 
@@ -7054,6 +7053,40 @@ class RootWidget(BoxLayout):
 # =============================================================================
 # App 入口 / 冒烟
 # =============================================================================
+# 加载页第二行(实时诊断)**最早什么时候才准出现**。
+# ⚠️ 它不是审美参数, 是"消闪"用的: 缓存判定完成之前 `Sfx.cached` 还是 False、`_expected`
+#    还是 0, 那一两帧会闪出「正在合成… 已加载 0 个」; 而冷启动前 0.5 秒本来也没什么可看的
+#    (玩家那时只知道"要等一下")。
+VEIL_STATUS_MIN_SEC = 0.5
+
+
+def _veil_status_line(sfx, wait):
+    """加载页那第二行该不该印、印什么; 返回 None = **这一行整个不出现**。
+
+    ⚠️ 抽成纯函数是为了**能被门禁直接测**: 它以前是 `_frame` 里的一段内联代码, 而 `_frame`
+    要跑起来得先有整个 App(rootw / game_area / 时钟), fx_probe 造不出来 —— 于是这块逻辑
+    **零自动覆盖**, 改坏了完全静默, 而"加载页显示错字"恰恰是本项目最典型的静默故障形态。
+
+    两条闸门(玩家 2026-09-11 原话: 「热加载的时候应该只显示加载界面, 但是额外显示了音频
+    载入时间什么的 必现」):
+      ① 热启动(`sfx.cached`)一律不印 —— 它走磁盘缓存, 烘焙不到 0.1 秒, 这一页纯属"等探针",
+         没有任何进度可报; 印出来就是一块「已加载 97 / 97　·　已用 0.0 秒」却还杵着不走的屏。
+         ⚠️ 这一行原本的立意("加载页吞掉所有触摸, 作者长按不到标题, 所以把诊断印在他唯一
+            看得见的那一屏上")**本来就只在冷启动那几秒里成立** —— 热启动半秒, 没人来得及
+            长按。收窄到冷启动不伤立意。
+      ② 太早(`wait < VEIL_STATUS_MIN_SEC`)不印 —— 见该常量的注释。"""
+    try:
+        if getattr(sfx, "cached", False) or wait < VEIL_STATUS_MIN_SEC:
+            return None
+        n = len(getattr(sfx, "named", ()))
+        exp = getattr(sfx, "_expected", 0) or 0
+        if exp:
+            return "已加载 %d / %d　·　已用 %.1f 秒" % (n, exp, wait)
+        return "正在合成…　已加载 %d 个　·　%.1f 秒" % (n, wait)
+    except Exception:
+        return None
+
+
 class _LoadVeil(Widget):
     """冷启动"音效库烘焙中"的加载页: 盖住整屏 + 吞掉所有触摸。
 
@@ -7195,7 +7228,14 @@ class PlinkoApp(App):
             anchor.add_widget(self.veil)
             self.rootw._load_veil = self.veil      # 交给 _frame 收尾
             self.rootw._load_veil_host = anchor    # 重放冷启动时要往这里再挂一页
-            self._load_veil_t0 = time.time()
+            # ⚠️ 计时起点必须挂在 **rootw** 上(不是 App 上) —— 读它的是 `RootWidget._frame`。
+            #    曾经写的是 `self._load_veil_t0`(= 挂在 App 上), 而 _frame 里是
+            #    `getattr(self, "_load_veil_t0", 0.0) or time.time()` ⇒ rootw 上取不到 ⇒ 兜到
+            #    `or time.time()` ⇒ **wait 恒等于 0.0** ⇒ 加载页永远显示「已用 0.0 秒」。
+            #    玩家 2026-09-11: 「热加载的时候应该只显示加载界面, 但是额外显示了音频载入时间
+            #    什么的 必现」—— "0.0 秒"就是这个 bug 的正面证据(重放路径有自己的赋值, 所以它
+            #    显示的是真数, 这也是为什么以前没被发现)。
+            self.rootw._load_veil_t0 = time.time()
         self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
