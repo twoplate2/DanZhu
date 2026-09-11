@@ -1576,26 +1576,6 @@ def _sfx_code_tag():
         return "%d.%d.nofile" % (SFX_SEED, SR)
 
 
-def _android_output_rate():
-    """设备**首选输出采样率**(Hz); 拿不到返回 0。
-
-    ⚠️ 这不是"顺便报个参数" —— 它是**跨设备可比性的前提**。源音频统一是 SR=22050Hz,
-    设备若跑 48000 就要重采样放大 **2.18 倍**, 而这是整条解码链路里最大的一块计算量。
-    两台机器这个数不同 ⇒ 它们的「音效等待」压根不是在回答同一道题, 并排比会得出反向结论。
-
-    2026-09-11 实测: PC 模拟器报 372ms、真机报 711ms, 而模拟器的跑分只有真机一半 ——
-    "会不会是没走重采样"正是当时的候选解释之一。没有这一行, 那组数据无法判读。
-
-    静态方法, 不需要 Context; 拿不到就安静返回 0(绝不把面板带崩)。"""
-    try:
-        from jnius import autoclass
-        AudioTrack = autoclass("android.media.AudioTrack")
-        AudioManager = autoclass("android.media.AudioManager")
-        return int(AudioTrack.getNativeOutputSampleRate(AudioManager.STREAM_MUSIC))
-    except Exception:
-        return 0
-
-
 def _wav_write(path, pcm):
     """原子写: 先写 .tmp 再 replace。半截文件绝不能留在缓存里被下次启动当成有效音效。"""
     tmp = path + ".tmp"
@@ -1938,8 +1918,6 @@ class Sfx:
         self._audio_ready = False   # 烘完 + **探到真的能播** 才为真(见 _await_ready)。默认 False:
                                     # 但 !enabled / 后端探测不可用时一律放行 —— 绝不软锁
         self.ready_ms = 0.0         # 等"真的能播"花了多久(0 = 不适用/没探针)
-        self._out_rate = -1         # 设备首选输出采样率(Hz)。-1=还没问过, 0=问不到。
-                                    # 懒问 + 缓存(见 audio_detail 里那一行); 只在安卓上报
         self.n_attempt = 0          # 过了全部闸门、真的向后端要过声音的次数
         self.n_missed = 0           # 上面那些里**后端仍说没播成**的次数(静默的正面计数)
         self._expected = 0          # 满编音效数(烘焙时顺手记, 见 _expected_total 为什么不能现算)
@@ -2104,20 +2082,12 @@ class Sfx:
                     rows.append("　　　　　%s" % _err[:64])
             rows.append(mode_row)
 
-            # 2.5) 设备输出采样率 —— 「**这道题有多难**」。放在"后端"与"等待"之间, 因为它正是
-            #      那两行之间的桥: 后端决定谁来解, 它决定要解多少, 等待才是结果。
-            # ⚠️ 只在安卓上出现: PCM 后端(PC 的 winmm)送的是 SR=22050 的 PCM 给声卡,
-            #    "设备输出采样率"在那个后端上不是同一个概念, 印出来反而误导。
-            # ⚠️ 值只问一次(缓存): 这是个不变的系统属性, 每次开面板都查一遍没有意义。
-            # ⚠️ 必须 getattr 兜底: `fx_probe` 的夹具走 `Sfx.__new__` 绕开 `__init__`,
-            #    直接读 `self._out_rate` 会 AttributeError → 被外层的 except 吞成**空列表**,
-            #    整个面板静默变成空白(这正是本项目栽过好几次的形状)。
-            if platform == "android":
-                _rate = getattr(self, "_out_rate", -1)
-                if _rate < 0:
-                    _rate = _android_output_rate()
-                    self._out_rate = _rate
-                rows.append("输出采样率　%s" % ("%d Hz" % _rate if _rate > 0 else "未知"))
+            # ⚠️ 这里原来有一行「输出采样率　48000 Hz」(v0.6.24 加的), **玩家 2026-09-11 定稿删除**:
+            #    原话「去掉音频输出中的 输出采样率 这个其实是个固定数值」。
+            #    它当初是为跨设备对比加的(22050 源在 48000 设备上要重采样 2.18 倍), 理由是"两台机器
+            #    这个数不同就不是在做同一道题" —— 但真机 + 模拟器实测**都是 48000**, 于是它成了
+            #    "永远不变的那一行", 而这块面板的成文规则是: **有唯一预期值的, 只在偏离时才有信息**
+            #    (同 "后端重建" 只在非 0 时出现)。真要偏离(22050/44100)再把它加回来也不迟。
 
             # 3) 音效等待 —— 等"真的能播"花了多久。⚠️ 安卓上"没有探针"是**护栏缺失**
             #    (那 6 秒形同虚设, 而这正是那个 bug 的成因), 不能写成中性的"不适用"。
@@ -7046,12 +7016,10 @@ class RootWidget(BoxLayout):
 # 所以"系统 splash -> 加载页"的交接是连续的; 这一段只是在那张图上加一点"活气"。
 LOADVEIL_ASPECT = 1080.0 / 1920.0   # presplash.png 的宽高比
 # ⚠️ 加载页底色必须**等于 presplash.png 自己的底色**(实测四角全是 #0b1220), 否则那张图会在
-#    屏幕上显示成一个"方块"; 用了它, 图的边界就完全看不见, 只剩内容在长大。
-#    和游戏里的 COL_BG(#0e1524)差 3 个色阶 —— 摘页时那一下几乎看不出来, 而"图有边框"是一眼可见的。
+#    屏幕上显示成一个"方块"; 用了它, 图溢出屏幕的部分也看不出来。
+#    (buildozer.spec 里 `android.presplash_color` 也是同一个值, 系统那层同样不闪。)
 VEIL_BG = "#0b1220"
-LOADVEIL_GROW_SEC = 0.55            # 从小到大用多久
-LOADVEIL_GROW_FROM = 0.72           # 起手是最终尺寸的几成
-LOADVEIL_BREATH_SEC = 1.9           # 长满之后的呼吸周期
+LOADVEIL_BREATH_SEC = 1.9           # 呼吸周期
 LOADVEIL_BREATH_AMP = 0.018         # 呼吸幅度(±1.8%)
 
 
@@ -7067,45 +7035,41 @@ def _loadveil_src():
 
 
 def _veil_fit(w, h):
-    """加载图在 w×h 的页面里的**基准尺寸**(contain: 整张图完整放进去, 绝不裁切)。
+    """加载图在 w×h 页面里的基准尺寸 —— **cover: 铺满整屏**(超出的部分裁掉), 保持原图比例。
 
-    ⚠️ **不能"只按高度铺"**: 手机的屏幕比这张图更瘦长(典型 1080x2340 = 0.46, 而图是 0.5625),
-    只按高度算出来的宽度会**超出屏幕**, 图的两侧被裁掉。contain 之后上下各留一条边 ——
-    而那条边正好是它自己的底色, 所以肉眼看不出来。
-
-    ⚠️ 返回值**已经预留了呼吸的余量**: `base * (1 + BREATH_AMP)` 也仍然完整放得下。
-    不留的话, 呼吸涨到最大时图会比屏幕大一圈 —— 溢出的虽然只是背景色(看不出), 但那是
-    "碰巧看不出来", 不该靠它; 以后换一张边缘有内容的图就会当场露馅。
+    ⚠️ **必须是 cover, 不能是 contain。** 系统 presplash 是 Android 拿这张图当
+    `windowBackground` **铺满整屏**画的 ⇒ "打开 app"看到的第一眼就是铺满那一版。
+    我们这边如果只做 contain(把整张图完整放下), 就会**比它小一圈**, 玩家看到的是:
+    「打开app显示一个最大的加载, **然后迅速变小**」(2026-09-11 原话)。
+    铺满之后两者大小一致, 交接处没有尺寸跳变 —— 溢出裁掉的本来就是它自己的底色。
     返回 (宽, 高), 宽高比恒等于 LOADVEIL_ASPECT。"""
     try:
-        room = 1.0 + LOADVEIL_BREATH_AMP
-        bw = (h * LOADVEIL_ASPECT)
-        if bw > w:
+        bw = h * LOADVEIL_ASPECT
+        if bw < w:          # 比屏幕"瘦"(如平板 15:10) -> 按宽度顶满, 高度溢出
             bw = w
-        bw /= room
         return bw, bw / LOADVEIL_ASPECT
     except Exception:
         return 0.0, 0.0
 
 
 def _veil_scale(t):
-    """加载图在"这一页开了 t 秒"时应有的缩放系数: 先进场从小到大, 长满之后轻轻呼吸。
+    """加载图在"这一页开了 t 秒"时的缩放系数: **只有呼吸**(±AMP, 周期 BREATH_SEC)。
+
+    ⚠️ 这里原来还有一段"进场从小到大"(0.72 → 1.0 / 0.55s), **已删**。两个理由:
+      ① 它和系统 splash **冲突**: presplash 是铺满的, 进场从 0.72 起步就等于"先缩一圈再长大",
+         而玩家睁眼看到的第一眼正好是那个"缩" —— 原话:「打开app显示一个最大的加载, 然后
+         迅速变小」。
+      ② 它在真机上**根本来不及播**: `_t0` 从构造算起, 而第一帧要等 presplash 撤掉才画出来,
+         中间可能早过了 0.55 秒 ⇒ 一睁眼就是终态 ⇒ 玩家原话里的「**然后啥也没有动**」。
+    现在: 铺满 + 直接呼吸, 交接处没有任何尺寸跳变, 动的东西从头到尾都看得见。
 
     ⚠️ 为什么不是"循环进度条"(玩家问过"和 windows 一样搞个循环进度条…感觉不太合适?"):
-    进度条承诺的是"我能告诉你还剩多少" —— 而这个等待**没有可报的进度**: 热启动半秒、冷启动
-    几秒, 差一个数量级, 中间一个台阶都没有。转圈却不前进只会持续提醒"还没好"; 而且它多半
-    只出现半秒, 转半圈就被摘掉, 纯属闪一下。
-    一张"从小到大"的图传达的是"正在醒来": 尺寸**有终态**, 长满就停, 不承诺任何剩余时间。"""
+    进度条承诺的是"我能告诉你还剩多少", 而这个等待**没有可报的进度**(热启动半秒 / 冷启动几秒,
+    没有中间态)。呼吸只传达"我在", 尺寸有终态, 不承诺任何剩余时间。"""
     try:
-        if t <= 0.0:
-            return LOADVEIL_GROW_FROM
-        if t < LOADVEIL_GROW_SEC:
-            u = t / LOADVEIL_GROW_SEC
-            # 三次缓出: 起手快、落位稳(和退场那套"感知优先"同款理由)。
-            return LOADVEIL_GROW_FROM + (1.0 - LOADVEIL_GROW_FROM) * (1.0 - (1.0 - u) ** 3)
         import math
         return 1.0 + LOADVEIL_BREATH_AMP * math.sin(
-            2.0 * math.pi * (t - LOADVEIL_GROW_SEC) / LOADVEIL_BREATH_SEC)
+            2.0 * math.pi * t / LOADVEIL_BREATH_SEC)
     except Exception:
         return 1.0
 
@@ -7236,8 +7200,9 @@ class _LoadVeil(Widget):
         self._lbl.pos = (self.x, top - lh)
         self._sub.size = (self.width, sh)
         self._sub.pos = (self.x, top - lh - gap - sh)
-        # 加载图: **contain**(整张图完整放得下, 绝不裁切), 两侧/上下留出来的边正好是**它自己的
-        # 底色** #0b1220, 而背景矩形也是同一个颜色 ⇒ 看不出图片边界, 只有内容在长大。
+        # 加载图: **铺满整屏**(cover, 见 _veil_fit) —— 和系统 presplash 一样大, 所以"系统 splash
+        # 撤掉 -> 本页接上"看不出尺寸变化; 溢出裁掉的部分是它自己的底色 #0b1220, 而背景矩形也
+        # 是同一个颜色 ⇒ 连边界都看不见。
         if self._img is not None:
             self._base_w, self._base_h = _veil_fit(self.width, self.height)
             self.tick()
