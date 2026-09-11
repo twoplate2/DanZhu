@@ -242,7 +242,20 @@ _ARC_FRAME = 0               # 物理帧计数(弧面缓动判定用; 预演/真
 LAND_K = 16.0                # 落袋横向软吸附刚度
 LAND_DAMP = 0.80             # 落袋横向阻尼
 LAND_E = 0.42                # 落袋地板恢复系数: 0.42→弹3~4次逐渐停住, 视觉明显
-LAND_BOUNCE_MIN_VY = 220.0   # 落地最低初速: 低于此值就补到这么多, 保证每次都有可见回弹
+LAND_BOUNCE_MIN_VY = 440.0   # 落地"撞击速度"保底 —— ⚠️ 是**撞击**速度不是回弹速度:
+                             # 回弹 = 撞击 × LAND_E(0.42), 所以 440 → 回弹 185 → apex≈17px。
+                             # 旧值 220 是把它当回弹速度写的, 实际只弹起 ~4px(肉眼看不见),
+                             # 实测 74% 的落袋就是那样。用户 2026-09-11 定稿: "落地必须弹跳下,
+                             # 真跳和假跳都可以" → 保底提到 440。
+                             # ⚠️ 440 是**按最坏随机**倒推的: 撞击先 ×JITTER[0]=0.85, 回弹再
+                             #    ×DECAY_JITTER[0]=0.92 ⇒ 0.85×0.92×0.42×440 = 144 → apex 10.4px,
+                             #    刚好压在"看得见(>=10px)"上。调低这个数就等于让一部分落袋
+                             #    弹不起来 —— selftest (2e) 与 fx_probe [17] 都按这条公式钉着。
+LAND_BOUNCE_JITTER = (0.85, 1.15)   # 落地撞击速度的随机系数(用户定稿: 高度不要固定, 每发
+                                    # 不一样)。乘在 max(真实下落速度, 保底) 上, 所以落得越快
+                                    # 弹得越高、同时每发都有随机差异。apex ∝ 系数² → 变化 1.4 倍
+LAND_BOUNCE_DECAY_JITTER = (0.92, 1.08)   # 每次触地回弹的 ±8% 随机(原来写死在两处 GUI 的
+                                          # 回弹行里; 提成常数是为了让门禁能按最坏情况倒推)
 LAND_BOUNCE_MAX_VY = 220.0   # 落地回弹vy上限(删SLOT_BRAKE后替代防穿帮): 反弹apex≤24px,
                              # 球顶恰=隔板顶DIV_TOP=606不越板。刹车的唯一合法用途(限冲击防弹飞)
                              # 该用一次性冲击上限实现, 而非全程每帧减速
@@ -608,6 +621,20 @@ def physics_step(b, geo, dt):
         b.x += b.vx * sub
         b.y += b.vy * sub
         for w in geo["walls"]:
+            # ⚠️ 地板不是墙, 而是落袋边界(见下面落袋判据)。以前这里把 (0, FLOOR, CW, CH) 当
+            # 普通弹性墙撞: 球在"被判定落袋"的同一子步里先被它以 WALL_E=0.5 弹成向上(实测首触
+            # vy = -295~-312), 而这条路径**没有 LAND_BOUNCE_MAX_VY 上限**。两个后果:
+            #   ① GUI 的飞行循环是"每轮覆盖 landed", 落袋那一帧只要还有第二个物理步, 球就已经
+            #      飞离地板线、那一步返回 None ⇒ 这次落袋被整帧吞掉(横速没清零、没切 landing、
+            #      没结算), 球斜着弹过隔板顶落进隔壁槽 —— 玩家 2026-09-11 第三次报的那个 bug
+            #      "弹珠落入1个倍率槽之后跑到其他槽位去了, 弹跳的高度比较高而且是斜着的"。
+            #   ② 真正的下落速度被这一弹吃掉, 落地那一下反而弹不起来(实测 74% 只弹 4px)。
+            # 跳过它 ⇒ 球带着真实下落速度落袋, 弹跳高度和"落下来的速度"挂钩(用户要的),
+            # 而且落袋判定不再受"这一步有没有撞到地板墙"这个偶然影响。
+            # ⚠️ 跳过是**槽号无关**的: 该矩形的碰撞法线恒为竖直(cx=clamp(b.x,0,CW)=b.x ⇒ dx=0),
+            #    它从来没有改过 b.x —— 只改 vy 和 y。所以落格分布一位不变。
+            if w[1] == FLOOR:
+                continue
             _collide_rect(b, w[0], w[1], w[2], w[3], WALL_E, EV_WALL)
         for s in geo["deflectors"]:
             _collide_arc(b, s[0], s[1], s[2], s[3], _ARC_FRAME)  # 缓动带球: 贴轨转向, 静音接触
@@ -615,6 +642,18 @@ def physics_step(b, geo, dt):
         for d in geo["dividers"]:
             _collide_rect(b, d[0], d[1], d[2], d[3], E, EV_DIV)
         if b.y + BALL_R >= FLOOR - 0.5:
+            # 落袋 = 终态(2026-09-11 用户定稿): 就地钉住横速 + 贴地。
+            # ⚠️ 这里**只清 vx, 保留 vy**:
+            #   - 清 vx 让"结算槽 == 落格槽"成为**结构性不变量** —— 之后不管哪个调用方再推进
+            #     这颗球, 球心 x 都不会再动, 返回的槽号恒等于第一次落袋的那个。GUI 的累加器
+            #     循环是"每轮覆盖 landed"(落袋那一帧只要还有第二个物理步就会把 landed 冲成
+            #     None 并跳过整个落袋分支), 靠调用方写对是历史事故的来源; 做成不变量才治本。
+            #     实测: 只加这一处, 帧间隔 0.5s(一帧 30 个物理步)下 150 发零错槽; 未加时 8/150。
+            #   - 保留 vy 是为了落地那一下还能弹起来(回弹 = 撞击速度 × LAND_E), 见 LAND_BOUNCE_MIN_VY。
+            #   - 贴地是把落袋位置规范化: 判据本身是 FLOOR-0.5, 不夹的话球可能停在半像素偏上,
+            #     也可能(被地板墙推过)偏下, 视觉上不稳定。
+            b.y = FLOOR - BALL_R
+            b.vx = 0.0
             i = int((b.x - FIELD_L) / SLOT_W)
             return max(0, min(NUM_SLOTS - 1, i))
     return None
@@ -2094,6 +2133,74 @@ def selftest(n=40000):
     ok = ok and stuck == 0 and no_top == 0 and no_enter == 0
     print("  升过通道顶失败: %d/%d   越顶入场失败: %d/%d   卡死: %d" %
           (no_top, m, no_enter, m, stuck))
+
+    # (2c) 落袋即终态(2026-09-11 加)。玩家报过三次「弹珠落入1个倍率槽之后跑到其他槽位去了,
+    #      弹跳的高度比较高, 而且是斜着的」—— 根因在**出货路径**上, 不在物理:
+    #      GUI 的飞行循环是"累加器 + 每轮覆盖 landed", 落袋那一帧只要还有第二个物理步, 球就
+    #      已经飞离地板线、那一步返回 None ⇒ landed 被冲成 None ⇒ **整个落袋分支被跳过**
+    #      (横速没清零、没切 landing、没结算), 球带着横速弹过隔板顶落进隔壁槽。
+    #      ⚠️ 上面 (2) 的循环是"逐物理步 break", **永远构造不出这个场景** —— 这正是它活到
+    #      今天的原因(门禁验一套语义、出货跑另一套)。所以这里不去复制循环, 改成断言一个
+    #      **与调用方无关的不变量**: 落袋之后再推进, 槽号与球心 x 都不许变。这样任何循环
+    #      形状都伤不到结算, 而且测的是 physics_step 本身(出货代码)。
+    #      ⚠️ 只跑正常帧率测不出东西: 这条不变量与帧率无关, 任何时候都该成立。
+    print("== 落袋终态(落袋后再推进 30 步, 槽号与球心 x 不许变) ==")
+    pin_n = 300
+    pin_bad = 0
+    for _k in range(pin_n):
+        _b = launch_ball(MISFIRE_POWER + (1.0 - MISFIRE_POWER) * (_k / (pin_n - 1.0)),
+                         rng=random.Random(20260911 + _k))
+        _r0 = None
+        for _ in range(4000):
+            _r0 = advance_flight(_b, geo)
+            if _r0 is not None:
+                break
+        if _r0 is None:
+            pin_bad += 1                     # 4000 步还不落袋 = 卡死, 也算失败
+            continue
+        _x0 = _b.x
+        for _ in range(30):
+            _r1 = advance_flight(_b, geo)
+            if _r1 is not None and (_r1 != _r0 or abs(_b.x - _x0) > 0.5):
+                pin_bad += 1
+                break
+    ok = ok and pin_bad == 0
+    print("  落袋后槽号/位置变了: %d/%d  %s"
+          % (pin_bad, pin_n, "OK" if pin_bad == 0 else "穿帮!"))
+
+    # (2d) 落袋时球仍在下落(真实下落速度必须活到那一刻)。
+    #      地板矩形 (0, FLOOR, CW, CH) 以前是当普通弹性墙撞的, 球在"被判定落袋"的同一子步里
+    #      先被它以 WALL_E=0.5 弹成向上 —— 实测未修时 61% 的落袋 vy<0。两个后果: 结算槽受
+    #      "这一步有没有撞到地板墙"这个偶然影响; 落地那一下反而弹不起来(设计要的可见回弹被
+    #      抹掉四分之三)。修完应当**几乎全部**落袋时仍在下落。
+    print("== 落袋时仍在下落(地板不吃掉真实下落速度) ==")
+    down_bad = 0
+    for _k in range(300):
+        _b = launch_ball(MISFIRE_POWER + (1.0 - MISFIRE_POWER) * (_k / 299.0),
+                         rng=random.Random(20260912 + _k))
+        for _ in range(4000):
+            if advance_flight(_b, geo) is not None:
+                break
+        if _b.vy <= 0.0:
+            down_bad += 1
+    _down_ok = down_bad <= 15               # <=5%: 被隔板底面顶起来的极少数是合理的
+    ok = ok and _down_ok
+    print("  落袋时不在下落: %d/300  %s" % (down_bad, "OK" if _down_ok else "地板把速度吃了!"))
+
+    # (2e) 落地必弹(用户 2026-09-11 定稿: "落地的时候必须弹跳下, 真跳和假跳都可以, 高度别太
+    #      固定")。这里钉的是**常数之间的关系**: 保底的撞击速度乘 LAND_E 得到的最小回弹,
+    #      换算成 apex 必须 >= 10px(可见口径, 与碰钉弹高门禁同尺); 上限必须 <= 45px 且球顶
+    #      不越隔板顶。真正的落地循环在 GUI 里(plinko.py 与 android_part_ui.py 各一份),
+    #      由 tools/fx_probe.py 的落地弹跳门禁兜。
+    _apex_lo = (LAND_BOUNCE_MIN_VY * LAND_BOUNCE_JITTER[0] * LAND_E
+                * LAND_BOUNCE_DECAY_JITTER[0]) ** 2 / (2.0 * G)
+    _apex_hi = LAND_BOUNCE_MAX_VY ** 2 / (2.0 * G)
+    _clear_ok = _apex_hi <= (FLOOR - BALL_R) - DIV_TOP + BALL_R
+    _b_ok = _apex_lo >= 10.0 and _apex_hi <= 45.0 and _clear_ok
+    ok = ok and _b_ok
+    print("== 落地必弹(保底撞击速度换算的 apex) ==")
+    print("  最低 apex %.1fpx (>=10 才看得见)   最高 apex %.1fpx (<=45 且球顶不越隔板顶)  %s"
+          % (_apex_lo, _apex_hi, "OK" if _b_ok else "弹不起来/弹太飞!"))
 
     # (2b) 哑火: 力度 < MISFIRE_POWER 时球照样弹出去, 但必须升不过隔墙顶并原路掉回柱塞
     print("== 哑火(发射了但升不过隔墙顶) ==")
@@ -6199,6 +6306,14 @@ class RootWidget(BoxLayout):
                             tick_amp[bit] = spd
                     b.events = 0
                     b.amp.clear()
+                if landed is not None:
+                    # 落袋即本例终态: 这一帧剩下的物理步不再推进这颗球。
+                    # ⚠️ 与 PC 版 plinko.py 的 _frame 同因同解。第一道保险在 physics_step 的
+                    # 落袋返回处(清 vx + 贴地), 已经让"结算槽==落格槽"成为结构性不变量; 这一道
+                    # 管的是**别的事**: 少了它, 球落袋后还会被继续模拟(实测越槽局多飞
+                    # 0.68~1.27s), 结算时刻/槽位白闪/装杯/揭晓全部随帧率漂, 状态栏这段时间还
+                    # 打着"即将入袋…"。也与 --selftest 的"逐物理步 break"口径对齐。
+                    break
             if not self._crossed and b.x < FIELD_R and b.y < LANE_WALL_TOP:
                 self._crossed = True
             elif self._crossed and not self._risen and b.y > RISER_Y:
@@ -6277,8 +6392,12 @@ class RootWidget(BoxLayout):
             b = self.ball
             if self._landing_primed:
                 self._landing_primed = False
+                # 落地必须弹一下(用户 2026-09-11 定稿: "真跳和假跳都可以, 高度别太固定"):
+                # 撞击速度 = max(球真实下落速度, 保底) × 随机系数 —— 落得越快弹得越高,
+                # 同时每一发高度都不一样。回弹 = 撞击 × LAND_E, 上限 LAND_BOUNCE_MAX_VY。
                 if b.vy < LAND_BOUNCE_MIN_VY:
-                    b.vy = LAND_BOUNCE_MIN_VY + random.uniform(-30, 30)
+                    b.vy = LAND_BOUNCE_MIN_VY
+                b.vy *= random.uniform(*LAND_BOUNCE_JITTER)
             self._accumulator += dt
             floor_y = FLOOR - BALL_R
             while self._accumulator >= FIXED_DT:
@@ -6294,9 +6413,12 @@ class RootWidget(BoxLayout):
                     if b.vy > 0:
                         if b.vy > 60.0:
                             self.sfx.play("bounce", clamp(b.vy / 500.0, 0.3, 1.0), 0.05)
-                        b.vy = -b.vy * LAND_E * random.uniform(0.92, 1.08)
+                        b.vy = -b.vy * LAND_E * random.uniform(*LAND_BOUNCE_DECAY_JITTER)
                         if b.vy < -LAND_BOUNCE_MAX_VY:     # 回弹vy上限(删刹车后防弹越隔板)
-                            b.vy = -LAND_BOUNCE_MAX_VY
+                            # apex≤24px, 球顶恰=隔板顶, 不穿帮。⚠️ 顶到上限时**也要随机**(取
+                            # JITTER 的下半段): 否则所有"落得快"的球都停在同一个 24.2px,
+                            # 一眼看出是套路(用户定稿: 高度别太固定)。
+                            b.vy = -LAND_BOUNCE_MAX_VY * random.uniform(LAND_BOUNCE_JITTER[0], 1.0)
             if (abs(b.x - self.land_target_x) < SLOT_W * 0.45 and abs(b.vy) < 10.0
                     and b.y >= floor_y - 0.5):
                 b.vx = 0.0
