@@ -1650,31 +1650,50 @@ class _SoundPoolOut:
                 .build())
 
     def _register_noisy_receiver(self):
-        """拔耳机 → 系统发 ACTION_AUDIO_BECOMING_NOISY → 重建 SoundPool 恢复扬声器路由。
-        耳机拔出时底层音频流被系统断开(stream disconnected), 不重建就永久无声, 只能重启。
+        """路由一变就重建 SoundPool:
+        - **拔**耳机 → ACTION_AUDIO_BECOMING_NOISY → 回扬声器。耳机拔出时底层音频流被系统
+          断开(stream disconnected), 不重建就永久无声, 只能重启。
+        - **插**耳机 → ACTION_HEADSET_PLUG → 回耳机。玩家 2026-09-11 报的必然复现 bug:
+          「玩的时候插耳机, 耳机里没声音; 关掉 app 再打开, 耳机就有声音了」。
+          ⚠️ 根因: SoundPool 的输出路由是**建流那一刻**定下的, 建在扬声器上就一直往扬声器
+          送, 系统插耳机的事件不会把它搬过去。重启 app = 重新建流 = 跟着当前设备走, 所以
+          "重启就好"。修法就是插耳机时把 SoundPool 重建一次(和拔耳机同一条路)。
+        ⚠️ ACTION_HEADSET_PLUG 是 **sticky** 广播 —— registerReceiver 会立刻回放"当前状态"。
+          所以必须记下初值、只在**状态真的变了**时才重建, 否则每次启动都白重建一次
+          (那一瞬间 sample 还没 load 完, 会丢音)。
         receiver 存到 self._receiver 保活, 防被 GC(OnLoadCompleteListener 的前车之鉴)。"""
         try:
             from jnius import autoclass, PythonJavaClass, java_method
             PythonActivity = autoclass('org.kivy.android.PythonActivity')
             AudioManager = autoclass('android.media.AudioManager')
             IntentFilter = autoclass('android.content.IntentFilter')
+            _plug_action = str(AudioManager.ACTION_HEADSET_PLUG)
 
-            class _NoisyReceiver(PythonJavaClass):
+            class _RouteReceiver(PythonJavaClass):
                 __javainterfaces__ = ['android/content/BroadcastReceiver']
                 __javacontext__ = 'app'
 
                 def __init__(self, cb):
                     super().__init__()
                     self.cb = cb
+                    self._plugged = None          # None = 还没收到过插拔状态
 
                 @java_method('(Landroid/content/Context;Landroid/content/Intent;)V')
                 def onReceive(self, context, intent):
+                    try:
+                        if str(intent.getAction()) == _plug_action:
+                            st = intent.getIntExtra("state", -1)
+                            if st == self._plugged:
+                                return            # sticky 回放(启动那一次)/无关抖动: 不动
+                            self._plugged = st
+                    except Exception:
+                        pass
                     self.cb()
 
-            self._receiver = _NoisyReceiver(self._rebuild)
-            PythonActivity.mActivity.registerReceiver(
-                self._receiver,
-                IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+            self._receiver = _RouteReceiver(self._rebuild)
+            flt = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+            flt.addAction(AudioManager.ACTION_HEADSET_PLUG)
+            PythonActivity.mActivity.registerReceiver(self._receiver, flt)
         except Exception:
             self._receiver = None
 

@@ -355,7 +355,10 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   调用方循环形状无关的结构性不变量); ②两个 GUI 的飞行循环落袋即 break。另外地板矩形不再
 #   被当弹性墙撞(它会把真实下落速度弹掉), 并让落地必弹(保底撞击速度 220->440 + 随机系数,
 #   旧值实际只弹 4px)。落格分布逐发零变化(3000 发比对), 补 3 条 selftest 门禁 + fx_probe[17]。
-version = 0.6.7
+# 0.6.8(2026-09-11): 修「玩的时候插耳机, 耳机里没声音(关掉 app 重开才有)」—— SoundPool 的输出路由
+#   是建流那一刻定下的, 插耳机不会搬过去。加了 ACTION_HEADSET_PLUG 监听, 插耳机也重建一次
+#   (原来只处理拔耳机的 ACTION_AUDIO_BECOMING_NOISY)。
+version = 0.6.8
 
 requirements = python3,kivy==2.3.0,pyjnius
 
