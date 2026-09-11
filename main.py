@@ -5578,7 +5578,7 @@ class RootWidget(BoxLayout):
         self.plays = 0
         self.hits = 0
         self.rtp_target = 0.80
-        self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.60, 10.0, 20.0, 50.0)}   # 各档盘面一起生成, 切换不刷新
+        self._boards = {r: roll_multipliers(r) for r in self._all_rtp()}   # 各档盘面一起生成, 切换不刷新
         self.multipliers = self._boards[self.rtp_target]
         # 声音两态: on(音效已开, 含语音播报, 默认) | off(音效已关)。
         # **不持久化** —— 不进配置文件, 每次启动都是 on(用户定稿)。
@@ -6890,10 +6890,21 @@ class RootWidget(BoxLayout):
             # _frame 的 try/except 是静默的, 这里不留痕的话"数字永不出现"会查无对证
             print("REVEAL FAIL: %s: %s" % (type(exc).__name__, exc))
 
+    def _all_rtp(self):
+        """所有档位(常驻 + 彩蛋) —— **唯一真源**, 别在各处再手写一份元组。
+
+        ⚠️ 这里是真的踩过坑(2026-09-12 线上闪退): `_boards` 的初始化 和 `park_ball` 的
+        重刷**各写了一份手抄档位列表**, 加彩蛋档时只改到其中一处 —— 另一处漏掉之后,
+        切到 2000%/5000% 再发射一次, `self._boards[self.rtp_target]` 就抛 KeyError 闪退。
+        1000% 当时没事, 纯粹因为它早就在那行手抄列表里。凡"同一份清单出现在两处"必出事。
+        """
+        return (tuple(v for _l, v in self.RTP_TIERS)
+                + tuple(v for _l, v in self.RTP_HIDDEN))
+
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
         if reroll:
-            self._boards = {r: roll_multipliers(r) for r in (0.80, 1.20, 2.00, 3.60, 10.0)}   # 重新发射: 4档盘面一起刷新
+            self._boards = {r: roll_multipliers(r) for r in self._all_rtp()}   # 各档盘面一起刷新
             self.multipliers = self._boards[self.rtp_target]
             self.game_area._redraw()
         else:
