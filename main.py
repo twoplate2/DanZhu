@@ -5093,6 +5093,50 @@ class GameArea(FloatLayout):
                 shadow.center = (e["cx"] + 2, e["cy"] + rise - 2)
 
 
+def _app_version():
+    """本包版本号(如 "v0.6.30"); 拿不到返回 ""。
+
+    ⚠️ 两个来源, **都不是在这里另抄一份常数**:
+      - 安卓: PackageManager 的 versionName(就是 buildozer.spec 的 version);
+      - 桌面: 直接读 main.py 旁边的 `buildozer.spec` —— 出货打包用的就是同一个文件。
+    (玩家 2026-09-11: 「我在pc上也需要知道版本号」。)"""
+    try:
+        if platform == 'android':
+            from jnius import autoclass
+            act = autoclass('org.kivy.android.PythonActivity').mActivity
+            pi = act.getPackageManager().getPackageInfo(act.getPackageName(), 0)
+            if pi.versionName:
+                return 'v%s' % pi.versionName
+    except Exception:
+        pass
+    try:
+        import os
+        import re as _re
+        _spec = os.path.join(os.path.dirname(os.path.abspath(__file__)), "buildozer.spec")
+        with open(_spec, "r", encoding="utf-8", errors="ignore") as _f:
+            for _line in _f:
+                _m = _re.match(r"\s*version\s*=\s*(\S+)", _line)
+                if _m:
+                    return "v%s" % _m.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+def _startup_title():
+    """「启动信息」那个弹窗的**标题**。玩家 2026-09-11 定稿:
+    「启动信息调整  从启动信息改为 跳跳的弹珠机v0.x.x」。
+
+    ⚠️ 版本号**全工程只在这里出现一次** —— 玩家同时要求「去掉其他地方的版本号」, 原先正文里
+    那行 `v0.6.30 · 于 … 制作` 的版本前缀已经删掉, 只留制作时刻(见 `_build_info`)。
+    拿不到版本时退化成纯游戏名, 不留一个孤零零的 "v"。"""
+    try:
+        v = _app_version()
+    except Exception:
+        v = ""
+    return ("跳跳的弹珠机%s" % v) if v else "跳跳的弹珠机"
+
+
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
 
@@ -5614,7 +5658,9 @@ class RootWidget(BoxLayout):
         裁掉, 玩家看到的是一句缺尾巴的话(见 v0.6.12)。
         ⚠️ 纯只读 —— 这个弹窗**不许**放任何会动音频栈或游戏状态的按钮(那是"绝不软锁"的前提)。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
-        title_lbl = Label(text='启动信息', font_size='20sp', bold=True, halign='center',
+        # 玩家 2026-09-11 定稿: 标题从「启动信息」改成 **跳跳的弹珠机v0.x.x**(见 _startup_title)。
+        # 版本号全工程只在这里出现一次, 正文那行只剩制作时刻。
+        title_lbl = Label(text=_startup_title(), font_size='20sp', bold=True, halign='center',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
         title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(title_lbl)
@@ -5840,9 +5886,11 @@ class RootWidget(BoxLayout):
         return '%s / %s / Python %s' % (pf.node(), pf.system(), pf.python_version())
 
     def _build_info(self):
-        """这个包是**哪个版本、什么时候做出来的** —— 长按标题那两个弹窗里显示一行。
+        """这个包是**什么时候做出来的** —— 长按标题那两个弹窗里显示一行。
 
-        版本走 Android 的 PackageManager(它的 versionName 就是 buildozer.spec 的 version);
+        ⚠️ **版本号不在这儿**: 玩家 2026-09-11 定稿把它挪进了弹窗标题(见 `_startup_title`),
+        同时要求「去掉其他地方的版本号」—— 这里只剩制作时刻。
+
         日期取 `main.py` 的文件 mtime。
 
         ⚠️ **为什么不把日期烘成源码常量**: `tools/build_android_main.py` 是纯字符串拼接、
@@ -5857,33 +5905,6 @@ class RootWidget(BoxLayout):
         一行信息, 不值得为它冒任何风险。
         """
         parts = []
-        if platform == 'android':
-            try:
-                from jnius import autoclass
-                act = autoclass('org.kivy.android.PythonActivity').mActivity
-                pi = act.getPackageManager().getPackageInfo(act.getPackageName(), 0)
-                if pi.versionName:
-                    parts.append('v%s' % pi.versionName)
-            except Exception:
-                pass
-        # ⚠️ PC 上没有 PackageManager —— 但 `buildozer.spec` 就躺在 main.py 旁边, **直接读它**。
-        #    读的是**出货打包时用的同一个文件**, 不是在这里再抄一份版本号(抄的那份早晚忘改)。
-        #    安卓上 buildozer.spec 不进 APK、open 会失败, 而那时上面的分支已经把版本填好了,
-        #    所以这里用 `if not parts:` 兜底, 两边互不干扰。
-        #    (玩家 2026-09-11: 「我在pc上也需要知道版本号 也需要知道那几个时间 别tmd自作主张」。)
-        if not parts:
-            try:
-                import re as _re
-                _spec = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                     "buildozer.spec")
-                with open(_spec, "r", encoding="utf-8", errors="ignore") as _f:
-                    for _line in _f:
-                        _m = _re.match(r"\s*version\s*=\s*(\S+)", _line)
-                        if _m:
-                            parts.append("v%s" % _m.group(1))
-                            break
-            except Exception:
-                pass
         try:
             t = os.path.getmtime(os.path.abspath(__file__))
             # 1600000000 = 2020-09; 再过掉"未来时间"(设备时钟不对时会取到), 免得显示怪日期

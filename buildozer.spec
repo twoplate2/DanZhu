@@ -489,7 +489,15 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   ③ PC 上补「音效等待 0 ms」一行。winmm 没有 probe_all、`_await_ready` 见到就放行, 所以这个 0
 #      是**真的**(PC 上根本不存在"等解码"这件事), 耗时全在上一行的「冷启动 XXXX ms」里。
 #   fx_probe: PC 那两条断言从"三项都不出现"改成"必须有那几个时间"; [13] 的版本号从可选变必选。
-version = 0.6.30
+# 0.6.31(2026-09-11): 「启动信息」弹窗改标题。玩家定稿: 「启动信息调整  从启动信息改为
+#   跳跳的弹珠机v0.x.x」+「去掉其他地方的版本号」。
+#   ① 标题: 「启动信息」 -> **跳跳的弹珠机v0.6.31**(新增 `_startup_title()` 与 `_app_version()`)。
+#   ② 正文那行只剩制作时刻(「于 2026年09月11日 16:14 制作」)—— 原来的版本前缀删掉。
+#      **版本号全工程只在标题出现一次**, 来源不变(安卓走 PackageManager, PC 读 buildozer.spec),
+#      不另抄一份常数。
+#   fx_probe [13]: 正文行从"版本可选"改成"**不许出现版本**", 并新增一条钉标题格式
+#   (^跳跳的弹珠机v\d)。
+version = 0.6.31
 
 requirements = python3,kivy==2.3.0,pyjnius
 
