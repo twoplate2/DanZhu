@@ -307,6 +307,9 @@ COL_BTN = "#3563d1"
 COL_BTN_HOVER = "#4a78ea"
 COL_BTN_OFF = "#26324f"
 COL_FIRE = "#e0533b"
+COL_DARKRED = "#8f3a2e"        # 暗砖红(安卓隐藏档弹窗的"确定"按钮): 深蓝紫底上够沉, 白字够清
+                               # ⚠️ 不复用 COL_FIRE(偏亮偏橙, 且已是"蓄力发射"按钮的颜色),
+                               #    也不用 COL_x[10](那是槽位倍率色体系, 语义不同)。
 COL_GREEN = "#39d98a"
 COL_GRAY = "#5a6a8c"
 COL_METER = "#f0b000"
@@ -6742,7 +6745,7 @@ class RootWidget(BoxLayout):
             # (它只看坐标) —— 弹窗开着时再长按会叠出第二个。闸门开在"建弹窗"这一端。
             return
         content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(8))
-        tip = Label(text='（不保存 —— 重新打开游戏要重新解锁）',
+        tip = Label(text='（重启游戏后隐藏返还率失效，需重新激活）',
                     font_size='13sp', halign='center', valign='middle',
                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
         tip.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
@@ -6775,7 +6778,7 @@ class RootWidget(BoxLayout):
         _restyle()                                   # 建完立刻上默认高亮
 
         ok_btn = Button(text='确定', font_size='16sp', bold=True, background_normal='',
-                        background_down='', background_color=hex_rgb(COL_GREEN) + (1,),
+                        background_down='', background_color=hex_rgb(COL_DARKRED) + (1,),
                         size_hint_y=None, height=dp(48))
         content.add_widget(ok_btn)
         # 尺寸 0.92 / h_dp=250 是**量出来的**(不是拍的): Kivy 的 Popup 外壳还有一层 12dp
