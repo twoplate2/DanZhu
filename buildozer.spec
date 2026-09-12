@@ -984,7 +984,23 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #       本该是 idle"被残值误判成 FAIL。补一句 `_abort()` 清理。
 #     实测修复后: s8/s9/s9b 全部 `state=ready`、`bench-win: cup=idle busy=False`、零 FAIL。
 #   四道门禁全绿(--check / fx_probe / --selftest / --smoke)。
-version = 0.6.53
+# 【v0.6.54 注释去谎 + 死字段清理】v0.6.53 的收尾, **零行为改动**:
+#   ① 文件头的红线 3「绝不软锁」现在是半个谎 —— 它写"任何异常路径都必须回到 idle", 而
+#      result 段(装满静止)**故意没有时间兜底**。改成"出口分两种": pending/win 走
+#      FX_MAX_SEC 兜底; result 走玩家点击(request_close)。并写明"谁要给它加超时, 先问玩家"。
+#   ② `_on_easter_settled` 那句"(轮询有上界: win_fx 自己有 FX_MAX_SEC=9s 硬兜底, 不会空转)"
+#      —— **现在是假的**(result 段没有时间兜底 ⇒ 轮询没有算术上界)。改成真话, 并写明
+#      "别改成'到点自己弹', 那会让弹窗盖在**还立着的杯子**上"。
+#   ③ `_frame` landed 分支的"硬兜底…不会锁死"补上"**只覆盖落珠期**; 装满后的出口是玩家点击"。
+#   ④ `expected_sec` 的 docstring 说"给 _result_until **和兜底 deadline** 用" —— 后半句早
+#      就过时了(兜底 deadline 现在走 reveal_at())。改成"只给 _result_until", 写明它算的是
+#      "**最短**上屏时长"(结果段可以无限长), 并记一个**既有缺陷**: settle() 调它的时刻早于
+#      play_win(后者被 CUP_TRIGGER_DELAY 延后调度) ⇒ 线上实际走估算分支。顺手把那句已被
+#      证伪的"调用顺序有保证"删掉(它自 CUP_TRIGGER_DELAY 引入起就不成立了)。
+#   ⑤ 删掉死字段 `self._hold`: 退场改由点击触发之后它**只剩写入、零读取**(最后一处读取在
+#      v0.6.53 的 auto_close 支路里, 改用 HOLD_BASE 常量)。
+#   零行为改动, 四道门禁全绿(--check / fx_probe / --selftest / --smoke 零 FAIL)。
+version = 0.6.54
 
 
 

@@ -3498,8 +3498,13 @@ _PILE_BAKED = {
 #   2. 时基一律 time.time() 绝对值, 不新增 Clock.schedule_interval。Kivy 的 Clock 在切
 #      后台时会停/跳, 用绝对时基的话"切回来动画直接跳终态"而不是卡住, 顺带绕开
 #      BUILD_APK.md §3.23 的"Clock 回调零参签名真机必闪退"红线。
-#   3. 绝不软锁 —— busy() 有 FX_MAX_SEC 硬兜底, 任何异常路径都必须回到 idle, 否则
-#      park_ball 永不执行, 玩家只能杀进程。
+#   3. 绝不软锁 —— 但"出口"现在分两种, 别混:
+#        · pending / win(进场 + 落珠): 玩家没有话语权 ⇒ `busy()` 有 FX_MAX_SEC 硬兜底,
+#          超时无条件放手(`_abort`, 画面当场清掉)。
+#        · result(杯子装满后): 出口是**玩家的点击**(`request_close`, 挂在 Window 级触摸
+#          观察者上, 每一下必到)。这一段**故意没有任何时间兜底** —— 玩家 2026-09-12 定稿
+#          "不点就一直在", 任何定时退场都是产品违约(也会让切后台回来那一帧把杯子擦掉)。
+#          谁要给它加超时, 先回去问玩家。
 #
 # 坐标系(踩过的坑, 别再猜): Kivy 子控件的 canvas **就是绝对(窗口)坐标**, 父级不会给
 #   子控件做平移 —— 已用像素实测确认(Rectangle 画在子控件 canvas 的 (0,0) 落在窗口原点,
@@ -4128,7 +4133,6 @@ class WinPileFX(Widget):
         self._rain_shift = 0.0            # 本局雨的整场前移量(见 RAIN_ANCHOR), expected_sec 要用
         self._last_touch = 0.0            # 最后一颗球**第一次触地**(相对 _t0) —— 揭晓基准
         self._last_settle = 0.0           # 最后一颗球**回弹停住**(相对 _t0) —— 退场计时用
-        self._hold = HOLD_BASE            # 本局"装满后静止"时长(play_win 按倍率重设)
         self._done_fired = False          # 揭晓是否已放出去(它比退场早, 要各自触发一次)
         self._settled_at = 0.0
         self._deadline = 0.0
@@ -4222,17 +4226,23 @@ class WinPileFX(Widget):
         return self._t0 + self._last_touch + REVEAL_DELAY
 
     def expected_sec(self, multiplier):
-        """本档预计总时长(秒)。给 RootWidget 延长 _result_until 和兜底 deadline 用。
+        """本档预计总时长(秒)。给 RootWidget 延长 _result_until(语音抑制窗口)用。
 
-        ⚠️ 以前这里按 FALL_MAX 估, 注释写着"是 T 的上界" —— **那句不成立**:
-        _make_balls 给每颗球的落袋时长带了 ×u(0.88,1.12) 的随机, 可以超过 FALL_MAX。
-        实测 2000 局/档, x100 有 3.9%、x50 有 1.6% 的局里 est < 真实总时长(最大超出 3.4%)。
-        后果是兜底 deadline 会在最后一颗球落定**之前**触发 -> 大字/余额/语音提前冒出来,
-        正是当初把揭晓挪到 T 想消灭的"数字提前剧透", 只是概率低没人发现。
-        现在直接读 **本局真实的球数据**(play_win 已经把 _make_balls 跑完了, 调用顺序有保证:
-        ui 的 settle 是 play_win -> expected_sec, fx_probe 也是先 _make_balls 再算)。
-        b["end"] 已经是前移过的值, 所以**不要**在这里再减一次 _rain_shift。
+        ⚠️ 它算的是"**最短**上屏时长" = 进场 + 落定 + HOLD_BASE + RESULT_FADE, 不再是
+           整场时长 —— 2026-09-12 起退场由**玩家点击**触发(result 段可以无限长)。
+           唯一消费者是 `_result_until`, 作用是"别让 set_bet/set_rtp 的 UI 语音插嘴";
+           而那段里按钮本来就是 disabled + 输入锁定, 所以窗口长短不影响正确性。
+        ⚠️ 另注(既有缺陷, 不是本次引入): `settle()` 里调 expected_sec 的时刻**早于**
+           play_win(后者被 CUP_TRIGGER_DELAY=0.15s 延后调度) ⇒ 线上实际走的是下面那个
+           **估算**分支, 不是"本局真实球数据"。要修是把 _result_until 的赋值挪进
+           _start_cup, 属于另一个改动 —— 别在这上面加"必须读真实球"的新假设。
         """
+        # ⚠️ 以前这里按 FALL_MAX 估, 注释写着"是 T 的上界" —— **那句不成立**:
+        # _make_balls 给每颗球的落袋时长带了 x u(0.88,1.12) 的随机, 可以超过 FALL_MAX。
+        # 实测 2000 局/档, x100 有 3.9%、x50 有 1.6% 的局里 est < 真实总时长(最大超出 3.4%)。
+        # 后果是兜底 deadline 会在最后一颗球落定**之前**触发 -> 大字/余额/语音提前冒出来,
+        # 正是当初把揭晓挪到 T 想消灭的"数字提前剧透", 只是概率低没人发现。
+        # b["end"] 已经是前移过的值, 所以**不要**在这里再减一次 _rain_shift。
         n = max(1, int(multiplier))
         if self._balls:
             # 整场时长按"退场起点"(最后一颗回弹停住)算, 不是揭晓那个(第一次触地)——
@@ -4269,7 +4279,6 @@ class WinPileFX(Widget):
         try:
             self._value = bet if bet in BET_COLORS else DEFAULT_BET
             self._seq += 1
-            self._hold = hold_for(multiplier)      # 现在恒 = HOLD_BASE(最短停留), 见 hold_for
             self._make_balls(multiplier, self._value, self._seq)
         except Exception as exc:               # build_pile 的断言/任何意外
             print("CUP-PILE FAIL: %s" % exc)
@@ -4484,7 +4493,7 @@ class WinPileFX(Widget):
             # 退场**不再自动** —— 等玩家点击(见 request_close)。**跑分期间例外**: 跑分是
             # 自动连续发射的, 等人点击会把整轮跑分卡死(玩家 2026-09-12 定稿), 那一路仍到点自己走。
             if (not self._closing_at and self._auto_close
-                    and now >= self._settled_at + self._hold):
+                    and now >= self._settled_at + HOLD_BASE):
                 self._closing_at = now
             if self._closing_at and now >= self._closing_at + RESULT_FADE:
                 self.mode = "idle"
@@ -7208,7 +7217,10 @@ class RootWidget(BoxLayout):
         # ⚠️ 这个回调挂在"最后一颗球**第一次触地**"(揭晓用), 而装杯的退场还要再跑
         # 0.6s 左右。用户定稿是"先播完装杯、全部落定再弹对话框" —— 所以这里必须等到
         # win_fx 真正回到 idle, 否则弹窗会在杯子还在淡出的时候盖上来。
-        # (轮询有上界: win_fx 自己有 FX_MAX_SEC=9s 硬兜底, 不会空转。)
+        # 出口是**玩家点击**(win_fx 的手动收尾, 见 request_close); 轮询在 FX 未 idle 期间
+        # 持续, **没有算术上界** —— 每次只做一次 id 比较 + 一次 schedule_once, 开销可忽略。
+        # 玩家一直不点, 弹窗就和他一起等。
+        # ⚠️ 别改成"到点自己弹": 那会让弹窗盖在**还立着的杯子**上。
         if self.game_area.win_fx.mode != "idle":
             Clock.schedule_once(self._on_easter_settled, 0.2)
             return
@@ -7843,9 +7855,10 @@ class RootWidget(BoxLayout):
         elif self.state == "landed":
             # 中奖玻璃杯演出期间不放行: 否则 park_ball 会在杯子播到一半时重掷盘面、
             # 恢复按钮, 杯子就盖在一个已经换过的盘面上, 玩家还能同时发下一颗。
-            # 硬兜底在 WinPileFX.busy() 里(FX_MAX_SEC 超时无条件放手), 不会锁死。
+            # 硬兜底在 WinPileFX.busy() 里 —— 但**只覆盖 pending/win**(球还在进场/下落那段)。
+            # 装满之后的出口是**玩家点击**(request_close), 那一段故意没有时间兜底。
             # _easter_hold: 彩蛋的弹窗+装杯整段(弹窗是模态的, 玩家只有"确定"一条出口,
-            # 所以这个锁不会把谁困住; 装杯那半段另有 busy() 的 9s 兜底)。
+            # 所以这个锁不会把谁困住)。
             if (time.time() - self.landed_at >= self._land_hold
                     and not self.game_area.win_fx_busy()
                     and not self._easter_hold):
