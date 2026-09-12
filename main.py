@@ -4839,6 +4839,56 @@ def slot_txt(m):
     return "#0b1220" if m >= 100 else "#ffffff"
 
 
+# ---------------- 单行自适应字号(把"太长就折行"从根上掐掉) ----------------
+# 病根: Kivy 的 Label 只有**两种**行为 —— 设了 `text_size` 就折行, 没设就溢出
+# (它不裁剪, 直接画到隔壁控件身上)。没有"缩到放得下"这一档, 而本作 HUD 上几乎每个
+# 位置都是**定宽 + 定高**的(顶栏 44dp / 信息行 26dp / 按钮 56x36), 于是:
+#   · 可用宽度取决于**设备逻辑宽度**(1200px 的机器落在 400~457dp, 桌面开发窗是 540)
+#     ⇒ 同一条字符串在桌面上不折、在手机上折;
+#   · `sp()` 还跟着系统"字体大小"(config.fontScale, 0.85~1.3)一起放大, 而盒子是 dp
+#     写死的 ⇒ 玩家把系统字体调大, 满屏折行。
+# 这里补上 Android 那套 autoSizeTextType: 量一下, 挑一个**放得下的最大字号**;
+# 实在放不下就给最小档(0.7 倍), 而不是折行。
+# ⚠️ 只在**单行**标签上用。多行正文(弹窗说明/历史列表)不能缩 —— 那会把整段字一起缩小。
+# ⚠️ 量宽度走 CoreLabel + 缓存: 只花在**文字变化**时(状态栏那几个字符串一局才变几次),
+#    不是逐帧。逐帧量会让手机掉帧。
+FIT_SCALES = (1.0, 0.94, 0.88, 0.82, 0.76, 0.70)
+_FIT_PX = {}
+
+
+def text_px(text, fs, bold=False):
+    """一段文字在字号 fs 下的**单行宽度**(px)。结果缓存。"""
+    if not text:
+        return 0.0
+    key = (text, round(fs, 2), bool(bold))
+    got = _FIT_PX.get(key)
+    if got is None:
+        try:
+            _cl = CoreLabel(text=text, font_size=fs, bold=bold, text_size=(None, None))
+            _cl.refresh()
+            got = _cl.texture.size[0]
+        except Exception:
+            got = len(text) * fs * 0.55          # 量不出来按汉字宽粗估, 绝不抛
+        if len(_FIT_PX) > 512:                   # 余额那类数字会一直变, 别让缓存无限长
+            _FIT_PX.clear()
+        _FIT_PX[key] = got
+    return got
+
+
+def fit_font_size(text, base_fs, avail_w, bold=False):
+    """挑一个"单行塞得进 avail_w"的最大字号档;**返回绝对字号(px)**。
+
+    塞不下就给最小档(FIT_SCALES[-1] = 0.7 倍)—— 宁可小一点, 也不折行/不溢出。
+    """
+    if not text or avail_w <= 1.0 or base_fs <= 0:
+        return base_fs
+    for _k in FIT_SCALES:
+        _fs = base_fs * _k
+        if text_px(text, _fs, bold) <= avail_w:
+            return _fs
+    return base_fs * FIT_SCALES[-1]
+
+
 _BALL_TEX = None
 
 
@@ -5845,6 +5895,59 @@ class RootWidget(BoxLayout):
         lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
         return lbl
 
+    def _fit1(self, w, base=None, inset=0.0):
+        """把控件 w 的字号调到"当前文字**恰好一行**放得下"的最大档, 返回实际字号。
+
+        `base` = 这一档布局的**基准字号**(由 `_apply_sizes` 按 `sp(N)*_font_scale*_ui_scale`
+        算出来传进来); 不传就用上次记下的 / 当前字号 —— 于是文字一变(状态栏、余额、
+        统计)也会自动重挑, 不需要每个赋值点都记得调。
+
+        ⚠️ 重入闸是必须的: 这个函数会写 `font_size`, 而 `font_size` 变 → `texture_size` 变,
+        绑了 texture_size 的地方(弹窗里那些自动撑高的行)会再回调回来。没有闸就是死循环。
+        ⚠️ 只改字号、**不改宽度** —— 宽度归 `_apply_sizes` / BoxLayout 管, 两边都改就会打架。
+        """
+        if getattr(w, "_fit_busy", False):
+            return float(w.font_size)
+        if base is not None:
+            w._fit_base = float(base)
+        # inset 记在控件上: 挂在 width 上的自动重挑(`_install_fit`)也要用同一个内缩量,
+        # 否则"布局重排"和"文字变化"两条路会算出**两个**字号, 同一个按钮一会儿大一会儿小。
+        if inset:
+            w._fit_inset = float(inset)
+        else:
+            inset = float(getattr(w, "_fit_inset", 0.0))
+        b = getattr(w, "_fit_base", None)
+        if b is None:
+            b = float(w.font_size)
+            w._fit_base = b
+        w._fit_busy = True
+        try:
+            pad = getattr(w, "padding", [0, 0, 0, 0])
+            avail = max(1.0, w.width - pad[0] - pad[2] - inset)
+            fs = fit_font_size(w.text or "", b, avail,
+                               bool(getattr(w, "bold", False)))
+            if abs(float(w.font_size) - fs) > 0.01:
+                w.font_size = fs
+        finally:
+            w._fit_busy = False
+        return float(w.font_size)
+
+    def _install_fit(self, *ws):
+        """给单行控件挂上"文字一变就重挑字号"的钩子(宽度归布局管, 也一起绑)。
+
+        挂在 `text` 上而不是在 20 个赋值点各调一次 —— 那样迟早漏掉一个, 而漏掉的表现
+        就是"某个状态又折行了", 只有截图才看得见。"""
+        for w in ws:
+            if w is None or getattr(w, "_fit_installed", False):
+                continue
+            w._fit_installed = True
+            w._fit_base = float(w.font_size)
+
+            def _go(_w, *_a):
+                self._fit1(_w)
+            w.bind(text=_go, width=_go)
+        return ws
+
     def _mk_button(self, text, cb, bg=COL_BTN_OFF):
         b = Button(text=text, background_normal="", background_down="",
                    background_color=hex_rgb(bg) + (1,), color=(1, 1, 1, 1),
@@ -5874,6 +5977,47 @@ class RootWidget(BoxLayout):
         kw["height"] = min(dp(h_dp), vh * 0.92)
         kw.setdefault("title_align", "center")
         return RotPopup(**kw)
+
+    def _fit_line(self, lb, base_sp=None):
+        """弹窗/正文里的**单行**标签: 自动挑字号保证一行(装不下就缩, 绝不折行)。
+
+        与 `_mk_label` 那条路分开写: 那条绑的是 `size→text_size`(两维都给), 这里必须只给
+        宽度、高度留 None, 否则 Kivy 会把文字排版进一个**固定高度**里 —— 折行后的第二行
+        就画不出来了(定高裁切, v0.6.12/v0.6.20 栽过两次)。"""
+        if base_sp is not None:
+            lb.font_size = sp(base_sp)
+        lb._fit_base = float(lb.font_size)
+        lb.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+        self._install_fit(lb)
+        return lb
+
+    def _auto_h(self, lb, h0=0.0, extra=0.0):
+        """多行正文标签: 高度跟着**真实排版**走 —— 折行只会让弹窗长高, 不会把字裁掉。
+
+        `h0` 是单行时的最小高度。绑 `width→text_size`(不是 size: 见 BUILD_APK §3.19,
+        绑 size 会死循环), 再把 `texture_size[1]`(排版后的真实高度)写回 height。"""
+        lb.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+        lb.bind(texture_size=lambda w, ts: setattr(w, "height", max(h0, ts[1] + extra)))
+        return lb
+
+    def _popup_fit_content(self, popup, content, tries=2):
+        """开完之后把弹窗高度改成**内容真实需要的高度**(只长不缩到 92% 视口以内)。
+
+        ⚠️ 不能靠写死的 `h_dp` 估: 同一个弹窗在 360dp 机器上、在系统字体 1.3 倍下, 排版
+        高度差 40%~100%(实测跑分说明 170 → 420), 估小了内容就被顶出弹窗外面。
+        ⚠️ 非内容区(标题栏 16~44 + 分隔条 4 + 外壳内边距 24)不写死常数, 而是**量**出来:
+        `popup.height - content.height` 就是它, 与 Kivy 版本的 kv 结构无关。
+        ⚠️ 必须等一帧: `content.minimum_height` 要等子控件宽度落定(自动撑高的那些标签
+        是先知道宽度、再算出高度的)。"""
+        def _refit(*_):
+            try:
+                _vw, _vh = self._veq()
+                chrome = max(0.0, popup.height - content.height)
+                popup.height = min(content.minimum_height + chrome, _vh * 0.92)
+            except Exception:
+                pass
+        for _i in range(max(1, tries)):
+            Clock.schedule_once(_refit, 0.0 if _i == 0 else 0.06)
 
     def _row_bg(self, row, hexcolor):
         with row.canvas.before:
@@ -5964,41 +6108,48 @@ class RootWidget(BoxLayout):
             col.rgba = (DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], a)
 
     def _build_ui(self):
-        # 顶栏: [左容器 flex] [标题 固定宽·居中] [右容器 flex]
-        # 左右等 flex → 标题严格全栏居中, 与两侧内容长短无关
+        # 顶栏: [左边两个按钮(定宽)] [标题(弹性·居中)] [状态(弹性·右对齐)]
+        # ⚠️ 原来是 [left_box 弹性][36dp spacer][标题 定宽112][right_box 弹性] ——
+        #    两个弹性块按 Kivy 的规矩**平分**剩余宽, 而 left_box 的内容(静音 64 + 每轮 72
+        #    + 间距)要 142dp: 实测 400dp 机器只分到 107(内容右溢 35dp)、360dp 只分到 87
+        #    (右溢 55dp), 溢出的按钮去盖标题 —— BUILD_APK §3.5 记过同一个坑。
+        #    现在左边**显式定宽**(宽度在 `_apply_sizes` 里按按钮实际宽度算), 标题与状态
+        #    平分剩下的, 两者都挂单行自适应字号 ⇒ 谁也不折行、谁也不盖谁。
+        #    顺带: 标题本来也不居中(那个 36dp spacer 只能把它往右推, 实测偏右 20dp)。
         top = BoxLayout(size_hint_y=None, height=dp(H_TOP),
                         padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
         self._row_top = top
         self._row_bg(top, COL_PANEL)
-        left_box = BoxLayout(spacing=dp(6))
+        left_box = BoxLayout(spacing=dp(6), size_hint_x=None, width=dp(126))
+        self._top_left = left_box
         self.mute_btn = self._mk_button("", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
-        self.mute_btn.width = dp(64)
+        self.mute_btn.width = dp(58)
         self.mute_btn.font_size = "13sp"
         self._refresh_mute_btn()
         left_box.add_widget(self.mute_btn)
         self.round_btn = self._mk_button("每轮%d次" % self.max_plays,
             lambda _b: self._show_round_settings(), bg=COL_GREEN)
         self.round_btn.size_hint_x = None
-        self.round_btn.width = dp(72)
+        self.round_btn.width = dp(62)
         self.round_btn.font_size = "13sp"
         self.round_btn.color = (0, 0, 0, 1)          # 黑字配绿底
         left_box.add_widget(self.round_btn)
-        left_box.add_widget(Widget())
         top.add_widget(left_box)
-        top.add_widget(Widget(size_hint_x=None, width=dp(36)))  # 标题右移防移动端重叠
-        self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT,
-                                        "center", True, size_hint_x=None, width=dp(112))
+        self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT, "center", True)
         top.add_widget(self.title_lbl)
-        right_box = BoxLayout()
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
-        right_box.add_widget(self.status_lbl)
-        top.add_widget(right_box)
+        top.add_widget(self.status_lbl)
+        # 文字一变就重挑字号(状态栏在整局里会换成十来种文案, 逐个赋值点去调必漏)
+        self._install_fit(self.title_lbl, self.status_lbl, self.mute_btn, self.round_btn)
         self.add_widget(top)
         # ---- 设定区(左对齐, 不撑满) ----
         # 返还率行: 返还率 + 三档(固定宽)
+        # ⚠️ 左右空白都是**宽度预算的一部分**: 原来 padding=[24,4] 是"左右各 24", 右边那
+        #    24dp 纯粹白扔(内容左对齐, 右边本来就是空的)。收到 14/10 之后, 360dp 机器上
+        #    每个档位按钮从 45.3dp 变成 52.3dp —— 这才是玩家看得见的差别。
         rtp = BoxLayout(size_hint_y=None, height=dp(H_RTP),
-                        padding=[dp(24), dp(4)], spacing=dp(5))
+                        padding=[dp(14), dp(4), dp(10), dp(4)], spacing=dp(5))
         self._row_rtp = rtp
         self._rtp_title_lbl = self._mk_label("期望返还比例：", "14sp", COL_TEXT, "left", False,
                                       size_hint_x=None, width=dp(115))
@@ -6024,7 +6175,7 @@ class RootWidget(BoxLayout):
         self.add_widget(rtp)
         # 投入行: 投入弹珠单位 + 1/10/50/100(固定宽)
         bets = BoxLayout(size_hint_y=None, height=dp(H_BETS),
-                         padding=[dp(24), dp(4)], spacing=dp(5))
+                         padding=[dp(14), dp(4), dp(10), dp(4)], spacing=dp(5))
         self._row_bets = bets
         self._bet_title_lbl = self._mk_label("每次投入弹珠：", "14sp", COL_TEXT, "left", False,
                                        size_hint_x=None, width=dp(115))
@@ -6045,7 +6196,9 @@ class RootWidget(BoxLayout):
         # 信息行: 弹珠(对齐重置按钮左沿 6dp+12dp=18dp) + 累计x投x中(x%)
         info = BoxLayout(size_hint_y=None, height=dp(H_INFO))
         self._row_info = info
-        info.add_widget(Widget(size_hint_x=None, width=dp(24)))  # 对齐重置按钮(6+12+6=24)
+        # 与上面两行同一条左竖线(14dp)。原来这里写 dp(24) 并注"对齐重置按钮(6+12+6=24)",
+        # 但底行的重置按钮其实起于 6+12=18 —— 那个 24 从来没对齐过任何东西。
+        info.add_widget(Widget(size_hint_x=None, width=dp(14)))
         self._bead_lbl = self._mk_label("弹珠：", "15sp", COL_TEXT, "left", True,
                                        size_hint_x=None, width=dp(48))
         info.add_widget(self._bead_lbl)
@@ -6055,6 +6208,8 @@ class RootWidget(BoxLayout):
         self.stats_lbl = self._mk_label("", "15sp", COL_TEXT, "center", True,
                                         size_hint_x=0.70)
         info.add_widget(self.stats_lbl)
+        # 余额/统计/“弹珠：”都是单行; 余额涨到 8 位数以上时**缩字号**而不是折行
+        self._install_fit(self._bead_lbl, self.balance_lbl, self.stats_lbl)
         self.add_widget(info)
         # 底行: [重置 96] —长距离— [力度 100] [蓄力发射 弹性]
         fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
@@ -6073,6 +6228,7 @@ class RootWidget(BoxLayout):
         self.power_lbl = self._mk_label("", "14sp", COL_METER, "center", True,
                                         size_hint_x=None, width=dp(100))
         fire.add_widget(self.power_lbl)
+        self._install_fit(self.power_lbl)
         self.fire_btn = self._mk_button("蓄力发射", None, bg=COL_FIRE)
         self.fire_btn.size_hint_x = None
         self.fire_btn.width = dp(110)
@@ -6224,14 +6380,18 @@ class RootWidget(BoxLayout):
     def _show_bench_menu(self):
         """弹珠发射性能测试菜单弹窗: 开始测试 / 查看历史。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
-        title_lbl = Label(text='弹珠发射性能测试', font_size='20sp', bold=True, halign='center',
-                          color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
-        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        title_lbl = self._fit_line(Label(text='弹珠发射性能测试', bold=True, halign='center',
+                                         color=hex_rgb(COL_TEXT) + (1,),
+                                         size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
         desc_lbl = Label(text='全程约 25 秒(含完整的中奖装杯演出)。\n\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯 Python 执行，反映设备跑弹珠的实际流畅度。',
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
-        desc_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        # 说明是**多行正文** —— 只能用"高度跟着排版走"(缩字号会把整段一起缩小)。
+        # 它原来定高 dp(170), 而最宽那句"全程约 25 秒(含完整的中奖装杯演出)。"要 327px:
+        # 360~432dp 的机器上**全都**会折行(可用 246~307px), 实测排版高 198~420px ⇒
+        # 折出来的行被定高裁掉, 看到的是一段缺尾巴的说明。现在折行只让弹窗长高。
+        self._auto_h(desc_lbl, dp(120), dp(8))
         content.add_widget(desc_lbl)
         # ⚠️ 版本/制作日期 与 音频体检**不在这里** —— 它们搬去「启动信息」独立弹窗了。
         #    用户 2026-09-11 定稿: 这里是跑分菜单, 那两样是启动信息, 不该混在一起。
@@ -6253,6 +6413,7 @@ class RootWidget(BoxLayout):
         content.add_widget(hist_btn)
         content.add_widget(info_btn)
         popup.open()
+        self._popup_fit_content(popup, content)
 
     def _show_startup_info(self):
         """「启动信息」弹窗: 版本/制作日期 + 音频体检。
@@ -6270,9 +6431,9 @@ class RootWidget(BoxLayout):
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
         # 玩家 2026-09-11 定稿: 标题从「启动信息」改成 **跳跳的弹珠机v0.x.x**(见 _startup_title)。
         # 版本号全工程只在这里出现一次, 正文那行只剩制作时刻。
-        title_lbl = Label(text=_startup_title(), font_size='20sp', bold=True, halign='center',
-                          color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
-        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        title_lbl = self._fit_line(Label(text=_startup_title(), bold=True, halign='center',
+                                         color=hex_rgb(COL_TEXT) + (1,),
+                                         size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
         rows = []
         try:
@@ -6349,10 +6510,10 @@ class RootWidget(BoxLayout):
         ⚠️ 整段 try/except + 给默认高度: 弹窗起不来也绝不能让玩家卡在加载页(项目红线)。"""
         try:
             content = BoxLayout(orientation="vertical", spacing=dp(10), padding=dp(14))
-            head = Label(text="重放冷启动 · 详细统计", font_size="19sp", bold=True,
-                         color=hex_rgb(COL_TEXT) + (1,),
-                         halign="center", valign="middle", size_hint_y=None, height=dp(34))
-            head.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+            head = self._fit_line(Label(text="重放冷启动 · 详细统计", bold=True,
+                                        color=hex_rgb(COL_TEXT) + (1,),
+                                        halign="center", valign="middle",
+                                        size_hint_y=None, height=dp(34)), 19)
             content.add_widget(head)
             body = Label(text=self._replay_summary(), font_size="16sp",
                          color=hex_rgb(COL_SUB) + (1,),
@@ -6370,6 +6531,7 @@ class RootWidget(BoxLayout):
                                 auto_dismiss=True, separator_height=0)
             ok_btn.bind(on_release=lambda *_: popup.dismiss())
             popup.open()
+            self._popup_fit_content(popup, content)
 
             # 开完再按真实排版高度对一次(同「启动信息」那块面板的做法: 先给个估高, 再校正)。
             def _refit(*_):
@@ -6604,10 +6766,9 @@ class RootWidget(BoxLayout):
             self.bench_history.pop(0)
         self._save_bench_history()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
-        title_lbl = Label(text='性能测试', font_size='20sp', bold=True,
-                          halign='center', color=hex_rgb(COL_TEXT) + (1,),
-                          size_hint_y=None, height=dp(28))
-        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        title_lbl = self._fit_line(Label(text='性能测试', bold=True,
+                                         halign='center', color=hex_rgb(COL_TEXT) + (1,),
+                                         size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
         data = ('%s\n'
                 '运算速度：每秒 %d 步模拟\n'
@@ -6619,11 +6780,12 @@ class RootWidget(BoxLayout):
         #    成绩面板只放成绩; 版本/日期在长按标题的**菜单弹窗**里(见 _show_bench_menu)。
         data_lbl = Label(text=data, font_size='17sp', halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(160))
-        data_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        self._auto_h(data_lbl, dp(120), dp(8))
         content.add_widget(data_lbl)
         popup = self._popup(0.90, 300, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         popup.open()
+        self._popup_fit_content(popup, content)
         self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
         self._set_controls_enabled(True)
         self._bench_running = False
@@ -6632,9 +6794,9 @@ class RootWidget(BoxLayout):
     def _show_bench_history(self):
         """弹珠发射性能测试历史弹窗(最近100次, 每行只显示每秒步数)。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
-        title_lbl = Label(text='测试历史（最近100次）', font_size='19sp', bold=True, halign='center',
-                          color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(28))
-        title_lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        title_lbl = self._fit_line(Label(text='测试历史（最近100次）', bold=True,
+                                         halign='center', color=hex_rgb(COL_TEXT) + (1,),
+                                         size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
         if not self.bench_history:
             empty = Label(text='暂无测试记录\n\n长按标题 3 秒即可测试', font_size='16sp', halign='center',
@@ -6646,11 +6808,12 @@ class RootWidget(BoxLayout):
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
             for r in reversed(self.bench_history[-100:]):
-                row = Label(text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
-                            font_size='17sp', halign='left', valign='middle',
-                            color=hex_rgb(COL_TEXT) + (1,),
-                            size_hint_y=None, height=dp(30))
-                row.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+                # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
+                # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
+                row = self._fit_line(Label(
+                    text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
+                    halign='left', valign='middle', color=hex_rgb(COL_TEXT) + (1,),
+                    size_hint_y=None, height=dp(30)), 17)
                 inner.add_widget(row)
             scroll.add_widget(inner)
             content.add_widget(scroll)
@@ -6726,6 +6889,13 @@ class RootWidget(BoxLayout):
     RTP_HIDDEN = (("1000%", 10.0), ("2000%", 20.0), ("5000%", 50.0))
     RTP_UNLOCK_HOLD = 3.0      # 长按多久触发隐藏档弹窗(5.0 -> 3.0, 玩家 2026-09-12 定稿)
 
+    def _reflow_row_budget(self):
+        '''档位按钮增删之后重跑一次宽度预算(包在 try 里: 探针夹具只搭了半套控件)。'''
+        try:
+            self._apply_row_budget(self._ui_scale, self._font_scale * self._ui_scale)
+        except Exception:
+            pass
+
     def _add_rtp_button(self, label, val):
         """往返还率那一行插一个按钮 —— 插在"右侧留空"的 Widget 之前(视觉上接在最右那个后面)。"""
         b = self._mk_button(label, lambda _b, t=val: self.set_rtp(t))
@@ -6738,6 +6908,7 @@ class RootWidget(BoxLayout):
         except (ValueError, AttributeError):
             idx = 1
         self._rtp_row.add_widget(b, index=idx)
+        self._reflow_row_budget()
         return b
 
     def _rtp_is_hidden(self, t):
@@ -6757,6 +6928,7 @@ class RootWidget(BoxLayout):
         b = self.rtp_btns.pop(val, None)
         if b is not None:
             self._rtp_row.remove_widget(b)
+        self._reflow_row_budget()
 
     def _close_rtp_hidden(self, silent=False):
         """关掉隐藏档: 摘掉**全部**隐藏档按钮, 返还比例回到最高常驻档。
@@ -6820,7 +6992,9 @@ class RootWidget(BoxLayout):
         tip = Label(text='（重启游戏后隐藏返还率失效，需重新激活）',
                     font_size='14sp', halign='center', valign='middle',
                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
-        tip.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+        # 这行 22 个汉字要 320px, 而 360dp 机器上只有 312px(系统字体放大更宽) ⇒
+        # 原来"定高 28 + text_size=w.size"会把折出来的第二行**裁掉**。折行就长高。
+        self._auto_h(tip, dp(28), dp(4))
 
         # 四个选项**横向**一排(玩家定稿)。第一项是"不要隐藏档", 文字固定; 后三项**从
         # RTP_HIDDEN 生成**, 加一档就自动多一个按钮。
@@ -6842,6 +7016,11 @@ class RootWidget(BoxLayout):
         for key, text in opts:
             b = Button(text=text, font_size='18sp', bold=True, background_normal='',
                        background_down='')
+            # Kivy 的 Button **不换行也不缩**: 装不下就**盖到隔壁按钮上**。"关闭隐藏"
+            # 4 个汉字在 360dp 机器上只有 75.2dp(18sp 要 72dp, 余量仅 3.2dp; 系统字体
+            # 1.15 倍就超) ⇒ 接进单行自适应, 只有真的装不下时才缩。
+            b._fit_base = float(b.font_size)
+            self._install_fit(b, )
             b.bind(on_release=_pick(key))
             btns[key] = b
             row.add_widget(b)
@@ -6881,6 +7060,7 @@ class RootWidget(BoxLayout):
         popup.bind(on_dismiss=lambda *_: setattr(self, '_rtp_popup', None))
         self._rtp_popup = popup
         popup.open()
+        self._popup_fit_content(popup, content)
 
     def set_rtp(self, t, silent=False):
         self.rtp_target = t
@@ -7237,14 +7417,19 @@ class RootWidget(BoxLayout):
         ⚠️ **跑分期间不弹**(用户 2026-09-11 定案: "benchmark的时候不弹, 其他时间还是需要弹的"),
         防线在 `_on_easter_settled` 里(那里必须走 _easter_finish 解锁, 不能只 return)。
         """
-        content = BoxLayout(orientation="vertical", padding=dp(20), spacing=dp(14))
-        title = Label(text="弹珠返回发射槽", font_size="28sp", bold=True, halign="center",
-                      color=hex_rgb(COL_METER) + (1,), size_hint_y=None, height=dp(44))
+        content = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(14))
+        # 三个孩子**全部定高**(size_hint_y=None) ⇒ `content.minimum_height` 就是精确值,
+        # 弹窗高度由 `_popup_fit_content` 按它反算。原来正文是**弹性**孩子: 400dp 机器上
+        # 它只分到 248px 可用宽, 而最长那句要 253px ⇒ 折成 4 行(96px)塞在 56px 的格子里,
+        # 末行直接压在「确定」上 —— 玩家报的就是这个。
+        title = self._fit_line(Label(text="弹珠返回发射槽", bold=True, halign="center",
+                                     color=hex_rgb(COL_METER) + (1,),
+                                     size_hint_y=None, height=dp(44)), 28)
         msg = Label(text="弹珠未落入倍率槽, 已回到发射槽。" + chr(10)
                          + "本局按 ×2 结算, 返还 %d 个弹珠。" % (2 * self.bet),
                     font_size="16sp", halign="center", valign="middle",
-                    color=hex_rgb(COL_TEXT) + (1,))
-        msg.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+                    color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(48))
+        self._auto_h(msg, dp(24), dp(6))
         ok_btn = Button(text="确定", font_size="16sp", bold=True,
                         background_normal="", background_down="",
                         background_color=hex_rgb(COL_BTN) + (1,),
@@ -7252,7 +7437,10 @@ class RootWidget(BoxLayout):
         content.add_widget(title)
         content.add_widget(msg)
         content.add_widget(ok_btn)
-        popup = self._popup(0.78, 260, title="", content=content,
+        # 宽度 0.78 -> 0.90, 内边距 20 -> 16: 正文那两句各 16 个汉字, 16sp 下要 253px。
+        # 老参数在 400dp 机器上只剩 248px、在 360dp 上只剩 216px, **必然折行**; 现在 360dp
+        # 上也有 268px(余量 15)。
+        popup = self._popup(0.90, 280, title="", content=content,
                             auto_dismiss=False,
                             title_color=hex_rgb(COL_TEXT) + (1,),
                             separator_color=hex_rgb(COL_DIV) + (1,))
@@ -7261,6 +7449,7 @@ class RootWidget(BoxLayout):
         # 顺便把弹窗引用留给探针用。
         popup.bind(on_dismiss=self._on_easter_closed)
         self._easter_popup = popup
+        self._popup_fit_content(popup, content)
         # 播报。直接调 sfx.play —— set_bet/set_rtp 那类辅助函数会被 _result_until 挡掉
         # (本分支刚把它设成 now+2.5), 走辅助函数会自己把自己抑制掉。
         # 与正常中奖同一套约定: 语音档播语音, 非语音档播 ×2 轻赢琶音(两者同播会互盖)。
@@ -7446,8 +7635,9 @@ class RootWidget(BoxLayout):
         msg = "本轮游戏 %d 次已结束\n剩余 [color=%s]%d[/color] 个弹珠\n弹珠数量已调整到1000个\n欢迎你再次挑战" % (
             self.round_plays, COL_BALL, self.balance)
         lbl = Label(text=msg, font_size="18sp", halign="center", valign="middle",
-                    markup=True, color=hex_rgb(COL_TEXT) + (1,))
-        lbl.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+                    markup=True, color=hex_rgb(COL_TEXT) + (1,),
+                    size_hint_y=None, height=dp(96))
+        self._auto_h(lbl, dp(72), dp(8))
         content.add_widget(lbl)
         ok_btn = Button(text="确定", font_size="16sp", bold=True,
                         background_normal="", background_down="",
@@ -7460,6 +7650,7 @@ class RootWidget(BoxLayout):
                             title_size="19sp",
                             separator_color=hex_rgb(COL_DIV) + (1,))
         popup.open()
+        self._popup_fit_content(popup, content)
         # 玩家点"确定"才重置并关闭弹窗; 语音只播报, 不自动关闭
         _done = [False]                            # 防重复调用
         def _auto_reset():
@@ -7476,9 +7667,9 @@ class RootWidget(BoxLayout):
         content = BoxLayout(orientation="vertical", padding=dp(14), spacing=dp(12))
 
         # 每轮次数选择(纵向: 标签一行, 按钮一行, 全自适应防溢出)
-        lbl = Label(text="每轮游戏次数：", font_size="16sp", halign="left", valign="middle",
-                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
-        lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        lbl = self._fit_line(Label(text="每轮游戏次数：", halign="left", valign="middle",
+                                   color=hex_rgb(COL_SUB) + (1,),
+                                   size_hint_y=None, height=dp(28)), 16)
         content.add_widget(lbl)
         sel_box = BoxLayout(size_hint_y=None, height=dp(48), spacing=dp(10))
         sel_btns = {}
@@ -7497,25 +7688,28 @@ class RootWidget(BoxLayout):
         _refresh_sel()
 
         # 历史记录(ScrollView 可滚动, 最多显示最近 100 条)
-        hist_lbl = Label(text="最近完成的轮次：", font_size="15sp", halign="left", valign="middle",
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
-        hist_lbl.bind(size=lambda w, *_: setattr(w, "text_size", w.size))
+        hist_lbl = self._fit_line(Label(text="最近完成的轮次：", halign="left", valign="middle",
+                                        color=hex_rgb(COL_SUB) + (1,),
+                                        size_hint_y=None, height=dp(28)), 15)
         content.add_widget(hist_lbl)
+        # 一行一条, 每条自己**单行自适应**。原来是"一个大 Label 用 \n 拼", 而
+        # "最近第1轮  每轮50次  剩 17405 个弹珠" 要 255px、360dp 机器上只有 250px ⇒
+        # 每条都折成两行(白占一倍高度, 看着像坏掉了)。顺带把"最近"两字去掉(表头已经说了)。
+        inner = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(4))
+        inner.bind(minimum_height=inner.setter("height"))
         if self.round_history:
-            lines = []
             for i, r in enumerate(reversed(self.round_history[-100:])):
-                lines.append("最近第%d轮  每轮%d次  剩 %d 个弹珠" %
-                            (i + 1, r["plays"], r["balance"]))
-            text = "\n".join(lines)
+                inner.add_widget(self._fit_line(Label(
+                    text="第%d轮  每轮%d次  剩 %d 个弹珠" % (i + 1, r["plays"], r["balance"]),
+                    halign="left", valign="middle", color=hex_rgb(COL_TEXT) + (0.7,),
+                    size_hint_y=None, height=dp(26)), 15))
         else:
-            text = "暂无完成的轮次记录"
-        hist_text = Label(text=text, font_size="15sp", halign="left", valign="top",
-                          color=hex_rgb(COL_TEXT) + (0.7,),
-                          size_hint_y=None)
-        hist_text.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)),
-                       texture_size=lambda w, *_: setattr(w, "height", w.texture_size[1] + dp(8)))
+            inner.add_widget(self._fit_line(Label(
+                text="暂无完成的轮次记录", halign="left", valign="middle",
+                color=hex_rgb(COL_TEXT) + (0.7,),
+                size_hint_y=None, height=dp(26)), 15))
         scroll = ScrollView(size_hint=(1, 1), bar_width=dp(6))
-        scroll.add_widget(hist_text)
+        scroll.add_widget(inner)
         content.add_widget(scroll)
 
         ok_btn = Button(text="确定", font_size="16sp", bold=True,
@@ -7627,41 +7821,104 @@ class RootWidget(BoxLayout):
         self.spacing = dp(10) * uv                      # 行间距: 激进衰减
 
         self._row_top.padding    = [dp(10), dp(4) * uv, dp(10), dp(4) * uv]
-        self._row_rtp.padding    = [dp(24), dp(4) * uv]
-        self._row_bets.padding   = [dp(24), dp(4) * uv]
+        self._row_rtp.padding    = [dp(14), dp(4) * uv, dp(10), dp(4) * uv]
+        self._row_bets.padding   = [dp(14), dp(4) * uv, dp(10), dp(4) * uv]
         self._row_bottom.padding = [dp(6), dp(4) * uv, dp(12), dp(4) * uv]
         self.padding = [0, 0, 0, dp(12)]  # 底部留白
 
-        self.title_lbl.font_size       = sp(18) * fs
-        self.status_lbl.font_size      = sp(13) * fs
-        self._rtp_title_lbl.font_size  = sp(14) * fs
-        self._bet_title_lbl.font_size  = sp(14) * fs
-        self._bead_lbl.font_size       = sp(15) * fs
-        self.balance_lbl.font_size     = sp(19) * fs
-        self.stats_lbl.font_size       = sp(15) * fs
-        self.power_lbl.font_size       = sp(14) * fs
-
-        self.mute_btn.font_size = sp(13) * fs
-        self.round_btn.font_size = sp(13) * fs
-        for b in self.rtp_btns.values():
+        # ---- 基准字号: 与原来逐条一致(sp(N) * fs), 紧接着全部交给 `_fit1` 定档 ----
+        # `_fit1` 只会在**装不下**时往下调(最低 0.7 倍), 装得下就原样保持 —— 所以宽屏/
+        # 正常字体下与改动前逐像素相同, 只有"会折行/会溢出"的那些才会变。
+        for _w, _base in ((self.title_lbl, sp(18) * fs),
+                          (self.status_lbl, sp(13) * fs),
+                          (self.mute_btn, sp(13) * fs),
+                          (self.round_btn, sp(13) * fs),
+                          (self._rtp_title_lbl, sp(14) * fs),
+                          (self._bet_title_lbl, sp(14) * fs),
+                          (self._bead_lbl, sp(15) * fs),
+                          (self.balance_lbl, sp(19) * fs),
+                          (self.stats_lbl, sp(15) * fs),
+                          (self.power_lbl, sp(14) * fs),
+                          (self.reset_btn, sp(16) * fs),
+                          (self.fire_btn, sp(16) * fs)):
+            _w.font_size = _base
+            _w._fit_base = _base
+        for b in list(self.rtp_btns.values()) + list(self.bet_btns.values()):
             b.font_size = sp(16) * fs
-        for b in self.bet_btns.values():
-            b.font_size = sp(16) * fs
-        self.reset_btn.font_size = sp(16) * fs
-        self.fire_btn.font_size  = sp(16) * fs
+            b._fit_base = b.font_size
 
-        self.mute_btn.width    = dp(64)  * us
-        self.round_btn.width   = dp(72)  * us
-        self.title_lbl.width    = dp(112) * us
-        self.reset_btn.width   = dp(96)  * us
-        self.fire_btn.width    = dp(110) * us
-        self.power_lbl.width   = dp(100) * us
-        self._rtp_title_lbl.width  = dp(115) * us
-        self._bet_title_lbl.width  = dp(115) * us
-        for b in self.rtp_btns.values():
-            b.width = dp(56) * us
-        for b in self.bet_btns.values():
-            b.width = dp(56) * us
+        self._apply_row_budget(us, fs)
+
+    def _apply_row_budget(self, us, fs):
+        '''重算"顶栏 / 两条档位行 / 信息行 / 底行"的**宽度预算**, 再定一遍字号。
+
+        ⚠️ 单独成方法是为了让**档位按钮增删之后能再跑一次** —— 长按解锁隐藏档会在返还率
+           那行**多插一个按钮**, 关闭隐藏又摘掉。插/摘都会改这一行需要的总宽, 而原来
+           `_add_rtp_button` 把新按钮宽**写死** `dp(56)`、常驻档按钮的宽却是这里反算出来的
+           (360dp 机器上 ≈45dp): 一解锁, 那一行从"恰好铺满"变成**右溢 61dp**, 最右那个
+           隐藏档按钮只剩一小半在屏内 —— 玩家报的"隐藏返还率几乎看不到"就是**被推出屏幕**,
+           不是"看不清"。所以增删之后必须重跑一遍(见 `_reflow_row_budget`)。
+        '''
+        # 顶栏左块**显式定宽**: 两个按钮 + 它们之间的间距。标题与状态平分剩下的
+        # (`size_hint_x=1`), 各自 `_fit1` 保证单行 —— 三块永远不会互相盖。
+        self.mute_btn.width    = dp(58) * us
+        self.round_btn.width   = dp(62) * us
+        self._top_left.spacing = dp(6) * us
+        self._top_left.width   = (self.mute_btn.width + self._top_left.spacing
+                                  + self.round_btn.width)
+
+        # 「返还比例」「投入」两行: 标签宽**按它自己的字量**(原写死 115dp, 实测字只要 98),
+        # 档位按钮宽**由行宽反算**。原来按钮一律 dp(56): 整行最小要 364dp, 而 360dp 机器上
+        # 只有 312 —— 最右那个按钮(360% / 100个)被推出屏幕 47dp。现在整行恰好铺满。
+        # 全角"："的字身自带宽空白(墨迹只占左边一小半), 所以宽度量到字宽就够了, 再垫 4dp
+        # 就已经"贴上去"了。原来写死 dp(115) 而字只要 98 —— 那 17dp 白占, 又正好把
+        # 最右那个档位按钮挤出屏幕。
+        _lbl_w = max(text_px(self._rtp_title_lbl.text, sp(14) * fs),
+                     text_px(self._bet_title_lbl.text, sp(14) * fs)) + dp(4)
+        self._rtp_title_lbl.width = _lbl_w
+        self._bet_title_lbl.width = _lbl_w
+        for _rw in (self._row_rtp, self._row_bets):
+            # ⚠️ 预算吃的是**行的真实宽度**, 而 `_apply_sizes` 是在"窗口尺寸变了"那一帧跑的
+            #    —— 那一刻 `_row.width` 还是**上一次布局**的值(实测 360dp 机器上会按 540 算,
+            #    按钮宽 66 而不是 52, 最右那个"100个"被推出屏幕)。绑到行宽上就自洽了:
+            #    布局一落定就重算一次, 与"窗口变化"这个触发时机彻底解耦。
+            _rw.bind(width=lambda *_a: self._reflow_row_budget())
+        for _row, _btns in ((self._row_rtp, self.rtp_btns),
+                            (self._row_bets, self.bet_btns)):
+            _n = len(_btns)
+            if not _n:
+                continue
+            _pad = _row.padding                     # Kivy 已展开成 [l, t, r, b]
+            _avail = (max(_row.width, self.width) if self.width else _row.width)                 - _pad[0] - _pad[2]
+            _gap = _row.spacing
+            # 两行的孩子都是 n+2 个(标签 + 一个吃余量的空白 + N 个档位按钮)
+            # ⇒ 间距有 n+1 段; 按钮把余量吃干净, 那个空白弹簧自然收到 0。
+            _bw = (_avail - _lbl_w - _gap * (_n + 1)) / float(_n)
+            _bw = max(dp(34) * us, _bw)
+            for b in _btns.values():
+                b.width = _bw
+
+        # 信息行: "弹珠："按字量, 余额/统计靠 `_fit1`(余额 8 位数以上时会缩, 而不是折行)
+        self._bead_lbl.width = text_px(self._bead_lbl.text, sp(15) * fs) + dp(4)
+
+        # 底行: 定宽件按原尺寸, 只把按钮文字也接进自适应(系统大字体下不溢出)
+        self.reset_btn.width = dp(96)  * us
+        self.fire_btn.width  = dp(110) * us
+        # 力度标签**按它自己的字量**给宽 —— 它现在是空的(全工程只有一处赋值, 赋的还是空串),
+        # 而它白占 dp(100): 底行定宽件 + 间距 + 内边距 = 366dp, 340dp 以下的机器上
+        # "蓄力发射"会被推出屏幕(实测 320dp 右溢 28dp、300dp 右溢 39dp)。
+        # 空串给 0 宽, 以后真往里写力度也就自动有位置了。
+        self.power_lbl.width = (text_px(self.power_lbl.text, sp(14) * fs) + dp(6)
+                                if self.power_lbl.text else 0.0)
+
+        # ---- 定档: 上面所有宽度都落定之后, 再算字号(顺序不能反) ----
+        for _w in (self.title_lbl, self.status_lbl, self.mute_btn, self.round_btn,
+                   self._rtp_title_lbl, self._bet_title_lbl, self._bead_lbl,
+                   self.balance_lbl, self.stats_lbl, self.power_lbl,
+                   self.reset_btn, self.fire_btn):
+            self._fit1(_w)
+        for b in list(self.rtp_btns.values()) + list(self.bet_btns.values()):
+            self._fit1(b, inset=dp(6) * us)
 
     def _frame(self, dt):
         self._check_title_hold()
