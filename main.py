@@ -4853,6 +4853,8 @@ def slot_txt(m):
 # ⚠️ 量宽度走 CoreLabel + 缓存: 只花在**文字变化**时(状态栏那几个字符串一局才变几次),
 #    不是逐帧。逐帧量会让手机掉帧。
 FIT_SCALES = (1.0, 0.94, 0.88, 0.82, 0.76, 0.70)
+FIT_HARD_FLOOR = 0.42       # 阶梯全试完后的硬下限(只防"小到看不见", 不参与塞不塞得下的判断)
+                            # (0.5 时实测 1.5 倍字体 + 5 个档位按钮下 "5000%" 还差 5px)
 _FIT_PX = {}
 
 
@@ -4886,7 +4888,23 @@ def fit_font_size(text, base_fs, avail_w, bold=False):
         _fs = base_fs * _k
         if text_px(text, _fs, bold) <= avail_w:
             return _fs
-    return base_fs * FIT_SCALES[-1]
+    # ⚠️ 6 档全试完还是塞不下时, **不能**"给个地板档然后听天由命" —— 那样就退回了折行/
+    #    盖邻居两态, 正是这套机制要消灭的东西(对抗性复核实测: 大字体下 360dp 上
+    #    返还率按钮超 48%、顶栏状态超 16%, 全都落在这一支)。
+    # ⚠️ 也**不能**按比例估一次: 实测字宽**不随字号线性变** —— 同一串在 14.95 和 14.05
+    #    下量出来都是 139px(字形步进被取整), 估出来的 10.65 量出来仍是 102px > 可用 101。
+    #    所以在 [硬下限, 阶梯最小档] 之间**二分**, 取"真的量得下"的最大字号。
+    _lo = base_fs * FIT_HARD_FLOOR
+    _hi = base_fs * FIT_SCALES[-1]
+    if text_px(text, _hi, bold) <= avail_w:
+        return _hi
+    for _ in range(6):
+        _mid = (_lo + _hi) / 2.0
+        if text_px(text, _mid, bold) <= avail_w:
+            _lo = _mid
+        else:
+            _hi = _mid
+    return _lo
 
 
 _BALL_TEX = None
@@ -5513,6 +5531,8 @@ class GameArea(FloatLayout):
             text = "未中"
             hexcolor = COL_FIRE
             size = sp(36)
+        # 同上: 手绘文字, 按可见宽缩字号(隐藏档 5000% 时 "+500000" 会比屏幕还宽)
+        size = fit_font_size(text, size, max(80.0, float(self.width) * 0.94), True)
         main = Label(text=text, font_size=size, bold=True,
                      color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         main.bind(size=lambda w, _: setattr(w, "text_size", w.size))
@@ -5550,7 +5570,12 @@ class GameArea(FloatLayout):
         for e in self._effects:
             if e["kind"] == "toast":
                 return                            # 已有 toast 存活, 不重复弹
-        lbl = Label(text=text, font_size=sp(size), bold=True, halign="center",
+        # ⚠️ 这是**手绘**文字(不在任何布局里, 自己 `size = texture_size`), 屏幕装不下
+        #    就左右被切 —— 实测 360dp + 1.3 倍系统字体: "弹珠数量已调整到1000个" 量出
+        #    408px 而屏只有 360px, 左右各切掉 24px。所以这里也要按**可见宽**定字号。
+        _seen = max(80.0, float(self.width) * 0.94)
+        _fs = fit_font_size(text, sp(size), _seen, True)
+        lbl = Label(text=text, font_size=_fs, bold=True, halign="center",
                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
         lbl.texture_update()                      # 立刻出纹理, 尺寸跟文字(center 才摆得准)
         lbl.size = lbl.texture_size
@@ -5932,6 +5957,60 @@ class RootWidget(BoxLayout):
             w._fit_busy = False
         return float(w.font_size)
 
+    def _fit_uniform(self, rows, base):
+        """一组**同格式**的行共用一个字号: 按最宽那条算档, 全体照用。
+
+        ⚠️ 逐行各自 `_fit1` 会得出**好几个**字号 —— 实测跑分历史 12 行里出现了
+        34.0 / 31.96 / 30.0 三种(位数多的那几行缩了、位数少的没缩)。同一个列表里字号参差,
+        玩家一眼就发现「同一个 log 为什么不一样」。同格式的列表**必须**统一。
+        `base` = 这一档的基准字号; 宽度落定后(以及转屏时)自动重算。
+        """
+        rows = [w for w in rows if w is not None]
+        if not rows:
+            return rows
+
+        def _go(*_a):
+            avail = min(float(getattr(w, "width", 0.0) or 0.0) for w in rows)
+            if avail <= 1.0:
+                return
+            # ⚠️ 这里原来手抄了一遍阶梯, 也就是老的"给个地板听天由命" —— 大字体下
+            #    (实测 360dp + 1.5 倍)12 行历史列表全都 CLIP。改走 `fit_font_size`
+            #    (它带二分, 保证挑到真的塞得下的那一档)。
+            _longest = max(rows, key=lambda w: text_px(w.text or "", base,
+                                                       bool(getattr(w, "bold", False))))
+            fs = fit_font_size(_longest.text or "", base, avail,
+                               bool(getattr(_longest, "bold", False)))
+            for w in rows:
+                if abs(float(w.font_size) - fs) > 0.01:
+                    w.font_size = fs
+
+        for w in rows:
+            w._fit_base = float(base)
+            w.bind(width=lambda *_a, _g=_go: _g())
+        _go()
+        return rows
+
+    def _fit_buttons_uniform(self, btns, base, inset=0.0):
+        """一排按钮**共用一个字号**: 按最宽那个标签定档, 全体照用。
+
+        ⚠️ 逐个小 `_fit1` 会让长标签缩得更多 —— 实测 360dp 解锁隐藏档后, 返还率那一排
+        出现 **24 / 19 / 16px 三种墨迹高**("80%"最大、"5000%"最小), 玩家一眼就看出来不齐。
+        这与列表行是同一个道理(见 `_fit_uniform` 的说明), 只是按钮还要扣掉左右内缩 `inset`。
+        """
+        btns = [b for b in btns if b is not None]
+        if not btns:
+            return
+        avail = min(max(1.0, float(b.width) - inset) for b in btns)
+        longest = max(btns, key=lambda b: text_px(b.text or "", base,
+                                                  bool(getattr(b, "bold", False))))
+        fs = fit_font_size(longest.text or "", base, avail,
+                           bool(getattr(longest, "bold", False)))
+        for b in btns:
+            b._fit_base = float(base)
+            b._fit_inset = float(inset)
+            if abs(float(b.font_size) - fs) > 0.01:
+                b.font_size = fs
+
     def _install_fit(self, *ws):
         """给单行控件挂上"文字一变就重挑字号"的钩子(宽度归布局管, 也一起绑)。
 
@@ -5997,7 +6076,18 @@ class RootWidget(BoxLayout):
         `h0` 是单行时的最小高度。绑 `width→text_size`(不是 size: 见 BUILD_APK §3.19,
         绑 size 会死循环), 再把 `texture_size[1]`(排版后的真实高度)写回 height。"""
         lb.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
-        lb.bind(texture_size=lambda w, ts: setattr(w, "height", max(h0, ts[1] + extra)))
+
+        def _sync(*_a):
+            # `_auto_cap` 由 `_popup_fit_content` 在"内容装不下"时写进来(见那里的说明):
+            # 有它就把高度**压到它以下**(代价是少显示几行), 没有就按真实排版撑开。
+            _cap = float(getattr(lb, "_auto_cap", 0.0) or 0.0)
+            _h = max(h0, lb.texture_size[1] + extra)
+            lb.height = min(_h, _cap) if _cap > 0 else _h
+        lb._auto_sync = _sync
+        lb._auto_min_h = h0
+        lb._auto_base = float(lb.font_size)      # 装不下时按这个基准缩字号(见 _popup_fit_content)
+        lb.bind(texture_size=_sync)
+        _sync()
         return lb
 
     def _popup_fit_content(self, popup, content, tries=2):
@@ -6012,8 +6102,69 @@ class RootWidget(BoxLayout):
         def _refit(*_):
             try:
                 _vw, _vh = self._veq()
-                chrome = max(0.0, popup.height - content.height)
-                popup.height = min(content.minimum_height + chrome, _vh * 0.92)
+                # ⚠️ 非内容区**绝不能**用 `popup.height - content.height` 反推。那个差值默认
+                #    "content 的 height 已经跟上 popup 的新高度", 而在**同一个 tick 里**它还是
+                #    上一轮布局的旧值 —— 实测: 第一次调用把 popup 从 280 改成 250 之后, 第二次
+                #    调用读到 content.h 仍是 236(没变), 于是 chrome 被算成 14 而不是 44:
+                #      · 彩蛋弹窗 -> 高度 220px(110dp), 内容要 206px, 分隔线**压在标题字上**;
+                #      · 跑分菜单 -> 高度 518px(259dp), 内容只要 450px, **顶上留一大块空白**。
+                #    改成**按结构直接算**: GridLayout 的内边距 + 除 container 之外的孩子高度
+                #    (空标题行 16 + 分隔条 4)。它只取决于 kv 结构, 与"布局跑到第几帧"无关,
+                #    所以调一次和调十次结果相同(幂等), 也就不会把高度越算越偏。
+                chrome = getattr(popup, "_fit_chrome", None)
+                if chrome is None:
+                    _cont = content.parent
+                    _grid = _cont.parent if _cont is not None else None
+                    if _grid is not None and hasattr(_grid, "padding"):
+                        _pad = _grid.padding
+                        chrome = (_pad[1] + _pad[3]
+                                  + sum(c.height for c in _grid.children if c is not _cont))
+                    else:
+                        chrome = max(0.0, popup.height - content.height)   # 兜底
+                    popup._fit_chrome = chrome
+                # ⚠️ 上限从 0.92 提到 0.96: 0.92 是**我拍的余量**, 不是硬约束 —— 真正的要求
+                #    只是"弹窗要放得上屏幕"。定 0.92 的代价实测: 360dp + 1.3 倍系统字体下
+                #    跑分菜单的内容高出 11px(半个行高), 于是被压掉一行 —— 而它明明放得下。
+                #    缩字号也救不了: 说明是 8 行, 缩 2.6% 还是 8 行, 高度**一像素都不变**
+                #    (行高按行算, 不按字号连续变)。所以正确做法是别把它压到屏幕装得下的
+                #    范围之内去 —— 剩下那 4% 的留白不值得用一行字去换。
+                _cap = _vh * 0.96
+                if content.minimum_height + chrome > _cap:
+                    # ⚠️ 装不下的时候**不能就这么封顶**: Kivy 不裁剪控件, 多出来的那截会被
+                    #    竖排 BoxLayout 摆到**弹窗外面**(实测 320x640 + 大字体时弹窗标题整行
+                    #    飘到屏幕外, 「启动信息」的版本行高出弹窗顶 218px) —— 玩家看到的是
+                    #    "字飘在游戏画面上"。旧版这里是定高裁掉尾巴(至少还在面板里)。
+                    #    做法: 把**"自动撑高"的那几个标签按比例压低**, 让总高正好塞进上限。
+                    #    宁可少显示两行(裁在面板里), 也不飘出去。
+                    _autos = [c for c in content.children if hasattr(c, "_auto_sync")]
+                    _tot = sum(float(c.height) for c in _autos)
+                    _over = (content.minimum_height + chrome) - _cap
+                    if _autos and _tot > 0:
+                        # 先**缩字号**(字全都在, 只是小一点) —— 这比"裁掉几行"对玩家友好。
+                        # 字号变了纹理要下一帧才重排, 所以这一帧先按比例把高度压住当保险;
+                        # 下一帧 `_refit` 再跑时 `minimum_height` 已经变小, 若够用就不再压。
+                        _k = max(0.55, min(1.0, (_tot - _over) / _tot))
+                        for _a in _autos:
+                            _b = float(getattr(_a, "_auto_base", 0.0) or 0.0)
+                            if _b > 0 and _k < 0.999:
+                                _a.font_size = max(6.0, _b * _k)
+                        _room = max(0.0, _tot * _k)
+                        for _a in _autos:
+                            _a._auto_cap = max(
+                                float(getattr(_a, "_auto_min_h", 0.0)),
+                                _room * (float(_a.height) / _tot))
+                            _a._auto_sync()
+                else:
+                    # ⚠️ 钳位**只设不清**是个陷阱: 第一帧压过之后, 即使下一帧字号已经缩小、
+                    #    内容真的够了, 旧钳位还留着继续裁(实测 1.3 倍字体下跑分菜单的说明
+                    #    被裁掉 11px 一直不恢复)。够用就释放。
+                    for _c in content.children:
+                        if getattr(_c, "_auto_cap", 0.0):
+                            _c._auto_cap = 0.0
+                            _sync = getattr(_c, "_auto_sync", None)
+                            if _sync is not None:
+                                _sync()
+                popup.height = min(content.minimum_height + chrome, _cap)
             except Exception:
                 pass
         for _i in range(max(1, tries)):
@@ -6384,7 +6535,7 @@ class RootWidget(BoxLayout):
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='全程约 25 秒(含完整的中奖装杯演出)。\n\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯 Python 执行，反映设备跑弹珠的实际流畅度。',
+        desc_lbl = Label(text='全程约 25 秒(含完整的中奖装杯演出)。\n\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n\n第 2 项主要吃 CPU 单核浮点算力。\n纯Python执行，\n反映设备跑弹珠的实际流畅度。',
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         # 说明是**多行正文** —— 只能用"高度跟着排版走"(缩字号会把整段一起缩小)。
@@ -6404,7 +6555,15 @@ class RootWidget(BoxLayout):
         info_btn = Button(text='启动信息', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        popup = self._popup(0.84, 470, title='', content=content,
+        # 0.84 -> 0.88: 加宽之后 400dp 机器上说明的每一句都**刚好一行**(实测最长那句
+        # 「全程约 25 秒(含完整的中奖装杯演出)。」259px < 可用 296px), 折行整个消失。
+        # ⚠️ 最后那句「纯Python执行，反映设备跑弹珠的实际流畅度。」(291px) 在 360dp 上
+        #    怎么都放不进一行(可用只有 261px), 自动折行会把末尾两个字**孤零零甩到下一行**。
+        #    所以那一句的断行**写死**(见上面的字面量): 两段分别 93px / 210px, 360 和 400
+        #    都一次放得下 —— 排版是我们定的, 不该让 Kivy 在运行时碰运气。
+        #    (顺带: 原来「纯 Python」两边有空格, 而**空格就是 Kivy 的断行点**, 于是断成
+        #     「纯 Python」+「执行, …」两行 —— 玩家报的"这个纯python执行的换行也很奇怪"就是它。)
+        popup = self._popup(0.88, 470, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
@@ -6491,14 +6650,11 @@ class RootWidget(BoxLayout):
 
         # 上面那个高度是**按单行估的**; 一旦有行折了(设备越窄越容易折), 内容就比弹窗高。
         # 所以开完再按**真实排版高度**对一次 —— 这样"折行"永远只让弹窗长高, 不会把内容顶出去。
-        # ⚠️ 必须等一帧: minimum_height 要等子控件的高度都落定才算得准。
-        def _refit(*_):
-            try:
-                _vw, _vh = self._veq()
-                popup.height = min(content.minimum_height + dp(64), _vh * 0.92)
-            except Exception:
-                pass
-        Clock.schedule_once(_refit, 0.06)
+        # ⚠️ 这里原来自己手抄了一份 `content.minimum_height + dp(64)`, 而结构里的非内容区
+        #    实测只有 44dp(外壳内边距 24 + 空标题行 16 + 分隔条 4) —— 多出来的 20dp 因为
+        #    纵向 BoxLayout 有富余时贴着底部堆, **全落在正文上方**(实测比内容高 20dp)。
+        #    改走统一的 `_popup_fit_content`(按结构算 chrome, 且带"装不下"的兜底)。
+        self._popup_fit_content(popup, content)
 
     def _show_replay_detail(self):
         """「重放冷启动」完成后点屏幕: 把**详细统计**摆出来(带确认按钮的独立窗口)。
@@ -6807,14 +6963,21 @@ class RootWidget(BoxLayout):
             scroll = ScrollView(size_hint=(1, 1))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
+            _rows = []          # 收齐后**整组**定一个字号(见 _fit_uniform)
             for r in reversed(self.bench_history[-100:]):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
-                row = self._fit_line(Label(
+                row = Label(
                     text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
-                    halign='left', valign='middle', color=hex_rgb(COL_TEXT) + (1,),
-                    size_hint_y=None, height=dp(30)), 17)
+                    font_size='17sp', halign='left', valign='middle',
+                    color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
+                row.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                _rows.append(row)
                 inner.add_widget(row)
+            # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
+            #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
+            #    同一批行 17.0 而别的 17sp 行是 34.0)。
+            self._fit_uniform(_rows, sp(17))
             scroll.add_widget(inner)
             content.add_widget(scroll)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
@@ -6902,6 +7065,14 @@ class RootWidget(BoxLayout):
         b.size_hint_x = None
         b.width = dp(56)
         b.size_hint_y = 1.0
+        # ⚠️ `_fit_base` 必须在这里就给对: `_apply_sizes` 只给**当时已存在**的按钮写过它,
+        #    而隐藏档是**运行期**(长按解锁)新建的。不给的话 `_fit1` 会退回
+        #    `float(b.font_size)` —— 那是裸的 16.0(不含 _font_scale*_ui_scale), 而且会被
+        #    **缓存**成基准: 实测 320dp 上解锁后隐藏档按钮 `_fit_base=16.0`/font=11.20,
+        #    而同排四个常驻档是 12.709/11.95 —— 就它一个跟别人参差, 一直到下次窗口尺寸
+        #    变化才被纠正。(对抗性复核挖出来的。)
+        b._fit_base = (sp(16) * float(getattr(self, "_font_scale", 1.0) or 1.0)
+                       * float(getattr(self, "_ui_scale", 1.0) or 1.0))
         self.rtp_btns[val] = b
         try:
             idx = self._rtp_row.children.index(self._rtp_spacer) + 1
@@ -7440,10 +7611,14 @@ class RootWidget(BoxLayout):
         # 宽度 0.78 -> 0.90, 内边距 20 -> 16: 正文那两句各 16 个汉字, 16sp 下要 253px。
         # 老参数在 400dp 机器上只剩 248px、在 360dp 上只剩 216px, **必然折行**; 现在 360dp
         # 上也有 268px(余量 15)。
+        # ⚠️ `separator_height=0` 不能漏: 这个弹窗的标题在**内容里**, Popup 自带的标题栏
+        #    是空的, 但不关分隔条的话那条线还画着 —— 于是它飘在标题上方, 而另外三个同样
+        #    "无标题栏"的弹窗(跑分菜单/跑分历史/启动信息)都显式关了。六个弹窗该长一个样。
         popup = self._popup(0.90, 280, title="", content=content,
                             auto_dismiss=False,
                             title_color=hex_rgb(COL_TEXT) + (1,),
-                            separator_color=hex_rgb(COL_DIV) + (1,))
+                            separator_color=hex_rgb(COL_DIV) + (1,),
+                            separator_height=0)
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
         # 绑 on_dismiss 而不是按钮: 将来多一条关闭路径(手势/系统)也不会漏掉解锁。
         # 顺便把弹窗引用留给探针用。
@@ -7697,17 +7872,21 @@ class RootWidget(BoxLayout):
         # 每条都折成两行(白占一倍高度, 看着像坏掉了)。顺带把"最近"两字去掉(表头已经说了)。
         inner = BoxLayout(orientation="vertical", size_hint_y=None, spacing=dp(4))
         inner.bind(minimum_height=inner.setter("height"))
+        _rows = []
         if self.round_history:
             for i, r in enumerate(reversed(self.round_history[-100:])):
-                inner.add_widget(self._fit_line(Label(
+                _rows.append(Label(
                     text="第%d轮  每轮%d次  剩 %d 个弹珠" % (i + 1, r["plays"], r["balance"]),
-                    halign="left", valign="middle", color=hex_rgb(COL_TEXT) + (0.7,),
-                    size_hint_y=None, height=dp(26)), 15))
+                    font_size="15sp", halign="left", valign="middle",
+                    color=hex_rgb(COL_TEXT) + (0.7,), size_hint_y=None, height=dp(26)))
         else:
-            inner.add_widget(self._fit_line(Label(
-                text="暂无完成的轮次记录", halign="left", valign="middle",
-                color=hex_rgb(COL_TEXT) + (0.7,),
-                size_hint_y=None, height=dp(26)), 15))
+            _rows.append(Label(
+                text="暂无完成的轮次记录", font_size="15sp", halign="left", valign="middle",
+                color=hex_rgb(COL_TEXT) + (0.7,), size_hint_y=None, height=dp(26)))
+        for _r in _rows:
+            _r.bind(width=lambda w, *_: setattr(w, "text_size", (w.width, None)))
+            inner.add_widget(_r)
+        self._fit_uniform(_rows, sp(15))     # 绝对字号, 必须过 sp()(见 _show_bench_history)
         scroll = ScrollView(size_hint=(1, 1), bar_width=dp(6))
         scroll.add_widget(inner)
         content.add_widget(scroll)
@@ -7882,7 +8061,14 @@ class RootWidget(BoxLayout):
             #    —— 那一刻 `_row.width` 还是**上一次布局**的值(实测 360dp 机器上会按 540 算,
             #    按钮宽 66 而不是 52, 最右那个"100个"被推出屏幕)。绑到行宽上就自洽了:
             #    布局一落定就重算一次, 与"窗口变化"这个触发时机彻底解耦。
-            _rw.bind(width=lambda *_a: self._reflow_row_budget())
+            # ⚠️⚠️ **只能绑一次**(`_budget_bound` 守着)。Kivy 的 `bind` 只追加、不去重,
+            #    而这条回调会调回 `_apply_row_budget`, 于是每跑一次就再挂一条新的 ——
+            #    实测 observer 数 21 -> 85 -> 341 -> 1365(**每变一次宽就 ×4**),
+            #    一次宽度变化要跑几千遍(单遍 0.046ms) => 转屏 / 分屏拖拽 / 折叠屏开合时
+            #    整帧卡 1~4 秒, 而且**只增不减、越玩越糟**。这是对抗性复核挖出来的。
+            if not getattr(_rw, "_budget_bound", False):
+                _rw._budget_bound = True
+                _rw.bind(width=lambda *_a: self._reflow_row_budget())
         for _row, _btns in ((self._row_rtp, self.rtp_btns),
                             (self._row_bets, self.bet_btns)):
             _n = len(_btns)
@@ -7894,9 +8080,17 @@ class RootWidget(BoxLayout):
             # 两行的孩子都是 n+2 个(标签 + 一个吃余量的空白 + N 个档位按钮)
             # ⇒ 间距有 n+1 段; 按钮把余量吃干净, 那个空白弹簧自然收到 0。
             _bw = (_avail - _lbl_w - _gap * (_n + 1)) / float(_n)
-            _bw = max(dp(34) * us, _bw)
+            # ⚠️ **上下都要夹**: 下界防窄屏把按钮压没, 上界防宽屏把它撑爆。
+            #    联想 Y700 的等效竖屏内容列有 792dp(手机的近两倍), 只按下界的话实测
+            #    返还率按钮 127dp/个、投入按钮 160dp/个(设计值 56) —— 一排巨无霸。
+            #    夹到 dp(72) 之后: 400dp 上仍是算出来的 62.3(不变)、457dp 上 76.5 -> 72,
+            #    平板上的富余交回给"吃余量的空白弹簧", 正好回到原本的左对齐构图。
+            _bw = min(max(dp(34) * us, _bw), dp(72) * us)
             for b in _btns.values():
                 b.width = _bw
+            # 一排按钮**共用一个字号**(见 `_fit_buttons_uniform` 的说明)
+            self._fit_buttons_uniform(list(_btns.values()), sp(16) * fs,
+                                      inset=dp(6) * us)
 
         # 信息行: "弹珠："按字量, 余额/统计靠 `_fit1`(余额 8 位数以上时会缩, 而不是折行)
         self._bead_lbl.width = text_px(self._bead_lbl.text, sp(15) * fs) + dp(4)
@@ -7917,8 +8111,7 @@ class RootWidget(BoxLayout):
                    self.balance_lbl, self.stats_lbl, self.power_lbl,
                    self.reset_btn, self.fire_btn):
             self._fit1(_w)
-        for b in list(self.rtp_btns.values()) + list(self.bet_btns.values()):
-            self._fit1(b, inset=dp(6) * us)
+        # (两行的按钮在各自那一轮里已经按**整排统一**定过字号了, 见上)
 
     def _frame(self, dt):
         self._check_title_hold()
