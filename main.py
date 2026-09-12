@@ -6271,7 +6271,11 @@ class RootWidget(BoxLayout):
                         padding=[dp(10), dp(4), dp(10), dp(4)], spacing=dp(6))
         self._row_top = top
         self._row_bg(top, COL_PANEL)
-        left_box = BoxLayout(spacing=dp(6), size_hint_x=None, width=dp(126))
+        # ⚠️ 顶栏必须是 [左 flex(1)] [标题 定宽] [右 flex(1)] —— **左右等宽**, 标题才落在
+        #    屏幕正中(玩家: 「跳跳的弹珠机应该居中」)。原来左边定宽 126、右边 flex, 两边不等,
+        #    于是窗口越宽标题越偏左: 实测 400dp 偏 2.5px(看不出来), 540dp 的桌面窗**偏 38.5px**。
+        #    代价: 左边两个按钮的宽得由这份份额反算(见 `_apply_row_budget`), 上限仍是设计值。
+        left_box = BoxLayout(spacing=dp(6))
         self._top_left = left_box
         self.mute_btn = self._mk_button("", lambda _b: self.toggle_mute())
         self.mute_btn.size_hint_x = None
@@ -6287,10 +6291,16 @@ class RootWidget(BoxLayout):
         self.round_btn.color = (0, 0, 0, 1)          # 黑字配绿底
         left_box.add_widget(self.round_btn)
         top.add_widget(left_box)
-        self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT, "center", True)
+        self.title_lbl = self._mk_label("跳跳的弹珠机", "18sp", COL_TEXT, "center", True,
+                                        size_hint_x=None, width=dp(120))
         top.add_widget(self.title_lbl)
+        # 状态要装在一个**弹性容器**里(与左边等宽), 这样"右对齐"是相对那一半而言,
+        # 而标题正好落在两半中间。
+        right_box = BoxLayout()
+        self._top_right = right_box
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
-        top.add_widget(self.status_lbl)
+        right_box.add_widget(self.status_lbl)
+        top.add_widget(right_box)
         # 文字一变就重挑字号(状态栏在整局里会换成十来种文案, 逐个赋值点去调必漏)
         self._install_fit(self.title_lbl, self.status_lbl, self.mute_btn, self.round_btn)
         self.add_widget(top)
@@ -6535,7 +6545,7 @@ class RootWidget(BoxLayout):
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='全程约 25 秒(含完整的中奖装杯演出)。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。',
+        desc_lbl = Label(text='全程约 25 秒（含中奖装杯演出）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。',
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         # 说明是**多行正文** —— 只能用"高度跟着排版走"(缩字号会把整段一起缩小)。
@@ -7416,7 +7426,9 @@ class RootWidget(BoxLayout):
             # 以前 t=0 就报 "+200", 而语音要等装杯播完(×2≈2.0s, ×100≈3.7s)才念 ——
             # 数字提前剧透, 后面整场装杯沦为重播(用户反馈)。
             # 账务(上面的 balance/hits/_save_config)一秒都不挪: 中途被杀不能吞奖励。
-            self.status_lbl.text = "命中 x%d · 结算中…" % m   # 中间态: 第一秒不发空, 余额"冻结"不像 bug
+            # 精简(玩家: 「把那几个换行的文字精简下」): 去掉尾省略号 —— "结算中"本身已含进行义,
+            # 128px 收到 112px, 于是 360dp 的右侧份额(110px)里也塞得下, 不必再靠缩字号。
+            self.status_lbl.text = "命中 x%d · 结算中" % m   # 中间态: 第一秒不发空, 余额"冻结"不像 bug
             self._anim_pending = True
             # ---- 揭晓: 一次性事件, 用"本轮序号"当幂等键 ----
             # 三个洞一起补(2026-09-10 实修; 血泪见 android_part_pile.py 的 _pump_reveal):
@@ -7516,7 +7528,8 @@ class RootWidget(BoxLayout):
         """
         try:
             self._anim_pending = False
-            self.status_lbl.text = ("中奖!  +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
+            # 那个双空格是笔误, 收成单空格(119 -> 116px)
+            self.status_lbl.text = ("中奖! +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
             self.game_area.big_result_text(m, payout)
             now = time.time()
             self._anim_start_balance = self.display_balance
@@ -7613,8 +7626,9 @@ class RootWidget(BoxLayout):
         title = self._fit_line(Label(text="弹珠返回发射槽", bold=True, halign="center",
                                      color=hex_rgb(COL_METER) + (1,),
                                      size_hint_y=None, height=dp(44)), 28)
-        msg = Label(text="弹珠未落入倍率槽, 已回到发射槽。" + chr(10)
-                         + "本局按 ×2 结算, 返还 %d 个弹珠。" % (2 * self.bet),
+        # 标点与全 app 一致: 夹在中文之间的逗号用全角「，」(实测 249->256px, 仍放得下)
+        msg = Label(text="弹珠未落入倍率槽，已回到发射槽。" + chr(10)
+                         + "本局按 ×2 结算，返还 %d 个弹珠。" % (2 * self.bet),
                     font_size="16sp", halign="center", valign="middle",
                     color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(48))
         self._auto_h(msg, dp(24), dp(6))
@@ -8055,13 +8069,23 @@ class RootWidget(BoxLayout):
            隐藏档按钮只剩一小半在屏内 —— 玩家报的"隐藏返还率几乎看不到"就是**被推出屏幕**,
            不是"看不清"。所以增删之后必须重跑一遍(见 `_reflow_row_budget`)。
         '''
-        # 顶栏左块**显式定宽**: 两个按钮 + 它们之间的间距。标题与状态平分剩下的
-        # (`size_hint_x=1`), 各自 `_fit1` 保证单行 —— 三块永远不会互相盖。
+        # 顶栏宽度预算: 标题**按自己的字量**定宽(不折行), 左右两块各拿 (行内宽 - 标题 - 2间距)/2
+        # —— 两边**强制等宽** ⇒ 标题居中。左边两个按钮的宽由这份份额反算(上限是设计值 58/62),
+        # 于是窄屏上收的是按钮、不是标题的字号。
+        _tp = self._row_top.padding                    # Kivy 已展开成 [l, t, r, b]
+        _top_inner = (self._row_top.width or self.width) - _tp[0] - _tp[2]
+        _gap = self._row_top.spacing
+        _title_w = text_px(self.title_lbl.text, sp(18) * fs, True) + dp(6)
+        self.title_lbl.width = _title_w
+        _share = max(dp(56) * us, (_top_inner - _title_w - _gap * 2) / 2.0)
         self.mute_btn.width    = dp(58) * us
         self.round_btn.width   = dp(62) * us
-        self._top_left.spacing = dp(6) * us
-        self._top_left.width   = (self.mute_btn.width + self._top_left.spacing
-                                  + self.round_btn.width)
+        self._top_left.spacing = _gap
+        _need = self.mute_btn.width + _gap + self.round_btn.width
+        if _need > _share:                             # 窄屏: 两个按钮等比收, 保住标题字号
+            _k = max(0.62, (_share - _gap) / max(1.0, _need - _gap))
+            self.mute_btn.width  = dp(58) * us * _k
+            self.round_btn.width = dp(62) * us * _k
 
         # 「返还比例」「投入」两行: 标签宽**按它自己的字量**(原写死 115dp, 实测字只要 98),
         # 档位按钮宽**由行宽反算**。原来按钮一律 dp(56): 整行最小要 364dp, 而 360dp 机器上
