@@ -3573,11 +3573,11 @@ HOLD_BASE = 0.6        # 装满后的**最短停留**: 这之前点击无效, �
 #    玩家定稿: 装满后由**玩家点击**才退场, 这个 0.6s 只当"最短停留"用。
 #    `HOLD_TIERS` / `HOLD_STEP` 已删 —— 别因为"想给大奖多一点"再加回来, 那会和点击逻辑打架。
 RESULT_FADE = 0.25     # 可见的离开(**恒定, 不随档位变** —— 离开的手感要一致)
-# 硬兜底: 超过这个时长无条件解锁。⚠️ 2026-09-12 从 9.0 提到 **60.0** —— 退场改成"等玩家
-# 点击"之后, 9 秒对"看够了再点"太短, 会把画面**当场清掉**(`_abort` 是 mode=idle + 清空球)。
-# 它不是产品行为, 是**安全网**: 防的是"某个 bug 让点击失效 -> 真卡死"。触发时的表现是
-# "画面突然没了", 跟"一直等"矛盾 —— 但两害相权, 宁可画面没了也不能把玩家锁死。
-FX_MAX_SEC = 60.0
+# 硬兜底: 超过这个时长无条件解锁。⚠️ **只覆盖 pending / win**(球还在进场/下落那两段,
+# 玩家没有话语权, 卡住必须放手)。**result 段(装满静止)不设任何时间兜底** —— 玩家
+# 2026-09-12 定稿"不点就一直在", 定时退场会在切后台回来那一帧把杯子当场擦掉。
+# 见 `busy()`。最长非交互段 ≈ WINDUP + 最后一颗落定 ≈ 5~6s, 9s 绰绰有余。
+FX_MAX_SEC = 9.0
 
 
 def hold_for(m):
@@ -4310,10 +4310,20 @@ class WinPileFX(Widget):
         return True
 
     def busy(self):
-        """锁输入判据。硬兜底: 超时无条件放手, 绝不把玩家锁死。"""
+        """锁输入判据。
+
+        ⚠️ 硬兜底**只覆盖 pending / win**(球还在进场/下落那两段) —— 那时玩家没有话语权,
+           状态机卡住必须放手, 否则是真软锁。`FX_MAX_SEC=9s` 对那两段绰绰有余
+           (最长非交互段 ≈ WINDUP + 最后一颗落定 ≈ 5~6s)。
+
+        ⚠️ **result 段(装满静止)故意不设时间兜底**: 玩家 2026-09-12 定稿"不点就一直
+           在", 任何定时退场都是产品违约 —— 而且它会在玩家切后台一分钟后回来时, 把杯子
+           和整屏压暗**当场擦掉**。出口只有 `request_close()`, 它挂在 Window 级触摸观察者
+           上(每一下触摸都会到, 比任何算术都可靠)。
+        """
         if self.mode == "idle":
             return False
-        if time.time() >= self._deadline:
+        if self.mode in ("pending", "win") and time.time() >= self._deadline:
             self._abort()
             return False
         return True
@@ -4345,6 +4355,7 @@ class WinPileFX(Widget):
     def _abort(self):
         self.mode = "idle"
         self._balls = []
+        self._closing_at = 0.0             # 清干净: 别留半局状态给下一局
         self._dirty = True
         # 出口兜底也算"已放": 否则 _pump_reveal 的 `not self._balls` 分支会在下一帧再放一次
         # (回调本身是原子消费, 不会双响; 但闩要一致, 免得以后有人加副作用时踩坑)。
@@ -6141,8 +6152,14 @@ class RootWidget(BoxLayout):
         # 装杯装满后等玩家点击才退场(玩家 2026-09-12 定稿)。这一下**吞掉** —— 早退, 不触发
         # 下面"标题 / 期望返还比例"的长按计时: 玩家点的是"我看够了", 不是 HUD 上的长按热区。
         # 受理条件(装满静止 + 过了最短停留)全在 request_close 里, 这里只管"点到了就试一下"。
-        if self.game_area.win_fx.request_close():
-            return
+        # ⚠️ try/except 是必须的: Window 的事件派发**不捕获异常**, 这里漏出去会冒到事件循环。
+        # ⚠️ 用裸 `return`(不是 `return True`): 实测观察者返回值只是 OR 聚合、**不短路**,
+        #    没有任何证据 `return True` 能吞掉后面的 widget 树 —— 没必要冒那个险。
+        try:
+            if self.game_area.win_fx.request_close():
+                return
+        except Exception:
+            pass
         if (self.title_lbl.collide_point(*pos)
                 and not getattr(self, "_bench_running", False)):
             self._bench_start = time.time()
@@ -8507,6 +8524,10 @@ def _smoke():
         r._easter_popup = None
         r._easter_hold = False
         r._bench_running = True
+        # ⚠️ 先清掉上一局残留的装杯: 装满后要玩家点击才退场(2026-09-12 定稿), 而冒烟里
+        #    没有人点 —— 不清的话它停在 result, 下面那条"settle 那一刻 mode 本该是 idle"
+        #    会被这个残值误判成 FAIL。
+        r.game_area.win_fx._abort()
         r.multipliers = [0] * 9
         r.multipliers[4] = 50
         r.state = "landing"
@@ -8549,6 +8570,15 @@ def _smoke():
         """
         def poll(dt, left=tries):
             r = app.rootw
+            # ⚠️ 装杯装满后要**玩家点击**才退场(玩家 2026-09-12 定稿), 而冒烟里没有人点 ——
+            #    所以过半还没等到就**模拟一次玩家点击**, 走的是同一个 `request_close()`
+            #    (别在冒烟里另写一份"点击该干什么")。不这么做的话 s8/s9 会静默走超时分支,
+            #    在"杯子还立着"的状态下截图, 日志里只有一行超时 = 会骗人的绿。
+            if left < tries // 2:
+                try:
+                    r.game_area.win_fx.request_close()
+                except Exception:
+                    pass
             if r.state == "ready" and not r.game_area.win_fx_busy():
                 fn(dt)
                 return
