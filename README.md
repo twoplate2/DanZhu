@@ -100,7 +100,7 @@ manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而
 若某个横拿方向画面上下颠倒, 翻转 `../tools/android_part_ui.py` 里 `_land_angle()`
 的 90/-90 映射(一行)。
 
-## 语音播报 (edge-tts 预录, voice/*.wav 57 个)
+## 语音播报 (edge-tts 预录, voice/*.wav 63 个)
 
 | 场景 | 语音 | 说明 |
 |------|------|------|
@@ -113,7 +113,7 @@ manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而
 
 数字朗读: 0~9 / 十百千万 / 两(二/两规则), 共 22 个独立片段, 对标 Clac 项目方案。
 
-生成: `python ../tools/generate_voice.py`。57 个语音文件。
+生成: `python ../tools/generate_voice.py`。63 个语音文件。
 
 ## 构建 APK (GitHub Actions 云构建)
 
@@ -157,7 +157,7 @@ BUILD_APK.md                  # 云构建流程 + 移植弯路集
 how_to_desigin.html           # 多专家协作汇报页面
 icon.png / presplash.png      # 图标 + 启动屏
 fonts/NotoSansSC-Medium.otf   # 中文字体
-voice/*.wav                   # 预录语音 57 个(edge-tts)
+voice/*.wav                   # 预录语音 63 个(edge-tts)
 .github/workflows/build-apk.yml  # 云构建流水线
 ```
 

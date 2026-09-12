@@ -5947,7 +5947,12 @@ class RootWidget(BoxLayout):
         rtp.add_widget(self._rtp_spacer)
         self.rtp_btns = {}
         self._rtp_row = rtp
-        self._rtp_unlocked = False     # 隐藏档解锁状态 —— ⚠️ **故意不持久化**(玩家定稿)
+        # ⚠️ 这里原来是 `self._rtp_unlocked = False`(隐藏档解锁状态) —— **已整个删除**。
+        #    它只置真、从不置假 ⇒ "长按成功解锁过一次"之后入口就永久失效; 玩家 2026-09-12
+        #    定稿改成"每次长按都弹"。删掉之后,**"有没有隐藏档"的唯一真源是 `rtp_btns` 的键**
+        #    —— 冷启动重建界面时它是空的, 天然表达"未解锁", 与"隐藏档不持久化"自洽。
+        #    留一个只写不读的标志 = 第二个状态源, 迟早和那排按钮漂移(见 _close_rtp_hidden)。
+        self._rtp_popup = None         # 隐藏档弹窗的引用: 防重入闸门 + 探针查"还开着吗"
         self._rtp_hold_start = 0.0
         self._rtp_hold_fired = False
         for label, val in self.RTP_TIERS:   # 常驻档; 隐藏档靠长按解锁, 见 _unlock_rtp
@@ -6093,15 +6098,18 @@ class RootWidget(BoxLayout):
                 and not getattr(self, "_bench_running", False)):
             self._bench_start = time.time()
             self._bench_triggered = False
-        # 长按"期望返还比例"5 秒 -> 问要不要解锁隐藏档(判据与上面那套同构: 按下记时刻、
-        # 每帧查时长、抬手清零; 不在这儿做任何计时器, 免得和跑分那套抢状态)
-        if self._rtp_title_lbl.collide_point(*pos) and not self._rtp_unlocked:
+        # 长按"期望返还比例"3 秒 -> 四选一档位弹窗(判据与上面那套同构: 按下记时刻、
+        # 每帧查时长、抬手清零; 不在这儿做任何计时器, 免得和跑分那套抢状态)。
+        # ⚠️ 这里原来还有 `and not self._rtp_unlocked` —— 它让一局只能解锁一次。玩家
+        #    2026-09-12 定稿改成"每次长按都弹", 那个标志已整个删除。去掉守卫后"一次按压
+        #    只弹一个、松手再按再弹"由 `_rtp_hold_fired`(每次按下清零)自然保证。
+        if self._rtp_title_lbl.collide_point(*pos):
             self._rtp_hold_start = time.time()
             self._rtp_hold_fired = False
 
     def _on_title_touch_up(self, win, touch):
         self._bench_start = 0.0
-        self._rtp_hold_start = 0.0        # 抬手即取消长按(还没到 5 秒就不算)
+        self._rtp_hold_start = 0.0        # 抬手即取消长按(还没到 RTP_UNLOCK_HOLD 就不算)
         if self.state == "charging":
             self.launch()   # 发射保底: 松手时若仍在蓄力(如滑出按钮致 on_release 未触发), 补发
 
@@ -6136,7 +6144,7 @@ class RootWidget(BoxLayout):
         t2 = self._rtp_hold_start
         if t2 > 0 and not self._rtp_hold_fired and time.time() - t2 >= self.RTP_UNLOCK_HOLD:
             self._rtp_hold_fired = True
-            self._ask_unlock_rtp()    # 长按5秒: 问要不要解锁隐藏档(档位文字从 RTP_HIDDEN 取)
+            self._ask_unlock_rtp()    # 长按 RTP_UNLOCK_HOLD 秒: 四选一档位弹窗
 
     def _show_bench_menu(self):
         """弹珠发射性能测试菜单弹窗: 开始测试 / 查看历史。"""
@@ -6633,15 +6641,15 @@ class RootWidget(BoxLayout):
 
     # ---- 期望返还比例: 常驻档 + 需要长按解锁的隐藏档 ----
     RTP_TIERS = (("80%", 0.80), ("120%", 1.20), ("200%", 2.00), ("360%", 3.60))
-    # ⚠️ **隐藏档**(玩家 2026-09-11 定稿的入口): 长按"期望返还比例"标签 5 秒 -> 弹窗问一句 ->
-    #    点"是"解锁。玩家原话「点击是的话, 就解锁了, 不过不保存, 重新打开游戏就得重新解锁」。
+    # ⚠️ **隐藏档**(玩家 2026-09-11 定稿的入口): 长按"期望返还比例"标签 -> 弹窗选一个 ->
+    #    **不保存**。长按时长见 `RTP_UNLOCK_HOLD`(2026-09-12: 5s -> 3s)。
     #    所以它只是内存里的一个开关: ① 存档那侧的档位白名单**不含** 50.0(重开时那份存档被忽略);
     #    ② `_boards` 里那份盘面也无所谓(选不中就用不到)。
-    # 彩蛋档位(长按"期望返还比例"5 秒解锁, **不保存**)。弹窗让玩家从这里挑一个, 或者不开。
+    # 彩蛋档位(长按"期望返还比例"解锁, **不保存**)。弹窗让玩家从四选一里挑(或"关闭隐藏")。
     # ⚠️ 三档**全部"必中"**(plinko.py 的 K_DIST = {9: 1.0}), 所以每格均值被恒等式钉死在
     #    档位上 —— 实际落格分布见 plinko.py 的 VALUE_SHAPE 注释。
     RTP_HIDDEN = (("1000%", 10.0), ("2000%", 20.0), ("5000%", 50.0))
-    RTP_UNLOCK_HOLD = 5.0
+    RTP_UNLOCK_HOLD = 3.0      # 长按多久触发隐藏档弹窗(5.0 -> 3.0, 玩家 2026-09-12 定稿)
 
     def _add_rtp_button(self, label, val):
         """往返还率那一行插一个按钮 —— 插在"右侧留空"的 Widget 之前(视觉上接在最右那个后面)。"""
@@ -6657,66 +6665,142 @@ class RootWidget(BoxLayout):
         self._rtp_row.add_widget(b, index=idx)
         return b
 
+    def _rtp_is_hidden(self, t):
+        """t 是不是隐藏档 —— 判据走 RTP_HIDDEN, 不手抄数字(见 _all_rtp 的血泪注释)。"""
+        return any(abs(t - v) < 1e-6 for _lab, v in self.RTP_HIDDEN)
+
+    def _remove_rtp_button(self, val):
+        """把一个档位的按钮从返还率那排摘掉 —— `_add_rtp_button` 的逆操作。
+
+        ⚠️ 两处必须**一起**改: ① `rtp_btns` 字典 ② `_rtp_row` 的 children。
+           只删字典 -> 按钮还画在屏幕上、点下去照样切档(玩家看到"关了还在");
+           只删 children -> `_restyle_selects`/`_set_controls_enabled` 还在遍历它(白干不报错),
+           而且下次 `_unlock_rtp` 走 `val in self.rtp_btns` 直接 return, 按钮永远加不回来。
+        ⚠️ `_rtp_spacer` 绝不碰 —— 它是 `_add_rtp_button` 的定位锚点。
+        `pop(val, None)` 让"本来就没这个按钮"(冷启动直接点「关闭隐藏」)天然是空操作。
+        """
+        b = self.rtp_btns.pop(val, None)
+        if b is not None:
+            self._rtp_row.remove_widget(b)
+
+    def _close_rtp_hidden(self, silent=False):
+        """关掉隐藏档: 摘掉**全部**隐藏档按钮, 返还比例回到最高常驻档。
+
+        ⚠️ `was_hidden` 必须在**动任何东西之前**判掉 —— 先切 360% 的话再判就恒假,
+           那个信息丢了, 症状是"选了关闭却什么都没发生"。
+        ⚠️ 本来就是常驻档 -> **什么都不做**(不跳 360%)。玩家 2026-09-12 点名的细节。
+        ⚠️ 摘的是**全部**隐藏档按钮(不只是当前那个), 收完那排就只剩 80/120/200/360。
+        ⚠️ 切回的是 `max(RTP_TIERS)`, **不写死 3.60**(同一份清单原则, 见 _all_rtp)。
+        ⚠️ `_boards` 一个字都不动: 摘的是"按钮"不是"盘面", 删键 = 复刻 v0.6.47 的 KeyError 闪退。
+        """
+        was_hidden = self._rtp_is_hidden(self.rtp_target)
+        was_tier = self.rtp_target          # 语音要念"被关掉的是哪一档", 必须在 set_rtp 之前存
+        for _lab, v in self.RTP_HIDDEN:     # 不手抄, 加一档自动跟着摘
+            self._remove_rtp_button(v)
+        if not was_hidden:
+            return
+        self.set_rtp(max(v for _lab, v in self.RTP_TIERS), silent=True)
+        # ⚠️ `silent=True` 是必须的: 切回 360% 那句 `voice_rtp_360` 与新语音同族, 两条都走
+        #    普通路径的话 `Sfx.play` 的互斥会按"上一句真实时长"静默挤掉一条 —— 靠调用顺序
+        #    兜底太脆(谁调换两行就回归), 声明式地只留一个新语音出口。click 在语音分支之前,
+        #    不受影响, 按钮反馈不丢。
+        if not silent and self.sound_mode == "on":
+            self.sfx.play("voice_rtp_hide_%d" % int(was_tier * 100), throttle=0.6)
+
     def _unlock_rtp(self, val):
-        """解锁**指定档位**(幂等), 并直接切过去 —— 玩家点了就是要用它。
+        """应用玩家选中的档位(幂等): 先摘掉**别的**隐藏档按钮(只留当前一个), 再切过去。
 
         ⚠️ 这里原来写的是 `self.RTP_HIDDEN[0][1]`(写死第一档) —— 弹窗改成多选一之后
         必须收参数, 否则选 2000% 也会跳到 1000%。
+        ⚠️ 原来还在这里置 `_rtp_unlocked = True` —— 那个标志已随"每次都弹"整个删除。
+        ⚠️ "只留当前一个"是玩家 2026-09-12 定的: 开过 1000% 又改选 2000% 时, 那排上
+        不该同时挂着两个隐藏档按钮。
         """
-        if val in self.rtp_btns:
-            self.set_rtp(val)                 # 已经加过了, 直接切
-            return
-        for label, v in self.RTP_HIDDEN:
-            if v == val and v not in self.rtp_btns:
-                self._add_rtp_button(label, v)
-        self._rtp_unlocked = True
+        for _lab, v in self.RTP_HIDDEN:
+            if v != val:
+                self._remove_rtp_button(v)
+        if val not in self.rtp_btns:
+            for label, v in self.RTP_HIDDEN:
+                if v == val:
+                    self._add_rtp_button(label, v)
         self.set_rtp(val)
 
     def _ask_unlock_rtp(self):
-        """长按"期望返还比例"5 秒: 让玩家从隐藏档里**挑一个**(或者不开)。
+        """长按"期望返还比例"3 秒: 四选一 + 确认(玩家 2026-09-12 定稿)。
 
-        档位文字**从 RTP_HIDDEN 取**, 不写死 —— 这里写死过一次(5000%), 后来隐藏档定稿
-        成 1000% 时漏改, 弹窗就一直显示上一版的数字(玩家 2026-09-11 截图报的就是这个)。
+        与旧版的四点差异:
+          ① **每次都弹** —— 旧版靠 `_rtp_unlocked` 守卫, 一局只弹一次;
+          ② 点选项只**选中**(高亮), 点「确定」才生效 —— 旧版点了立即生效、没有回头路;
+          ③ 「关闭隐藏」能把隐藏档按钮**摘掉** —— 旧版只有"加", 没有"减";
+          ④ 默认选中**当前档位**(当前是常驻档 -> 选中「关闭隐藏」)。
+
+        档位文字**从 RTP_HIDDEN 取**, 不写死 —— 这里写死过一次(5000%), 隐藏档改定稿时
+        漏改, 弹窗一直显示上一版的数字(玩家 2026-09-11 截图报的就是这个)。
         """
-        content = BoxLayout(orientation='vertical', padding=dp(14), spacing=dp(10))
-        lbl = Label(text='解锁隐藏返还率？',
-                    font_size='17sp', bold=True, halign='center', valign='middle',
-                    color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(34))
-        lbl.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-        content.add_widget(lbl)
+        if self._rtp_popup is not None:
+            # 防重入: `_on_title_touch_down` 是 **Window 级触摸观察者**, 模态弹窗拦不住它
+            # (它只看坐标) —— 弹窗开着时再长按会叠出第二个。闸门开在"建弹窗"这一端。
+            return
+        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(8))
         tip = Label(text='（不保存 —— 重新打开游戏要重新解锁）',
                     font_size='13sp', halign='center', valign='middle',
                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
         tip.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
         content.add_widget(tip)
-        popup = None
 
-        def _pick(v):
+        # 四个选项**横向**一排(玩家定稿)。第一项是"不要隐藏档", 文字固定; 后三项**从
+        # RTP_HIDDEN 生成**, 加一档就自动多一个按钮。
+        opts = [(None, '关闭隐藏')] + [(v, lab) for lab, v in self.RTP_HIDDEN]
+        sel = [self.rtp_target if self._rtp_is_hidden(self.rtp_target) else None]
+        btns = {}
+
+        def _restyle():
+            for k, b in btns.items():
+                b.background_color = hex_rgb(COL_BTN if k == sel[0] else COL_BTN_OFF) + (1,)
+
+        def _pick(k):
             def _go(*_):
-                popup.dismiss()
-                if v is not None:                 # None = 不开启
-                    self._unlock_rtp(v)
+                sel[0] = k
+                _restyle()
             return _go
 
-        # 第一行: 不开启(整行, 视觉上就是"取消")
-        row0 = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10))
-        b_no = Button(text='不开启新档位', font_size='16sp', background_normal='',
-                      background_color=hex_rgb(COL_BTN) + (1,))
-        row0.add_widget(b_no)
-        content.add_widget(row0)
-        # 第二行: 三个隐藏档(从 RTP_HIDDEN 生成, 加一档就自动多一个按钮)
-        row1 = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(10))
-        bts = []
-        for label, val in self.RTP_HIDDEN:
-            b = Button(text=label, font_size='16sp', bold=True, background_normal='',
-                       background_color=hex_rgb(COL_FIRE) + (1,))
-            bts.append((b, val))
-            row1.add_widget(b)
-        content.add_widget(row1)
-        popup = self._popup(title='', content=content, hint_w=0.86, h_dp=300)
-        b_no.bind(on_release=_pick(None))
-        for b, val in bts:
-            b.bind(on_release=_pick(val))
+        row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(4))
+        for key, text in opts:
+            b = Button(text=text, font_size='16sp', bold=True, background_normal='',
+                       background_down='')
+            b.bind(on_release=_pick(key))
+            btns[key] = b
+            row.add_widget(b)
+        content.add_widget(row)
+        _restyle()                                   # 建完立刻上默认高亮
+
+        ok_btn = Button(text='确定', font_size='16sp', bold=True, background_normal='',
+                        background_down='', background_color=hex_rgb(COL_GREEN) + (1,),
+                        size_hint_y=None, height=dp(48))
+        content.add_widget(ok_btn)
+        # 尺寸 0.92 / h_dp=250 是**量出来的**(不是拍的): Kivy 的 Popup 外壳还有一层 12dp
+        # 内边距(kivy/data/style.kv 里的 GridLayout(padding:'12dp')), 于是横向可用宽 =
+        # `hint_w*vw - 24 - 2*pad - 3*spacing` 再 /4。360dp 机器上 0.86/14/5 差 3.3dp
+        # —— 文字比按钮宽就是溢出, 而 Kivy 的 Button **不会自动换行**(它没有 text_size),
+        # 0.92/10/4 余 +4.8dp。改文案或加档位时要重算这个。
+        popup = self._popup(0.92, 250, title='隐藏返还率', content=content,
+                            auto_dismiss=True,          # 同"每轮游戏次数设定": 点外面关掉且不生效
+                            title_color=hex_rgb(COL_TEXT) + (1,),
+                            title_size='19sp',
+                            separator_color=hex_rgb(COL_DIV) + (1,))
+
+        def _confirm(*_):
+            popup.dismiss()
+            if sel[0] is None:
+                self._close_rtp_hidden()
+            else:
+                self._unlock_rtp(sel[0])
+
+        ok_btn.bind(on_release=_confirm)
+        # 绑 on_dismiss(而不是绑按钮)与 _show_easter_popup 同一套路: 点外部/系统关掉也能
+        # 放行, 顺带把引用留给探针查"还开着吗" —— 它也是防重入闸门的唯一解锁点。
+        popup.bind(on_dismiss=lambda *_: setattr(self, '_rtp_popup', None))
+        self._rtp_popup = popup
         popup.open()
 
     def set_rtp(self, t, silent=False):
@@ -6996,6 +7080,14 @@ class RootWidget(BoxLayout):
             # _frame 的 try/except 是静默的, 这里不留痕的话"数字永不出现"会查无对证
             print("REVEAL FAIL: %s: %s" % (type(exc).__name__, exc))
 
+    def _regular_rtp(self):
+        """常驻档(可持久化的那批) —— 从 RTP_TIERS 派生, **不手抄**。
+
+        用途只有一个: `_load_config` 的读档白名单。派生而非手写 ⇒ 隐藏档**结构上**
+        不可能被读回来, 这就是"隐藏档不保存"的实现点(保存侧照常写盘, 读侧丢弃)。
+        """
+        return tuple(v for _lab, v in self.RTP_TIERS)
+
     def _all_rtp(self):
         """所有档位(常驻 + 彩蛋) —— **唯一真源**, 别在各处再手写一份元组。
 
@@ -7179,7 +7271,12 @@ class RootWidget(BoxLayout):
                 # 老存档里的 "voice"/"sfx" 两个旧值因此被自然忽略, 不需要迁移代码。
                 if isinstance(cfg.get("max_plays"), int) and cfg["max_plays"] in (20, 50, 100):
                     self.max_plays = cfg["max_plays"]
-                if isinstance(cfg.get("rtp_target"), (int, float)) and cfg["rtp_target"] in (0.80, 1.20, 2.00, 3.60):  # ⚠️ 不含隐藏档 10.0: 它不持久化, 重开要重新解锁
+                # ⚠️ 白名单走 `_regular_rtp()`(从 RTP_TIERS 派生), **不手抄** —— 这里原本是
+                #    硬编码的常驻档白名单, 正是 v0.6.47 闪退事故的同款形状
+                #    (同一份档位清单出现在两处, 改档位表时漏改一处就静默出错)。
+                #    派生之后"隐藏档读不回来"是**结构性**的, 不靠谁记得改这一行。
+                if (isinstance(cfg.get("rtp_target"), (int, float))
+                        and cfg["rtp_target"] in self._regular_rtp()):
                     self.rtp_target = float(cfg["rtp_target"])
                 if isinstance(cfg.get("bet"), int) and cfg["bet"] in PRESETS:
                     self.bet = cfg["bet"]
