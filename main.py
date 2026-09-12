@@ -3636,7 +3636,16 @@ RAIN_HEADROOM = 420.0  # design px: 起点抬到覆盖层可见顶边之上, 保
 # (前者会把每颗球入画时刻的随机分散压平、雨点变整齐球阵; 后者把雨从"飘"改成"砸"),
 # 而平移一帧画面都不动。实测压到 0 也只到 0.30s, 消不掉(球从可见顶边之上落下来本身要时间)。
 RAIN_ANCHOR = 0.12     # 首球"露头"的时刻(相对 _t0)。0.06(3.6帧)太挤, 会和"杯子落位"黏成一件事
-RAIN_SHIFT_MAX = 0.55  # 前移上限: 再往前整场缩水太多
+# 前移上限 0.55 -> 0.80。发起因由: 发牌改成随机拓扑序之后, **第一颗球不再是最远那颗**
+# —— 它现在是随机挑的一颗"没有被谁压着"的球, 也就是底层球, 而底层球的下落路径最长
+# (从可见顶边之上一直落到杯底), 入画必然更晚。实测 min(t0+f_enter) 从约 0.67 涨到
+# 0.73~0.80(x2/x3 两档), 0.55 的上限就被封顶了 -> 首球要等 0.25~0.29s 才露头, 比设计的
+# 0.12 晚一倍多。放开上限让"首球 0.12 露头"这条设计意图重新成立。
+# ⚠️ 安全性不靠这个常数: shift = min(RAIN_SHIFT_MAX, min(t0+f_enter) - RAIN_ANCHOR),
+#    恒有 shift < min(t0+f_enter) -> t=0 时没有任何一颗球已经入画(凭空出现在半空)。
+# ⚠️ 影响面只有原本就封顶的档: n>=5 的 s 都不到 0.55, 加不加一个字都不变; x2/x3 整场
+#    提前约 0.13s(_last_settle 1.21 -> 1.08), 尾巴的揭晓/退场跟着一起提前, 无副作用。
+RAIN_SHIFT_MAX = 0.80
 FALL_GRAVITY = 1900.0  # 原型 2400 是按"960dp 高窗"调的, 嵌进 660 高板面必须降
 FALL_MIN, FALL_MAX = 0.55, 1.30
 ENTER_FADE = 0.08      # 越过覆盖层顶边后的渐入
@@ -3918,6 +3927,87 @@ def _beads_from_baked(count, v):
     return out if len(out) == count else None
 
 
+def _support_map(proj, r):
+    """算"谁必须先落"的偏序: 对每颗球 j 找出所有 h 更低、且水平距 < 2r 的球 i。
+
+    为什么这是"必须先落"的充要近似: 球 j 从画面上方落到自己的位置 h_j, 途中会经过
+    **所有比 h_j 高的高度** —— 包括 i 所在的 h_i(h_i < h_j)。只要两者的**水平**距离
+    小于一个球直径, j 的下降轨迹就会切进 i 的球体。所以 i 必须先落定, j 才有路。
+
+    ⚠️ 判据必须是**水平**距离, 不是 3D 距离。用 3D 距离(≤2r+ε)会漏掉"隔一层"的球
+    —— 层距 1.633r 让隔层球的 3D 距离 ≥ 1.633r·... 实测那样会漏掉约 2/3 的阻挡关系,
+    按那个图跑出来的顺序比不改还差(专家实测 x100 一局 PEN 708, 是"什么都不做"的 34 倍)。
+
+    ⚠️ 还有一个坑: 球堆有 ±9px 抖动, 所以**不能**用"接触"/"距离≈2r"当判据 ——
+    抖开之后会有球找不到任何支撑(实测 x100 v0 有 22 颗"无支撑", 而底层只有 18 颗)。
+    用 2r 的**水平**阈值天然免疫这个问题。
+
+    返回 {proj 下标: [前驱 proj 下标, ...]}, 只含非 meta 项。
+    """
+    ms = [k for k, p in enumerate(proj) if not p.get("meta")]
+    xs = [proj[k]["sx"] - CX for k in ms]
+    zs = [proj[k]["z"] for k in ms]
+    # h 从投影反推(project_pile 的 sy = FLOOR_Y - h - K2*z), 不依赖 beads 的 layer 字段:
+    # 离线烘焙表的 "layer" 恒为 0(见 _beads_from_baked), 按它分层会静默失效。
+    hs = [FLOOR_Y - proj[k]["sy"] - K2 * proj[k]["z"] for k in ms]
+    thr2 = (2.0 * r) ** 2
+    out = {}
+    for j in range(len(ms)):
+        xj, zj, hj = xs[j], zs[j], hs[j]
+        pre = []
+        for i in range(len(ms)):
+            if hs[i] >= hj:
+                continue
+            dx = xs[i] - xj
+            dz = zs[i] - zj
+            if dx * dx + dz * dz < thr2:
+                pre.append(ms[i])
+        out[ms[j]] = pre
+    return out
+
+
+def _topo_deal(proj, rng):
+    """随机拓扑序: 每次从"支撑已全部发牌"的球里**均匀随机**挑一颗, 返回 proj 下标排列。
+
+    为什么不是"按层发牌": 层的先后只是这个偏序的一个**保守特例**(把整层当一块),
+    代价是屏幕上出现"一层一块"的施工缝 —— 把"永远先内后外"换成"永远先下后上",
+    在玩家眼里还是同一个固定套路。拓扑序允许"这层角上先落、中间后落", 才是真随机。
+
+    复杂度 O(n+e); 偏序图由 _support_map 算好挂在 proj 上(缓存), 这里只跑一次 Kahn。
+    """
+    ms = [k for k, p in enumerate(proj) if not p.get("meta")]
+    n = len(ms)
+    if n == 0:
+        return []
+    pos = {m: t for t, m in enumerate(ms)}
+    indeg = [0] * n
+    succ = [[] for _ in range(n)]
+    for m in ms:
+        t = pos[m]
+        for i in (proj[m].get("sup") or ()):   # 前驱(更低的球)必须先发
+            ti = pos.get(i)
+            if ti is None:
+                continue
+            succ[ti].append(t)
+            indeg[t] += 1
+    ready = [t for t in range(n) if indeg[t] == 0]
+    out = []
+    while ready:
+        k = rng.randrange(len(ready))          # 均匀随机挑一颗 -> 随机性全在这里
+        t = ready[k]
+        ready[k] = ready[-1]                   # 交换删除, O(1)
+        ready.pop()
+        out.append(ms[t])
+        for u in succ[t]:
+            indeg[u] -= 1
+            if indeg[u] == 0:
+                ready.append(u)
+    if len(out) != n:
+        # 有环(只可能来自坏数据) -> 安静退回画家序, 绝不锁死演出(见本模块"绝不软锁"那条)
+        return ms
+    return out
+
+
 def _pile_projected(count, seed):
     """(count, seed) -> 投影绘制表, 带缓存。同 (count,seed) 逐球心一致可复现。
 
@@ -3949,6 +4039,14 @@ def _pile_projected(count, seed):
             beads, meta = build_pile(spec)
             proj = project_pile(beads)
             proj.append({"meta": True, "H": meta["H"], "R": meta["R"]})
+        # 支撑偏序图只跟几何有关 -> 挂缓存上算一次; 运行期发牌只跑一遍 Kahn(O(n+e))。
+        # 放在缓存构建里而不是 _make_balls 里: 那是 settle 那一帧, 而那一帧有别的活要干
+        # (槽位白闪/绿灯), 不能塞 10^4 次距离计算进去。
+        if proj:
+            _r0 = proj[0].get("r")
+            if _r0:
+                for _k, _pre in _support_map(proj, _r0).items():
+                    proj[_k]["sup"] = _pre
         _PILE_CACHE[key] = proj
         _PILE_ORDER.append(key)
         while len(_PILE_ORDER) > _PILE_CACHE_MAX:
@@ -4246,9 +4344,13 @@ class WinPileFX(Widget):
         idx = 0
         u = self._rng.uniform
         mouth_half = max(1.0, halfwidth(FLOOR_Y - RIM_Y))
-        for p in proj:
-            if p.get("meta"):
-                continue
+        # 发牌顺序 = 随机拓扑序(见 _topo_deal): 每颗球发出时, 它正下方的球都已发出。
+        # "i" 决定 t0(见下面按 i 递增排的那段), 所以这里是**顺序的唯一真源**;
+        # project_pile 的画家序(远先近后)与 _balls 的 z 序(绘制用)都不受影响。
+        # ⚠️ 原来这里是 `for p in proj`, 而 proj 是按 z 降序排的 -> 每局、每个变体
+        #    都是"从杯子最里侧扫到最外侧", 玩家报的"总是先内后外"就是它。
+        for _k in _topo_deal(proj, self._rng):
+            p = proj[_k]
             r = p["r"]
             sy0 = self._rain_start_y(r)
             sx0 = CX + u(-0.80 * mouth_half, 0.80 * mouth_half) + u(-0.12 * r, 0.12 * r)
@@ -4571,14 +4673,18 @@ class WinPileFX(Widget):
                     Color(1.0, 1.0, 1.0, a_cup * a)
                     Rectangle(texture=t, pos=(bx, by + bh * f0), size=(bw, bh * fh))
 
-                # 已落定球按画家序(远先近后); 前玻璃层随后覆盖, 形成真实杯内层次
+                # 球按画家序一趟画完(远先近后) —— **含飞行中的球**。
+                # ⚠️ 原来是两趟: 先画已落定球、再把飞行球**一律置顶**。那个写法之所以
+                #    不出事, 唯一原因是发牌序 = z 降序 ⇒ 任意时刻已落定的恰好是最远的那批
+                #    ⇒ 飞行球永远比它们近, 画在上面**是对的**。发牌改成随机拓扑序之后
+                #    这个巧合就没了: 更远的飞行球会被画在更近的已落定球之上 —— 实测
+                #    x100 一局 4750 帧的层次错乱(占重叠帧 25.5%), 落定那一帧还有约 46 颗
+                #    球会"单帧掉掉一半像素"(从置顶切成画家序)。
+                # 现在按深度插进同一趟: 近的球盖远的球, 飞行球也不例外。代价是飞行球
+                #    可能被前面的球短暂遮住(物理上正确 —— 像球陷进堆里), 这是为顺序随机
+                #    付的必要代价, 别改回去。
                 for b in self._balls:
-                    if b["settled"]:
-                        self._draw_bead(b, a_cup)
-                # 飞行/弹跳球一律最后画(置顶), 盖掉层间穿插
-                for b in self._balls:
-                    if not b["settled"]:
-                        self._draw_bead(b, a_cup)
+                    self._draw_bead(b, a_cup)
 
                 if front_tex is not None:      # 回退时没有前层, 弹珠就在玻璃之上(可接受的降级)
                     Color(1.0, 1.0, 1.0, a_cup)
