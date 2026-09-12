@@ -6610,7 +6610,9 @@ class RootWidget(BoxLayout):
             _info = self._build_info()
         except Exception:
             _info = ""
-        def _mk_lbl(_text, _align, _size='16sp', _h0=26):
+        def _mk_lbl(_text, _align, _size='15sp', _h0=26):
+            # ⚠️ 默认字号 16 -> 15: 与另外两个列表弹窗(跑分历史/每轮次数)统一到 15sp。
+            #    这三个弹窗长得几乎一样, 却用了 17/16/15 三种字号 —— 玩家一眼就看出参差。
             """自动撑高的行标签 —— **折行不再等于裁切**。
 
             ⚠️ 为什么必须是这个形状: 这块面板栽在"文字被裁掉"上两次了(v0.6.12 把两行并一行;
@@ -6978,17 +6980,21 @@ class RootWidget(BoxLayout):
             for r in reversed(self.bench_history[-100:]):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
+                # ⚠️ 字号/行高与另外两个列表弹窗**对齐**(见 _fit_uniform 上方那段说明):
+                #    这里原来是 17sp/30dp —— 全 app 最大的正文, 比主界面正文(14~15)还大一档,
+                #    而它是个要塞很多行的滚动列表。统一到 15sp(Body 档) + 26dp 行高:
+                #    同一个滚动框里能多放约两行(玩家: 「这个设计的目的是放更多内容的」)。
                 row = Label(
                     text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
-                    font_size='17sp', halign='left', valign='middle',
-                    color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(30))
+                    font_size='15sp', halign='left', valign='middle',
+                    color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(26))
                 row.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
                 _rows.append(row)
                 inner.add_widget(row)
             # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
             #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
             #    同一批行 17.0 而别的 17sp 行是 34.0)。
-            self._fit_uniform(_rows, sp(17))
+            self._fit_uniform(_rows, sp(15))     # 与另外两个列表弹窗同一个基准(见上)
             scroll.add_widget(inner)
             content.add_widget(scroll)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
