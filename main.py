@@ -6744,12 +6744,11 @@ class RootWidget(BoxLayout):
             # 防重入: `_on_title_touch_down` 是 **Window 级触摸观察者**, 模态弹窗拦不住它
             # (它只看坐标) —— 弹窗开着时再长按会叠出第二个。闸门开在"建弹窗"这一端。
             return
-        content = BoxLayout(orientation='vertical', padding=dp(10), spacing=dp(8))
+        content = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(8))
         tip = Label(text='（重启游戏后隐藏返还率失效，需重新激活）',
-                    font_size='13sp', halign='center', valign='middle',
-                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
+                    font_size='14sp', halign='center', valign='middle',
+                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(28))
         tip.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-        content.add_widget(tip)
 
         # 四个选项**横向**一排(玩家定稿)。第一项是"不要隐藏档", 文字固定; 后三项**从
         # RTP_HIDDEN 生成**, 加一档就自动多一个按钮。
@@ -6767,26 +6766,31 @@ class RootWidget(BoxLayout):
                 _restyle()
             return _go
 
-        row = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(4))
+        row = BoxLayout(size_hint_y=None, height=dp(54), spacing=dp(4))
         for key, text in opts:
-            b = Button(text=text, font_size='16sp', bold=True, background_normal='',
+            b = Button(text=text, font_size='18sp', bold=True, background_normal='',
                        background_down='')
             b.bind(on_release=_pick(key))
             btns[key] = b
             row.add_widget(b)
         content.add_widget(row)
+        # 说明行放在**选项和「确定」之间**(玩家 2026-09-12 定稿): 先选, 选完往下看到
+        # 说明, 再看到确定 —— 顺序跟玩家的动作顺序一致。放最上面时它挤在标题下面,
+        # 容易被当成"副标题"跳过。
+        content.add_widget(tip)
         _restyle()                                   # 建完立刻上默认高亮
 
-        ok_btn = Button(text='确定', font_size='16sp', bold=True, background_normal='',
+        ok_btn = Button(text='确定', font_size='18sp', bold=True, background_normal='',
                         background_down='', background_color=hex_rgb(COL_DARKRED) + (1,),
-                        size_hint_y=None, height=dp(48))
+                        size_hint_y=None, height=dp(52))
         content.add_widget(ok_btn)
-        # 尺寸 0.92 / h_dp=250 是**量出来的**(不是拍的): Kivy 的 Popup 外壳还有一层 12dp
-        # 内边距(kivy/data/style.kv 里的 GridLayout(padding:'12dp')), 于是横向可用宽 =
-        # `hint_w*vw - 24 - 2*pad - 3*spacing` 再 /4。360dp 机器上 0.86/14/5 差 3.3dp
-        # —— 文字比按钮宽就是溢出, 而 Kivy 的 Button **不会自动换行**(它没有 text_size),
-        # 0.92/10/4 余 +4.8dp。改文案或加档位时要重算这个。
-        popup = self._popup(0.92, 250, title='隐藏返还率', content=content,
+        # 尺寸 0.98 / h_dp=265 是**算出来再用截图量过的**(不是拍的)。字号从 16sp 提到 18sp
+        # 之后, 四个汉字("关闭隐藏")要 4x18 = 72dp, 而按钮宽 = `hint_w*vw - 24(外壳内边距,
+        # 见 kivy/data/style.kv 的 GridLayout(padding:'12dp')) - 2*pad - 3*spacing` 再 /4
+        # —— 360dp 机器上 0.92/10/4 只给 68.8dp, **放大字号就会溢出**(Kivy 的 Button 没有
+        # text_size, 不会自动换行, 超了直接盖到隔壁按钮上)。现在 0.98/8/4 给 75.2dp。
+        # 改文案/加档位/改字号都要重算这个。
+        popup = self._popup(0.98, 265, title='隐藏返还率', content=content,
                             auto_dismiss=True,          # 同"每轮游戏次数设定": 点外面关掉且不生效
                             title_color=hex_rgb(COL_TEXT) + (1,),
                             title_size='19sp',
