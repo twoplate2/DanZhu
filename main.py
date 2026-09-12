@@ -3568,24 +3568,25 @@ REVEAL_DELAY = 0.4     # 揭晓 = _last_touch + 这个值
 #    ui 的 _reveal_deadline / fx_probe 全从它取值。
 #    血泪: _reveal_deadline 里曾经硬编码过 0.45, 后来尾巴改成 0.60 时**静默**脱钩 ->
 #    兜底 deadline 提前触发 -> 数字和语音提前冒出来剧透。**别再写死任何和。**
-HOLD_TIERS = (2, 3, 5, 10, 20, 50, 100)   # 档位顺序(与下面两个常量一起决定全表)
-HOLD_BASE = 0.6        # x2(最小档)的停留
-HOLD_STEP = 0.1        # 每升一档 +0.1s
-# => x2 0.6 / x3 0.7 / x5 0.8 / x10 0.9 / x20 1.0 / x50 1.1 / x100 1.2
+HOLD_BASE = 0.6        # 装满后的**最短停留**: 这之前点击无效, 过了才受理(见 request_close)
+# ⚠️ 2026-09-12 起**不再按倍率分档**(原来是 x2 0.6 -> x100 1.2, "大奖多看一会儿")。
+#    玩家定稿: 装满后由**玩家点击**才退场, 这个 0.6s 只当"最短停留"用。
+#    `HOLD_TIERS` / `HOLD_STEP` 已删 —— 别因为"想给大奖多一点"再加回来, 那会和点击逻辑打架。
 RESULT_FADE = 0.25     # 可见的离开(**恒定, 不随档位变** —— 离开的手感要一致)
-FX_MAX_SEC = 9.0       # 硬兜底: 超过这个时长无条件解锁
+# 硬兜底: 超过这个时长无条件解锁。⚠️ 2026-09-12 从 9.0 提到 **60.0** —— 退场改成"等玩家
+# 点击"之后, 9 秒对"看够了再点"太短, 会把画面**当场清掉**(`_abort` 是 mode=idle + 清空球)。
+# 它不是产品行为, 是**安全网**: 防的是"某个 bug 让点击失效 -> 真卡死"。触发时的表现是
+# "画面突然没了", 跟"一直等"矛盾 —— 但两害相权, 宁可画面没了也不能把玩家锁死。
+FX_MAX_SEC = 60.0
 
 
 def hold_for(m):
-    """本局"装满后静止"的时长(秒) —— 按倍率所在档位线性递增。
+    """装满后的**最短停留**(秒) —— 全项目唯一真源。
 
-    小于最小档按最小档算, 大于等于最高档封顶。这是全项目唯一的停留时长真源。
+    ⚠️ 参数保留但**不再使用**: 2026-09-12 起统一 0.6s, 不再按倍率分档(见 HOLD_BASE 处)。
+       签名不改是因为 5 个消费者 + 6 条探针判据都写的是 `hold_for(n)`, 改名会牵一大片。
     """
-    i = 0
-    for k, t in enumerate(HOLD_TIERS):
-        if m >= t:
-            i = k
-    return HOLD_BASE + HOLD_STEP * i
+    return HOLD_BASE
 
 # ---- 进场/退场的分层与位移 ----
 # 病根: 整层由**一根 alpha** 统一驱动 -> 进场是"所有东西同时淡入"、退场是"同时淡出",
@@ -4131,6 +4132,11 @@ class WinPileFX(Widget):
         self._done_fired = False          # 揭晓是否已放出去(它比退场早, 要各自触发一次)
         self._settled_at = 0.0
         self._deadline = 0.0
+        # 退场由**玩家点击**触发(2026-09-12 定稿): `_closing_at` = 收到关闭请求的墙钟时刻,
+        # 0 = 还没有(此时画面停在"装满静止")。`_auto_close` = 这一局不等点击、到点自己走
+        # —— **只给跑分用**(跑分是自动连续发射的, 等人点击会把整轮跑分卡死)。
+        self._closing_at = 0.0
+        self._auto_close = False
         self._on_done = None
         self._s = 1.0
         self._ox = 0.0
@@ -4237,10 +4243,13 @@ class WinPileFX(Widget):
             tail = SPAWN_TOP + (n - 1) * iv + FALL_MAX + 0.33
         return WINDUP + tail + hold_for(n) + RESULT_FADE
 
-    def play_win(self, multiplier, bet, on_done=None):
+    def play_win(self, multiplier, bet, on_done=None, auto_close=False):
         """排定一场中奖演出。返回 False 表示没排上(调用方照常解锁)。
 
         失败绝不能影响结算 —— 余额这时已经加过了, 这里只是表演。
+
+        `auto_close`: 装满后**不等玩家点击**、到点自己退场。**只给跑分用** —— 跑分是
+        自动连续发射的, 等人点击会把整轮跑分卡死(玩家 2026-09-12 定稿)。
         """
         try:
             multiplier = int(multiplier)
@@ -4260,7 +4269,7 @@ class WinPileFX(Widget):
         try:
             self._value = bet if bet in BET_COLORS else DEFAULT_BET
             self._seq += 1
-            self._hold = hold_for(multiplier)      # 本局回味时长: 按倍率档位取值
+            self._hold = hold_for(multiplier)      # 现在恒 = HOLD_BASE(最短停留), 见 hold_for
             self._make_balls(multiplier, self._value, self._seq)
         except Exception as exc:               # build_pile 的断言/任何意外
             print("CUP-PILE FAIL: %s" % exc)
@@ -4272,11 +4281,32 @@ class WinPileFX(Widget):
         now = time.time()
         self._t0 = now + WINDUP
         self._settled_at = 0.0
+        self._closing_at = 0.0            # 新一局: 还没收到关闭请求(画面会停在装满等点击)
+        self._auto_close = bool(auto_close)
         self._done_fired = False
         self._deadline = self._t0 + FX_MAX_SEC
         self._on_done = on_done
         self.mode = "pending"
         self._dirty = True
+        return True
+
+    def request_close(self):
+        """玩家点了一下屏幕, 请求把装杯画面收走。返回 True = 这一下被消费掉了。
+
+        调用方(RootWidget 的 Window 级触摸观察者)拿到 True 就该**早退**, 别再走
+        "标题/期望返还比例的长按计时" —— 玩家点的是"我看够了", 不是 HUD 上的长按热区。
+
+        ⚠️ 只有"装满静止**且**过了最短停留"才受理。在那之前点击必须无效, 否则刚装好的
+           画面会被手快的玩家点掉(玩家 2026-09-12 定稿)。球还在往下落(mode != "result")
+           时同样不受理 —— 那正是"没有下落完成时点击无效"这条。
+        ⚠️ 基准用 `_settled_at`(**墙钟**, tick 里写进去的)而**不是** `_last_settle`
+           (相对 `_t0` 的秒数) —— 只有前者能和 `time.time()` 比。
+        """
+        if self.mode != "result" or self._closing_at:
+            return False
+        if time.time() < self._settled_at + HOLD_BASE:
+            return False
+        self._closing_at = time.time()
         return True
 
     def busy(self):
@@ -4440,7 +4470,12 @@ class WinPileFX(Widget):
             # ⚠️ 这一段**不能停** —— _ball_screen 对未落定的球是按 tt 插值的, 不推进的话
             # 它们会冻在半空(而不是落到堆里)。
             self._advance_balls(now - self._t0)
-            if now >= self._settled_at + self._hold + RESULT_FADE:
+            # 退场**不再自动** —— 等玩家点击(见 request_close)。**跑分期间例外**: 跑分是
+            # 自动连续发射的, 等人点击会把整轮跑分卡死(玩家 2026-09-12 定稿), 那一路仍到点自己走。
+            if (not self._closing_at and self._auto_close
+                    and now >= self._settled_at + self._hold):
+                self._closing_at = now
+            if self._closing_at and now >= self._closing_at + RESULT_FADE:
                 self.mode = "idle"
                 self._balls = []
         # ⚠️ 揭晓判定必须在**所有 mode 迁移之后**, 且**不能只认 win 分支**(2026-09-10 实修)。
@@ -4590,15 +4625,21 @@ class WinPileFX(Widget):
             return a_dim, a_cup, k, dy
         if self.mode == "win":
             return 1.0, 1.0, 1.0, 0.0
-        # result: 退场
-        td = now - self._settled_at
-        u = max(0.0, min(1.0, (td - self._hold) / RESULT_FADE))
+        # result: 退场 —— 从**玩家点击那一刻**起算(见 request_close; 跑分走 _auto_close)。
+        # ⚠️ 点击之前一律返回"装满静止态", **dy 必须是 0** —— 否则整组会停在"上浮过的"
+        #    位置上, 那是退场终态的姿势、不是装满的姿势。
+        # ⚠️ 原来这里从 `_settled_at + self._hold` 起算; 改成点击触发之后那个基准不存在了,
+        #    别把它加回来(加了就会在等待期里按"已退场"渲染)。
+        if not self._closing_at:
+            return 1.0, 1.0, 1.0, 0.0
+        td = now - self._closing_at
+        u = max(0.0, min(1.0, td / RESULT_FADE))
         # 位移/缩放: 二次缓出 —— 运动必须发生在还看得见的时候(见 EXIT_LIFT 处的说明)
         u_pos = 1.0 - (1.0 - u) ** 2
         # 透明度: 线性, 且在解锁前 EXIT_ALPHA_TAIL 就归零
-        u_a = max(0.0, min(1.0, (td - self._hold) / (RESULT_FADE - EXIT_ALPHA_TAIL)))
+        u_a = max(0.0, min(1.0, td / (RESULT_FADE - EXIT_ALPHA_TAIL)))
         # 压暗层早 EXIT_DIM_LEAD 撤 -> 灯先亮回来, 道具后撤走
-        u_dim = self._eo((td - self._hold + EXIT_DIM_LEAD) / RESULT_FADE)
+        u_dim = self._eo((td + EXIT_DIM_LEAD) / RESULT_FADE)
         a_dim = 1.0 - u_dim
         a_cup = 1.0 - u_a
         k = 1.0 - (1.0 - EXIT_SCALE) * u_pos
@@ -6097,6 +6138,11 @@ class RootWidget(BoxLayout):
         layer = _land_layer()
         if layer is not None:
             pos = layer._to_eq(*pos)        # Window 级触摸是物理坐标, 先逆旋转到等效坐标
+        # 装杯装满后等玩家点击才退场(玩家 2026-09-12 定稿)。这一下**吞掉** —— 早退, 不触发
+        # 下面"标题 / 期望返还比例"的长按计时: 玩家点的是"我看够了", 不是 HUD 上的长按热区。
+        # 受理条件(装满静止 + 过了最短停留)全在 request_close 里, 这里只管"点到了就试一下"。
+        if self.game_area.win_fx.request_close():
+            return
         if (self.title_lbl.collide_point(*pos)
                 and not getattr(self, "_bench_running", False)):
             self._bench_start = time.time()
@@ -7033,7 +7079,10 @@ class RootWidget(BoxLayout):
             self._reveal_deadline = 0.0
 
             def _start_cup():
-                if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled):
+                # auto_close: **跑分期间**不等玩家点击(跑分是自动连续发射的, 等人点击会把
+                # 整轮跑分卡死); 正常玩则停在装满状态等点击(玩家 2026-09-12 定稿)。
+                if not self.game_area.win_fx.play_win(m, self.bet, on_done=_on_settled,
+                                                      auto_close=getattr(self, "_bench_running", False)):
                     # 排不上(球堆异常)也绝不能把数字和声音吞了 —— 以前这个返回值是被丢弃的
                     _on_settled()
                 # 兜底: 到点还没揭就自己揭(防 tick 停摆)。
