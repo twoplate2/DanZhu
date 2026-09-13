@@ -4198,6 +4198,7 @@ class WinPileFX(Widget):
         self._a_dim_now = 0.0
         self._glass_prebaked = False     # prebake_step 的一次性开关(玻璃贴图预热)
         self._font_prebaked = False      # prebake_step 的一次性开关(大字/飘字字号预热)
+        self._vib_prebaked = False       # prebake_step 的一次性开关(震动线程+系统服务代理)
         self._balls = []
         self._value = DEFAULT_BET
         self._seq = 0
@@ -4886,6 +4887,14 @@ class WinPileFX(Widget):
         #    ⚠️ 预热的是**字号**不是文本 —— 所以只要把这几个字号各碰一次就够, 之后不管
         #    出 "+2" 还是 "+500000" 都是 0.05ms。`_FIT_PX` 清空也冲不掉它: 那 26ms 的开销
         #    记在 Kivy 自己的按字号字体缓存里, 不在 `_FIT_PX` 里。
+        if not self._vib_prebaked:
+            self._vib_prebaked = True
+            try:
+                _vib_warm()
+            except Exception:
+                pass
+            Clock.schedule_once(self.prebake_step, 0.05)
+            return
         if not self._font_prebaked:
             self._font_prebaked = True
             for _fs in (sp(36), sp(48), sp(26), sp(30)):
@@ -5161,6 +5170,31 @@ def _vib_worker():
         if item is None:
             return
         _vibrate_now(item[0], item[1])
+
+
+def _vib_warm():
+    """启动期把震动这条路**焐热**: 建工作线程 + 预取 Vibrator 代理。
+
+    ⚠️ **为什么必须预热**(2026-09-14 玩家报"v0.6.66 比 v0.6.65 差"之后补的):
+    工作线程原本是**第一次震动时才建**的, 而第一次震动正好落在**第一次发射**那一刻 ——
+    也就是跑分采样窗口**里面**。于是那一帧要现付: 建线程 + 首次 JNI 调用的
+    `AttachCurrentThread`(安卓上可能几十毫秒, 还要 JVM 锁) + 首次 `getSystemService`。
+    1%Low 只统计最慢的 1%(约 12 帧), **一帧 200ms 就能把那一档的均值明显拉下去**。
+    这和本工程其它预热(玻璃贴图/球纹理/字形表)是同一条规矩: **别在采样/中奖那帧现做**。
+    """
+    if platform != "android":
+        return
+    global _VIB_Q
+    if _VIB_Q is None:
+        with _VIB_LOCK:
+            if _VIB_Q is None:
+                try:
+                    import queue as _queue
+                    _VIB_Q = _queue.Queue(maxsize=32)
+                    threading.Thread(target=_vib_worker, daemon=True).start()
+                except Exception:
+                    _VIB_Q = False
+    _vib_get()                            # 顺手把系统服务代理也取回来
 
 
 def _vibrate(ms, amp=255):
