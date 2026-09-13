@@ -7143,11 +7143,18 @@ class RootWidget(BoxLayout):
             return ''
         try:
             parts = []
-            parts.append('每帧耗时： 一半的帧 ≤%.1f 毫秒 · 最慢的 1%% ≤%.1f · 最慢一帧 %.1f'
-                         % (d["p50"], d["p99"], d["max"]))
             # "实算"= 那一帧真的烧掉的 CPU。它接近帧间隔就是**算出来的**(处理器瓶颈);
             # 很小就是**等出来的**(GC/IO/显卡/驱动)。真机上这两个数一对一比就见分晓。
-            w = '  '.join('%.0f毫秒(%s·实算%.1f)' % (g, t, c) for g, t, c in d["worst"])
+            # "实算"只在 >=1 毫秒时才带出来: 安卓是 Linux, process_time 有纳秒精度, 那几个数
+            # 是真有用的; 而 Windows 只有 15.6ms 精度, 桌面跑分里恒为 0.0, 纯噪声。
+            # ⚠️ 两个分支的**占位符个数不一样**(带实算 3 个 / 不带 2 个), 所以必须分别格式化 ——
+            #    写成 `('A' if c>=1 else 'B') % (g,t,c)` 会在 B 分支抛 TypeError, 而外层那个
+            #    except 会把它**静默吞掉**(面板诊断整块消失, 不报错)。踩过一次了。
+            def _frame_cell(_g, _t, _c):
+                if _c >= 1.0:
+                    return '%.0f毫秒(%s·实算%.1f)' % (_g, _t, _c)
+                return '%.0f毫秒(%s)' % (_g, _t)
+            w = '  '.join(_frame_cell(g, t, c) for g, t, c in d["worst"])
             parts.append('最慢三帧： ' + w)
             _ord = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
             gs = d["groups"]
@@ -7162,7 +7169,7 @@ class RootWidget(BoxLayout):
             # 是"关掉音效 1% low 就回升", 而那会**连震动一起关掉**, 混在一起分不开);
             # ② **自证探针在工作** —— 看到"全程发声 N 次"就知道计数器真跑了, 否则
             # "慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这仓库栽过这种静默)。
-            parts.append('发声/震动： 全程 %d 次 / %d 次'
+            parts.append('发声/震动： %d 次 / %d 次'
                          % (d.get("snd_n", 0), d.get("vib_n", 0)))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
@@ -7184,9 +7191,8 @@ class RootWidget(BoxLayout):
                       else ("处理器比较吃紧" if _r >= 0.4 else "大头在等"))
             else:
                 _v = "—"
-            parts.append('瓶颈： %s · 每帧实算 %.1f / 帧间隔 %.1f 毫秒 · 内存回收 %.1f 毫秒'
-                         '（%d 次，最坏 %.1f）'
-                         % (_v, _cpu, _p50, d["gc_total"] * 1000.0, d["gc_n"],
+            parts.append('瓶颈： %s · 每帧实算 %.1f / 帧间隔 %.1f 毫秒 · 内存回收 %.1f 毫秒（最坏一次 %.1f）'
+                         % (_v, _cpu, _p50, d["gc_total"] * 1000.0,
                             d["gc_worst"] * 1000.0))
             return '\n'.join(parts)
         except Exception:
