@@ -946,7 +946,20 @@ def roll_multipliers(rtp=0.80):
 # 音效层: 程序化合成 16bit PCM + winmm 多声道播放 (纯 stdlib, 无音频文件)
 # =============================================================================
 SR = 22050                   # 采样率
-SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数)
+# 并发声道数(可同时叠加的音效数)。
+# ⚠️ 2026-09-14 由 8 提到 16, 是冲着**真机实测的那个 53 毫秒/次**去的:
+#    真机跑分测出 `SoundPool.play()` 单次最慢 143.6ms、50 次累计 2674ms(平均 53.5ms),
+#    而帧间隔才 12.5ms。最常见的成因就是**声道不够 → SoundPool 要抢一条正在响的流**,
+#    抢流要停掉再启一条 AudioTrack, 走音频服务。
+#    本作最长的音: `win6` **1980ms**、`win5` 1780、`flight` 1500 —— 一条 2 秒的音
+#    就占死一条声道 2 秒; 揭晓那一刻"中奖琶音 + 语音(1~3秒) + 落珠 10 次/秒 + coin"
+#    很容易顶到 8 条上限。提到 16 只是给 SoundPool 更多余量, **不改任何播放逻辑**,
+#    而且顺带**少掐断正在响的音**(文档里记着: 满了的行为不是丢音, 是把还在响的流当场掐断)。
+#    ⚠️ 这一条是**根因尝试、不是已证实的修复** —— 判据看跑分面板的"发声·单次最慢":
+#       前端值 143.6 毫秒, 若明显下降就是这个方向对了; 若纹丝不动说明慢在别处(音频 HAL 唤醒等)。
+#    ⚠️ 反向风险(为什么只敢翻倍、不敢更大): 并发流越多, 音频线程的混音/重采样越重。
+#       16 条短音对现代 SoC 是小事, 但 32 条就没把握了 —— 别再往上加。
+SFX_VOICES = 16              # 并发声道数(可同时叠加的音效数)
 SFX_MASTER = 1.0             # 总音量 (0~1), 手机喇叭需要满幅
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
 SFX_RESULT_LEAD = 0.18       # 结果音(中奖/未中)前置静音: 让入袋声先落地 + 放大揭晓前定格
@@ -1922,7 +1935,11 @@ _FRAME_PROBE = [0, 0]            # [本帧发声次数, 本帧震动次数]
 #    后端耗时不再属于某一帧。真机实测这个数大得离谱: 15 秒窗口里 **50 次调用共 2674 毫秒**
 #    (平均每次 53.5ms, 单次最慢 143.6ms, 后端 SoundPool), 而帧间隔才 12.5ms ⇒
 #    **主线程每响一声就被卡几十毫秒**。记下最慢那一次的名字, 万一元凶是某个特定音效。
-_SND_STAT = [0.0, 0.0, ""]        # [累计秒, 单次最慢秒, 最慢的名字]
+_SND_STAT = [0.0, 0.0, "", 0.0]    # [累计秒, 单次最慢秒, 最慢的名字, 超过阈值的次数]
+# 发声"慢调用"的判据(毫秒)。20ms 已经远超一帧的余量(帧间隔 12.5ms), 落在这儿就一定有问题。
+# 它的用途是**区分两种成因**: "每一次都慢"(说明是这条路的固定开销/HAL 唤醒)
+# vs "少数几次很慢"(说明是争议资源 —— 声道抢用/锁竞争)。
+SND_SLOW_MS = 20.0
 # "慢帧"的判定门槛(毫秒)。只此一处 —— 判据与面板文案都读它, 免得两处各写一个数漂掉。
 BENCH_SLOW_MS = 90.0
 
@@ -2005,6 +2022,8 @@ class Sfx:
         finally:
             _dt = time.perf_counter() - _t0
             _SND_STAT[0] += _dt
+            if _dt * 1000.0 > SND_SLOW_MS:
+                _SND_STAT[3] += 1
             if _dt > _SND_STAT[1]:
                 _SND_STAT[1] = _dt
                 # ⚠️ 取**最后一项**当名字 —— 两个分支的载荷不同(pcm 是字节, named 是名字+增益),
@@ -2437,6 +2456,8 @@ class Sfx:
         ok = self.out.play_named(name, lvl / 10.0)
         _dt = time.perf_counter() - _t0
         _SND_STAT[0] += _dt
+        if _dt * 1000.0 > SND_SLOW_MS:
+            _SND_STAT[3] += 1
         if _dt > _SND_STAT[1]:
             _SND_STAT[1] = _dt
             _SND_STAT[2] = name
@@ -7011,6 +7032,7 @@ class RootWidget(BoxLayout):
         _SND_STAT[0] = 0.0
         _SND_STAT[1] = 0.0
         _SND_STAT[2] = ""
+        _SND_STAT[3] = 0.0
         _VIB_STAT[0] = 0.0
         _VIB_STAT[1] = 0.0
         _VIB_STAT[2] = "" 
@@ -7164,6 +7186,7 @@ class RootWidget(BoxLayout):
         out["snd_worst"] = _SND_STAT[1] * 1000.0        # 全程单次最慢(毫秒)
         out["snd_sum"] = _SND_STAT[0] * 1000.0          # 全程累计(毫秒)
         out["snd_worst_name"] = _SND_STAT[2]
+        out["snd_slow_n"] = int(_SND_STAT[3])
         out["vib_worst"] = _VIB_STAT[1] * 1000.0
         out["vib_sum"] = _VIB_STAT[0] * 1000.0
         out["vib_worst_name"] = _VIB_STAT[2]
@@ -7377,10 +7400,12 @@ class RootWidget(BoxLayout):
             # 发声/震动**各占一行** —— 这两个数现在是定位卡顿的主判据, 挤一行读不清。
             # 后端名并到发声那行(它只跟发声有关)。
             _wn = d.get("snd_worst_name", "")
-            parts.append('发声： %d 次 · 单次最慢 %.1f 毫秒%s · 累计 %.0f 毫秒（后端 %s）'
+            parts.append('发声： %d 次 · 单次最慢 %.1f 毫秒%s · 累计 %.0f 毫秒'
+                         ' · 超%.0f毫秒 %d 次（后端 %s）'
                          % (d.get("snd_n", 0), d.get("snd_worst", 0.0),
                             ('（%s）' % _wn) if _wn else '',
-                            d.get("snd_sum", 0.0), d.get("backend", "?")))
+                            d.get("snd_sum", 0.0), SND_SLOW_MS,
+                            d.get("snd_slow_n", 0), d.get("backend", "?")))
             _vn = d.get("vib_worst_name", "")
             parts.append('震动： %d 次 · 单次最慢 %.1f 毫秒%s · 累计 %.0f 毫秒'
                          % (d.get("vib_n", 0), d.get("vib_worst", 0.0),
