@@ -3808,7 +3808,11 @@ _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
 _FONT_WARM_SIZES = None
 # GC 冻结计数(gc.freeze() 之后为永久代里的对象数; 0 = 还没冻结)。只给跑分面板显示用 ——
 # 让玩家/后来的人一眼看出"这版的 GC 冻结到底跑没跑", 而不是靠猜(本仓库栽过静默失效)。
-_GC_FROZEN = [0]
+# [冻结的对象数, 冻结**前**强制全量回收一次要多久(毫秒), 冻结**后**同一个动作要多久]
+# 后两格是 v0.6.75 加的 —— 桌面实测**量不出**冻结的收益(桌面 30 秒只有 0.6ms 的 GC, 全是
+# 零头), 所以只能让 App 在**真机上**自己量: 启动时冻结前后各强制做一次 gen-2 全量回收,
+# 把两个数打进跑分面板。判据一眼可见: "全量回收 26.8 -> 0.0 毫秒"。
+_GC_FROZEN = [0, 0.0, 0.0]
 _GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例存
 # 杯口环的**后半个**(远侧那半圈)在 back 贴图里占的高度比例。
 # 生成器里 `rim_back = _half_mask(rim, front=False, split_y=80)`, 环本体是 design y 5..155、
@@ -4982,8 +4986,19 @@ class WinPileFX(Widget):
         try:
             import gc as _gc
             _gc.collect()                 # 先把垃圾收干净, 免得把垃圾也一起冻结
+            # 冻结**前**强制一次 gen-2 全量回收并计时 —— 这就是"真机上一次全量回收要
+            # 多久"的直接读数(面板那栏"内存回收 最坏一次 26.8"就是它造成的)。
+            # 代价是启动期多一记停顿, 发生在预热链里、玩家看不见的地方。
+            _t0 = time.perf_counter()
+            _gc.collect(2)
+            _t1 = time.perf_counter()
             _gc.freeze()
+            _t2 = time.perf_counter()
+            _gc.collect(2)                # 冻结后再来一次: 这次扫不到东西
+            _t3 = time.perf_counter()
             _GC_FROZEN[0] = _gc.get_freeze_count()
+            _GC_FROZEN[1] = (_t1 - _t0) * 1000.0
+            _GC_FROZEN[2] = (_t3 - _t2) * 1000.0
         except Exception:
             pass
 
@@ -7496,6 +7511,8 @@ class RootWidget(BoxLayout):
         # 这一栏是"GC 冻结有没有生效"的判据: 冻结之后 gen-2 该变成扫不到东西。
         out["gc_worst_gen"] = (max(gcs, key=lambda g: gcs[g][2]) if gcs else -1)
         out["gc_frozen"] = _GC_FROZEN[0]
+        out["gc_frz_before"] = _GC_FROZEN[1]
+        out["gc_frz_after"] = _GC_FROZEN[2]
         return out
 
     def _wait_idle_then_bench(self, dt=0):
@@ -7761,8 +7778,11 @@ class RootWidget(BoxLayout):
             # 冻结生效与否**必须显示** —— 否则"GC 没再拖后腿"既可能是真冻结了, 也可能是
             # 根本没跑到(这个仓库专门栽过这种静默)。
             if d.get("gc_frozen"):
-                parts.append('内存冻结： 已冻结 %d 个常驻对象（全量回收从此扫不到东西）'
-                             % d.get("gc_frozen", 0))
+                # 冻结**前后各强制做一次全量回收**的实测读数 —— 这是"冻结到底买到了什么"
+                # 在真机上的直接答案, 不用靠推断(桌面量不出来: 30 秒总共才 0.6 毫秒的 GC)。
+                parts.append('内存冻结： 已冻结 %d 个常驻对象 · 全量回收 %.1f -> %.1f 毫秒'
+                             % (d.get("gc_frozen", 0), d.get("gc_frz_before", 0.0),
+                                d.get("gc_frz_after", 0.0)))
             if _win:
                 parts.append('⚠️ 每帧实算这一项在 Windows 上测不准(系统计时粒度 15.6 毫秒), '
                              '「瓶颈」不判 —— 要看它请用安卓机的成绩')
