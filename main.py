@@ -5189,6 +5189,17 @@ _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的�
 # ⚠️ 桌面量不到(`platform != "android"` 直接 return), 只能靠真机跑分面板读那一行。
 _JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0, 0.0]
 
+# 上一帧 `_frame` **自己**在**本线程**上花了多少毫秒(由 `_frame_timed` 写)。
+# ⚠️ 为什么必须单独有这一格: 面板那栏"每帧实算"读的是 `time.process_time()`, 那是
+#    **整个进程**的 CPU —— 含发声/震动两条工作线程、以及安卓那一堆 Java 线程。
+#    于是"慢帧里实算 37.8 毫秒"既可能是**主线程真在忙**, 也可能只是别的线程在忙。
+#    这一格与"实算"一起看才分得开:
+#        实算大 · **自算也大**  ⇒ 是我们自己的代码(该去优化它);
+#        实算大 · **自算很小**  ⇒ 主线程在等(GC / 框架 / 别的线程), 优化我们的代码没用。
+#    桌面已经用 cProfile 剖过一遍(整个 `_frame` 只占帧时间 0.9%), 但真机没有剖析器,
+#    只能靠这一格。
+_FRAME_SELF = [0.0]
+
 
 def _vib_get():
     """取(并缓存)Vibrator 系统服务代理。
@@ -6301,7 +6312,7 @@ class RootWidget(BoxLayout):
             self._bench_dim_col = Color(0.05, 0.06, 0.09, 0.0)
             self._bench_dim_rect = Rectangle(pos=(0, 0), size=(0, 0))
         self.bind(size=self._relayout_bench_dim, pos=self._relayout_bench_dim)
-        Clock.schedule_interval(self._frame, FIXED_DT)
+        Clock.schedule_interval(self._frame_timed, FIXED_DT)
         # 中奖杯的球纹理/球堆预热: 分帧摊在启动后做, 别等中奖那一刻现算(低端机单档
         # d=128 纯 Python 合成要 100~200ms, 一次做完就是几个长帧, 而这动画的全部意义
         # 就是丝滑)。排在 _frame 之后, 不影响冷启动的建界面/烘音效。
@@ -7342,7 +7353,8 @@ class RootWidget(BoxLayout):
             #    纳秒级; Windows 上精度只有 15.6ms, 所以桌面看不出分辨力, 真机才有效。
             self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag(),
                                        (cpu - pcpu) * 1000.0,
-                                       _FRAME_PROBE[0], _FRAME_PROBE[1]))
+                                       _FRAME_PROBE[0], _FRAME_PROBE[1],
+                                       _FRAME_SELF[0]))
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
 
@@ -7412,7 +7424,13 @@ class RootWidget(BoxLayout):
         # 后两个数一起看才分流: 实算 ≈ 帧间隔 ⇒ 算出来的(处理器瓶颈);
         # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
         by_worst = sorted(fr, key=lambda x: -x[0])[:3]
-        out["worst"] = [x[:3] for x in by_worst]
+        # 每一帧带上"自算"(_frame 在本线程上的耗时, 第 6 个字段)。
+        out["worst"] = [[x[0], x[1], x[2], (x[5] if len(x) > 5 else 0.0)] for x in by_worst]
+        # 全程自算的中位数 —— 与"实算"并排看: 两者都小 ⇒ 主线程既没算也没被我们的代码占,
+        # 帧时间就是框架/出图的开销(优化我们的代码没用)。
+        _self_sorted = sorted((x[5] if len(x) > 5 else 0.0) for x in fr)
+        out["self_p50"] = _self_sorted[len(_self_sorted) // 2] if _self_sorted else 0.0
+        out["self_max"] = _self_sorted[-1] if _self_sorted else 0.0
         # 慢帧的"节拍"与"这一帧在发声/震动吗" —— 定位偶发长停顿的两把刀:
         #   · 节拍规则 ⇒ 时钟驱动(某个 0.5s 定时器); 不规则 ⇒ 事件驱动。
         #   · 慢帧里绝大多数在发声/震动 ⇒ 就是那条路(玩家"关音效就变好"的因果线索)。
@@ -7643,11 +7661,21 @@ class RootWidget(BoxLayout):
             # ⚠️ 两个分支的**占位符个数不一样**(带实算 3 个 / 不带 2 个), 所以必须分别格式化 ——
             #    写成 `('A' if c>=1 else 'B') % (g,t,c)` 会在 B 分支抛 TypeError, 而外层那个
             #    except 会把它**静默吞掉**(面板诊断整块消失, 不报错)。踩过一次了。
-            def _frame_cell(_g, _t, _c):
-                if _c >= 1.0:
-                    return '%.0f毫秒(%s·实算%.1f)' % (_g, _t, _c)
+            def _frame_cell(_g, _t, _c, _s):
+                # ⚠️ **三个数必须一起显示**才分得开(见 `_FRAME_SELF` 处的说明):
+                #    帧间隔 / 全进程实算 / 本线程自算。
+                #    实算大而自算小 ⇒ 主线程在等, 优化我们的代码没用。
+                # ⚠️ 占位符个数不同的分支**必须分开格式化** —— 写成
+                #    `('A' if c else 'B') % (g,t,c)` 会在一个分支抛 TypeError, 而外层
+                #    那个 except 会把它静默吞掉(面板诊断整块消失)。踩过一次了。
+                if _c >= 1.0 or _s >= 1.0:
+                    return '%.0f毫秒(%s·实算%.1f·自算%.1f)' % (_g, _t, _c, _s)
                 return '%.0f毫秒(%s)' % (_g, _t)
-            w = '  '.join(_frame_cell(g, t, c) for g, t, c in d["worst"])
+            _w = []
+            for _it in d["worst"]:
+                _w.append(_frame_cell(_it[0], _it[1], _it[2],
+                                      (_it[3] if len(_it) > 3 else 0.0)))
+            w = '  '.join(_w)
             parts.append('最慢三帧： ' + w)
             _ord = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
             gs = d["groups"]
@@ -7725,8 +7753,10 @@ class RootWidget(BoxLayout):
             # GC 那一栏后面挂上"最坏那次是哪一代" —— gen-2 全量回收与 gen-0 差一个量级,
             # 不写清是哪一代, 读者没法判断这是"轻微抖动"还是"扫了整个对象图"。
             _gn = {0: "轻度", 1: "中度", 2: "全量"}.get(d.get("gc_worst_gen", -1), "—")
-            parts.append('瓶颈： %s · 每帧实算 %.1f / 帧间隔 %.1f 毫秒 · 内存回收 %.1f 毫秒（最坏一次 %.1f·%s）'
-                         % (_v, _cpu, _p50, d["gc_total"] * 1000.0,
+            parts.append('瓶颈： %s · 每帧实算 %.1f（本线程 %.1f，最坏一次 %.1f）/ 帧间隔 %.1f 毫秒'
+                         ' · 内存回收 %.1f 毫秒（最坏一次 %.1f·%s）'
+                         % (_v, _cpu, d.get("self_p50", 0.0), d.get("self_max", 0.0),
+                            _p50, d["gc_total"] * 1000.0,
                             d["gc_worst"] * 1000.0, _gn))
             # 冻结生效与否**必须显示** —— 否则"GC 没再拖后腿"既可能是真冻结了, 也可能是
             # 根本没跑到(这个仓库专门栽过这种静默)。
@@ -8923,6 +8953,19 @@ class RootWidget(BoxLayout):
                    self.reset_btn, self.fire_btn):
             self._fit1(_w)
         # (两行的按钮在各自那一轮里已经按**整排统一**定过字号了, 见上)
+
+    def _frame_timed(self, dt):
+        """给 `_frame` 计一个**本线程**的耗时, 喂给跑分面板(见 `_FRAME_SELF` 处的说明)。
+
+        ⚠️ 用 `perf_counter` 而不是 `process_time`: 要量的就是"这一帧我们自己的代码在
+            **这条线程**上花了多久", 不能把工作线程/Java 线程的 CPU 算进来。
+        ⚠️ 包一层而不是改 `_frame` 内部: 那个函数里有好几处提前 return, 内嵌计时容易漏。
+        """
+        _t0 = time.perf_counter()
+        try:
+            self._frame(dt)
+        finally:
+            _FRAME_SELF[0] = (time.perf_counter() - _t0) * 1000.0
 
     def _frame(self, dt):
         self._check_title_hold()
