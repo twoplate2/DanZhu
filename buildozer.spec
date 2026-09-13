@@ -1179,7 +1179,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #    不换算, 已排除在报告之外。)
 #   门禁: --check / --selftest / fx_probe / --smoke 全绿; 布局探针 360/400/457/540/800dp 全绿;
 #   弹窗高度门禁 360/400dp 全过; 回归检查全过; check_desc 报"全部一行放得下(360dp 起)"。
-version = 0.6.85
+version = 0.6.86
 
 
 

@@ -1997,6 +1997,7 @@ _FRAME_PROBE = [0, 0, 0]         # [本帧发声次数, 本帧震动次数, 本�
 _FRAME_BRK = {}                  # 本帧累计(会被 _on_flip 读走并清空)
 _BRK_KEYS = ("板面", "重掷", "字号", "装杯")
 _FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
+_FRAME_CALLS = [0]               # `_frame` 被调了几次(与"采样了多少帧"比, 见面板"节拍"行)
 _TEXUPD = [0]                    # 文字重排累计次数(Label.texture_update 被调了几次)
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
@@ -2040,6 +2041,30 @@ def _texupd_wrap():
 
 
 _texupd_wrap()
+
+
+def _cpu_split():
+    """读 `/proc/self/stat` 的 utime(14)/stime(15), 返回 (用户态秒, 内核态秒) 或 None。
+
+    ⚠️ **只适合整窗口统计, 不能逐帧**: 安卓/Linux 的 USER_HZ 是 100 ⇒ 一个 tick = 10 毫秒,
+       而一帧只有 12 毫秒 —— 逐帧读等于全是量化台阶。整窗口的占比足够把候选池切两半:
+         内核态占比高 ⇒ JNI/Binder/logd socket 写/文件写回 这一族;
+         用户态占比高 ⇒ 纯 Python 的 CPU 竞争(GIL)这一族。
+    ⚠️ 解析必须**从最后一个 ')' 之后切**: 进程名那段带括号且可能含空格。
+    """
+    try:
+        with open("/proc/self/stat", "r") as f:
+            raw = f.read()
+        rest = raw[raw.rfind(")") + 2:].split()
+        hz = 100.0
+        try:
+            import os as _os
+            hz = float(_os.sysconf("SC_CLK_TCK")) or 100.0
+        except Exception:
+            pass
+        return (int(rest[11]) / hz, int(rest[12]) / hz)     # 14-3=11, 15-3=12
+    except Exception:
+        return None
 
 
 def _brk_add(tag, t0):
@@ -7668,6 +7693,9 @@ class RootWidget(BoxLayout):
         self._bench_gc_t0 = 0.0
         self._bench_cpu0 = time.process_time()
         self._bench_cpu_prev = self._bench_cpu0
+        self._bench_thr_prev = _THREAD_TIME()
+        _FRAME_CALLS[0] = 0
+        self._bench_cpusplit0 = _cpu_split()
         _SND_STAT[0] = 0.0
         _SND_STAT[1] = 0.0
         _SND_STAT[2] = ""
@@ -7743,6 +7771,14 @@ class RootWidget(BoxLayout):
         #    (切后台回来"直接跳终态"依赖它), 那个语义是对的。
         now = time.perf_counter()
         cpu = time.process_time()
+        # ⚠️ **这一格必须真的写**(2026-09-14 修一个真 bug): `_FRAME_THR[0]` 原来在出货文件里
+        #    只有"读进帧记录"和"面板打印", **没有任何一处赋值** ⇒ 面板那格"主线程"永远是
+        #    **硬编码 0.0**, 而格式串照常打印"主线程0.0"、还会因为别的数 >=1.0 打开长格式分支,
+        #    字符串看起来完全健康。最坏的一种: 一个专抓静默归因的面板, 用一个常量冒充测量值。
+        #    (对抗性评审压测段的 1 号专家独立查出来的。)
+        _tt = _THREAD_TIME()
+        _FRAME_THR[0] = (_tt - getattr(self, "_bench_thr_prev", _tt)) * 1000.0
+        self._bench_thr_prev = _tt
         prev = self._flip_times[-1] if self._flip_times else None
         pcpu = self._bench_cpu_prev
         self._bench_cpu_prev = cpu
@@ -7832,16 +7868,22 @@ class RootWidget(BoxLayout):
         # 最慢的 3 帧 + 当时在演什么 + **那一帧真烧了多少 CPU**。
         # 后两个数一起看才分流: 实算 ≈ 帧间隔 ⇒ 算出来的(处理器瓶颈);
         # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
-        by_worst = sorted(fr, key=lambda x: -x[0])[:3]
+        # 带上它在 `_bench_frames` 里的**下标** —— 三个最慢帧是不是**同一段忙碌里的连续帧**,
+        # 看下标就知道(现在看不出来)。
+        by_worst = [x for _i, x in sorted(enumerate(fr), key=lambda p: -p[1][0])[:3]]
         # 每一帧带上"自算"(_frame 在本线程上的耗时, 第 6 个字段)。
         # [帧间隔, 场景, 全进程实算, 本线程自算, 这一帧是不是启动预热]
         # [帧间隔, 场景, 全进程实算, 自算, 是否预热, 本帧最大的两笔子步骤]
         # [帧间隔, 场景, 全进程实算, 主线程, 自算, 是否预热, 本帧最大的两笔子步骤]
         # [帧间隔, 场景, 全进程实算, 主线程(x[7]), 自算(x[5]), 是否预热(x[6]), 子步骤(x[8])]
+        _idx_of = {}
+        for _i, _x in enumerate(fr):
+            _idx_of[id(_x)] = _i
         out["worst"] = [[x[0], x[1], x[2], (x[7] if len(x) > 7 else 0.0),
                          (x[5] if len(x) > 5 else 0.0),
                          (x[6] if len(x) > 6 else 0),
-                         (x[8] if len(x) > 8 else ())] for x in by_worst]
+                         (x[8] if len(x) > 8 else ()),
+                         _idx_of.get(id(x), -1)] for x in by_worst]
         # 全程自算的中位数 —— 与"实算"并排看: 两者都小 ⇒ 主线程既没算也没被我们的代码占,
         # 帧时间就是框架/出图的开销(优化我们的代码没用)。
         _self_sorted = sorted((x[5] if len(x) > 5 else 0.0) for x in fr)
@@ -7857,10 +7899,32 @@ class RootWidget(BoxLayout):
         out["thr_p50"] = _thr_sorted[len(_thr_sorted) // 2] if _thr_sorted else 0.0
         out["thr_max"] = _thr_sorted[-1] if _thr_sorted else 0.0
         out["texupd"] = _TEXUPD[0]
+        # 节拍事实: Kivy 的限速旋钮实际是什么值, 以及"逻辑更新几次 vs 呈现了几帧"。
+        try:
+            from kivy.config import Config as _Cfg
+            out["maxfps"] = str(_Cfg.get("graphics", "maxfps"))
+            out["vsync"] = str(_Cfg.get("graphics", "vsync")) or "(空=不改)"
+        except Exception:
+            out["maxfps"], out["vsync"] = "?", "?"
+        out["frame_calls"] = _FRAME_CALLS[0]
+        _cs1 = _cpu_split()
+        _cs0 = getattr(self, "_bench_cpusplit0", None)
+        if _cs1 and _cs0:
+            out["utime_ms"] = (_cs1[0] - _cs0[0]) * 1000.0
+            out["stime_ms"] = (_cs1[1] - _cs0[1]) * 1000.0
+        else:
+            out["utime_ms"] = out["stime_ms"] = -1.0
         # 慢帧的"节拍"与"这一帧在发声/震动吗" —— 定位偶发长停顿的两把刀:
         #   · 节拍规则 ⇒ 时钟驱动(某个 0.5s 定时器); 不规则 ⇒ 事件驱动。
         #   · 慢帧里绝大多数在发声/震动 ⇒ 就是那条路(玩家"关音效就变好"的因果线索)。
-        _slow = [x for x in fr if x[0] >= BENCH_SLOW_MS]
+        # ⚠️ 门槛**自适应**(2026-09-14 修): 原来硬编码 `BENCH_SLOW_MS = 90`, 而本机最慢帧
+        #    只有 40ms ⇒ `_slow` **恒为空集** ⇒ 下面"慢帧的节拍 / 慢帧里在发声 / 在震动 /
+        #    在启动预热"四行**永远不打印**。一个专门用来定位卡顿的面板, 在这台设备上把
+        #    最该看的那几行静默掉了(压测段的专家挑出来的, 核对属实)。
+        #    改成"中位帧的两倍, 但至少 25 毫秒" —— 每台设备按自己的节拍算。
+        _slow_ms = max(25.0, 2.0 * out["p50"])
+        out["slow_ms"] = _slow_ms
+        _slow = [x for x in fr if x[0] >= _slow_ms]
         out["slow_n"] = len(_slow)
         out["slow_beat"] = (sum(g for g, *_r in fr) / len(_slow)) if _slow else 0.0
         out["slow_snd"] = sum(1 for x in _slow if x[3] > 0)
@@ -8110,7 +8174,7 @@ class RootWidget(BoxLayout):
             #    这些都跑在别的 Clock 回调里, 在它外面。所以"自算很小"**不等于**"我们没干活":
             #    桌面实测那几帧 实算 62.5 而自算 0.1, 正是预热(球纹理烘焙)干的。
             #    所以**预热帧必须直接标出来**, 否则会被误读成"主线程在等"。
-            def _frame_cell(_g, _t, _c, _h, _s, _b, _k=()):
+            def _frame_cell(_g, _t, _c, _h, _s, _b, _k=(), _i=-1):
                 # ⚠️ 占位符个数不同的分支**必须分开格式化** —— 写成
                 #    `('A' if c else 'B') % (g,t,c)` 会在一个分支抛 TypeError, 而外层
                 #    那个 except 会把它静默吞掉(面板诊断整块消失)。踩过一次了。
@@ -8127,6 +8191,8 @@ class RootWidget(BoxLayout):
                 # ⚠️ 标签之间用 '/' 分隔而不是空格: 面板那一行本来就长, 空格会让它读不清哪里断开。
                 for _ms, _nm in (_k or ()):
                     _x += '|%s%.1f' % (_nm, _ms)
+                if _i >= 0:
+                    _x += '@%d' % _i          # 在采样序列里的下标: 相邻=同一段忙碌
                 return _x
             _w = []
             for _it in d["worst"]:
@@ -8134,12 +8200,15 @@ class RootWidget(BoxLayout):
                                       (_it[3] if len(_it) > 3 else 0.0),
                                       (_it[4] if len(_it) > 4 else 0.0),
                                       (_it[5] if len(_it) > 5 else 0),
-                                      (_it[6] if len(_it) > 6 else ())))
+                                      (_it[6] if len(_it) > 6 else ()),
+                                      (_it[7] if len(_it) > 7 else -1)))
             w = '  '.join(_w)
             parts.append('最慢三帧： ' + w)
             _ord = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
             gs = d["groups"]
-            seg = ['%s %.1f' % (t, gs[t][1]) for t in _ord if t in gs]
+            # 带上帧数 —— 只印中位数的话, "待机 8 帧"的中位和"飞行 300 帧"的中位不可比,
+            # 而三个最慢帧里两个是待机(压测段专家指出的)。
+            seg = ['%s %.1f(%d帧)' % (t, gs[t][1], gs[t][0]) for t in _ord if t in gs]
             if seg:
                 parts.append('各阶段每帧： ' + ' · '.join(seg) + ' 毫秒')
             # 慢帧的节拍 + 当时在不在发声/震动。这一行是给"偶发长停顿"定位用的 ——
@@ -8187,7 +8256,7 @@ class RootWidget(BoxLayout):
                 #    0.03~0.10 毫秒)。混在一起看会把"启动慢"误读成"玩起来卡"。
                 parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声'
                              ' / %d 帧在震动 / %d 帧在启动预热'
-                             % (d["slow_n"], BENCH_SLOW_MS, d["slow_beat"] / 1000.0,
+                             % (d["slow_n"], d.get("slow_ms", 25.0), d["slow_beat"] / 1000.0,
                                 d.get("slow_snd", 0), d.get("slow_vib", 0),
                                 d.get("slow_bake", 0)))
             # 瓶颈判断: 每帧真正花在计算上的时间 vs 帧间隔。差得远 = 大头在等画面
@@ -8223,6 +8292,17 @@ class RootWidget(BoxLayout):
             #   主线程大 · _frame 小      => **Kivy 渲染 / 文字重排**在吃;
             #   _frame 大                => 就是我们自己的代码。
             _win_s = max(0.001, d.get("p50", 12.5) * max(1, d.get("n", 0)) / 1000.0)
+            # 节拍那一行 —— 直接回答"帧循环是不是自由跑": 比值 < 1 说明**呈现比逻辑更新更频繁**
+            # (有一批帧在白白占用呈现机会)。也顺手把 Kivy 的限速旋钮值打出来。
+            _fc = int(d.get("frame_calls", 0))
+            parts.append('节拍： maxfps=%s vsync=%s · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
+                         % (d.get("maxfps", "?"), d.get("vsync", "?"), _fc,
+                            d.get("n", 0), _fc / float(max(1, d.get("n", 1)))))
+            # 内核态占比 —— 把这一个数当**分流器**: 高则查 JNI/Binder/文件写, 低则查 GIL。
+            _u, _k = float(d.get("utime_ms", -1)), float(d.get("stime_ms", -1))
+            if _u >= 0 and (_u + _k) > 0:
+                parts.append('CPU 构成： 用户态 %.0f 毫秒 · 内核态 %.0f 毫秒（内核占 %.0f%%）'
+                             % (_u, _k, 100.0 * _k / (_u + _k)))
             parts.append('瓶颈： %s · 每帧实算 %.1f / 主线程 %.1f（其中 _frame %.1f，最坏 %.1f）'
                          '/ 帧间隔 %.1f 毫秒'
                          ' · 内存回收 %.1f 毫秒（最坏一次 %.1f·%s）· 文字重排 %.1f 次/秒'
@@ -9447,6 +9527,7 @@ class RootWidget(BoxLayout):
             self._frame(dt)
         finally:
             _FRAME_SELF[0] = (time.perf_counter() - _t0) * 1000.0
+            _FRAME_CALLS[0] += 1
 
     def _frame(self, dt):
         self._check_title_hold()
