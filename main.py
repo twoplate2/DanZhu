@@ -1986,6 +1986,39 @@ def open_output():
 #      慢帧里有预热 ⇒ 那是**启动期**的账, 玩家实际游玩(预热早跑完)没那么差;
 #      慢帧里没预热 ⇒ 那是**稳态**的账, 得继续往别处找。
 _FRAME_PROBE = [0, 0, 0]         # [本帧发声次数, 本帧震动次数, 本帧是否跑了预热]
+
+# 本帧**各子步骤**各花了多少秒: {名字: 秒}。由下面几个包装器累加, `_on_flip` 读完清零。
+# ⚠️ 为什么必须细分到子步骤: 面板到 v0.6.81 为止只能说出"这一帧是**待机**、`_frame` 自己烧了
+#    **9 毫秒**"(真机连续两份面板都这样: "36毫秒(待机·实算27.5·**自算8.1**)" /
+#    "34毫秒(待机·实算25.6·**自算9.1**)") —— 但**不知道那 9 毫秒花在哪**, 只能靠桌面一条条
+#    排除。细分之后真机一次跑分就能指名道姓。
+# ⚠️ 只包**几个**大头(板面动态重画 / 重掷盘面 / 自适应字号 / 装杯重画), 不是每个函数都包 ——
+#    包装本身有开销, 包多了反而把被测量的东西改变掉。
+_FRAME_BRK = {}                  # 本帧累计(会被 _on_flip 读走并清空)
+_BRK_KEYS = ("板面", "重掷", "字号", "装杯")
+
+
+def _brk_add(tag, t0):
+    """记一笔子步骤耗时(秒)。**只在跑分采样期有用**, 平时只是一次字典读改写。"""
+    d = _FRAME_BRK.get(tag)
+    _FRAME_BRK[tag] = (d or 0.0) + (time.perf_counter() - t0)
+
+
+def _brk_wrap(cls, attr, tag):
+    """给一个方法包一层计时。⚠️ 包装函数的 `__name__` 必须**与原方法同名** ——
+    Kivy 的 WeakMethod 存的是 `__name__`, 名字对不上会在下次调度时 AttributeError
+    (本工程的探针踩过一次)。"""
+    orig = getattr(cls, attr, None)
+    if orig is None:
+        return
+    def f(*a, **k):
+        t0 = time.perf_counter()
+        try:
+            return orig(*a, **k)
+        finally:
+            _brk_add(tag, t0)
+    f.__name__ = attr
+    setattr(cls, attr, f)
 # 发声耗时统计: [累计次数, 累计秒, 单次最慢秒, 最慢那一次的音效名]。
 # ⚠️ 它是**全程**的、不是逐帧的 —— 因为发声已经搬到工作线程上了(见 Sfx._drain),
 #    后端耗时不再属于某一帧。真机实测这个数大得离谱: 15 秒窗口里 **50 次调用共 2674 毫秒**
@@ -5092,6 +5125,36 @@ def slot_color(m):
         return "#2a3550"
     return COL_x.get(m, "#1e8a5a")
 
+# 槽倍率文字的**贴图缓存**: (倍率, 字号) -> Texture。
+# ⚠️ 为什么必须缓存(2026-09-14): `_redraw` 每次重掷盘面都会把整块画布重建一遍, 而里面
+#    **每个非空槽都要新建一个 `CoreLabel` 并 `refresh()`** —— 那是**一次完整的文字光栅化**。
+#    一次重掷最多 9 个槽 ⇒ 9 次光栅化, 而它落在**球落定后那一帧**(待机)。
+#    真机面板连出两版都指向这一帧: "最慢三帧 ... 36毫秒(待机·**自算8.1**)" /
+#    "34毫秒(待机·**自算9.1**)"。桌面实测 `park_ball` 中位 1.9 毫秒, 其中画布重建 1.2 毫秒。
+#    而倍率的取值只有 2/3/5/10/20/50/100 这么几种 ⇒ 贴图建一次就够, 之后每次重掷都白建。
+# ⚠️ 缓存键**必须带字号** `fs`: 它跟着 `s`(画布缩放)走, 转屏/改窗口时字号会变, 那时要重建。
+# ⚠️ 与工程里其它贴图缓存同一套路(`_CUP_BALL_TEX` / `_RAMP_TEX` / `_GLASS_TEX`) —— 持有
+#    引用本身就是"别被回收"的保证。
+_SLOT_TXT_TEX = {}
+
+
+def slot_text_tex(m, fs):
+    """倍率文字的贴图(带缓存)。见 `_SLOT_TXT_TEX` 处的说明。"""
+    k = (int(m), int(fs))
+    t = _SLOT_TXT_TEX.get(k)
+    if t is None:
+        try:
+            cl = CoreLabel(text="x%d" % m, font_size=fs, font_name="Roboto", bold=True)
+            cl.refresh()
+            t = cl.texture
+        except Exception:
+            return None
+        if len(_SLOT_TXT_TEX) > 64:
+            _SLOT_TXT_TEX.clear()
+        _SLOT_TXT_TEX[k] = t
+    return t
+
+
 def slot_txt(m):
     """槽位数字字色: ×100 深橙白字对比 2.3 太低(大奖会糊), 故黑字(8.0)最跳;
     其余档白字(低档绿蓝红干净醒目, 深红/紫暗底白字最亮)。"""
@@ -6089,15 +6152,13 @@ class GameArea(FloatLayout):
                 RoundedRectangle(radius=[max(1.0, 6 * s)],
                                  **self._rect(FIELD_L + i * SLOT_W + 2, SLOT_TOP + 3,
                                               FIELD_L + (i + 1) * SLOT_W - 2, FLOOR - 3))
-            # 槽倍率文字(CoreLabel 烘成纹理; 逻辑 20px 跟盘面缩放, 手机上≈11sp)
+            # 槽倍率文字(走 `slot_text_tex` 的缓存; 逻辑 20px 跟盘面缩放, 手机上≈11sp)
             fs = max(12, int(20 * s))
             for i in range(NUM_SLOTS):
                 m = g.multipliers[i]
                 if m <= 0:
                     continue
-                cl = CoreLabel(text="x%d" % m, font_size=fs, font_name="Roboto", bold=True)
-                cl.refresh()
-                tex = cl.texture
+                tex = slot_text_tex(m, fs)
                 cx = FIELD_L + (i + 0.5) * SLOT_W
                 cy = (SLOT_TOP + FLOOR) / 2.0
                 Color(*hex_rgb(slot_txt(m)))
@@ -7609,7 +7670,12 @@ class RootWidget(BoxLayout):
             self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag(),
                                        (cpu - pcpu) * 1000.0,
                                        _FRAME_PROBE[0], _FRAME_PROBE[1],
-                                       _FRAME_SELF[0], _FRAME_PROBE[2]))
+                                       _FRAME_SELF[0], _FRAME_PROBE[2],
+                                       _FRAME_THR[0],
+                                       tuple(sorted(
+                                           ((v * 1000.0, k) for k, v in _FRAME_BRK.items()
+                                            if v > 0.0002), reverse=True)[:2])))
+            _FRAME_BRK.clear()
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
             _FRAME_PROBE[2] = 0
@@ -7682,13 +7748,23 @@ class RootWidget(BoxLayout):
         by_worst = sorted(fr, key=lambda x: -x[0])[:3]
         # 每一帧带上"自算"(_frame 在本线程上的耗时, 第 6 个字段)。
         # [帧间隔, 场景, 全进程实算, 本线程自算, 这一帧是不是启动预热]
-        out["worst"] = [[x[0], x[1], x[2], (x[5] if len(x) > 5 else 0.0),
-                         (x[6] if len(x) > 6 else 0)] for x in by_worst]
+        # [帧间隔, 场景, 全进程实算, 自算, 是否预热, 本帧最大的两笔子步骤]
+        # [帧间隔, 场景, 全进程实算, 主线程, 自算, 是否预热, 本帧最大的两笔子步骤]
+        out["worst"] = [[x[0], x[1], x[2], (x[8] if len(x) > 8 else 0.0),
+                         (x[5] if len(x) > 5 else 0.0),
+                         (x[6] if len(x) > 6 else 0),
+                         (x[7] if len(x) > 7 else ())] for x in by_worst]
         # 全程自算的中位数 —— 与"实算"并排看: 两者都小 ⇒ 主线程既没算也没被我们的代码占,
         # 帧时间就是框架/出图的开销(优化我们的代码没用)。
         _self_sorted = sorted((x[5] if len(x) > 5 else 0.0) for x in fr)
         out["self_p50"] = _self_sorted[len(_self_sorted) // 2] if _self_sorted else 0.0
         out["self_max"] = _self_sorted[-1] if _self_sorted else 0.0
+        # 主线程 CPU(线程级时钟) —— 它与"自算"的**差额就是 `_frame` 外面那一大块**
+        # (Kivy 渲染 / 延迟的文字重排 / 其它 Clock 回调)。见 _FRAME_THR 处的说明。
+        _thr_sorted = sorted((x[8] if len(x) > 8 else 0.0) for x in fr)
+        out["thr_p50"] = _thr_sorted[len(_thr_sorted) // 2] if _thr_sorted else 0.0
+        out["thr_max"] = _thr_sorted[-1] if _thr_sorted else 0.0
+        out["texupd"] = _TEXUPD[0]
         # 慢帧的"节拍"与"这一帧在发声/震动吗" —— 定位偶发长停顿的两把刀:
         #   · 节拍规则 ⇒ 时钟驱动(某个 0.5s 定时器); 不规则 ⇒ 事件驱动。
         #   · 慢帧里绝大多数在发声/震动 ⇒ 就是那条路(玩家"关音效就变好"的因果线索)。
@@ -7942,20 +8018,31 @@ class RootWidget(BoxLayout):
             #    这些都跑在别的 Clock 回调里, 在它外面。所以"自算很小"**不等于**"我们没干活":
             #    桌面实测那几帧 实算 62.5 而自算 0.1, 正是预热(球纹理烘焙)干的。
             #    所以**预热帧必须直接标出来**, 否则会被误读成"主线程在等"。
-            def _frame_cell(_g, _t, _c, _s, _b):
+            def _frame_cell(_g, _t, _c, _h, _s, _b, _k=()):
                 # ⚠️ 占位符个数不同的分支**必须分开格式化** —— 写成
                 #    `('A' if c else 'B') % (g,t,c)` 会在一个分支抛 TypeError, 而外层
                 #    那个 except 会把它静默吞掉(面板诊断整块消失)。踩过一次了。
+                # **实算 / 主线程 / 自算** 三个数并排 —— 玩家 2026-09-14 质疑"9 毫秒是不是小头",
+                # 那三帧的账确实对不上(36毫秒那帧自算只有 0.3, 23.5 毫秒的超出不在 `_frame` 里),
+                # 而"主线程"才是能看见 Kivy 渲染那一块的那一格。
                 if _c >= 1.0 or _s >= 1.0:
-                    _x = '%.0f毫秒(%s·实算%.1f·自算%.1f)' % (_g, _t, _c, _s)
+                    _x = '%.0f毫秒(%s·实算%.1f·主线程%.1f·自算%.1f)' % (_g, _t, _c, _h, _s)
                 else:
                     _x = '%.0f毫秒(%s)' % (_g, _t)
-                return (_x + '·预热') if _b else _x
+                if _b:
+                    _x += '·预热'
+                # 本帧最大的两笔子步骤 —— **这是"那 9 毫秒到底花在哪"的直接答案**。
+                # ⚠️ 标签之间用 '/' 分隔而不是空格: 面板那一行本来就长, 空格会让它读不清哪里断开。
+                for _ms, _nm in (_k or ()):
+                    _x += '|%s%.1f' % (_nm, _ms)
+                return _x
             _w = []
             for _it in d["worst"]:
                 _w.append(_frame_cell(_it[0], _it[1], _it[2],
                                       (_it[3] if len(_it) > 3 else 0.0),
-                                      (_it[4] if len(_it) > 4 else 0)))
+                                      (_it[4] if len(_it) > 4 else 0.0),
+                                      (_it[5] if len(_it) > 5 else 0),
+                                      (_it[6] if len(_it) > 6 else ())))
             w = '  '.join(_w)
             parts.append('最慢三帧： ' + w)
             _ord = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
@@ -8039,11 +8126,17 @@ class RootWidget(BoxLayout):
             # GC 那一栏后面挂上"最坏那次是哪一代" —— gen-2 全量回收与 gen-0 差一个量级,
             # 不写清是哪一代, 读者没法判断这是"轻微抖动"还是"扫了整个对象图"。
             _gn = {0: "轻度", 1: "中度", 2: "全量"}.get(d.get("gc_worst_gen", -1), "—")
-            parts.append('瓶颈： %s · 每帧实算 %.1f（本线程 %.1f，最坏一次 %.1f）/ 帧间隔 %.1f 毫秒'
-                         ' · 内存回收 %.1f 毫秒（最坏一次 %.1f·%s）'
-                         % (_v, _cpu, d.get("self_p50", 0.0), d.get("self_max", 0.0),
-                            _p50, d["gc_total"] * 1000.0,
-                            d["gc_worst"] * 1000.0, _gn))
+            # 三个数并排才能分流"谁在吃时间"(见 _FRAME_THR 处的说明):
+            #   实算(全进程)大 · 主线程小 => 工作线程在忙;
+            #   主线程大 · _frame 小      => **Kivy 渲染 / 文字重排**在吃;
+            #   _frame 大                => 就是我们自己的代码。
+            _win_s = max(0.001, d.get("p50", 12.5) * max(1, d.get("n", 0)) / 1000.0)
+            parts.append('瓶颈： %s · 每帧实算 %.1f / 主线程 %.1f（其中 _frame %.1f，最坏 %.1f）'
+                         '/ 帧间隔 %.1f 毫秒'
+                         ' · 内存回收 %.1f 毫秒（最坏一次 %.1f·%s）· 文字重排 %.1f 次/秒'
+                         % (_v, _cpu, d.get("thr_p50", 0.0), d.get("self_p50", 0.0),
+                            d.get("self_max", 0.0), _p50, d["gc_total"] * 1000.0,
+                            d["gc_worst"] * 1000.0, _gn, d.get("texupd", 0) / _win_s))
             if d.get("cfg_n"):
                 parts.append('　存档落盘： %d 次（工作线程）· 单次最慢 %.1f 毫秒'
                              % (d["cfg_n"], d.get("cfg_worst", 0.0)))
@@ -9863,6 +9956,16 @@ class _LoadVeil(Widget):
 
     def on_touch_up(self, touch):
         return True
+
+# 给几个"大头"挂上子步骤计时(必须在**类都定义完之后**执行 —— 这里是 App 类之前)。
+# 只包四个: 板面动态重画 / 重掷盘面 / 自适应字号 / 装杯重画。见 `_FRAME_BRK` 处的说明。
+# ⚠️ "装杯"是**嵌套在"板面"里面**的(tick_draw -> win_fx.tick -> _redraw), 所以面板上
+#    这几个数**不能相加**, 只按"谁最大"读。
+_brk_wrap(GameArea, "tick_draw", "板面")
+_brk_wrap(RootWidget, "park_ball", "重掷")
+_brk_wrap(RootWidget, "_fit1", "字号")
+_brk_wrap(WinPileFX, "_redraw", "装杯")
+
 
 class PlinkoApp(App):
     def build(self):
