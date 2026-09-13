@@ -5133,6 +5133,17 @@ def text_px(text, fs, bold=False):
         _FIT_PX[key] = got
     return got
 
+# `fit_font_size` 的**结果缓存**。键 = (文字, 基准字号, 可用宽, 粗体) —— 它是纯函数。
+# ⚠️ 为什么值得缓存(2026-09-14, 桌面实测): `_fit1` 是 `_frame` 里**最大的单块**开销 ——
+#    45 秒累计 **1.06 秒**(每秒 24 毫秒), 是板面重画 `tick_draw`(0.26 秒)的 4 倍。
+#    而 `_install_fit` 把 `_fit1` 绑在 **`text` 和 `width` 两条路**上: **宽度变化那条
+#    文字根本没变**, 却在用同一份输入把整个阶梯(最多 6 次 `text_px`, 每次光栅化一段文字)
+#    从头再算一遍。实测 `_fit1` 每帧被调 ~4.5 次, 而一帧里真正变了文字的只有余额那一格。
+# ⚠️ 缓存**不设超大**: 余额那类数字会一直变, 上限到了整体清空(与 `_FIT_PX` 同策),
+#    免得无限长。
+_FIT_SIZE_PX = {}
+
+
 def fit_font_size(text, base_fs, avail_w, bold=False):
     """挑一个"单行塞得进 avail_w"的最大字号档;**返回绝对字号(px)**。
 
@@ -5140,6 +5151,19 @@ def fit_font_size(text, base_fs, avail_w, bold=False):
     """
     if not text or avail_w <= 1.0 or base_fs <= 0:
         return base_fs
+    _key = (text, round(base_fs, 2), round(avail_w, 1), bool(bold))
+    _got = _FIT_SIZE_PX.get(_key)
+    if _got is not None:
+        return _got
+    _res = _fit_font_size_slow(text, base_fs, avail_w, bold)
+    if len(_FIT_SIZE_PX) > 256:
+        _FIT_SIZE_PX.clear()
+    _FIT_SIZE_PX[_key] = _res
+    return _res
+
+
+def _fit_font_size_slow(text, base_fs, avail_w, bold=False):
+    """真正干活的那一半(原来 `fit_font_size` 的全部内容)。**别直接调它**, 走带缓存的入口。"""
     for _k in FIT_SCALES:
         _fs = base_fs * _k
         if text_px(text, _fs, bold) <= avail_w:
@@ -9380,25 +9404,17 @@ class RootWidget(BoxLayout):
         now = time.time()
         if self._coin_start <= now < self._coin_until:
             self.sfx.play("coin", 0.8, 0.055)
-        if self._anim_pending:
-            # 揭晓前余额冻结在扣注后的值 —— 一帧都不许动。
-            # 这里不能图省事只把三行赋值搬到 _reveal_win: 不冻结的话, _anim_start_time 还是
-            # 上一局的旧值, elapsed >= _anim_dur 成立 → 走 else 分支 0.1 秒内就追平新余额,
-            # 剧透一点没修、滚动和 coin 全废。
-            pass
-        else:
-            # elapsed 必须 clamp ≥0: 负值时 noise = (1-t)*uniform 里的 (1-t) > 1 反而放大噪声,
-            # 在 t 略小于 0 的那几帧里 ease+noise 可能转正, 抖出一帧偏移(投注大时肉眼可见)。
-            elapsed = max(0.0, now - self._anim_start_time)
-            if elapsed < self._anim_dur:
-                t = elapsed / self._anim_dur
-                ease = 1.0 - (1.0 - t) ** 3
-                noise = (1.0 - t) * random.uniform(-0.15, 0.15) if t < 0.6 else 0
-                f = max(0.0, min(1.0, ease + noise))
-                self.display_balance = (self._anim_start_balance +
-                                        (self._anim_target_balance - self._anim_start_balance) * f)
-            else:
-                self.display_balance += (self.balance - self.display_balance) * 0.5
+        # ⚠️ **余额不再"滚"上去了**(2026-09-14 玩家定案): 落杯子的动画已经承担了"钱到账"的
+        #    演出, 数字再滚一遍纯属重复。而且代价不小 —— 滚动期内**每帧都在改
+        #    `balance_lbl.text`**, 而 `text` 是 Kivy `Label._font_properties` 之一:
+        #    一次赋值 = **重测字形 + 重光栅化整段文字 + 重建纹理**, 还会连锁触发挂在它上面的
+        #    自适应字号 `_fit1`。桌面实测 `_fit1` 是 `_frame` 里**最大的单块**开销 ——
+        #    45 秒累计 **1.06 秒**(每秒 24 毫秒), 是板面重画 `tick_draw`(0.26 秒) 的 4 倍。
+        #    现在只在余额**真的变了**那一帧才动文字 ⇒ 每球一次, 不再是每帧一次。
+        # ⚠️ **揭晓前仍然不许动**(`_anim_pending`): 数字必须跟大字/语音在同一刻出来,
+        #    提前跳上去就是剧透 —— 这条语义一个字没改, 只是把"滚过去"换成了"直接给"。
+        if not self._anim_pending:
+            self.display_balance = self.balance
         # 兜底揭晓: 正常路径下 on_done 会先到, 这条只在杯子卡住/tick 异常时才用得上。
         # 必须在 park_ball 之前触发, 否则玩家会看到新盘面上飘着旧局的 +200。
         # 兜底揭晓: 正常路径下 FX 的 `_pump_reveal()` 会先放; 这条只在 tick 完全停摆
