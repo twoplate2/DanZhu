@@ -1929,7 +1929,16 @@ def open_output():
 #    关音效会**连震动一起关掉**, 两条怀疑路径混在一起, 分不出是谁。
 #    这里逐帧记下"发了几次声 / 震了几次", 跑分面板就能报出**慢帧里有几帧在发声/震动** ——
 #    一刀切开。只在跑分采样期读, 平时只多两次列表自增。
-_FRAME_PROBE = [0, 0]            # [本帧发声次数, 本帧震动次数]
+# 2026-09-14 加第三格: **本帧跑了一次启动预热**。
+# ⚠️ 为什么必须能看出这一格: 桌面逐帧归因实测 —— 最慢的 11 帧**全部**落在启动后 0.6 秒内
+#    (= 预热链), 而那些帧的"本线程自算"只有 0.03~0.10 毫秒(我们自己的代码什么都没干)。
+#    真机上一个预热单步是 **100~200 毫秒**(球纹理烘焙; 桌面只要 16.6), 而跑分的采样窗口
+#    只有 7~12 秒(`_target_launches = 3`), 玩家又是**启动后 3 秒就长按标题**开跑的 ——
+#    预热很可能还在跑, 正落在采样窗口里, 把 1%Low 压下去。
+#    分不分得出来, 决定了两件完全不同的事:
+#      慢帧里有预热 ⇒ 那是**启动期**的账, 玩家实际游玩(预热早跑完)没那么差;
+#      慢帧里没预热 ⇒ 那是**稳态**的账, 得继续往别处找。
+_FRAME_PROBE = [0, 0, 0]         # [本帧发声次数, 本帧震动次数, 本帧是否跑了预热]
 # 发声耗时统计: [累计次数, 累计秒, 单次最慢秒, 最慢那一次的音效名]。
 # ⚠️ 它是**全程**的、不是逐帧的 —— 因为发声已经搬到工作线程上了(见 Sfx._drain),
 #    后端耗时不再属于某一帧。真机实测这个数大得离谱: 15 秒窗口里 **50 次调用共 2674 毫秒**
@@ -3813,6 +3822,12 @@ _FONT_WARM_SIZES = None
 # 零头), 所以只能让 App 在**真机上**自己量: 启动时冻结前后各强制做一次 gen-2 全量回收,
 # 把两个数打进跑分面板。判据一眼可见: "全量回收 26.8 -> 0.0 毫秒"。
 _GC_FROZEN = [0, 0.0, 0.0]
+# 启动预热链是否**全部**跑完(球纹理/字形/球堆/GC 冻结)。
+# ⚠️ 为什么跑分要等它: 采样窗口只有 7~12 秒(`_target_launches = 3`), 而玩家是启动后 3 秒
+#    就长按标题开跑的 —— 真机上一个预热单步要 100~200 毫秒(桌面只要 16.6), 常常还没跑完。
+#    混进采样里会把 1%Low 压下去, 而且量到的是**启动期**的数, 不是玩家平时玩的数。
+#    等它跑完再采样, 才是"稳态"的成绩。(桌面实测预热链 11 步、约 2.2 秒; 真机更久。)
+_PREBAKE_DONE = [False]
 _GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例存
 # 杯口环的**后半个**(远侧那半圈)在 back 贴图里占的高度比例。
 # 生成器里 `rim_back = _half_mask(rim, front=False, split_y=80)`, 环本体是 design y 5..155、
@@ -4913,6 +4928,7 @@ class WinPileFX(Widget):
                 pass
             Clock.schedule_once(self.prebake_step, 0.05)
             return
+        _FRAME_PROBE[2] += 1      # 本帧跑了预热(供跑分面板把"启动慢"与"玩起来卡"分开)
         if _FONT_WARM_SIZES is None:
             # 首次走到这里才按**当时的窗口密度**算(模块导入时窗口还没建, 那时 sp() 是错的)。
             globals()["_FONT_WARM_SIZES"] = (sp(36), sp(48), sp(26), sp(30))
@@ -5001,6 +5017,8 @@ class WinPileFX(Widget):
             _GC_FROZEN[2] = (_t3 - _t2) * 1000.0
         except Exception:
             pass
+        # 预热链到此结束 —— 跑分要等这个标(见 _PREBAKE_DONE 处的说明)。
+        _PREBAKE_DONE[0] = True
 
 # ======================= Kivy UI 层 =======================
 # 布局: 5 行全宽上下结构(上设定/下信息, 无右侧面板, 无历史行) —
@@ -7280,7 +7298,24 @@ class RootWidget(BoxLayout):
         self._show_bench_dim()   # 第1阶段就开始: 全屏置灰
         self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
         self._bench_toast_evt = Clock.schedule_interval(self._bench_toast_tick, 0.5)
-        self._start_benchmark()
+        # ⚠️ **等启动预热跑完再采样**(2026-09-14)。采样窗口只有 7~12 秒
+        #    (`_target_launches = 3`), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
+        #    预热单步要 100~200 毫秒(球纹理烘焙; 桌面只要 16.6), 常常还没跑完。
+        #    混进采样里会把 1%Low 压下去, 而且量到的是**启动期**的数, 不是玩家平时玩的数。
+        #    桌面逐帧归因实测: 最慢的 11 帧**全部**落在启动 0.6 秒内(= 预热链), 而那些帧
+        #    我们自己的代码只花了 0.03~0.10 毫秒 —— 完全不该算进"玩起来卡不卡"。
+        #    ⚠️ 有上限(最多等 20 秒): 预热万一卡住也不能把跑分永远挂在这儿 —— 本模块
+        #    唯一的红线是"绝不软锁"。
+        self._bench_wait_bake = 0.0
+        self._await_prebake()
+
+    def _await_prebake(self, dt=0):
+        """预热没跑完就先等着(最多 20 秒), 跑完再开采样。见 `_start_bench_test` 处说明。"""
+        if _PREBAKE_DONE[0] or self._bench_wait_bake >= 20.0:
+            self._start_benchmark()
+            return
+        self._bench_wait_bake += 0.25
+        Clock.schedule_once(self._await_prebake, 0.25)
 
     def _start_benchmark(self):
         """阶段1: 真实屏幕采样(on_flip, 自动发球3发), 发满后切阶段2物理吞吐。"""
@@ -7369,9 +7404,10 @@ class RootWidget(BoxLayout):
             self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag(),
                                        (cpu - pcpu) * 1000.0,
                                        _FRAME_PROBE[0], _FRAME_PROBE[1],
-                                       _FRAME_SELF[0]))
+                                       _FRAME_SELF[0], _FRAME_PROBE[2]))
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
+            _FRAME_PROBE[2] = 0
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
@@ -7440,7 +7476,9 @@ class RootWidget(BoxLayout):
         # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
         by_worst = sorted(fr, key=lambda x: -x[0])[:3]
         # 每一帧带上"自算"(_frame 在本线程上的耗时, 第 6 个字段)。
-        out["worst"] = [[x[0], x[1], x[2], (x[5] if len(x) > 5 else 0.0)] for x in by_worst]
+        # [帧间隔, 场景, 全进程实算, 本线程自算, 这一帧是不是启动预热]
+        out["worst"] = [[x[0], x[1], x[2], (x[5] if len(x) > 5 else 0.0),
+                         (x[6] if len(x) > 6 else 0)] for x in by_worst]
         # 全程自算的中位数 —— 与"实算"并排看: 两者都小 ⇒ 主线程既没算也没被我们的代码占,
         # 帧时间就是框架/出图的开销(优化我们的代码没用)。
         _self_sorted = sorted((x[5] if len(x) > 5 else 0.0) for x in fr)
@@ -7458,6 +7496,8 @@ class RootWidget(BoxLayout):
         # 否则"慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这个仓库栽过这种静默)。
         out["snd_n"] = sum(x[3] for x in fr)
         out["vib_n"] = sum(x[4] for x in fr)
+        # 慢帧里有多少帧是**启动预热**在跑(第 7 个字段)。与"在发声/震动"同一把刀。
+        out["slow_bake"] = sum(1 for x in _slow if (x[6] if len(x) > 6 else 0) > 0)
         # 发声耗时: 单次最慢 + 全程累计。**这是"那一声到底卡了多久"的直接证据** ——
         # 真机实测慢帧是纯等(119ms 只烧 10.4ms CPU), 所以要看的就是这个数:
         # 单次调用能到几十毫秒 ⇒ 卡的就是它。
@@ -7678,20 +7718,24 @@ class RootWidget(BoxLayout):
             # ⚠️ 两个分支的**占位符个数不一样**(带实算 3 个 / 不带 2 个), 所以必须分别格式化 ——
             #    写成 `('A' if c>=1 else 'B') % (g,t,c)` 会在 B 分支抛 TypeError, 而外层那个
             #    except 会把它**静默吞掉**(面板诊断整块消失, 不报错)。踩过一次了。
-            def _frame_cell(_g, _t, _c, _s):
-                # ⚠️ **三个数必须一起显示**才分得开(见 `_FRAME_SELF` 处的说明):
-                #    帧间隔 / 全进程实算 / 本线程自算。
-                #    实算大而自算小 ⇒ 主线程在等, 优化我们的代码没用。
+            # ⚠️ `_FRAME_SELF`(自算) **只包了 `_frame`** —— 启动预热、方向守卫、进度提示
+            #    这些都跑在别的 Clock 回调里, 在它外面。所以"自算很小"**不等于**"我们没干活":
+            #    桌面实测那几帧 实算 62.5 而自算 0.1, 正是预热(球纹理烘焙)干的。
+            #    所以**预热帧必须直接标出来**, 否则会被误读成"主线程在等"。
+            def _frame_cell(_g, _t, _c, _s, _b):
                 # ⚠️ 占位符个数不同的分支**必须分开格式化** —— 写成
                 #    `('A' if c else 'B') % (g,t,c)` 会在一个分支抛 TypeError, 而外层
                 #    那个 except 会把它静默吞掉(面板诊断整块消失)。踩过一次了。
                 if _c >= 1.0 or _s >= 1.0:
-                    return '%.0f毫秒(%s·实算%.1f·自算%.1f)' % (_g, _t, _c, _s)
-                return '%.0f毫秒(%s)' % (_g, _t)
+                    _x = '%.0f毫秒(%s·实算%.1f·自算%.1f)' % (_g, _t, _c, _s)
+                else:
+                    _x = '%.0f毫秒(%s)' % (_g, _t)
+                return (_x + '·预热') if _b else _x
             _w = []
             for _it in d["worst"]:
                 _w.append(_frame_cell(_it[0], _it[1], _it[2],
-                                      (_it[3] if len(_it) > 3 else 0.0)))
+                                      (_it[3] if len(_it) > 3 else 0.0),
+                                      (_it[4] if len(_it) > 4 else 0)))
             w = '  '.join(_w)
             parts.append('最慢三帧： ' + w)
             _ord = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
@@ -7739,9 +7783,14 @@ class RootWidget(BoxLayout):
                                 d.get("ui_sum", 0.0)))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
-                parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
+                # ⚠️ "几帧在预热"必须单独报 —— 那几帧是**启动期**的账, 与稳态卡顿不是一回事
+                #    (桌面实测: 最慢的 11 帧全在启动 0.6 秒内, 而那些帧我们自己的代码只花了
+                #    0.03~0.10 毫秒)。混在一起看会把"启动慢"误读成"玩起来卡"。
+                parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声'
+                             ' / %d 帧在震动 / %d 帧在启动预热'
                              % (d["slow_n"], BENCH_SLOW_MS, d["slow_beat"] / 1000.0,
-                                d.get("slow_snd", 0), d.get("slow_vib", 0)))
+                                d.get("slow_snd", 0), d.get("slow_vib", 0),
+                                d.get("slow_bake", 0)))
             # 瓶颈判断: 每帧真正花在计算上的时间 vs 帧间隔。差得远 = 大头在等画面
             #   (GPU 出图 / 垂直同步); 快追平 = 处理器就是瓶颈。
             _cpu = float(d.get("cpu_per_frame", 0.0))
