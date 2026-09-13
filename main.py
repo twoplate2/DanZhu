@@ -5379,7 +5379,11 @@ def _vib_worker():
             return
         if item is None:
             return
-        _vibrate_now(item[0], item[1])
+        # 两种形状: ("d", ms, gap, amp) = 双震; (ms, amp) = 单次(老形状保留, 防漏改)。
+        if len(item) == 4 and item[0] == "d":
+            _vibrate_double_now(item[1], item[2], item[3])
+        else:
+            _vibrate_now(item[0], item[1])
 
 
 def _vib_warm():
@@ -5655,24 +5659,53 @@ CUP_TRIGGER_DELAY = 0.15
 #    带上「年月日」就没有歧义(`fx_probe [13]` 有功能性断言钉住这两条)。
 BUILD_TIME_FMT = '%Y年%m月%d日 %H:%M'
 
-def _vibrate_double(ms=35, gap=40, amp=255):
-    """短促双震(彩蛋用): 两下短脉冲, 手机读作"发现惊喜"; 区别于单次长震的大奖之感。
-    仅 Android。API>=26 用 createWaveform 出确切双脉冲, 否则退回单次。"""
-    if platform != "android":
-        return
+def _vibrate_double_now(ms=35, gap=40, amp=255):
+    """短促双震的**真身**(只在工作线程上跑)。
+
+    ⚠️ 2026-09-14 从 `_vibrate_double` 里抽出来 —— 原来它是**同步 JNI**: 在调用线程上直接
+       `autoclass` + `activity.getSystemService(VIBRATOR_SERVICE)`(**这本身就是一次 Binder
+       往返**) + `vibrate`。而它唯一的调用点是**彩蛋路径的 `settle` 那一帧**。
+       同一条规矩本工程已经执行过三次(发声 665 / 震动 666 / 守卫 671 / 落盘 677):
+       **事件路径上的阻塞调用一律挪到工作线程**。
+    ⚠️ 顺带复用 `_vib_get()` 的缓存代理 —— 原来每次都要现取一次系统服务。
+    """
+    t0 = time.perf_counter()
     try:
-        from jnius import autoclass
-        activity = autoclass("org.kivy.android.PythonActivity").mActivity
-        Context = autoclass("android.content.Context")
-        vib = activity.getSystemService(Context.VIBRATOR_SERVICE)
+        vib = _vib_get()
         if vib is None:
             return
         try:
+            from jnius import autoclass
             VibrationEffect = autoclass("android.os.VibrationEffect")
             v = VibrationEffect.createWaveform([0, ms, gap, ms], [0, amp, 0, amp], -1)
             vib.vibrate(v)
         except Exception:
             vib.vibrate(ms * 2 + gap)          # 退回单次(近似时长)
+    except Exception:
+        _VIB_PROXY[0] = None
+    finally:
+        _dt = time.perf_counter() - t0
+        _VIB_STAT[0] += _dt
+        if _dt > _VIB_STAT[1]:
+            _VIB_STAT[1] = _dt
+            _VIB_STAT[2] = "双震%dms" % ms
+
+
+def _vibrate_double(ms=35, gap=40, amp=255):
+    """短促双震(彩蛋用): 两下短脉冲, 手机读作"发现惊喜"; 区别于单次长震的大奖之感。
+    仅 Android; **投递即返回**(见 `_vibrate_double_now` 处说明)。
+    ⚠️ 队列建不起来就退回同步调用 —— 与改之前逐字相同的行为, 绝不静默失震。
+    """
+    if platform != "android":
+        return
+    global _VIB_Q
+    if _VIB_Q is None:
+        _vib_warm()
+    if _VIB_Q is False:
+        _vibrate_double_now(ms, gap, amp)
+        return
+    try:
+        _VIB_Q.put_nowait(("d", ms, gap, amp))
     except Exception:
         pass
 
@@ -7834,16 +7867,28 @@ class RootWidget(BoxLayout):
         else:
             _low_txt = '平均帧率： %.1f\n1%%Low帧率：%.1f' % (render_fps, render_1low)
         # ⚠️ 这一屏**不放**版本/制作日期(用户 2026-09-11 定稿: "性能测试的成绩面板别加").
+        # ⚠️ **2026-09-14 玩家改主意了**: 跑完分要能一眼看出"这是哪个版本的包跑出来的"
+        #    (他手上有 PC 与两代 Y700 好几份成绩互相对照, 没版本号根本对不上号)。
+        #    按他给的方案加在 **"安卓版本后面"**(不是标题后面), 和机器名排在一起 ——
+        #    读成绩的人先看"哪台机器", 紧接着就是"哪个包"。
         #    成绩面板只放成绩; 版本/日期在长按标题的**菜单弹窗**里(见 _show_bench_menu)。
         # 排版(玩家 2026-09-13: "窗口高度增加一些 / 布局稍微美化下"):
         #   成绩块(亮色大字) → 细分隔线 → 诊断块(次级色、小一号)。
         #   两块都走 `_auto_h`(按真实排版撑高), 所以折行只会让弹窗长高, 不会把字裁掉 ——
         #   上一版是**一整块** label, 诊断四行挤进去之后底部被裁(玩家截图里 "分场景"
         #   那行折行、最后一行露出半个)。
+        # 设备行 + 版本号(玩家 2026-09-14): "TB323FU / Android 16  v0.6.81"
+        # ⚠️ 版本号拿不到时**不留空尾巴**(`_app_version()` 可能返回空串)。
+        _ver = ""
+        try:
+            _ver = str(_app_version() or "")
+        except Exception:
+            _ver = ""
+        _dev_ver = (dev + "  " + _ver) if _ver and _ver not in dev else dev
         score = ('%s\n'
                  '运算速度：每秒 %d 步模拟\n'
                  '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
-                 '%s') % (dev, int(phys_fps), avg_frames, cost_ms, _low_txt)
+                 '%s') % (_dev_ver, int(phys_fps), avg_frames, cost_ms, _low_txt)
         score_lbl = Label(text=score, font_size='17sp', halign='left', valign='top',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
         self._auto_h(score_lbl, dp(130), dp(6))
