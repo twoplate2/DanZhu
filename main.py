@@ -5143,6 +5143,22 @@ def text_px(text, fs, bold=False):
 #    免得无限长。
 _FIT_SIZE_PX = {}
 
+# 字号**量化网格**(px)。走过的字号一律先落到这个网格上再测量/返回。
+# ⚠️ 为什么必须量化(2026-09-14): "碰一个新字号"在 Kivy 里 = **重新打开一次 TTF 字形表**
+#    —— 桌面实测 **26 毫秒**(见 prebake_step 里那段字体预热的说明)。而 `fit_font_size`
+#    的**二分**支会返回 `10.65` 这种任意值, `_fit1` 又把它写进 `font_size` ⇒
+#    **每挑出一个新字号就付一次 26 毫秒**, 而且那个字号这辈子只用这一次。
+#    实测(桌面): `_fit1` 每次调用要 ~13 毫秒 —— 它就是 `_frame` 里最大的单块开销。
+#    量化到 0.5px 之后, 全 app 的字号集合塌缩成一个小集合: 量化误差**最大 0.25px**,
+#    肉眼分辨不出(比 1sp 在 2.5 倍密度下还小一个量级), 而字形表只需开那么几次。
+# ⚠️ 网格别调粗: 1px 网格在 360dp + 小字号(10~12px)上会有约 8% 的字号跳变, 就开始看得出了。
+_FIT_GRID = 0.5
+
+
+def _qfs(x):
+    """把字号落到量化网格上。见 `_FIT_GRID` 处的说明。"""
+    return round(x / _FIT_GRID) * _FIT_GRID
+
 
 def fit_font_size(text, base_fs, avail_w, bold=False):
     """挑一个"单行塞得进 avail_w"的最大字号档;**返回绝对字号(px)**。
@@ -5165,7 +5181,7 @@ def fit_font_size(text, base_fs, avail_w, bold=False):
 def _fit_font_size_slow(text, base_fs, avail_w, bold=False):
     """真正干活的那一半(原来 `fit_font_size` 的全部内容)。**别直接调它**, 走带缓存的入口。"""
     for _k in FIT_SCALES:
-        _fs = base_fs * _k
+        _fs = _qfs(base_fs * _k)          # 落网格: 免得探一个只此一次的字号(见 _FIT_GRID)
         if text_px(text, _fs, bold) <= avail_w:
             return _fs
     # ⚠️ 6 档全试完还是塞不下时, **不能**"给个地板档然后听天由命" —— 那样就退回了折行/
@@ -5174,12 +5190,16 @@ def _fit_font_size_slow(text, base_fs, avail_w, bold=False):
     # ⚠️ 也**不能**按比例估一次: 实测字宽**不随字号线性变** —— 同一串在 14.95 和 14.05
     #    下量出来都是 139px(字形步进被取整), 估出来的 10.65 量出来仍是 102px > 可用 101。
     #    所以在 [硬下限, 阶梯最小档] 之间**二分**, 取"真的量得下"的最大字号。
-    _lo = base_fs * FIT_HARD_FLOOR
-    _hi = base_fs * FIT_SCALES[-1]
+    _lo = _qfs(base_fs * FIT_HARD_FLOOR)
+    _hi = _qfs(base_fs * FIT_SCALES[-1])
     if text_px(text, _hi, bold) <= avail_w:
         return _hi
     for _ in range(6):
-        _mid = (_lo + _hi) / 2.0
+        # ⚠️ 二分出来的中值**也要落网格** —— 不落的话它会去探一串只此一次的字号,
+        #    每个都要重开一次字形表(26 毫秒)。落网格后探的仍是同一串数, 只是**有限**了。
+        _mid = _qfs((_lo + _hi) / 2.0)
+        if _mid <= _lo or _mid >= _hi:
+            break                        # 网格间距撑满区间: 再二分也出不来新值
         if text_px(text, _mid, bold) <= avail_w:
             _lo = _mid
         else:
