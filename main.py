@@ -1998,6 +1998,7 @@ _FRAME_BRK = {}                  # 本帧累计(会被 _on_flip 读走并清空)
 _BRK_KEYS = ("板面", "重掷", "字号", "装杯")
 _FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
 _FRAME_CALLS = [0]               # `_frame` 被调了几次(与"采样了多少帧"比, 见面板"节拍"行)
+_SINCE_LAUNCH = [0]              # 距上一次 `launch()` 过了多少帧(判 C6: 最差帧是不是紧跟在发射后)
 _TEXUPD = [0]                    # 文字重排累计次数(Label.texture_update 被调了几次)
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
@@ -7794,7 +7795,7 @@ class RootWidget(BoxLayout):
                                        (cpu - pcpu) * 1000.0,
                                        _FRAME_PROBE[0], _FRAME_PROBE[1],
                                        _FRAME_SELF[0], _FRAME_PROBE[2],
-                                       _FRAME_THR[0],
+                                       _FRAME_THR[0], _SINCE_LAUNCH[0],
                                        tuple(sorted(
                                            ((v * 1000.0, k) for k, v in _FRAME_BRK.items()
                                             if v > 0.0002), reverse=True)[:2])))
@@ -7882,7 +7883,7 @@ class RootWidget(BoxLayout):
         out["worst"] = [[x[0], x[1], x[2], (x[7] if len(x) > 7 else 0.0),
                          (x[5] if len(x) > 5 else 0.0),
                          (x[6] if len(x) > 6 else 0),
-                         (x[8] if len(x) > 8 else ()),
+                         (x[9] if len(x) > 9 else ()),      # breaks(子步骤) —— 加字段时别忘同步
                          _idx_of.get(id(x), -1)] for x in by_worst]
         # 全程自算的中位数 —— 与"实算"并排看: 两者都小 ⇒ 主线程既没算也没被我们的代码占,
         # 帧时间就是框架/出图的开销(优化我们的代码没用)。
@@ -7907,6 +7908,22 @@ class RootWidget(BoxLayout):
         except Exception:
             out["maxfps"], out["vsync"] = "?", "?"
         out["frame_calls"] = _FRAME_CALLS[0]
+        try:
+            from kivy.config import Config as _Cfg2
+            out["multisamples"] = str(_Cfg2.get("graphics", "multisamples"))
+        except Exception:
+            out["multisamples"] = "?"
+        # ---- C6 判据: 最差 20 帧距上一次发射各过了几帧 ----
+        try:
+            _w20 = sorted(fr, key=lambda x: -x[0])[:20]
+            _pos = [(x[8] if len(x) > 8 else -1) for x in _w20]   # [8] = 距上次发射的帧数
+            _pos = [p for p in _pos if p is not None]
+            _pos.sort()
+            out["w20_pos"] = _pos
+            out["w20_near"] = sum(1 for p in _pos if p <= 20)   # 发射后 20 帧内(约 0.33 秒)
+        except Exception:
+            out["w20_pos"] = []
+            out["w20_near"] = -1
         _cs1 = _cpu_split()
         _cs0 = getattr(self, "_bench_cpusplit0", None)
         if _cs1 and _cs0:
@@ -8299,6 +8316,15 @@ class RootWidget(BoxLayout):
                          % (d.get("maxfps", "?"), d.get("vsync", "?"), _fc,
                             d.get("n", 0), _fc / float(max(1, d.get("n", 1)))))
             # 内核态占比 —— 把这一个数当**分流器**: 高则查 JNI/Binder/文件写, 低则查 GIL。
+            # C6: 最差 20 帧是不是**紧跟在一次发射之后**? 是 ⇒ "每发才做一次的活"有罪;
+            # 铺开 ⇒ 无罪, 该往别处找。(这一条是全池子里判"站得住"的那条。)
+            _p = d.get("w20_pos") or []
+            if _p:
+                parts.append('最差20帧： 距上次发射 %d~%d 帧（中位 %d）· 其中 %d 帧在发射后 20 帧内'
+                             '　（铺开=与发射无关）' % (_p[0], _p[-1], _p[len(_p) // 2],
+                                                    d.get("w20_near", -1)))
+            parts.append('渲染设置： multisamples=%s（Kivy 默认 2 = 2x MSAA 全屏，每帧固定带宽成本）'
+                         % d.get("multisamples", "?"))
             _u, _k = float(d.get("utime_ms", -1)), float(d.get("stime_ms", -1))
             if _u >= 0 and (_u + _k) > 0:
                 parts.append('CPU 构成： 用户态 %.0f 毫秒 · 内核态 %.0f 毫秒（内核占 %.0f%%）'
@@ -8686,6 +8712,7 @@ class RootWidget(BoxLayout):
     def launch(self):
         if self.state != "charging":
             return
+        _SINCE_LAUNCH[0] = 0              # 发射那一刻归零, 后面每帧 +1(判 C6)
         if self.power < MISFIRE_POWER:
             # 哑火: 球照样弹出去, 只是升不过隔墙顶 -> 掉回柱塞。不扣弹珠、不计一局、不换盘面
             frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
@@ -9528,6 +9555,7 @@ class RootWidget(BoxLayout):
         finally:
             _FRAME_SELF[0] = (time.perf_counter() - _t0) * 1000.0
             _FRAME_CALLS[0] += 1
+            _SINCE_LAUNCH[0] += 1
 
     def _frame(self, dt):
         self._check_title_hold()
@@ -10277,11 +10305,15 @@ class PlinkoApp(App):
                     #    SurfaceFlinger, 代价**每台机器差很多**。2026-09-14 给它单独计时:
                     #    判据 —— 若单次 ≥5 毫秒, 那"每 0.7 秒重申一次"就是在拿 UI 线程
                     #    换一个系统本来就自动隐藏的东西(IMMERSIVE_STICKY 会自己收回)。
-                    _t0 = time.perf_counter()
                     try:
                         from jnius import autoclass
                         act = autoclass("org.kivy.android.PythonActivity").mActivity
                         View = autoclass("android.view.View")
+                        # ⚠️ `_t0` **必须打在两次 `autoclass` 之后**(2026-09-14 修): 原来打在
+                        #    它们之前, 于是面板上"系统栏重申·单次最慢"测的是**探针自己的查表
+                        #    开销**(pyjnius 的 autoclass 在毫秒级), 不是 `setSystemUiVisibility`
+                        #    的代价 —— 那一格一直在测自己。(压测段 2 号专家指出。)
+                        _t0 = time.perf_counter()
                         act.getWindow().getDecorView().setSystemUiVisibility(
                             View.SYSTEM_UI_FLAG_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
