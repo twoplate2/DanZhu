@@ -1902,6 +1902,17 @@ def open_output():
     return None
 
 # ======================= 音效总线 =======================
+# 跑分采样期的"这一帧发生了什么"计数器(2026-09-13 加)。
+# ⚠️ 为什么需要它: 真机(Y700 二代)实测那个偶发长停顿, 特征是**周期性(约每 0.5 秒一次)**
+#    且**是等出来的不是算出来的**(155ms 的帧只烧了 62.8ms CPU)。而玩家手上唯一有因果力的
+#    线索是「关掉音效后 1% low 大幅回升」—— 可 `_vibrate_tick` 挂在 `sfx.play()` 的返回值上,
+#    关音效会**连震动一起关掉**, 两条怀疑路径混在一起, 分不出是谁。
+#    这里逐帧记下"发了几次声 / 震了几次", 跑分面板就能报出**慢帧里有几帧在发声/震动** ——
+#    一刀切开。只在跑分采样期读, 平时只多两次列表自增。
+_FRAME_PROBE = [0, 0]            # [本帧发声次数, 本帧震动次数]
+# "慢帧"的判定门槛(毫秒)。只此一处 —— 判据与面板文案都读它, 免得两处各写一个数漂掉。
+BENCH_SLOW_MS = 90.0
+
 _VARIANT_FAMILIES = ("peg", "wall", "div", "top")
 
 def _throttle_key(name):
@@ -2334,12 +2345,14 @@ class Sfx:
             if data is None:
                 data = pcm if lvl >= 10 else _scale_pcm(pcm, lvl / 10.0)
                 self._scaled[key] = data
+            _FRAME_PROBE[0] += 1
             self.out.play_pcm(data)
             return True
         # ⚠️ 必须把这个返回值存下来再返回: 它和上面那几个"设计内静默"的 return False 长得一模一样,
         #    但语义完全不同 —— 这一条是"过了 enabled/互斥/已加载/增益/节流五道闸门之后,
         #    后端仍然说没播成", 也就是 README 里那个"首次安装必然没声音"的**正面计数**。
         #    节流那一支在它上面提前 return, 根本走不到这里, 所以天然被排除, 不用额外判断。
+        _FRAME_PROBE[0] += 1
         ok = self.out.play_named(name, lvl / 10.0)
         self.n_attempt += 1
         if not ok:
@@ -4963,6 +4976,7 @@ def _vibrate(ms, amp=255):
         vib = activity.getSystemService(Context.VIBRATOR_SERVICE)
         if vib is None:
             return
+        _FRAME_PROBE[1] += 1                 # 记在**真正发起 Binder 调用**这一刻(见 _FRAME_PROBE 说明)
         try:
             VibrationEffect = autoclass("android.os.VibrationEffect")
             vib.vibrate(VibrationEffect.createOneShot(
@@ -6870,7 +6884,10 @@ class RootWidget(BoxLayout):
             #    Linux/安卓 上 process_time 是 clock_gettime(CLOCK_PROCESS_CPUTIME_ID),
             #    纳秒级; Windows 上精度只有 15.6ms, 所以桌面看不出分辨力, 真机才有效。
             self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag(),
-                                       (cpu - pcpu) * 1000.0))
+                                       (cpu - pcpu) * 1000.0,
+                                       _FRAME_PROBE[0], _FRAME_PROBE[1]))
+            _FRAME_PROBE[0] = 0
+            _FRAME_PROBE[1] = 0
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
@@ -6889,16 +6906,27 @@ class RootWidget(BoxLayout):
         Window.unbind(on_flip=self._on_flip)
         flips = self._flip_times or []
         self._render_lows = {}
+        self._render_pct = {}
         if len(flips) >= 2:
             gaps = [flips[i + 1] - flips[i] for i in range(len(flips) - 1)]
             s = sorted(gaps)
             self._render_fps = 1.0 / s[len(s) // 2] if s[len(s) // 2] > 0 else 0.0
-            # 低帧率分位(玩家 2026-09-13 要的 1%/3%/10%): "最慢 N% 的帧"平均下来是多少 FPS。
-            # 三个一起看才分得清"偶发一次长停顿"(1% 掉、10% 不掉) 和"整体都慢"(三个一起掉)。
-            for _pct in (1, 3, 10):
+            # 低帧率(玩家 2026-09-13 要的 1%/10%): "最慢 N% 的帧"**平均下来**是多少 FPS。
+            # ⚠️ 它和下面的 p99/p90 **不是一回事**: 这里是"最慢那批的均值", 那里是"分位上那一帧"。
+            #    偶发几个巨大尖峰时, 均值会被拉得比阈值狠得多 —— 两个一起看才分得清
+            #    "偶发几次长停顿"和"整体都慢"。
+            for _pct in (1, 10):
                 n = max(1, int(len(s) * _pct / 100.0))
                 self._render_lows[_pct] = 1.0 / (sum(s[-n:]) / n) if sum(s[-n:]) > 0 else 0.0
             self._render_1low = self._render_lows[1]
+            # p99/p90 帧率(玩家 2026-09-13 要的): **99% / 90% 的帧都比它快**。
+            # 取"慢侧分位上那一帧"的帧率(不是均值) —— 它是**门槛**, 不是平均。
+            # ⚠️ `gaps` 是 `time.time()` 的差值 = **秒**, 所以这里除的是 1.0 不是 1000.0
+            #    (写成 1000.0 会虚高一千倍 —— 面板上会看到 "p99帧率: 66438" 这种鬼数)。
+            self._render_pct = {}
+            for _q in (99, 90):
+                _sec = s[min(len(s) - 1, int(len(s) * _q / 100.0))]
+                self._render_pct[_q] = (1.0 / _sec) if _sec > 0 else 0.0
         else:
             self._render_fps = 0.0
             self._render_1low = 0.0
@@ -6916,7 +6944,7 @@ class RootWidget(BoxLayout):
         fr = list(getattr(self, "_bench_frames", []) or [])
         if not fr:
             return out
-        gaps = sorted(g for g, _t, _c in fr)
+        gaps = sorted(g for g, _t, _c, _s, _v in fr)
         nn = len(gaps)
         pk = lambda q: gaps[min(nn - 1, int(nn * q))]
         out["n"] = nn
@@ -6927,10 +6955,22 @@ class RootWidget(BoxLayout):
         # 后两个数一起看才分流: 实算 ≈ 帧间隔 ⇒ 算出来的(处理器瓶颈);
         # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
         by_worst = sorted(fr, key=lambda x: -x[0])[:3]
-        out["worst"] = [(g, t, c) for g, t, c in by_worst]
+        out["worst"] = [(g, t, c) for g, t, c, _s, _v in by_worst]
+        # 慢帧的"节拍"与"这一帧在发声/震动吗" —— 定位偶发长停顿的两把刀:
+        #   · 节拍规则 ⇒ 时钟驱动(某个 0.5s 定时器); 不规则 ⇒ 事件驱动。
+        #   · 慢帧里绝大多数在发声/震动 ⇒ 就是那条路(玩家"关音效就变好"的因果线索)。
+        _slow = [x for x in fr if x[0] >= BENCH_SLOW_MS]
+        out["slow_n"] = len(_slow)
+        out["slow_beat"] = (sum(g for g, *_r in fr) / len(_slow)) if _slow else 0.0
+        out["slow_snd"] = sum(1 for x in _slow if x[3] > 0)
+        out["slow_vib"] = sum(1 for x in _slow if x[4] > 0)
+        # 全程总数 —— 用来**自证计数器在工作**: 面板上看到"全程发声 N 次"就知道探针没坏,
+        # 否则"慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这个仓库栽过这种静默)。
+        out["snd_n"] = sum(x[3] for x in fr)
+        out["vib_n"] = sum(x[4] for x in fr)
         # 分场景: 飞行 vs 装杯(跑分把装杯也采样进去了, 不分就分不清是谁在拖)
         grp = {}
-        for g, t, _c in fr:
+        for g, t, _c, _s, _v in fr:
             grp.setdefault(t, []).append(g)
         out["groups"] = {}
         for t, xs in grp.items():
@@ -7040,11 +7080,14 @@ class RootWidget(BoxLayout):
                                          size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
         _lows = getattr(self, "_render_lows", {}) or {}
+        _pct = getattr(self, "_render_pct", {}) or {}
         if _lows:
-            _low_txt = ('平均帧率： %.1f    1%%Low：%.1f\n'
-                        '3%%Low：%.1f    10%%Low：%.1f') % (
-                            render_fps, _lows.get(1, 0.0), _lows.get(3, 0.0),
-                            _lows.get(10, 0.0))
+            # 排版(玩家 2026-09-13 定稿): 平均帧率**独占一行**, 其余四个两两一行。
+            _low_txt = ('平均帧率： %.1f\n'
+                        '1%%Low：%.1f    10%%Low：%.1f\n'
+                        'p99帧率：%.1f    p90帧率：%.1f') % (
+                            render_fps, _lows.get(1, 0.0), _lows.get(10, 0.0),
+                            _pct.get(99, 0.0), _pct.get(90, 0.0))
         else:
             _low_txt = '平均帧率： %.1f\n1%%Low帧率：%.1f' % (render_fps, render_1low)
         # ⚠️ 这一屏**不放**版本/制作日期(用户 2026-09-11 定稿: "性能测试的成绩面板别加").
@@ -7111,18 +7154,38 @@ class RootWidget(BoxLayout):
             seg = ['%s %.1f' % (t, gs[t][1]) for t in _ord if t in gs]
             if seg:
                 parts.append('各阶段每帧： ' + ' · '.join(seg) + ' 毫秒')
+            # 慢帧的节拍 + 当时在不在发声/震动。这一行是给"偶发长停顿"定位用的 ——
+            # 规则节拍指向时钟驱动, 不规则指向事件驱动; 而慢帧里发声/震动的占比
+            # 直接回答玩家那句"关掉音效就好了"到底是声音还是震动造成的。
+            # 发声/震动计数**独立一行、永远显示**(玩家 2026-09-13: "发声多少次 没有看到啊")。
+            # 它有两个用途: ① 真机上把"偶发长停顿"归因到声音还是震动(玩家唯一有因果力的线索
+            # 是"关掉音效 1% low 就回升", 而那会**连震动一起关掉**, 混在一起分不开);
+            # ② **自证探针在工作** —— 看到"全程发声 N 次"就知道计数器真跑了, 否则
+            # "慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这仓库栽过这种静默)。
+            parts.append('发声/震动： 全程 %d 次 / %d 次'
+                         % (d.get("snd_n", 0), d.get("vib_n", 0)))
+            # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
+            if d.get("slow_n"):
+                parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
+                             % (d["slow_n"], BENCH_SLOW_MS, d["slow_beat"] / 1000.0,
+                                d.get("slow_snd", 0), d.get("slow_vib", 0)))
             # 瓶颈判断: 每帧真正花在计算上的时间 vs 帧间隔。差得远 = 大头在等画面
             #   (GPU 出图 / 垂直同步); 快追平 = 处理器就是瓶颈。
             _cpu = float(d.get("cpu_per_frame", 0.0))
             _p50 = float(d["p50"])
             if _p50 > 0 and _cpu > 0:
                 _r = _cpu / _p50
-                _v = ("算不过来（处理器是瓶颈）" if _r >= 0.8
-                      else ("处理器比较吃紧" if _r >= 0.4 else "在等画面（画面是瓶颈）"))
+                # ⚠️ 第三档**故意不说"画面是瓶颈"**(玩家 2026-09-13 问"是 gpu 还是?"):
+                #    这一项只量"本进程烧了多少 CPU"。"算得少、等得多"既可能是等显卡出图/
+                #    等垂直同步, 也可能是**阻塞在系统调用上**(Binder/JNI/文件IO) —— 本项
+                #    **分不出这两者**。写死"画面"会把归因带偏(这个仓库栽过: 一个专抓静默的
+                #    面板自己却在做静默归因)。要分清得靠"慢帧里在发声/震动吗"那一行。
+                _v = ("处理器算不过来" if _r >= 0.8
+                      else ("处理器比较吃紧" if _r >= 0.4 else "大头在等"))
             else:
                 _v = "—"
-            parts.append('瓶颈： %s（每帧实算 %.1f / 帧间隔 %.1f 毫秒）· 内存回收 %.1f 毫秒'
-                         '（%d 次，最坏一次 %.1f）'
+            parts.append('瓶颈： %s · 每帧实算 %.1f / 帧间隔 %.1f 毫秒 · 内存回收 %.1f 毫秒'
+                         '（%d 次，最坏 %.1f）'
                          % (_v, _cpu, _p50, d["gc_total"] * 1000.0, d["gc_n"],
                             d["gc_worst"] * 1000.0))
             return '\n'.join(parts)
