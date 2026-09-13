@@ -3801,6 +3801,11 @@ BOUNCE_A2_BASE, BOUNCE_A2_AMP = 0.25, 0.20       # 第二跳
 VISIBLE_TOP = -DESIGN_H * CUP_T / CUP_H
 
 _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
+# 启动预热要"碰一次"的字号: 大字 sp(36)/sp(48) + 飘字 sp(26)/sp(30)。
+# ⚠️ **必须懒算**: `sp()` 读当时的窗口密度, 而模块导入时窗口还没建 —— 在这里直接
+#    写 `sp(36)` 会拿到错误的密度(真机上就是"预热了一堆没人用的字号")。
+# ⚠️ **一次只碰一个**(见 prebake_step 的字体预热那段): 4 个挤一帧 = 一帧 100ms+。
+_FONT_WARM_SIZES = None
 _GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例存
 # 杯口环的**后半个**(远侧那半圈)在 back 贴图里占的高度比例。
 # 生成器里 `rim_back = _half_mask(rim, front=False, split_y=80)`, 环本体是 design y 5..155、
@@ -4197,7 +4202,7 @@ class WinPileFX(Widget):
         # (见 dim_alpha 的说明: 两边必须是**同一个数**, 不能各取一次时间)。
         self._a_dim_now = 0.0
         self._glass_prebaked = False     # prebake_step 的一次性开关(玻璃贴图预热)
-        self._font_prebaked = False      # prebake_step 的一次性开关(大字/飘字字号预热)
+        self._font_prebaked = 0          # prebake_step 的进度(已烘过几个字号, 见 _FONT_WARM_SIZES)
         self._vib_prebaked = False       # prebake_step 的一次性开关(震动线程+系统服务代理)
         self._balls = []
         self._value = DEFAULT_BET
@@ -4895,13 +4900,20 @@ class WinPileFX(Widget):
                 pass
             Clock.schedule_once(self.prebake_step, 0.05)
             return
-        if not self._font_prebaked:
-            self._font_prebaked = True
-            for _fs in (sp(36), sp(48), sp(26), sp(30)):
-                try:
-                    text_px("未中", _fs, True)
-                except Exception:
-                    pass
+        if _FONT_WARM_SIZES is None:
+            # 首次走到这里才按**当时的窗口密度**算(模块导入时窗口还没建, 那时 sp() 是错的)。
+            globals()["_FONT_WARM_SIZES"] = (sp(36), sp(48), sp(26), sp(30))
+        if self._font_prebaked < len(_FONT_WARM_SIZES):
+            # ⚠️ **一帧只碰一个字号**(2026-09-14 改)。原来是 4 个字号挤在**同一帧**里跑,
+            #    而"碰一个新字号"= 重新打开一次 TTF 字形表 = 桌面 26ms ⇒ 那一帧至少 **100ms**,
+            #    真机上更贵。这是本方法自己引入的长帧(它要消灭的是"落袋那帧现开字形表",
+            #    结果先在启动期造了一记更长的) —— 分帧摊开, 每帧只付一次。
+            _fs = _FONT_WARM_SIZES[self._font_prebaked]
+            self._font_prebaked += 1
+            try:
+                text_px("未中", _fs, True)
+            except Exception:
+                pass
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         cur = getattr(getattr(self.area, "game", None), "bet", DEFAULT_BET)
@@ -5113,6 +5125,21 @@ _VIB_Q = None                    # 震动工作队列(None = 还没建)
 _VIB_LOCK = threading.Lock()
 _VIB_PROXY = [None]              # [缓存的 Vibrator 代理]
 _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的描述]
+
+# 方向守卫 / 沉浸重申的**主线程耗时**统计: [方向累计秒, 方向单次最慢秒, 方向次数,
+# 沉浸累计秒, 沉浸次数]。⚠️ **必须定义在模块级**(不是某个类的类属性) —— 三处用它的人
+# (`_orient_guard` / `_enter_immersive` / `_start_benchmark` / `_bench_collect_diag`)
+# 写的都是**裸名**, 裸名找的是模块全局; 写成类属性会 AttributeError/NameError。
+# 为什么单独立一个计数器: 这两条链**每 0.7 秒**在主线程各跑一次, 而且**跑分期间照跑**。
+# 已经排掉的都是"事件路径、每球一次"的东西, 剩下能解释"1%Low 卡在某个数上不去"的,
+# 恰恰是这种**周期性**的主线程停顿 —— 1%Low 只看最差的 1%(约十几帧), 每 0.7 秒来一记,
+# 25 秒就是 35 记, 足够把那一档全占满。
+# ⚠️ 这个 app 里 JNI/Binder 已经实测过是**灾难级的慢**(`SoundPool.play()` 单次 143.6ms、
+#    平均 53.5ms) —— 所以"每 0.7 秒一次 system_server 往返"完全够格当 1%Low 的天花板。
+# ⚠️ 桌面量不到(`platform != "android"` 直接 return), 只能靠真机跑分面板读那一行。
+#    在没有这个数之前**不要动它** —— 砍错了没有门禁会红(selftest/fx_probe 都不走
+#    android 分支), 而它管的是宽屏设备横拿抢 fullSensor、以及系统栏复活后重新隐藏。
+_JNI_STAT = [0.0, 0.0, 0, 0.0, 0]
 
 
 def _vib_get():
@@ -7089,7 +7116,12 @@ class RootWidget(BoxLayout):
         _SND_STAT[3] = 0.0
         _VIB_STAT[0] = 0.0
         _VIB_STAT[1] = 0.0
-        _VIB_STAT[2] = "" 
+        _VIB_STAT[2] = ""
+        _JNI_STAT[0] = 0.0
+        _JNI_STAT[1] = 0.0
+        _JNI_STAT[2] = 0
+        _JNI_STAT[3] = 0.0
+        _JNI_STAT[4] = 0
         self._bench_wall0 = time.time()
         import gc
         try:
@@ -7244,6 +7276,14 @@ class RootWidget(BoxLayout):
         out["vib_worst"] = _VIB_STAT[1] * 1000.0
         out["vib_sum"] = _VIB_STAT[0] * 1000.0
         out["vib_worst_name"] = _VIB_STAT[2]
+        # 方向守卫 / 沉浸重申: 每 0.7 秒各一次的主线程 JNI, **跑分期间照跑**。
+        # 它是"周期性停顿"这一类里唯一的常驻项, 而 1%Low 只看最差的那十几帧 ——
+        # 每 0.7 秒来一记正好能把那一档占满。单次够大(几毫秒以上)就该把它挪出主线程。
+        out["jni_or_n"] = _JNI_STAT[2]
+        out["jni_or_worst"] = _JNI_STAT[1] * 1000.0
+        out["jni_or_sum"] = _JNI_STAT[0] * 1000.0
+        out["jni_im_n"] = _JNI_STAT[4]
+        out["jni_im_sum"] = _JNI_STAT[3] * 1000.0
         # 音频后端名 —— 这个仓库栽过一次: SoundPool 构造失败会**静默降级**到 Kivy-SoundLoader,
         # 而后者走 SDL_mixer, 阻塞行为完全不同。不知道后端就分不清是哪一个在卡。
         try:
@@ -7465,6 +7505,15 @@ class RootWidget(BoxLayout):
                          % (d.get("vib_n", 0), d.get("vib_worst", 0.0),
                             ('（%s）' % _vn) if _vn else '',
                             d.get("vib_sum", 0.0)))
+            # 方向守卫 / 沉浸重申那一行 —— 只在这两条链**真的跑过**时出(桌面是 0 次)。
+            # 判据: "单次最慢 ≥ 5 毫秒" 就值得把它挪出主线程 —— 它每 0.7 秒来一次,
+            # 1%Low 只看最差十几帧, 25 秒里它有 35 次机会把那一档占满。
+            if d.get("jni_or_n"):
+                parts.append('方向守卫： %d 次（每0.7秒）· 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒'
+                             '　沉浸重申： %d 次 · 累计 %.0f 毫秒'
+                             % (d.get("jni_or_n", 0), d.get("jni_or_worst", 0.0),
+                                d.get("jni_or_sum", 0.0), d.get("jni_im_n", 0),
+                                d.get("jni_im_sum", 0.0)))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
                 parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
@@ -9358,6 +9407,7 @@ class PlinkoApp(App):
         瘦长手机: 持续重申竖屏锁(7), 任何运行时横屏自报都被顶掉。"""
         if platform != "android":
             return
+        _t0 = time.perf_counter()
         try:
             from jnius import autoclass
             act = autoclass("org.kivy.android.PythonActivity").mActivity
@@ -9369,6 +9419,11 @@ class PlinkoApp(App):
                 act.setRequestedOrientation(7)
         except Exception:
             pass
+        _d = time.perf_counter() - _t0
+        _JNI_STAT[0] += _d
+        _JNI_STAT[2] += 1
+        if _d > _JNI_STAT[1]:
+            _JNI_STAT[1] = _d
 
     _immersive_task_inst = None
 
@@ -9413,12 +9468,15 @@ class PlinkoApp(App):
         ⚠️ 必须 runOnUiThread: 线程不对时静默失败(病根见 _immersive_task 注释)。"""
         if platform != "android":
             return
+        _t0 = time.perf_counter()
         try:
             from jnius import autoclass
             act = autoclass("org.kivy.android.PythonActivity").mActivity
             act.runOnUiThread(PlinkoApp._immersive_task())
         except Exception:
             pass
+        _JNI_STAT[3] += time.perf_counter() - _t0
+        _JNI_STAT[4] += 1
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
