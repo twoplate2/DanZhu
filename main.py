@@ -1909,7 +1909,10 @@ def open_output():
 #    关音效会**连震动一起关掉**, 两条怀疑路径混在一起, 分不出是谁。
 #    这里逐帧记下"发了几次声 / 震了几次", 跑分面板就能报出**慢帧里有几帧在发声/震动** ——
 #    一刀切开。只在跑分采样期读, 平时只多两次列表自增。
-_FRAME_PROBE = [0, 0]            # [本帧发声次数, 本帧震动次数]
+_FRAME_PROBE = [0, 0, 0.0, 0.0]   # [发声次数, 震动次数, 发声累计秒, 单次最慢秒]
+# ⚠️ 后两项**只包住真正那一次后端调用**(`play_pcm` / `play_named`), 不包整个 Sfx.play ——
+#    真机实测慢帧是"纯等"(119ms 的帧只烧 10.4ms CPU), 所以要量的是**那一声到底阻塞了多久**,
+#    而不是节流/查表那点开销。
 # "慢帧"的判定门槛(毫秒)。只此一处 —— 判据与面板文案都读它, 免得两处各写一个数漂掉。
 BENCH_SLOW_MS = 90.0
 
@@ -2345,15 +2348,25 @@ class Sfx:
             if data is None:
                 data = pcm if lvl >= 10 else _scale_pcm(pcm, lvl / 10.0)
                 self._scaled[key] = data
-            _FRAME_PROBE[0] += 1
+            _t0 = time.perf_counter()
             self.out.play_pcm(data)
+            _FRAME_PROBE[0] += 1
+            _dt = time.perf_counter() - _t0
+            _FRAME_PROBE[2] += _dt
+            if _dt > _FRAME_PROBE[3]:
+                _FRAME_PROBE[3] = _dt
             return True
         # ⚠️ 必须把这个返回值存下来再返回: 它和上面那几个"设计内静默"的 return False 长得一模一样,
         #    但语义完全不同 —— 这一条是"过了 enabled/互斥/已加载/增益/节流五道闸门之后,
         #    后端仍然说没播成", 也就是 README 里那个"首次安装必然没声音"的**正面计数**。
         #    节流那一支在它上面提前 return, 根本走不到这里, 所以天然被排除, 不用额外判断。
-        _FRAME_PROBE[0] += 1
+        _t0 = time.perf_counter()
         ok = self.out.play_named(name, lvl / 10.0)
+        _FRAME_PROBE[0] += 1
+        _dt = time.perf_counter() - _t0
+        _FRAME_PROBE[2] += _dt
+        if _dt > _FRAME_PROBE[3]:
+            _FRAME_PROBE[3] = _dt
         self.n_attempt += 1
         if not ok:
             self.n_missed += 1
@@ -6233,10 +6246,32 @@ class RootWidget(BoxLayout):
         x0, y0, w, h = vp.x, vp.y, vp.width, vp.height
         ga_lo = min(max(ga.y, y0), y0 + h)
         ga_hi = min(max(ga.y + ga.height, y0), y0 + h)
-        self._hud_dim_top.pos = (x0, ga_hi)
-        self._hud_dim_top.size = (w, max(0.0, y0 + h - ga_hi))
-        self._hud_dim_bot.pos = (x0, y0)
-        self._hud_dim_bot.size = (w, max(0.0, ga_lo - y0))
+        self._hud_dim_geo = ((x0, ga_hi, w, max(0.0, y0 + h - ga_hi)),
+                             (x0, y0, w, max(0.0, ga_lo - y0)))
+        # ⚠️ **构造期必须无条件写完整几何**: `fx_probe [11]` 就是在"刚建完、还没跑过一帧"
+        #    这个状态下读这四块矩形的 pos/size 来断言"恰好盖满整屏减游戏区"的。
+        #    跑起来之后才交给 `_paint_hud_dim` 按当前 alpha 决定"铺满"还是"收到 0"。
+        self._paint_hud_dim(max(0.0, self._hud_dim_last),
+                            force_geo=(self._hud_dim_last < 0))
+
+    def _paint_hud_dim(self, a, force_geo=False):
+        """按当前压暗强度摆这两块矩形。
+
+        ⚠️ **a <= 0 时把矩形收到 0 尺寸, 而不是只把 alpha 写成 0**(2026-09-13 中风险优化)。
+        alpha=0 的矩形**仍然要走一遍混合填充** —— 它盖的是"整块屏幕减去游戏区",
+        竖屏下约 35% 的屏面积。真机 2560x1600 = 400 万像素, 每帧白烧约 140 万像素的混合;
+        按 80fps 算是 ~115 Mpix/s 的无用填充(Adreno 730 的混合填充约 1~2 Gpix/s,
+        即 6~11% 的填充预算)。**它是这两块矩形唯一的存在意义就是"演出期压暗",
+        演出之外一个像素都不该画。**
+        桌面测不出收益(填充率太快), 所以这条是"去掉确凿的白工", 不是"实测更快的优化"。
+        """
+        for col, geo, rect in ((self._hud_dim_cols[0], self._hud_dim_geo[0],
+                                self._hud_dim_top),
+                               (self._hud_dim_cols[1], self._hud_dim_geo[1],
+                                self._hud_dim_bot)):
+            col.rgba = (DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], a)
+            rect.pos = (geo[0], geo[1])
+            rect.size = (geo[2], geo[3]) if (force_geo or a > 0.0) else (0.0, 0.0)
 
     def _sync_hud_dim(self):
         """每帧把压暗块对齐到装杯演出的生灭曲线。
@@ -6251,8 +6286,7 @@ class RootWidget(BoxLayout):
         if a == self._hud_dim_last:
             return
         self._hud_dim_last = a
-        for col in self._hud_dim_cols:
-            col.rgba = (DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], a)
+        self._paint_hud_dim(a)
 
     def _build_ui(self):
         # 顶栏: [左边两个按钮(定宽)] [标题(弹性·居中)] [状态(弹性·右对齐)]
@@ -6885,9 +6919,12 @@ class RootWidget(BoxLayout):
             #    纳秒级; Windows 上精度只有 15.6ms, 所以桌面看不出分辨力, 真机才有效。
             self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag(),
                                        (cpu - pcpu) * 1000.0,
-                                       _FRAME_PROBE[0], _FRAME_PROBE[1]))
+                                       _FRAME_PROBE[0], _FRAME_PROBE[1],
+                                       _FRAME_PROBE[2] * 1000.0, _FRAME_PROBE[3] * 1000.0))
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
+            _FRAME_PROBE[2] = 0.0
+            _FRAME_PROBE[3] = 0.0
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
@@ -6944,7 +6981,7 @@ class RootWidget(BoxLayout):
         fr = list(getattr(self, "_bench_frames", []) or [])
         if not fr:
             return out
-        gaps = sorted(g for g, _t, _c, _s, _v in fr)
+        gaps = sorted(x[0] for x in fr)
         nn = len(gaps)
         pk = lambda q: gaps[min(nn - 1, int(nn * q))]
         out["n"] = nn
@@ -6955,7 +6992,7 @@ class RootWidget(BoxLayout):
         # 后两个数一起看才分流: 实算 ≈ 帧间隔 ⇒ 算出来的(处理器瓶颈);
         # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
         by_worst = sorted(fr, key=lambda x: -x[0])[:3]
-        out["worst"] = [(g, t, c) for g, t, c, _s, _v in by_worst]
+        out["worst"] = [x[:3] for x in by_worst]
         # 慢帧的"节拍"与"这一帧在发声/震动吗" —— 定位偶发长停顿的两把刀:
         #   · 节拍规则 ⇒ 时钟驱动(某个 0.5s 定时器); 不规则 ⇒ 事件驱动。
         #   · 慢帧里绝大多数在发声/震动 ⇒ 就是那条路(玩家"关音效就变好"的因果线索)。
@@ -6968,10 +7005,21 @@ class RootWidget(BoxLayout):
         # 否则"慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这个仓库栽过这种静默)。
         out["snd_n"] = sum(x[3] for x in fr)
         out["vib_n"] = sum(x[4] for x in fr)
+        # 发声耗时: 单次最慢 + 全程累计。**这是"那一声到底卡了多久"的直接证据** ——
+        # 真机实测慢帧是纯等(119ms 只烧 10.4ms CPU), 所以要看的就是这个数:
+        # 单次调用能到几十毫秒 ⇒ 卡的就是它。
+        out["snd_worst"] = max((x[6] for x in fr), default=0.0)
+        out["snd_sum"] = sum(x[5] for x in fr)
+        # 音频后端名 —— 这个仓库栽过一次: SoundPool 构造失败会**静默降级**到 Kivy-SoundLoader,
+        # 而后者走 SDL_mixer, 阻塞行为完全不同。不知道后端就分不清是哪一个在卡。
+        try:
+            out["backend"] = str(getattr(self.sfx.out, "name", "?"))
+        except Exception:
+            out["backend"] = "?" 
         # 分场景: 飞行 vs 装杯(跑分把装杯也采样进去了, 不分就分不清是谁在拖)
         grp = {}
-        for g, t, _c, _s, _v in fr:
-            grp.setdefault(t, []).append(g)
+        for _x in fr:
+            grp.setdefault(_x[1], []).append(_x[0])
         out["groups"] = {}
         for t, xs in grp.items():
             xs.sort()
@@ -7169,8 +7217,11 @@ class RootWidget(BoxLayout):
             # 是"关掉音效 1% low 就回升", 而那会**连震动一起关掉**, 混在一起分不开);
             # ② **自证探针在工作** —— 看到"全程发声 N 次"就知道计数器真跑了, 否则
             # "慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这仓库栽过这种静默)。
-            parts.append('发声/震动： %d 次 / %d 次'
-                         % (d.get("snd_n", 0), d.get("vib_n", 0)))
+            parts.append('发声/震动： %d 次 / %d 次 · 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒'
+                         '（后端 %s）'
+                         % (d.get("snd_n", 0), d.get("vib_n", 0),
+                            d.get("snd_worst", 0.0), d.get("snd_sum", 0.0),
+                            d.get("backend", "?")))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
                 parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
