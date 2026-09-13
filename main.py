@@ -26,7 +26,7 @@ from kivy.clock import Clock
 from kivy.core.text import LabelBase, Label as CoreLabel
 from kivy.core.window import Window
 from kivy.graphics import (Color, Rectangle, Line, Ellipse, RoundedRectangle,
-                            PushMatrix, PopMatrix, Rotate, Translate, Scale, Triangle, Mesh,
+                            PushMatrix, PopMatrix, Rotate, Scale,
                             StencilPush, StencilPop, StencilUse, StencilUnUse)
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
@@ -48,7 +48,6 @@ try:
         LabelBase.register(name="Roboto", fn_regular=_FONT_PATH)
 except Exception:
     pass
-
 
 def hex_rgb(h):
     """'#rrggbb' -> (r,g,b) 0~1 浮点(Kivy Color 用)。"""
@@ -133,7 +132,7 @@ E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
 VMAX = 2400.0                # 限速(需 >= 最大发射速度, 防穿透)
 FIXED_DT = 1.0 / 60.0
-# 一帧最多补几个物理步(超出的积压**丢掉**, 不往下攒)。见 _clamp_accum 的说明。
+# 一帧最多补几个物理步(超出的积压**丢掉**, 不往下攒)。见 `_clamp_accum` 的说明。
 MAX_STEPS_PER_FRAME = 4
 FRAME_MS = 16
 SUBSTEPS = 6                 # 子步数(增加: 高速下防穿透)
@@ -143,17 +142,16 @@ def _clamp_accum(a):
     """把固定步长累加器的积压**截到单帧上限**。
 
     ⚠️ 为什么必须截(2026-09-14, 冲 1%Low): 真机实测过"单帧最大 dt **625 毫秒** ——
-       一帧跑了 **37 个物理步**"(跑分阶段 1 的原话)。帧被拖慢之后, 累加器会把积压的时间
-       **全塞进那一帧** —— 那一帧于是更慢, 而它补出来的步又产生新的耗时 ⇒
-       **"帧慢 → 补更多物理步 → 更慢"的正反馈放大器**(工程文档里点名过这一条)。
+       一帧跑了 **37 个物理步**"(跑分阶段 1 的原话, 见 android/CLAUDE.md)。帧被拖慢之后,
+       累加器会把积压的时间**全塞进那一帧** —— 那一帧于是更慢, 而它补出来的步又产生新的
+       耗时 ⇒ **"帧慢 → 补更多物理步 → 更慢"的正反馈放大器**(工程文档里点名过这一条)。
        截断之后最坏一帧只补 MAX_STEPS 步, 长停顿不再自我放大。
-       桌面实测(两进程对照, 同一段代码): 灌 625ms 的大帧 —— 有钳位 **4 步**,
-       钳位换成恒等(改之前) **37 步**。
 
     ⚠️ **代价是丢掉时间**: 截断 = 那一帧只推进 MAX_STEPS 步, 而墙钟走了更多 ⇒ 球在那一瞬
        **走得比墙钟慢一点**。这是**刻意的取舍**: 停顿时球慢一瞬, 好过整台机器卡 600 毫秒。
        (反过来"把积压留着下帧再还"是错的 —— 那会让之后每帧都跑满上限, 拖出一长串慢帧。)
-    ⚠️ 上限别调小: 60Hz 上一帧正常就是 1 步, 30Hz 是 2 步。取 4 留足余量。
+    ⚠️ 上限别调小: 60Hz 上一帧正常就是 1 步, 30Hz 是 2 步。取 4 留足余量,
+       只在真正卡顿时才生效。
     """
     _lim = MAX_STEPS_PER_FRAME * FIXED_DT
     return _lim if a > _lim else a
@@ -969,16 +967,24 @@ def roll_multipliers(rtp=0.80):
 # 音效层: 程序化合成 16bit PCM + winmm 多声道播放 (纯 stdlib, 无音频文件)
 # =============================================================================
 SR = 22050                   # 采样率
-# ⚠️ 2026-09-14 由 8 提到 16 —— 冲真机实测的"SoundPool.play 单次 143.6ms / 平均 53.5ms"去的。
-#    最常见成因是**声道不够 → 抢一条正在响的流**(抢流要停掉再启 AudioTrack, 走音频服务)。
-#    本作最长的音 win6=1980ms、flight=1500ms, 一条就占死一条声道两秒; 揭晓那一刻
-#    "琶音+语音+落珠10/秒+coin"很容易顶到 8 条。提到 16 不改任何播放逻辑,
-#    顺带少掐断正在响的音。**这是根因尝试不是已证实的修复** —— 判据看跑分面板
-#    "发声·单次最慢"(前端值 143.6 毫秒)。别再往上加: 并发越多音频线程混音越重。
+# 并发声道数(可同时叠加的音效数)。
+# ⚠️ 2026-09-14 由 8 提到 16, 是冲着**真机实测的那个 53 毫秒/次**去的:
+#    真机跑分测出 `SoundPool.play()` 单次最慢 143.6ms、50 次累计 2674ms(平均 53.5ms),
+#    而帧间隔才 12.5ms。最常见的成因就是**声道不够 → SoundPool 要抢一条正在响的流**,
+#    抢流要停掉再启一条 AudioTrack, 走音频服务。
+#    本作最长的音: `win6` **1980ms**、`win5` 1780、`flight` 1500 —— 一条 2 秒的音
+#    就占死一条声道 2 秒; 揭晓那一刻"中奖琶音 + 语音(1~3秒) + 落珠 10 次/秒 + coin"
+#    很容易顶到 8 条上限。提到 16 只是给 SoundPool 更多余量, **不改任何播放逻辑**,
+#    而且顺带**少掐断正在响的音**(文档里记着: 满了的行为不是丢音, 是把还在响的流当场掐断)。
+#    ⚠️ 这一条是**根因尝试、不是已证实的修复** —— 判据看跑分面板的"发声·单次最慢":
+#       前端值 143.6 毫秒, 若明显下降就是这个方向对了; 若纹丝不动说明慢在别处(音频 HAL 唤醒等)。
+#    ⚠️ 反向风险(为什么只敢翻倍、不敢更大): 并发流越多, 音频线程的混音/重采样越重。
+#       16 条短音对现代 SoC 是小事, 但 32 条就没把握了 —— 别再往上加。
 # ⚠️ 2026-09-14 **改回 8**。当初 8 -> 16 的理由是"声道不够 -> SoundPool 抢流 ->
 #    主线程卡几十毫秒", 但那条因果链**在 v0.6.65 就已经断了**: `SoundPool.play()` 现在跑在
 #    **发声工作线程**上, 抢流只会让工作线程多阻塞一会儿(队列满了就丢一声), **再也到不了
-#    主线程**。留下的只有代价那半边 —— 上面自己写着"并发流越多, 音频线程的混音/重采样越重"。
+#    主线程**。留下的只有代价那半边 —— 上面自己写着"并发流越多, 音频线程的混音/重采样越重";
+#    而文档还记着满了的行为是"把还在响的流当场掐断", 那本来是 16 想避免的、现在由队列兜着。
 #    也就是说: 16 相对 8 **没有任何已证实的收益**, 只有"更多 AudioTrack 同时活着"这一项开销。
 #    ⚠️ 这是一条"把无收益的改动退回去"的**低风险**改动, 不是新优化 —— 没有观感变化。
 SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数)
@@ -1609,7 +1615,6 @@ def _sfx_cache_dir():
         pass
     return d
 
-
 def _sfx_code_tag():
     """缓存指纹: 本文件的 mtime+size(装了新 APK 就变) + 合成种子 + 采样率。
     音效配方改了 -> main.py 变了 -> 指纹变 -> 旧 WAV 整目录作废, 不会拿旧配方冒充新的。
@@ -1620,14 +1625,12 @@ def _sfx_code_tag():
     except Exception:
         return "%d.%d.nofile" % (SFX_SEED, SR)
 
-
 def _wav_write(path, pcm):
     """原子写: 先写 .tmp 再 replace。半截文件绝不能留在缓存里被下次启动当成有效音效。"""
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(pcm_to_wav(pcm))
     os.replace(tmp, path)
-
 
 def _wav_wipe(d):
     for fn in os.listdir(d):
@@ -1637,11 +1640,9 @@ def _wav_wipe(d):
             except Exception:
                 pass
 
-
 def _voice_dir():
     """预录语音目录(与 main.py 同级; 目录不存在时静默为空 —— 语音是安卓版附加功能)。"""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice")
-
 
 _VOICE_FILES_CACHE = [None]      # None = 还没列过; 列到东西了才缓存(见下)
 
@@ -1674,7 +1675,6 @@ def _voice_files():
         _VOICE_FILES_CACHE[0] = out
     return out
 
-
 def _read_wav_pcm(path):
     """读 22050Hz 16bit mono wav -> 裸 PCM 字节(winmm pcm 模式用; 格式不符直接拒)。"""
     import wave
@@ -1683,7 +1683,6 @@ def _read_wav_pcm(path):
             raise ValueError("voice wav 不是 %dHz 16bit mono: %s" % (SR, path))
         return wf.readframes(wf.getnframes())
 
-
 class _SoundPoolOut:
     """Android SoundPool: 短音效全部解压进内存, 并发交给硬件 mixer。
     不再用 OnLoadCompleteListener 做"加载完才准播"的门禁: 那个 PythonJavaClass 代理是
@@ -1691,6 +1690,13 @@ class _SoundPoolOut:
     尚未加载完的 sample 本来就只是返回 0 什么都不做 —— 用不着这个单点故障。"""
     mode = "named"
     name = "SoundPool"
+    # ⚠️ **真机实测: `SoundPool.play()` 会阻塞调用线程几十到一百多毫秒**
+    #    (Y700 二代: 50 次调用累计 2674ms、单次最慢 143.6ms, 而帧间隔只有 12.5ms
+    #     ⇒ 主线程每响一声就被卡几十毫秒, 1%Low 只有 7.8 就是它造成的)。
+    #    声明这一条 ⇒ `Sfx` 会起一个工作线程, 主线程只投递不等待(见 `Sfx._drain`)。
+    #    只给这一个后端开: winmm 桌面实测单次 0.9ms 不值得动; Kivy-SoundLoader 走 SDL,
+    #    从工作线程调它的安全性没有验证过, 不开。
+    needs_worker = True
 
     def __init__(self, voices=SFX_VOICES):
         self._voices = voices
@@ -1878,7 +1884,6 @@ class _SoundPoolOut:
         except Exception:
             pass
 
-
 class _KivySoundOut:
     """桌面后备: Kivy SoundLoader(SDL2)。能同时响, 但延迟/叠加不如 winmm/SoundPool。"""
     mode = "named"
@@ -1926,9 +1931,7 @@ class _KivySoundOut:
                 pass
         self._sounds.clear()
 
-
 _BACKEND_ERRORS = []     # [(名字, 异常文本)] —— open_output 降级链每一级失败都记一笔
-
 
 def _backend_error(name):
     """取某个后端构造失败的原文(诊断用)。"""
@@ -1936,7 +1939,6 @@ def _backend_error(name):
         if _n == name:
             return _e
     return ""
-
 
 def open_output():
     """按优先级选后端: Android SoundPool > winmm > Kivy SoundLoader > 静音。
@@ -1966,7 +1968,6 @@ def open_output():
         _BACKEND_ERRORS.append(("Kivy-SoundLoader", "%s: %s" % (type(exc).__name__, exc)))
     return None
 
-
 # ======================= 音效总线 =======================
 # 跑分采样期的"这一帧发生了什么"计数器(2026-09-13 加)。
 # ⚠️ 为什么需要它: 真机(Y700 二代)实测那个偶发长停顿, 特征是**周期性(约每 0.5 秒一次)**
@@ -1979,57 +1980,45 @@ def open_output():
 # ⚠️ 为什么必须能看出这一格: 桌面逐帧归因实测 —— 最慢的 11 帧**全部**落在启动后 0.6 秒内
 #    (= 预热链), 而那些帧的"本线程自算"只有 0.03~0.10 毫秒(我们自己的代码什么都没干)。
 #    真机上一个预热单步是 **100~200 毫秒**(球纹理烘焙; 桌面只要 16.6), 而跑分的采样窗口
-#    只有 7~12 秒(_target_launches = 3), 玩家又是**启动后 3 秒就长按标题**开跑的 ——
+#    只有 7~12 秒(`_target_launches = 3`), 玩家又是**启动后 3 秒就长按标题**开跑的 ——
 #    预热很可能还在跑, 正落在采样窗口里, 把 1%Low 压下去。
 #    分不分得出来, 决定了两件完全不同的事:
 #      慢帧里有预热 ⇒ 那是**启动期**的账, 玩家实际游玩(预热早跑完)没那么差;
 #      慢帧里没预热 ⇒ 那是**稳态**的账, 得继续往别处找。
 _FRAME_PROBE = [0, 0, 0]         # [本帧发声次数, 本帧震动次数, 本帧是否跑了预热]
 
-# 本帧**各子步骤**各花了多少秒: {名字: 秒}。由 `_brk_wrap` 包的那几个方法累加, `_on_flip` 清零。
-# ⚠️ 为什么必须细分: 面板只能说出"这一帧是**待机**、`_frame` 自己烧了 **9 毫秒**", 但**不知道
-#    那 9 毫秒花在哪**。而玩家 2026-09-14 质疑得对 —— **9 毫秒是小头**: 真机上
-#    "36毫秒(飞行·实算26.2·**自算0.3**)" 那一帧, 23.5 毫秒的超出**几乎全不在 `_frame` 里**。
-# ⚠️ 只包**几个**大头, 不是每个函数都包 —— 包装本身有开销, 包多了反而把被测量的东西改变掉。
-_FRAME_BRK = {}
+# 本帧**各子步骤**各花了多少秒: {名字: 秒}。由下面几个包装器累加, `_on_flip` 读完清零。
+# ⚠️ 为什么必须细分到子步骤: 面板到 v0.6.81 为止只能说出"这一帧是**待机**、`_frame` 自己烧了
+#    **9 毫秒**"(真机连续两份面板都这样: "36毫秒(待机·实算27.5·**自算8.1**)" /
+#    "34毫秒(待机·实算25.6·**自算9.1**)") —— 但**不知道那 9 毫秒花在哪**, 只能靠桌面一条条
+#    排除。细分之后真机一次跑分就能指名道姓。
+# ⚠️ 只包**几个**大头(板面动态重画 / 重掷盘面 / 自适应字号 / 装杯重画), 不是每个函数都包 ——
+#    包装本身有开销, 包多了反而把被测量的东西改变掉。
+_FRAME_BRK = {}                  # 本帧累计(会被 _on_flip 读走并清空)
+_BRK_KEYS = ("板面", "重掷", "字号", "装杯")
 _FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
 _TEXUPD = [0]                    # 文字重排累计次数(Label.texture_update 被调了几次)
-_BRK_KEYS = ("板面", "重掷", "字号", "装杯")
 
-# ⚠️ 为什么必须单独有"主线程 CPU"这一格: 真机面板上那三帧的账**对不上** ——
-#    40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
-#    36毫秒(飞行·实算26.2·自算0.3) 整帧 23.5 毫秒的超出**几乎全不在 `_frame` 里**。
-#    主线程上还有一大块在 `_frame` 外面: **Kivy 自己的渲染**(canvas 遍历 + GL 提交)、
-#    **Kivy 用 Clock 延后去做的 `Label.texture_update`**(`text`/`font_size`/`color` 一变就排队,
-#    跑在 `_frame` 之外)、以及其它 Clock 回调。`time.thread_time()` 是线程级 CPU 时钟
-#    (安卓/linux 纳秒级), 覆盖本线程上跑过的一切, 又排除发声/震动/守卫那几条工作线程。
+# ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
+#    真机面板上那三帧的账**对不上** —— 40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
+#    36毫秒(飞行·实算26.2·**自算0.3**) 整帧 23.5 毫秒的超出**几乎全不在 `_frame` 里**。
+#    而面板此前能看到的只有 `_frame` 自己。**主线程上还有一大块在 `_frame` 外面**:
+#      · **Kivy 自己的渲染**(canvas 遍历 + GL 提交);
+#      · **Kivy 用 Clock 延后去做的 `Label.texture_update`**(重测+重光栅化+重建纹理+上传);
+#      · 其它 Clock 回调。
+#    `time.thread_time()` 是**线程级** CPU 时钟(安卓/linux 纳秒级), 覆盖本线程上跑过的一切,
+#    又天然排除发声/震动/守卫那几条工作线程。三个数一摆就能分流:
+#      实算(全进程)大 · 主线程小   => 工作线程在忙;
+#      主线程大 · `_frame` 小      => **Kivy 渲染 / 文字重排**在吃;
+#      `_frame` 大                => 就是我们自己的代码。
+# ⚠️ **这几个名字必须定义在这里**: `_on_flip` / `_start_benchmark` / `_bench_collect_diag`
+#    引用它们时用的是**裸名**。漏定义的话 `--selftest`/`--smoke` 都测不出来(它们不跑跑分),
+#    一到真机跑分就 NameError 崩 —— 这个坑 2026-09-14 已经踩过一次(见 v0.6.83 提交说明)。
 _THREAD_TIME = getattr(time, "thread_time", None) or time.process_time
 
 
-def _brk_add(tag, t0):
-    """记一笔子步骤耗时(秒)。**只在跑分采样期有用**, 平时只是一次字典读改写。"""
-    d = _FRAME_BRK.get(tag)
-    _FRAME_BRK[tag] = (d or 0.0) + (time.perf_counter() - t0)
-
-
-def _brk_wrap(cls, attr, tag):
-    """给一个方法包一层计时。⚠️ 包装函数的 `__name__` 必须**与原方法同名** ——
-    Kivy 的 WeakMethod 存的是 `__name__`, 名字对不上会在下次调度时 AttributeError。"""
-    orig = getattr(cls, attr, None)
-    if orig is None:
-        return
-    def f(*a, **k):
-        t0 = time.perf_counter()
-        try:
-            return orig(*a, **k)
-        finally:
-            _brk_add(tag, t0)
-    f.__name__ = attr
-    setattr(cls, attr, f)
-
-
 def _texupd_wrap():
-    """给 `Label.texture_update` 挂计数器 —— 文字重排每秒几次的直接读数。
+    """给 `Label.texture_update` 挂计数器 —— "文字重排每秒几次"的直接读数。
 
     ⚠️ 一次文字重排 = 重测字形 + 重光栅化 + 重建纹理 + 上传, 真机字形表更贵。它由 Kivy 用
        Clock **延后**执行, 跑在 `_frame` 外面。去掉余额滚动(0.6.79)就是冲它去的,
@@ -2051,6 +2040,29 @@ def _texupd_wrap():
 
 
 _texupd_wrap()
+
+
+def _brk_add(tag, t0):
+    """记一笔子步骤耗时(秒)。**只在跑分采样期有用**, 平时只是一次字典读改写。"""
+    d = _FRAME_BRK.get(tag)
+    _FRAME_BRK[tag] = (d or 0.0) + (time.perf_counter() - t0)
+
+
+def _brk_wrap(cls, attr, tag):
+    """给一个方法包一层计时。⚠️ 包装函数的 `__name__` 必须**与原方法同名** ——
+    Kivy 的 WeakMethod 存的是 `__name__`, 名字对不上会在下次调度时 AttributeError
+    (本工程的探针踩过一次)。"""
+    orig = getattr(cls, attr, None)
+    if orig is None:
+        return
+    def f(*a, **k):
+        t0 = time.perf_counter()
+        try:
+            return orig(*a, **k)
+        finally:
+            _brk_add(tag, t0)
+    f.__name__ = attr
+    setattr(cls, attr, f)
 # 发声耗时统计: [累计次数, 累计秒, 单次最慢秒, 最慢那一次的音效名]。
 # ⚠️ 它是**全程**的、不是逐帧的 —— 因为发声已经搬到工作线程上了(见 Sfx._drain),
 #    后端耗时不再属于某一帧。真机实测这个数大得离谱: 15 秒窗口里 **50 次调用共 2674 毫秒**
@@ -3187,16 +3199,13 @@ TAPER = 1.43               # 圆肩: 底半径/堆高(对应休止角 ~35 度)
 # 杯底加宽并放缓收口：底/口宽约 0.80，避免旧版漏斗感；必须与生成器同源。
 _WALL_BEZ = ((39.0, 80.0), (65.0, 262.0), (110.0, 404.0))  # 左壁 bezier(生成器同源)
 
-
 def _bez_at(t):
     u = 1.0 - t
     x = u * u * _WALL_BEZ[0][0] + 2 * u * t * _WALL_BEZ[1][0] + t * t * _WALL_BEZ[2][0]
     y = u * u * _WALL_BEZ[0][1] + 2 * u * t * _WALL_BEZ[1][1] + t * t * _WALL_BEZ[2][1]
     return x, y
 
-
 _HW_TABLE = None
-
 
 def _build_hw_table(n=160):
     pts = []
@@ -3205,7 +3214,6 @@ def _build_hw_table(n=160):
         pts.append((FLOOR_Y - y, CX - x))        # (h, halfwidth)
     pts.sort()
     return pts
-
 
 def halfwidth(h):
     """离地 h 高度处"画出来的"杯内壁半宽(design px), 表外钳制。"""
@@ -3228,11 +3236,9 @@ def halfwidth(h):
     h1, w1 = tab[hi]
     return w0 + (w1 - w0) * (h - h0) / (h1 - h0)
 
-
 def floor_radius():
     """碗底平面可用半径(壁内)。"""
     return halfwidth(0.0)
-
 
 class PileSpec(object):
     def __init__(self, count, r_dp=11.5, seed=0, dp2px=DESIGN_W / 430.0,
@@ -3285,7 +3291,6 @@ class PileSpec(object):
         #    (实测 x100 的 24 个合法层间序列里只有 12 个能装下 100 颗, 配额再一变就更挑。)
         self.quota = tuple(quota) if quota else None
 
-
 def _volume_H(spec):
     """体积守恒初值: N 球体积 / 格盘密度 = 半椭球堆体积 (2/3)pi R^2 H, R=TAPER*H。"""
     v_total = spec.count * (4.0 / 3.0) * math.pi * spec.r ** 3 / PACK_PHI
@@ -3293,14 +3298,12 @@ def _volume_H(spec):
     cap = (FLOOR_Y - RIM_Y) * 0.78        # 大珠档允许堆到内壁 78%(×100 要有"半坛"体积感)
     return max(spec.r * 2.0, min(H, cap))
 
-
 _SCATTER_MAX = 10       # 自由摆放生效的档位上限。
 # 为什么是 10: x2/x3/x5/x10 这四个档加起来占中奖场次约 90%, 而它们在地板层的
 # 可用半径有 245 —— 把 10 颗球平铺开需要的半径只有 sqrt(10*r^2/0.9) ≈ 167, 绰绰有余。
 # 原来这四档都挤在离轴 60~88 那一小圈里(格点由内而外取的), 自由摆放一上来就能甩到 ±245。
 # x20 不在此列: 20 颗球平铺需要半径 ~237, 已经顶到 245 的边, 而且"贴壁一圈"那种摆法
 # 圆周长只够放 15 颗(2*pi*a/(2r) = 15.3), 放 20 颗必然重叠 —— 它继续走格点 + 层间注册。
-
 
 def _scatter_floor(spec, a):
     """单层小档的自由摆放: 返回 [(x, z), ...] 或 None(表示"走老格点")。
@@ -3344,7 +3347,6 @@ def _scatter_floor(spec, a):
                 pts.append((x, z))
                 break
     return pts if len(pts) == n else None
-
 
 def _enumerate(spec, H, wall_mode=False):
     """给定堆高 H 做确定性格点枚举: 返回 (beads, H, R)。放不满则调用方增大 H。
@@ -3454,7 +3456,6 @@ def _enumerate(spec, H, wall_mode=False):
         k += 1
     return beads, H, R
 
-
 def build_pile(spec):
     """确定性 3D 球堆终态(生成期一次算完): 大 N 走壁填充"一坛子"; 小 N 体积初值 ->
     不足则长高 -> 截断到 N -> xz 重叠抛光 -> 断言(在壁内/不重叠/不沉底/颗数=倍率)。"""
@@ -3491,7 +3492,6 @@ def build_pile(spec):
     meta = {"count": len(beads), "H": H, "R": R, "ms": cost_ms}
     return beads, meta
 
-
 def _polish(beads, spec):
     """仅消重叠的 xz 推开(3D 距离判定, 纵层距不动), ≤spec.polish 轮, 与 R5 无冲突;
     推开后把球钳回本层壁内圆(抛光不可把球挤出杯)。"""
@@ -3527,7 +3527,6 @@ def _polish(beads, spec):
         if not moved:
             break
 
-
 def _assert_pile(beads, spec):
     r = spec.r
     r2 = 2.0 * r
@@ -3545,7 +3544,6 @@ def _assert_pile(beads, spec):
             dz = bi["z"] - bj["z"]
             dh = bi["h"] - bj["h"]
             assert dx * dx + dz * dz + dh * dh > (r2 - slop) ** 2, "unresolved overlap"
-
 
 def project_pile(beads):
     """(x,h,z) -> 屏幕 design px 斜投影(k1=0 纯纵剪), 返回画家序(远先近后)绘制表。"""
@@ -3756,9 +3754,9 @@ BIG_TEXT_LIFE = 1.8
 # 中奖/未中大字淡出时的 **alpha 量化档数**(性能, 2026-09-13)。
 # ⚠️ 为什么必须量化: `color` 是 Kivy `Label._font_properties` 之一, 会被**烘进字形纹理**
 #    (实测 Label 画布里那条 Color 恒为 (1,1,1,1), 颜色不在那儿) ⇒ 赋一次值就重测字形 +
-#    重光栅化 + 重建纹理。而淡出段 alpha 每帧都在变 ⇒ 不量化就等于**每帧重画一遍大字**。
+#    重光栅化 + 重建纹理 + 上传。而淡出段 alpha 每帧都在变 ⇒ 不量化就等于**每帧重画一遍大字**。
 #    量化到 20 档: 0.81s 的淡出分成每 40ms 一档、每档 5% alpha —— 配着同一时刻的上浮与缩放,
-#    肉眼分辨不出台阶; 代价从"每帧一次"降到"一次演出 20 次"(实测重建 530 -> 170)。
+#    肉眼分辨不出台阶; 代价从"每帧一次"降到"一次演出 20 次"。
 #    调小它 → 台阶可见; 调大它 → 白花性能(超过 ~24 档对 0.8s 的淡出已无意义)。
 BIG_TEXT_ALPHA_STEPS = 20
 
@@ -3802,7 +3800,6 @@ RESULT_FADE = 0.25     # 可见的离开(**恒定, 不随档位变** —— 离�
 # 2026-09-12 定稿"不点就一直在", 定时退场会在切后台回来那一帧把杯子当场擦掉。
 # 见 `busy()`。最长非交互段 ≈ WINDUP + 最后一颗落定 ≈ 5~6s, 9s 绰绰有余。
 FX_MAX_SEC = 9.0
-
 
 def hold_for(m):
     """装满后的**最短停留**(秒) —— 全项目唯一真源。
@@ -3938,38 +3935,47 @@ VISIBLE_TOP = -DESIGN_H * CUP_T / CUP_H
 
 _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
 # 启动预热要"碰一次"的字号: 大字 sp(36)/sp(48) + 飘字 sp(26)/sp(30)。
-# ⚠️ **必须惰算**: `sp()` 读当时的窗口密度, 而模块导入时窗口还没建 —— 在这里直接
+# ⚠️ **必须懒算**: `sp()` 读当时的窗口密度, 而模块导入时窗口还没建 —— 在这里直接
 #    写 `sp(36)` 会拿到错误的密度(真机上就是"预热了一堆没人用的字号")。
 # ⚠️ **一次只碰一个**(见 prebake_step 的字体预热那段): 4 个挤一帧 = 一帧 100ms+。
 _FONT_WARM_SIZES = None
 # GC 冻结计数(gc.freeze() 之后为永久代里的对象数; 0 = 还没冻结)。只给跑分面板显示用 ——
-# 让后来的人一眼看出"这版的 GC 冻结到底跑没跑", 而不是靠猜(本仓库栽过静默失效)。
+# 让玩家/后来的人一眼看出"这版的 GC 冻结到底跑没跑", 而不是靠猜(本仓库栽过静默失效)。
 # [冻结的对象数, 冻结**前**强制全量回收一次要多久(毫秒), 冻结**后**同一个动作要多久]
 # 后两格是 v0.6.75 加的 —— 桌面实测**量不出**冻结的收益(桌面 30 秒只有 0.6ms 的 GC, 全是
 # 零头), 所以只能让 App 在**真机上**自己量: 启动时冻结前后各强制做一次 gen-2 全量回收,
 # 把两个数打进跑分面板。判据一眼可见: "全量回收 26.8 -> 0.0 毫秒"。
 _GC_FROZEN = [0, 0.0, 0.0]
 # 启动预热链是否**全部**跑完(球纹理/字形/球堆/GC 冻结)。
-# ⚠️ 为什么跑分要等它: 采样窗口只有 7~12 秒(_target_launches = 3), 而玩家是启动后 3 秒
+# ⚠️ 为什么跑分要等它: 采样窗口只有 7~12 秒(`_target_launches = 3`), 而玩家是启动后 3 秒
 #    就长按标题开跑的 —— 真机上一个预热单步要 100~200 毫秒(桌面只要 16.6), 常常还没跑完。
 #    混进采样里会把 1%Low 压下去, 而且量到的是**启动期**的数, 不是玩家平时玩的数。
+#    等它跑完再采样, 才是"稳态"的成绩。(桌面实测预热链 11 步、约 2.2 秒; 真机更久。)
 _PREBAKE_DONE = [False]
-_GLASS_TEX = None       # (back, front, over, fallback) 模块级缓存, 不按实例存
-# 杯口环后半 + 杯底环后半("远侧那两半圈")现在由**独立的 assets/glass_tumbler_over.png**
-# 提供, 运行时在压暗层**之后**整张画一次 —— 这里不再需要 `RIM_BACK_BANDS` /
-# `RIM_BAND_STRIPS` / `RIM_BAND_ALPHA_TOP` 那套分段补画(已删除)。
-#
-# ⚠️ 为什么换掉它(2026-09-13, 玩家报「表演动画的玻璃杯上边缘的衔接处有明显痕迹」):
-#    那两段原本画在 back 层里, 会被演出的压暗层(DIM_ALPHA=0.68)盖住 —— 实测后环亮度
-#    被砍到 **12.7**, 而前环(front 层, 不压暗)约 150, **差 12 倍**。
-#    补画是**叠加**、上限受 back 层自身 alpha 的限制(环的 alpha 只有 68/255): 整条补到
-#    满格 1.0 也只能到 ~80, 而前环 ~120 ⇒ 这个落差**消不掉**, 只能靠渐变把它磨缓。
-#    而 12 段渐变是按 **y 线性**分的, 环在椭圆顶部近乎水平(沿环走 y 几乎不变 ⇒ alpha 恒定
-#    在 0.55)、在左右两端近乎竖直(y 急变 ⇒ alpha 猛升到 1.0) ⇒ 台阶恰好落在杯口的左右
-#    两端, 也就是玩家指的那个"衔接处"。**这是结构性缺陷, 调参救不了。**
-#    拆成独立层后这两段**完全不经过压暗**, 前后半环恢复成设计稿本来的比例(生成器实测
-#    back 208.7 vs front 238.3, 差 14% —— 那是刻意的"远侧略暗"透视感), 而且运行时只要
-#    画 1 个 Rectangle(原来 12 个)。生成器侧见 generate_glass_tumbler.py 里 `over` 的定义。
+_GLASS_TEX = None       # (back, front, fallback) 模块级缓存, 不按实例存
+# 杯口环的**后半个**(远侧那半圈)在 back 贴图里占的高度比例。
+# 生成器里 `rim_back = _half_mask(rim, front=False, split_y=80)`, 环本体是 design y 5..155、
+# 切开线 80 —— 换算到 920 行的贴图就是 10..160; 这里多留 6 行给生成器那层高斯模糊的晕。
+# 后层(back)里需要"补画到压暗之上"的两段 —— 每段都是**贴图行的比例区间(从顶边算)**。
+# 生成器用 `_half_mask(..., split_y)` 把环切成前/后两半, 后半个落在 back 层里、跟着一起被压暗:
+#   杯口环: 环本体 design y 5..155, split 80   -> 贴图行 10..160   (上面留 6 行给高斯晕: 0..166)
+#   杯底环: 环本体 design y 347..459, split 404 -> 贴图行 694..808 (下沿留到 808 就是切开线)
+# ⚠️ 两段缺一不可: 只补杯口环的话, **杯底环的远半边会消失** —— 它的 alpha 只有 22(杯口环 68),
+#    被压掉 68% 之后净贡献只剩 3~5/255, 读出来就是"杯子底部后半圈没画"(专家 2026-09-11 实测)。
+RIM_BACK_BANDS = ((0.0, 166.0 / 920.0), (694.0 / 920.0, 808.0 / 920.0))
+# 补画分几段做**纵向渐变** —— 后半个杯口环整体乘一个 alpha 是"两级台阶", 不是过渡:
+# 后层(back)被压暗、前层(front)不压暗, 两者在杯子左右两侧直接拼上, 实测那一圈是硬切
+# (玩家: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次")。
+# 分成 N 段、每段一个 alpha, 从顶部 RIM_BAND_ALPHA_TOP 线性升到杯口分界处的 1.0 ——
+# 于是"远侧暗 -> 近侧亮"变成一圈连续的渐变, 分界处两侧都接近 1.0, 接缝消失。
+# N=12 时相邻两段的 alpha 只差 4%, 看不出台阶。多出来的只是十几个 Rectangle, 可忽略。
+RIM_BAND_STRIPS = 12
+RIM_BAND_ALPHA_TOP = 0.55   # 环最上沿那段补画到多少(1.0 = 完全不压暗)
+_GLASS_RIM_TEX = {}     # id(back_tex) -> (back_tex, [各段子贴图])
+
+def _rim_band_alpha(i):
+    """第 i 段(0 = 最上)的补画强度 —— 从 RIM_BAND_ALPHA_TOP 线性升到 1.0。"""
+    return RIM_BAND_ALPHA_TOP + (1.0 - RIM_BAND_ALPHA_TOP) * (i / float(RIM_BAND_STRIPS - 1))
 _PILE_CACHE = {}        # (count, seed) -> proj
 _PILE_ORDER = []        # 插入序 —— 见 _pile_projected: 这是 **FIFO 淘汰序, 不是 LRU**
 # ⚠️ 上限 12 装不下 7 档 × 4 变体 = 28 个 key。2000 局(真实中奖构成)实测冷建率:
@@ -4009,7 +4015,6 @@ _PILE_QUOTA = ((18, 26, 25, 31), (17, 26, 31, 26), (19, 26, 26, 29), (19, 26, 29
 # ⚠️ 它**单独用是无效的**(只改相位不改形状, 见下), 现在是配合层间注册/摆法一起用。
 _PILE_ROT_STEP = 137.508
 
-
 def _r_dp_for(n):
     """球半径(dp)。**所有档同一个值** —— 玩家 2026-09-11 定稿: 「球一样大」。
 
@@ -4026,138 +4031,8 @@ def _r_dp_for(n):
     """
     return 27.0
 
-
-# ==================== 切面球烘焙(主球 + 杯中球共用同一套公式) ====================
-# 玩家 2026-09-13 定稿的样式: 8 面 · 纯平涂 · 金色 · 棱线「中·只要暗缝」。
-#
-# ⚠️ 这是**贴图**路, 不是矢量路。矢量路(Mesh 平面多边形拼合)试过并已回退(2026-09-13):
-#   ① 面与面之间那道棱线画不对 —— 正对镜头那两个面的投影多边形会**自交**, 扇形三角化多画
-#      212.7% 的面积、糊到别处(玩家看到的"黑线"); 而且 `_fatten` 绕重心放大后 8 个面**全部**
-#      越出球轮廓 1.3~2.0px, 球轮廓内还有 13% 不属于任何面、露出没受光的底色(亮黄月牙)。
-#   ② 更要命: Kivy 的 Mesh **每个面只能吃一个纯色**, 装不下工坊那层**球面明暗(lamS)**
-#      ⇒ 做出来每个面是一个平色块, 正是玩家说过"很丑"的那版
-#      (工坊自己的注释写着: 「少了 lamS 那一项…那就是丑的那版」)。
-#   烘成贴图两条都天然解决 —— 逐像素想怎么算就怎么算, 运行期还回到"1 张图"。
-#
-# ⚠️ 纯 Python 逐像素(**Android 上没有 PIL/numpy**, 见 BUILD_APK.md §3.8)。代价靠分帧预烘摊开,
-#   绝不要在中奖那一帧现做。
-#
-# ⚠️ **光照图与颜色解耦**: `受光量 / 棱线量 / alpha` 只取决于几何(球径 d), **与颜色无关**
-#   ⇒ 只算一次, 之后每档颜色只是"乘一下再写 3 个字节"。主球 + 4 个投注档**共用同一张 map**,
-#   这是这套烘焙能在纯 Python 下跑得动的唯一原因。
-_FACET_N = 8
-_FACET_RIDGE_W = 0.080        # 棱线总宽(点积阈值)。玩家定稿的「中」档 —— 实测 58px 上仍读得出刻痕
-_FACET_SEAM_K = 0.90          # 暗缝强度
-_FACET_SEAM_RGB = (0.02, 0.02, 0.03)
-_FACET_LIGHT = [-0.42, -0.52, 0.74]
-_FACET_AMB, _FACET_DIF_F, _FACET_DIF_S = 0.46, 0.52, 0.46
-_FACET_MAPS = {}              # d -> [(像素字节偏移, 受光量, 棱线量, alpha), ...]
-_FACET_CENTERS = None
-
-
-def _facet_centers():
-    """球面斐波那契 8 点 —— 天然**不对称**(转起来才看得出在转, 不会转半圈就重复)。"""
-    global _FACET_CENTERS
-    if _FACET_CENTERS is None:
-        pts = []
-        ga = math.pi * (3.0 - math.sqrt(5.0))
-        for i in range(_FACET_N):
-            z = 1.0 - (2.0 * i + 1.0) / _FACET_N
-            r = math.sqrt(max(0.0, 1.0 - z * z))
-            th = ga * i
-            pts.append((math.cos(th) * r, math.sin(th) * r, z))
-        _FACET_CENTERS = pts
-    return _FACET_CENTERS
-
-
-def _facet_map(d):
-    """算一次"光照图": 逐像素的 (受光量, 棱线量, alpha)。**与颜色无关**, 按 d 缓存。
-
-    受光 = 环境 + 面法线漫反射(块面感) + **球面法线漫反射**(明暗塑形)。
-    ⚠️ 第二项就是矢量路装不下的那层 `lamS` —— 少了它整颗球会"转到可见面都不朝光"时发暗。
-    """
-    m = _FACET_MAPS.get(d)
-    if m is not None:
-        return m
-    centers = _facet_centers()
-    ln = math.sqrt(sum(c * c for c in _FACET_LIGHT))
-    lx, ly, lz = (c / ln for c in _FACET_LIGHT)
-    r = d / 2.0
-    aa = 1.5 / r                       # 1.5 屏幕像素的抗锯齿带(**不随球径变宽**)
-    out = []
-    for y in range(d):
-        for x in range(d):
-            px = (x - r + 0.5) / (r - 0.5)
-            py = (y - r + 0.5) / (r - 0.5)
-            r2 = px * px + py * py
-            if r2 >= 1.0:
-                continue
-            dist = math.sqrt(r2)
-            pz = math.sqrt(1.0 - r2)
-            # 找最近的两个面心(正交投影下的球面 Voronoi)
-            best, second, bi = -2.0, -2.0, 0
-            for k in range(_FACET_N):
-                c = centers[k]
-                dot = px * c[0] + py * c[1] + pz * c[2]
-                if dot > best:
-                    second, best, bi = best, dot, k
-                elif dot > second:
-                    second = dot
-            c = centers[bi]
-            # 面法线漫反射(块面感) + 球面法线漫反射(明暗塑形)
-            lf = c[0] * lx + c[1] * ly + c[2] * lz
-            ls = px * lx + py * ly + pz * lz
-            lit = _FACET_AMB + _FACET_DIF_F * (lf if lf > 0.0 else 0.0) \
-                + _FACET_DIF_S * (ls if ls > 0.0 else 0.0)
-            e = (best - second) / _FACET_RIDGE_W
-            tt = 1.0 - (1.0 if e > 1.0 else (e if e > 0.0 else 0.0))   # 1 = 在棱线上
-            a = (1.0 - dist) / aa
-            alpha = 1.0 if a > 1.0 else (a if a > 0.0 else 0.0)
-            out.append(((y * d + x) * 4, lit, tt, alpha))
-    _FACET_MAPS[d] = out
-    return out
-
-
-def _facet_bake(d, base_rgb):
-    """按基色烘一张切面球 RGBA 字节串。base_rgb 是 0~1 的三元组。
-
-    ⚠️ **基色只能有一处真源**: 主球传球色、杯中球传 `BET_COLORS[档]`。这里不另存颜色表 ——
-       项目踩过"染色值两处不同步 ⇒ 闪一下回不到原色"的坑。
-    ⚠️ **收正过曝**: 工坊那套 `lit` 上限 1.44, 乘基色后大片通道被截断成死白。这里夹到
-       `1/max(基色)` —— 只有最亮的一小块贴顶, 不再成片死白。
-    """
-    map_ = _facet_map(d)
-    # 三个锚点由基色派生: mid 就是基色本身 ⇒ 球的主色与投注按钮色标严格同源
-    hi = tuple(base_rgb[i] + (1.0 - base_rgb[i]) * 0.60 for i in range(3))
-    lo = tuple(base_rgb[i] * 0.45 for i in range(3))
-    # 「纯平涂」: d=0.42 处的色 —— 与工坊 colorAt(col,0.42) 同一个取法
-    f = 0.42 / 0.55
-    bc = tuple(hi[i] + (base_rgb[i] - hi[i]) * f for i in range(3))
-    lim = 1.0 / max(bc)
-    sr, sg, sb = _FACET_SEAM_RGB
-    k0 = _FACET_SEAM_K
-    buf = bytearray(d * d * 4)
-    for i, lit, tt, alpha in map_:
-        L = lit if lit < lim else lim
-        k = k0 * tt
-        u = 1.0 - k
-        buf[i] = int((bc[0] * L * u + sr * k) * 255.0)
-        buf[i + 1] = int((bc[1] * L * u + sg * k) * 255.0)
-        buf[i + 2] = int((bc[2] * L * u + sb * k) * 255.0)
-        buf[i + 3] = int(alpha * 255.0)
-    return bytes(buf)
-
-
-# ⚠️ **杯中球 = 光滑渐变, 不是刻面** —— 这是看过实物之后退回的(2026-09-13)。
-#    刻面球单颗好看, 但成堆之后每颗都是同一个图案(只有 8 个面、球却有 100 颗),
-#    100 颗摆在一起读起来像一堆相同的糖; 而且贴图里烘着方向光, 自转会把光一起转走,
-#    一堆球各有各的光向, 更像复制粘贴。试过烘 12 个朝向变体(光照统一、图案不同),
-#    好一些但 100 颗仍重复 8 次以上, 仍然看得出来。
-#    结论: **刻面只给主球(单颗、飞行中)**; 杯中那堆是中奖的烟花, 干净比有细节重要。
-#    ⚠️ 别为了「跟主球一致」把它改回刻面 —— 一致性输给成堆观感, 这是玩家看过实物拍的。
 def _mix_rgb(a, b, amount):
     return tuple(int(x + (y - x) * amount) for x, y in zip(a, b))
-
 
 def _ball_texture(bet):
     """主游戏 ball_texture() 的彩色版: 同一套猫眼渐变外形, 只换球身颜色。
@@ -4229,61 +4104,41 @@ def _ball_texture(bet):
                     buf[i] = int(buf[i] + (band_c[0] - buf[i]) * w)
                     buf[i + 1] = int(buf[i + 1] + (band_c[1] - buf[i + 1]) * w)
                     buf[i + 2] = int(buf[i + 2] + (band_c[2] - buf[i + 2]) * w)
-    # ⚠️ `mipmap=True` + `min_filter="linear_mipmap_linear"` —— **别退回纯 linear**。
-    #    杯中球在演出里会被缩放(进场 0.92→1.0、退场缩到 0.90), 那是**缩小采样**;
-    #    没有 mipmap 时 Kivy 只取 2x2 个纹素, 边缘会发虚、跟球身糊在一起
-    #    (玩家 2026-09-13 原话: "边缘部分和主干部分没有区分度")。
-    #    血泪: 这行曾经在"从 HEAD 取回实现"时被静默丢掉过 —— HEAD 那版没有它。
-    tex = Texture.create(size=(d, d), colorfmt="rgba", mipmap=True)
+    tex = Texture.create(size=(d, d), colorfmt="rgba")
     tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
     tex.mag_filter = "linear"
-    tex.min_filter = "linear_mipmap_linear"   # 缩小走 mipmap 三线性
+    tex.min_filter = "linear"
     _CUP_BALL_TEX[bet] = tex
     return tex
 
-
 def _glass_textures():
-    """玻璃后层/前层 + 远侧环补画层 + 兼容整图; 分层失败回退整图, 再失败返回空四元组。
+    """玻璃后层/前层 + 兼容整图; 分层失败回退整图, 再失败返回空三元组。
 
     ⚠️ 最后一档回退是**静默**的 —— 会画出一个"没有杯子的一团弹珠"。所以这里显式
     print(CUP-TEX MISSING), 让它出现在 logcat 里, 而不是等玩家来问"杯子去哪了"。
-
-    返回值第 3 项 `over` = 杯口环后半 + 杯底环后半(远侧那两半圈)的独立补画层,
-    详见文件上方那段说明。它是**可选**的: 加载失败只降级成"后环被压暗"(即 2026-09-13
-    之前的样子), 不让整只杯子消失 —— 所以它单独 try, 不并进下面那个 except 链。
     """
     global _GLASS_TEX
     if _GLASS_TEX is not None:
         return _GLASS_TEX
     assets = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
     try:
-        # ⚠️ `mipmap=True` 必须在 **CoreImage 加载时**传 —— 纹理建好之后再改 `tex.mipmap`
-        #    不会补出 mip 链。玻璃在演出里会被缩放(0.90~1.0), 那是缩小采样。
-        back = _CoreImage(os.path.join(assets, "glass_tumbler_back.png"), mipmap=True).texture
-        front = _CoreImage(os.path.join(assets, "glass_tumbler_front.png"), mipmap=True).texture
+        back = _CoreImage(os.path.join(assets, "glass_tumbler_back.png")).texture
+        front = _CoreImage(os.path.join(assets, "glass_tumbler_front.png")).texture
         for texture in (back, front):
             texture.mag_filter = "linear"
-            texture.min_filter = "linear_mipmap_linear"
-        try:
-            over = _CoreImage(os.path.join(assets, "glass_tumbler_over.png"), mipmap=True).texture
-            over.mag_filter = "linear"
-            over.min_filter = "linear_mipmap_linear"
-        except Exception:
-            over = None
-            print("CUP-TEX NO-OVER: 远侧环补画层缺失, 杯口后半圈会偏暗(降级不崩)")
-        _GLASS_TEX = (back, front, over, None)
+            texture.min_filter = "linear"
+        _GLASS_TEX = (back, front, None)
     except Exception:
         try:
-            fallback = _CoreImage(os.path.join(assets, "glass_tumbler.png"), mipmap=True).texture
+            fallback = _CoreImage(os.path.join(assets, "glass_tumbler.png")).texture
             fallback.mag_filter = "linear"
-            fallback.min_filter = "linear_mipmap_linear"
-            _GLASS_TEX = (None, None, None, fallback)
+            fallback.min_filter = "linear"
+            _GLASS_TEX = (None, None, fallback)
             print("CUP-TEX FALLBACK: 分层玻璃图缺失, 退回整图")
         except Exception:
-            _GLASS_TEX = (None, None, None, None)
+            _GLASS_TEX = (None, None, None)
             print("CUP-TEX MISSING: assets/glass_tumbler*.png 都没加载到, 中奖杯不会显示")
     return _GLASS_TEX
-
 
 def _beads_from_baked(count, v):
     """查离线烘的球堆坐标表(tools/android_part_piledata.py)。命中返回 beads, 否则 None。
@@ -4307,7 +4162,6 @@ def _beads_from_baked(count, v):
         except (ValueError, TypeError):
             return None                       # 任何一项解不开 -> 整表当坏, 走回退
     return out if len(out) == count else None
-
 
 def _support_map(proj, r):
     """算"谁必须先落"的偏序: 对每颗球 j 找出所有 h 更低、且水平距 < 2r 的球 i。
@@ -4346,7 +4200,6 @@ def _support_map(proj, r):
                 pre.append(ms[i])
         out[ms[j]] = pre
     return out
-
 
 def _topo_deal(proj, rng):
     """随机拓扑序: 每次从"支撑已全部发牌"的球里**均匀随机**挑一颗, 返回 proj 下标排列。
@@ -4388,7 +4241,6 @@ def _topo_deal(proj, rng):
         # 有环(只可能来自坏数据) -> 安静退回画家序, 绝不锁死演出(见本模块"绝不软锁"那条)
         return ms
     return out
-
 
 def _pile_projected(count, seed):
     """(count, seed) -> 投影绘制表, 带缓存。同 (count,seed) 逐球心一致可复现。
@@ -4435,13 +4287,50 @@ def _pile_projected(count, seed):
             _PILE_CACHE.pop(_PILE_ORDER.pop(0), None)
     return proj
 
+def _rim_back_strips(back_tex):
+    """把 back 贴图里**需要补画到压暗之上**的那几段切成条带, 返回可直接画的列表。
 
-# 原 `_rim_back_strips()` 已删除(2026-09-13): 远侧那两半环改成独立贴图层
-# `assets/glass_tumbler_over.png`, 在压暗之后整张画一次, 见文件上方那段说明。
-# 它当年是把 back 里那两半环"补画到压暗之上", 但补画是**叠加**、上限受 back 自身 alpha
-# 的限制(环 alpha 只有 68/255), 落差消不掉 —— 玩家 2026-09-13 报的
-# 「杯口上边缘的衔接处有明显痕迹」就是它留下的。保留这行是为了让后来的人搜得到这段历史。
+    返回 `[(子贴图, 在杯子矩形里的纵向起点比例, 高度比例, alpha), ...]`, 已按画序(上->下)排好。
 
+    为什么需要它: 压暗改到"后层玻璃**之后**"以后, 后层里那两半环(杯口环的后半 = 杯口**远侧**
+    那半、杯底环的后半)跟着被压暗 —— 实测杯口远环峰值 68.0 -> 29.0, 前后对比从 1.76:1 拉到
+    4.1:1; 杯底远半更惨(alpha 只有 22, 净贡献 16.7 -> 5.3, 基本读不出来)。
+
+    ⚠️ 但**一整条一个 alpha 不行**(第一版就是那样, 已被玩家打回): 后层被压暗、前层不压暗,
+    两者在杯子左右两侧**直接拼上** —— 整条补画只是把台阶挪个位置(25 vs 120 -> 80 vs 120),
+    还是硬切。玩家原话: "明暗可以不一样, 但是目前的方案是没有过渡, 只有两个明暗层次"。
+    所以每段横切成 `RIM_BAND_STRIPS` 条, 每条一个 alpha, 从该段顶部的 `RIM_BAND_ALPHA_TOP`
+    线性升到段底(也就是前后半圈的切开线)的 1.0 —— 相邻条只差 4%, 且切开线两侧都接近 1.0,
+    接缝自然消失。实测沿环一圈: 远侧中心 ~42 -> 两侧 ~70 -> 近侧 ~120, 连续变化。
+
+    ⚠️ 也别用"alpha > 60 的像素"来挑: back 里杯体和杯底也有 alpha>60 的像素, 那样等于把
+    薄纱一起捞回来, 把"板面被杯子提亮"的元凶放回去。必须按**几何**(贴图行段)切。
+    """
+    if back_tex is None:
+        return None
+    ent = _GLASS_RIM_TEX.get(id(back_tex))
+    if ent is not None and ent[0] is back_tex:      # 认对象本身, 防 id 复用拿到过期子贴图
+        return ent[1]
+    try:
+        w, h = back_tex.size
+        n = RIM_BAND_STRIPS
+        out = []
+        for (y0f, y1f) in RIM_BACK_BANDS:
+            band_frac = y1f - y0f
+            sh = max(1, int(round(h * band_frac / n)))    # 每条的高度(贴图像素)
+            top_row = y0f * h                             # 该段的顶行(从贴图顶边算)
+            for i in range(n):                            # i=0 是该段最上面那条
+                y = int(round(h - (top_row + (i + 1) * sh)))   # Kivy 纹理 y 向上
+                t = back_tex.get_region(0, y, w, sh)
+                t.mag_filter = "linear"
+                t.min_filter = "linear"
+                seg = band_frac / n
+                # 画在杯子矩形里的位置: 该段底边在 1-y1f 处, 第 i 条再往上让 (n-1-i) 格
+                out.append((t, 1.0 - y1f + seg * (n - 1 - i), seg, _rim_band_alpha(i)))
+        _GLASS_RIM_TEX[id(back_tex)] = (back_tex, out)
+    except Exception:
+        return None
+    return out
 
 class WinPileFX(Widget):
     """中奖覆盖层: 压暗 -> 玻璃后层 -> 已落定球(画家序) -> 飞行球 -> 玻璃前层。
@@ -4848,6 +4737,7 @@ class WinPileFX(Widget):
         #   才被 play_win 的补执行放出来(上一局的数字/语音画在新一局开头, 而新一局自己的大字
         #   被 _reveal_done 吞掉)。最惨的是"中奖后不再发射"—— 没有下一局, 中奖音**永久丢失**,
         #   就是玩家报的"完全不播放中奖声音"。
+        self._pump_reveal(now)
         # ⚠️ **装满静止、还没开始退场时, 画布一个像素都不会变, 就别重建它**
         #    (2026-09-14 中风险优化, 由真机数据推动):
         #    `_redraw` 在 x100 时要重建 **684 条指令**(桌面实测 0.79ms/次 ⇒ 真机约 2.8ms,
@@ -5036,16 +4926,11 @@ class WinPileFX(Widget):
             return
         x, y, rx, ry, angle = scr
         Color(shade, shade, shade, alpha)
-        # ⚠️ 和主球同一个修法(见 android_part_ui.py 里 `_tex_coords_rot` 的说明): 落地的拉伸
-        #    方向必须留在**屏幕轴**上(球是竖直落下来的, 压扁自然也该竖直), 自转交给纹理坐标。
-        #    原来 `Rotate(angle=ring_angle + spin_deg*...)` 把拉伸方向一起转走了, 而 ring_angle
-        #    是**每颗球独立随机**(±180°)、`_ball_screen` 里也确实把它和 sx_k/sy_k 一起返回 ⇒
-        #    100 颗球落地时的压扁方向全是随机的。
-        #    这里不再 PushMatrix/Rotate: quad 保持轴对齐(rx/ry 直接就是屏幕上的横竖半径),
-        #    旋转全部落在纹理坐标上。顺带省掉每颗球一次矩阵进出。
-        bead_e = Rectangle(texture=_ball_texture(b["value"]),
-                           pos=(x - rx, y - ry), size=(rx * 2, ry * 2))
-        bead_e.tex_coords = _tex_coords_rot(angle)
+        PushMatrix()
+        Rotate(angle=angle, origin=(x, y))
+        Rectangle(texture=_ball_texture(b["value"]),
+                  pos=(x - rx, y - ry), size=(rx * 2, ry * 2))
+        PopMatrix()
 
     def _redraw(self, *_):
         self._dirty = False
@@ -5063,7 +4948,7 @@ class WinPileFX(Widget):
             return
         self._apply_anim_rect(k, dy)
         bx, by, bw, bh = self._abx, self._aby, self._abw, self._abh
-        back_tex, front_tex, over_tex, fb_tex = _glass_textures()
+        back_tex, front_tex, fb_tex = _glass_textures()
         with self.canvas:
             if a_cup > 0.0:
                 # 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
@@ -5091,14 +4976,11 @@ class WinPileFX(Widget):
                 Rectangle(pos=self.pos, size=self.size)
 
             if a_cup > 0.0:
-                # 远侧那两半环(杯口环后半 + 杯底环后半)在**压暗之上**整张画一次。
-                # 它们不经过压暗 ⇒ 前后半环保持设计稿本来的比例(生成器实测差 14%),
-                # 杯口上边缘那个接缝从根上消失(玩家 2026-09-13 报的)。见文件上方说明。
-                # 放在球之前: 后环本来就在珠子后面, 球要能挡住它。
-                # 同一张 3200x1840 画布, 所以矩形与 back 完全一致。
-                if over_tex is not None:
-                    Color(1.0, 1.0, 1.0, a_cup)
-                    Rectangle(texture=over_tex, pos=(bx, by), size=(bw, bh))
+                # 后层那两半环(杯口远侧 + 杯底远半)补画到压暗之上 —— 见 _rim_back_strips。
+                # 放在球之前: 它们本来就在珠子后面, 球要能挡住。
+                for t, f0, fh, a in (_rim_back_strips(back_tex) or ()):
+                    Color(1.0, 1.0, 1.0, a_cup * a)
+                    Rectangle(texture=t, pos=(bx, by + bh * f0), size=(bw, bh * fh))
 
                 # 球按画家序一趟画完(远先近后) —— **含飞行中的球**。
                 # ⚠️ 原来是两趟: 先画已落定球、再把飞行球**一律置顶**。那个写法之所以
@@ -5162,19 +5044,52 @@ class WinPileFX(Widget):
                 _vib_warm()
             except Exception:
                 pass
+            try:
+                # 守卫工作线程 + 沉浸 Runnable 一起焐热(理由同震动: 别在采样窗口里现建线程)。
+                # ⚠️ Runnable **必须在主线程上建**(它要注册 Java 代理)。
+                _guard_warm()
+            except Exception:
+                pass
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         _FRAME_PROBE[2] += 1      # 本帧跑了预热(供跑分面板把"启动慢"与"玩起来卡"分开)
         if _FONT_WARM_SIZES is None:
             # 首次走到这里才按**当时的窗口密度**算(模块导入时窗口还没建, 那时 sp() 是错的)。
-            globals()["_FONT_WARM_SIZES"] = (sp(36), sp(48), sp(26), sp(30))
+            # ⚠️ **必须用 `_qfs` 落同一个网格**(2026-09-14 修一个我自己引入的回归):
+            #    `fit_font_size` 现在探的第一个档是 `_qfs(base*1.0)`, 而这里原来烘的是**裸的**
+            #    `sp(48)` —— 两个值差最多 0.25px, 而 Kivy 的字体缓存**按精确字号索引** ⇒
+            #    预热等于白烘, **每次创建中奖大字都要现开一次字形表**(桌面 26 毫秒, 真机更贵)。
+            #    真机证据(0.6.81 均衡模式那份): "65毫秒(落袋·实算56.3·**自算48.8**)" /
+            #    "60毫秒(装杯·实算48.7·**自算40.7**)" —— `_frame` 自己一帧烧 41~49 毫秒,
+            #    而那两帧正是**创建大字**的时刻。性能模式下同一份面板是 10.8 毫秒(核频高、字形表便宜)。
+            # ⚠️ **必须把整个阶梯都烘掉, 不能只烘第一档**(2026-09-14)。
+            #    原来只烘 `sp(36)/sp(48)/sp(26)/sp(30)` 四个裸值, 而 `fit_font_size` 是**阶梯**:
+            #    第一档放不下就试 0.94 / 0.88 / 0.82 / 0.76 / 0.70, 再不行还有六轮二分 ——
+            #    **每一档都是一个新的精确字号, 每一次都要现开一次字形表**(桌面 26 毫秒, 真机更贵)。
+            #    而中奖大字的文字是 `+N`, 位数一多(隐藏档 +500000 / x100 的 +10000)第一档就放不下,
+            #    必然往下走。而 `big_result_text` 是**在 `_frame` 里面**跑的
+            #    (tick_draw -> win_fx.tick -> _pump_reveal -> _reveal_win) ⇒ 那几档冷开**直接记在
+            #    `_frame` 头上**。
+            #    真机证据(0.6.81 均衡模式): "65毫秒(落袋·**自算48.8**)" / "60毫秒(装杯·**自算40.7**)"
+            #    —— `_frame` 自己一帧烧 41~49 毫秒, 而性能模式同一份面板只有 10.8 毫秒
+            #    (核频高、字形表便宜)。那两帧正是**创建大字**的时刻。
+            #    代价: 预热从 4 步变 24 步(一步 0.05s, 多 1 秒启动期), 而跑分已经会等预热跑完。
+            # 把**整个阶梯**都烘掉, 不能只烘第一档: 中奖大字的文字是 `+N`, 位数一多第一档就
+            # 放不下, 必然往 0.94/0.88/... 走, 而每一档都是一个新的精确字号、每次都要现开
+            # 一次字形表(桌面 26 毫秒, 真机更贵); 而 `big_result_text` 是在 `_frame` **里面**
+            # 跑的(tick_draw -> win_fx.tick -> _pump_reveal -> _reveal_win) => 那几档冷开
+            # 直接记在 `_frame` 头上。真机证据(0.6.81 均衡模式): "65毫秒(落袋·自算48.8)" /
+            # "60毫秒(装杯·自算40.7)"。代价: 预热从 4 步变 22 步(多约 1 秒启动期)。
+            # ⚠️ 这里**不落 0.5px 网格** —— 落网格会和布局烘出来的字号对不上, 反而全变冷开
+            #    (0.6.80 那个回退的教训)。
+            globals()["_FONT_WARM_SIZES"] = tuple(
+                _b * _k for _b in (sp(36), sp(48), sp(26), sp(30))
+                for _k in FIT_SCALES)
         if self._font_prebaked < len(_FONT_WARM_SIZES):
             # ⚠️ **一帧只碰一个字号**(2026-09-14 改)。原来是 4 个字号挤在**同一帧**里跑,
             #    而"碰一个新字号"= 重新打开一次 TTF 字形表 = 桌面 26ms ⇒ 那一帧至少 **100ms**,
             #    真机上更贵。这是本方法自己引入的长帧(它要消灭的是"落袋那帧现开字形表",
             #    结果先在启动期造了一记更长的) —— 分帧摊开, 每帧只付一次。
-            #    实测(桌面, 逐步计时): 最慢一步 119.4ms -> 33.2ms, ≥50ms 的帧 1 -> 0,
-            #    总耗时不变(213 -> 225ms, 同一份工作)。
             _fs = _FONT_WARM_SIZES[self._font_prebaked]
             self._font_prebaked += 1
             try:
@@ -5218,34 +5133,31 @@ class WinPileFX(Widget):
         #   对象图。而 1%Low 看的就是最坏那一帧: 12.5 + 26.8 ≈ 39~47ms, 正好对上同一份
         #   面板里的"最慢三帧 47(装杯·实算37.8)"。**尾部的最大那一根就是它。**
         #
-        # 为什么本工程原先排除 GC 调优**不适用**于这里: CLAUDE.md 里那条排除的原话是
+        # 为什么本工程原先排除 GC 调优**不适用**于这里: `CLAUDE.md` 里那条排除的原话是
         #   "gc.freeze()/禁用换来的只是把一次 7.6ms 拆成更频繁的小停顿, **平均开销不变**"。
         #   那是对**平均帧**的算法 —— 而 1%Low 是"最慢那 1% 的均值", 只看最坏的那几帧,
         #   平均开销变不变与它无关。同一条注释自己也写着"它进不了平均值, 只能进 1% low"。
-        #   => **目标换成 1%Low 之后, 这条排除作废。**
+        #   ⇒ **目标换成 1%Low 之后, 这条排除作废。**
         #
         # 实测(桌面探针 gc_freeze_probe.py, 应用建完等预热跑完后):
         #   GC 跟踪的对象数  54145  ->  0（全部移入永久代, 永不再扫）
         #   强制 gen-2 全量回收 中位 2.9ms  ->  0.0ms
-        # 泄漏复验(gc_freeze_wiring_probe.py, 24 轮重建盘面 + 连发):
-        #   冻结计数 54542 -> 52898(只降不升, 引用计数仍在释放), Python 层内存每 6 轮
-        #   增量 38/40/120 KB, **不线性** —— 冻的不是会被丢掉的那批。
-        # ⚠️ **必须在预热全部跑完之后调**: 冻结的是"此刻活着的所有对象", 早调会把还没建好的
-        #    缓存漏在外面(仍然被跟踪, 白白多一次 gen-2 的扫描量)。
+        # ⚠️ **必须在预热全部跑完之后调**: 冻结的是"此刻活着的所有对象", 早调会把
+        #    还没建好的缓存漏在外面(仍然被跟踪, 白白多一次 gen-2 的扫描量)。
         # ⚠️ **冻结 = 这些对象永不被 GC 回收**。只要它们真是长期活着的(控件树/贴图/缓存),
-        #    这就是纯赚; 会**被淘汰**的缓存要留意 —— 本工程里 _PILE_CACHE 上限 128(现用 28)、
-        #    _CUP_BALL_TEX 4 个且从不淘汰、_FIT_PX 超 512 会 clear(里面是 float 和元组,
-        #    漏掉也无所谓), 都在可忽略的量级。
-        # ⚠️ 每局新造的东西(球堆的 100 颗球、画布指令、_balls 列表)都是**冻结之后**建的,
+        #    这就是纯赚; 会**被淘汰**的缓存要留意 —— 本工程里 `_PILE_CACHE` 上限 128(现用
+        #    28)、`_CUP_BALL_TEX` 4 个且从不淘汰、`_FIT_PX` 超 512 会 clear(里面是 float
+        #    和元组, 漏掉也无所谓), 都在可忽略的量级。
+        # ⚠️ 每局新造的东西(球堆的 100 颗球、画布指令、`_balls` 列表)都是**冻结之后**建的,
         #    照常被跟踪、照常回收 —— 冻结不会让它们泄漏。
-        # ⚠️ 冻结之后 gen-0/gen-1 也变便宜了。阈值**不动**(= CPython 默认 700/10/10) ——
-        #    没有实测证据就别改它。
+        # ⚠️ 冻结之后 gen-0/gen-1 也变便宜了(要扫的年轻对象没变, 但老的不用再被反复提升)。
+        #    阈值**不动**(= CPython 默认 700/10/10) —— 没有实测证据就别改它。
         try:
             import gc as _gc
             _gc.collect()                 # 先把垃圾收干净, 免得把垃圾也一起冻结
-            # 冻结**前**强制一次 gen-2 全量回收并计时 —— 这就是"真机上一次全量回收要多久"
-            # 的直接读数(面板那栏"内存回收 最坏一次 26.8"就是它造成的)。代价是启动期多
-            # 一记停顿, 发生在预热链里、玩家看不见的地方。
+            # 冻结**前**强制一次 gen-2 全量回收并计时 —— 这就是"真机上一次全量回收要
+            # 多久"的直接读数(面板那栏"内存回收 最坏一次 26.8"就是它造成的)。
+            # 代价是启动期多一记停顿, 发生在预热链里、玩家看不见的地方。
             _t0 = time.perf_counter()
             _gc.collect(2)
             _t1 = time.perf_counter()
@@ -5280,7 +5192,6 @@ H_INFO = 26                  # 弹珠 + 统计(缩高, 腾空间给底部留白)
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
-
 def slot_color(m):
     """槽位底色(m=0 空槽, 否则按倍数取色, WoW 品质色调整版)。"""
     if m <= 0:
@@ -5288,12 +5199,15 @@ def slot_color(m):
     return COL_x.get(m, "#1e8a5a")
 
 # 槽倍率文字的**贴图缓存**: (倍率, 字号) -> Texture。
-# ⚠️ 为什么缓存: `_redraw` 每次重掷盘面都把整块画布重建一遍, 里面**每个非空槽都新建一个
-#    `CoreLabel` 并 `refresh()`** —— 那是**一次完整的文字光栅化**。一次重掷最多 9 个槽。
-#    而倍率取值只有 2/3/5/10/20/50/100 这几种 ⇒ 贴图建一次就够, 之后每次重掷都白建。
-#    实测(桌面, 预热后连调 50 次): 中位 0.562 -> 0.503 毫秒, 最坏 2.775 -> 0.666 ——
-#    **只买到 12%**, 老老实实记在这儿: 剩下的 0.5 毫秒是"clear + 重建 ~345 条指令"本身。
-# ⚠️ 缓存键**必须带字号** `fs`: 它跟着画布缩放 `s` 走, 转屏/改窗口时字号会变。
+# ⚠️ 为什么必须缓存(2026-09-14): `_redraw` 每次重掷盘面都会把整块画布重建一遍, 而里面
+#    **每个非空槽都要新建一个 `CoreLabel` 并 `refresh()`** —— 那是**一次完整的文字光栅化**。
+#    一次重掷最多 9 个槽 ⇒ 9 次光栅化, 而它落在**球落定后那一帧**(待机)。
+#    真机面板连出两版都指向这一帧: "最慢三帧 ... 36毫秒(待机·**自算8.1**)" /
+#    "34毫秒(待机·**自算9.1**)"。桌面实测 `park_ball` 中位 1.9 毫秒, 其中画布重建 1.2 毫秒。
+#    而倍率的取值只有 2/3/5/10/20/50/100 这么几种 ⇒ 贴图建一次就够, 之后每次重掷都白建。
+# ⚠️ 缓存键**必须带字号** `fs`: 它跟着 `s`(画布缩放)走, 转屏/改窗口时字号会变, 那时要重建。
+# ⚠️ 与工程里其它贴图缓存同一套路(`_CUP_BALL_TEX` / `_RAMP_TEX` / `_GLASS_TEX`) —— 持有
+#    引用本身就是"别被回收"的保证。
 _SLOT_TXT_TEX = {}
 
 
@@ -5319,7 +5233,6 @@ def slot_txt(m):
     其余档白字(低档绿蓝红干净醒目, 深红/紫暗底白字最亮)。"""
     return "#0b1220" if m >= 100 else "#ffffff"
 
-
 # ---------------- 单行自适应字号(把"太长就折行"从根上掐掉) ----------------
 # 病根: Kivy 的 Label 只有**两种**行为 —— 设了 `text_size` 就折行, 没设就溢出
 # (它不裁剪, 直接画到隔壁控件身上)。没有"缩到放得下"这一档, 而本作 HUD 上几乎每个
@@ -5337,7 +5250,6 @@ FIT_SCALES = (1.0, 0.94, 0.88, 0.82, 0.76, 0.70)
 FIT_HARD_FLOOR = 0.42       # 阶梯全试完后的硬下限(只防"小到看不见", 不参与塞不塞得下的判断)
                             # (0.5 时实测 1.5 倍字体 + 5 个档位按钮下 "5000%" 还差 5px)
 _FIT_PX = {}
-
 
 def text_px(text, fs, bold=False):
     """一段文字在字号 fs 下的**单行宽度**(px)。结果缓存。"""
@@ -5357,22 +5269,24 @@ def text_px(text, fs, bold=False):
         _FIT_PX[key] = got
     return got
 
-
 # `fit_font_size` 的**结果缓存**。键 = (文字, 基准字号, 可用宽, 粗体) —— 它是纯函数。
 # ⚠️ 为什么值得缓存(2026-09-14, 桌面实测): `_fit1` 是 `_frame` 里**最大的单块**开销 ——
 #    45 秒累计 **1.06 秒**(每秒 24 毫秒), 是板面重画 `tick_draw`(0.26 秒)的 4 倍。
 #    而 `_install_fit` 把 `_fit1` 绑在 **`text` 和 `width` 两条路**上: **宽度变化那条
-#    文字根本没变**, 却在用同一份输入把整个阶梯从头再算一遍。
-# ⚠️ 缓存**不设超大**: 余额那类数字会一直变, 上限到了整体清空(与 `_FIT_PX` 同策)。
+#    文字根本没变**, 却在用同一份输入把整个阶梯(最多 6 次 `text_px`, 每次光栅化一段文字)
+#    从头再算一遍。实测 `_fit1` 每帧被调 ~4.5 次, 而一帧里真正变了文字的只有余额那一格。
+# ⚠️ 缓存**不设超大**: 余额那类数字会一直变, 上限到了整体清空(与 `_FIT_PX` 同策),
+#    免得无限长。
 _FIT_SIZE_PX = {}
 
 # 字号**量化网格**(px)。走过的字号一律先落到这个网格上再测量/返回。
 # ⚠️ 为什么必须量化(2026-09-14): "碰一个新字号"在 Kivy 里 = **重新打开一次 TTF 字形表**
-#    —— 桌面实测 **26 毫秒**。而 `fit_font_size` 的**二分**支会返回 `10.65` 这种任意值,
-#    `_fit1` 又把它写进 `font_size` ⇒ **每挑出一个新字号就付一次 26 毫秒**, 而且那个字号
-#    这辈子只用这一次。实测(桌面): 量化前 `_fit1` 45 秒累计 **1.041 秒**, 量化后 **0.569 秒**
-#    (降 45%, 帧数相当)。它就是 `_frame` 里最大的单块开销。
-#    量化误差**最大 0.25px**, 肉眼分辨不出(比 1sp 在 2.5 倍密度下还小一个量级)。
+#    —— 桌面实测 **26 毫秒**(见 prebake_step 里那段字体预热的说明)。而 `fit_font_size`
+#    的**二分**支会返回 `10.65` 这种任意值, `_fit1` 又把它写进 `font_size` ⇒
+#    **每挑出一个新字号就付一次 26 毫秒**, 而且那个字号这辈子只用这一次。
+#    实测(桌面): `_fit1` 每次调用要 ~13 毫秒 —— 它就是 `_frame` 里最大的单块开销。
+#    量化到 0.5px 之后, 全 app 的字号集合塌缩成一个小集合: 量化误差**最大 0.25px**,
+#    肉眼分辨不出(比 1sp 在 2.5 倍密度下还小一个量级), 而字形表只需开那么几次。
 # ⚠️ 网格别调粗: 1px 网格在 360dp + 小字号(10~12px)上会有约 8% 的字号跳变, 就开始看得出了。
 _FIT_GRID = 0.5
 
@@ -5382,10 +5296,10 @@ def _qfs(x):
 
     ⚠️ **2026-09-14: 已停止使用(保留函数只为别处引用不报错)。**
     为什么回退: 真机上 `sp(N)` 是 `N x 密度` 的**非整数**, 落网格后挪了最多 0.25px ——
-    而 Kivy 的字体缓存**按精确字号索引**, 于是**和启动期预热/布局烘出来的字号对不上**,
+    而 Kivy 的字体缓存**按精确字号索引**, 于是和启动期预热/布局烘出来的字号**对不上**,
     每次挑字号都变成一次**冷开字形表**(桌面 26 毫秒, 真机更贵)。
     后果是主线程变忙 -> 物理 benchmark 那条线程拿到的 GIL 变少 -> **纯 CPU 吞吐掉约 6%**
-    (玩家实测 10 次: 0.6.79 是 32000+ 步/秒, 0.6.81 只有 30000+)。
+    (玩家实测各 10 次: 0.6.79 是 32000+ 步/秒, 0.6.81 只有 30000+)。
     ⚠️ 桌面当时测出来是**变快**(`_fit1` 降 45%) —— 因为桌面上 `sp(48)` 正好 = 48.0,
     本来就落在网格上, 量化是空操作。**桌面测不到这个副作用**, 这正是它骗过我的地方。
     """
@@ -5411,7 +5325,7 @@ def fit_font_size(text, base_fs, avail_w, bold=False):
 
 
 def _fit_font_size_slow(text, base_fs, avail_w, bold=False):
-    """真正干活的那一半。**别直接调它**, 走带缓存的入口。"""
+    """真正干活的那一半(原来 `fit_font_size` 的全部内容)。**别直接调它**, 走带缓存的入口。"""
     for _k in FIT_SCALES:
         _fs = base_fs * _k
         if text_px(text, _fs, bold) <= avail_w:
@@ -5434,164 +5348,79 @@ def _fit_font_size_slow(text, base_fs, avail_w, bold=False):
             _hi = _mid
     return _lo
 
-
 _BALL_TEX = None
 
-
 def ball_texture():
-    """主球贴图: 切面球(8 面 · 纯平涂 · 金色 · 暗缝), 由 `_facet_bake` 烘。
-
-    ⚠️ **和杯中球共用同一套公式、同一张光照图**(`_facet_bake` 在 android_part_pile 段里,
-       那段在本段之前拼接) —— 主球与杯里的球必须是同一颗球, 否则小球落袋那一瞬就穿帮。
-    ⚠️ d 从 64 提到 128: 切面球的棱线是**高频内容**, 主球在 Y700 上要拉到 92px(64 的 1.44 倍),
-       64 不够。而且 128 与杯中球同尺寸 ⇒ **光照图只算一份**, 反而省。
-    """
+    """程序化径向渐变小球贴图(对应 tkinter 版 PIL 渐变, 纯 Python 生成, 零依赖)。"""
     global _BALL_TEX
     if _BALL_TEX is not None:
         return _BALL_TEX
-    d = 128
-    buf = _facet_bake(d, (0.918, 0.702, 0.031))     # 金色 = 原球贴图中段的色标
-    # ⚠️ `mipmap=True` + `min_filter="linear_mipmap_linear"`: 球在**演出时会被缩放**
-    #    (进场 0.92→1.0、退场缩到 0.90), 那几帧是缩小采样; 没有 mipmap 时 Kivy 只取 2x2 个纹素,
-    #    缩小就会漏采样出锯齿。Kivy 官方的 SvgWidget 就是靠 "mipmap-first" 做到无锯齿缩小的。
-    #    切面球的暗缝是高频内容, 比原来的径向渐变更需要它。
-    tex = Texture.create(size=(d, d), colorfmt="rgba", mipmap=True)
-    tex.blit_buffer(buf, colorfmt="rgba", bufferfmt="ubyte")
-    tex.mag_filter = "linear"                 # 放大用线性(球在真机上是放大的)
-    tex.min_filter = "linear_mipmap_linear"   # 缩小走 mipmap 三线性
+    d = 64
+    r = d / 2.0
+    stops = [
+        (0.00, (254, 240, 138)), (0.20, (250, 220, 80)), (0.40, (234, 179, 8)),
+        (0.65, (202, 138, 4)), (0.85, (160, 100, 10)), (0.94, (120, 65, 10)),
+        (0.99, (50, 25, 5)),
+    ]
+    buf = bytearray(d * d * 4)
+    for y in range(d):
+        for x in range(d):
+            dx = x - r + 0.5
+            dy = y - r + 0.5
+            dist = math.hypot(dx, dy) / (r - 0.5)
+            if dist >= 1.0:
+                continue
+            rr, gg, bb = stops[-1][1]
+            for j in range(len(stops) - 1):
+                if stops[j][0] <= dist <= stops[j + 1][0]:
+                    s0, c0 = stops[j]
+                    s1, c1 = stops[j + 1]
+                    f = (dist - s0) / (s1 - s0) if s1 > s0 else 0
+                    rr = int(c0[0] + (c1[0] - c0[0]) * f)
+                    gg = int(c0[1] + (c1[1] - c0[1]) * f)
+                    bb = int(c0[2] + (c1[2] - c0[2]) * f)
+                    break
+            alpha = 255
+            if dist > 0.97:                      # 边缘抗锯齿
+                alpha = int(255 * (1.0 - dist) / 0.03)
+            i = (y * d + x) * 4
+            buf[i] = rr
+            buf[i + 1] = gg
+            buf[i + 2] = bb
+            buf[i + 3] = alpha
+    # 猫眼色带(旋转可见): 焦糖色眼睛形带, 深色带形成明暗对比
+    # 1) 猫眼色带(焦糖, 眼睛形, 偏离圆心): 深色带形成明暗对比, 旋转可见
+    ba = math.radians(-32.0)
+    off = 0.08 * d                # 中心线偏离圆心(偏右下, 与左上高光错开)
+    band_w = 0.11 * d             # 中部半宽
+    band_c = (178, 108, 22)       # 焦糖色
+    strength = 0.50               # 最大混入强度(变暗五成)
+    cos_a, sin_a = math.cos(ba), math.sin(ba)
+    for y in range(d):
+        for x in range(d):
+            i = (y * d + x) * 4
+            if buf[i + 3] == 0:   # 跳过透明像素, 防边缘渗色
+                continue
+            dx = x - r
+            dy = y - r
+            s = dx * cos_a + dy * sin_a          # 沿带方向(-r..r)
+            v = -dx * sin_a + dy * cos_a         # 垂直带方向
+            if abs(s) < r:
+                wmax = band_w * math.sqrt(1.0 - (s / r) ** 2)   # 眼睛形: 中间宽两端尖
+                dv = abs(v - off)
+                if dv < wmax:
+                    t = dv / wmax
+                    w = (1.0 - t * t) ** 2 * strength
+                    buf[i] = int(buf[i] + (band_c[0] - buf[i]) * w)
+                    buf[i + 1] = int(buf[i + 1] + (band_c[1] - buf[i + 1]) * w)
+                    buf[i + 2] = int(buf[i + 2] + (band_c[2] - buf[i + 2]) * w)
+    # [高光已删] 用户要求去掉高光, 只保留焦糖色带(球身径向渐变已够立体)
+    tex = Texture.create(size=(d, d), colorfmt="rgba")
+    tex.blit_buffer(bytes(buf), colorfmt="rgba", bufferfmt="ubyte")
+    tex.mag_filter = "linear"
+    tex.min_filter = "linear"
     _BALL_TEX = tex
     return tex
-
-
-def _tex_coords_rot(angle):
-    """把矩形默认的 tex_coords 绕中心转 angle 弧度(自转留在纹理里, 压扁留在 quad 上)。
-
-    为什么需要它: 主球/球堆的"自转"和"受击压扁"原本共用同一个 `Rotate(angle=...)` ——
-    而 `Rotate` 会把矩形**局部 y 轴**(=压扁轴)一起转走, 于是压扁方向取决于球滚到哪儿了,
-    与"撞上了什么"无关(玩家看不到"沿撞击方向被压扁")。而物理层一直存着碰撞法线
-    (`squash_nx/ny`), 渲染层**从来没用过** —— 典型的"数据齐了、接线没接"。
-    拆开的办法: quad 转到**法线方向**(压扁轴 = 法线), 自转改由纹理坐标承担, 两者解耦。
-    ⚠️ 旋转后四个角会采样到贴图外面, 靠 Texture 默认的 `wrap='clamp_to_edge'` 兜住;
-       球贴图的四角本来就是全透明的, 所以不会看到边缘被拉伸。
-    """
-    c, s = math.cos(angle), math.sin(angle)
-    out = []
-    for u, v in ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)):
-        du, dv = u - 0.5, v - 0.5
-        out.append(0.5 + du * c - dv * s)
-        out.append(0.5 + du * s + dv * c)
-    return out
-
-
-_RAMP_TEX = {}
-
-
-def _ramp_buffer(axis="v"):
-    """金属渐变(灰度明暗图): 0.42 → 1.00(30% 处一条亮带) → 0.62, 两端再压 2 texel 暗边。
-
-    轴的选择不是审美问题, 是**几何约束** —— 纹理的**行永远映射到矩形的高度**:
-      'v' 出 8x64(渐变沿高度) → 给**横**着的墙(上/下墙、通道隔墙)
-      'h' 出 64x8(渐变沿宽度) → 给**竖**着的墙(左右墙)和**隔板**(6x42 的细竖条)
-    ⚠️ 给竖墙错用 'v', 渐变就会变成"上下走", 光看起来从侧面来。
-    """
-    w, h = (8, 64) if axis == "v" else (64, 8)
-    n = h if axis == "v" else w
-    buf = bytearray(w * h * 4)
-    for y in range(h):
-        for x in range(w):
-            t = (y if axis == "v" else x) / (n - 1.0)
-            if t < 0.30:
-                v = 0.42 + (1.00 - 0.42) * (t / 0.30)
-            else:
-                v = 1.00 + (0.62 - 1.00) * ((t - 0.30) / 0.70)
-            edge = min(t, 1.0 - t) * n          # 距两端的 texel 数
-            if edge < 2.0:                      # 两端压暗 = 边沿遮挡
-                v *= 0.30 + 0.70 * (edge / 2.0)
-            c = int(255.0 * (0.0 if v < 0.0 else (1.0 if v > 1.0 else v)))
-            i = (y * w + x) * 4
-            buf[i] = c
-            buf[i + 1] = c
-            buf[i + 2] = c
-            buf[i + 3] = 255
-    return buf
-
-
-def wall_ramp(axis="v"):
-    """金属渐变贴图(按轴缓存, 一次性几百像素)。
-
-    ⚠️ 要 `flip_vertical()` —— Kivy 的 `blit_buffer` 第 0 行落在**最下方**, 不翻的话
-    "上亮下暗"会倒过来。
-    （钉子那版贴图已因"小尺寸缩小采样出锯齿"**回退成矢量** —— 见钉子绘制处的说明。)
-    """
-    tex = _RAMP_TEX.get(axis)
-    if tex is not None:
-        return tex
-    w, h = (8, 64) if axis == "v" else (64, 8)
-    t = Texture.create(size=(w, h), colorfmt="rgba", mipmap=True)
-    t.blit_buffer(bytes(_ramp_buffer(axis)), colorfmt="rgba", bufferfmt="ubyte")
-    t.flip_vertical()
-    t.mag_filter = "linear"
-    t.min_filter = "linear_mipmap_linear"   # 墙在横向上是大倍数缩小(8px 贴图铺 1200px 宽)
-    _RAMP_TEX[axis] = t
-    return t
-
-
-_SLOT_TEX = None
-
-
-def _slot_buffer(w=64, h=36):
-    """倍率槽色块贴图: 灰度明暗图(圆角 + 上亮下暗 + 上内唇高光/下内唇阴影 + 外圈暗描边)。
-
-    ⚠️ 尺寸必须贴近槽位的**真实长宽比**。槽块逻辑尺寸约 45.7 x 26(1.76:1), 这里取 64x36
-       (1.78:1)。**用正方形贴图拉过去会把圆角在 x 方向拉成椭圆角**, 一眼就假。
-    ⚠️ 灰度 + 前置 Color 染色 ⇒ 结算时的**白闪**(把 `col.rgb` 置成 (1,1,1) 再恢复)原样工作,
-       而且"每档倍率一个颜色"的色相语义一点不丢。**渲染处的染色值必须严格取自
-       `slot_color(m)`** —— 白闪恢复那一行写的就是它, 两处一旦不同步, 闪完就回不到原色。
-    """
-    rad = 6.0 / 26.0 * h                 # 圆角半径按真实比例换算(逻辑 6px 圆角 / 26px 高)
-    cx, cy = w / 2.0, h / 2.0
-    buf = bytearray(w * h * 4)
-    for y in range(h):
-        for x in range(w):
-            px, py = x + 0.5 - cx, y + 0.5 - cy
-            qx = abs(px) - (cx - rad)
-            qy = abs(py) - (cy - rad)
-            # 圆角矩形 SDF: 负值在内部, 顺手把距离当 alpha 用 = 免费的抗锯齿
-            sd = math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - rad
-            a = -sd / 2.0
-            if a <= 0.0:
-                continue
-            a = 1.0 if a > 1.0 else a
-            t = (y + 0.5) / h            # 0 = 顶
-            v = 1.00 - 0.22 * t          # 上亮下暗
-            if -2.0 < sd < 0.5:          # 靠近边缘的那一圈: 上半是内唇高光、下半是内唇阴影
-                v += 0.20 if t < 0.5 else -0.24
-            if sd > -1.5:                # 最外一圈压暗 = 描边
-                v -= 0.30
-            v = 0.0 if v < 0.0 else (1.0 if v > 1.0 else v)
-            c = int(255.0 * v)
-            i = (y * w + x) * 4
-            buf[i] = c
-            buf[i + 1] = c
-            buf[i + 2] = c
-            buf[i + 3] = int(255.0 * a)
-    return buf
-
-
-def slot_texture():
-    """倍率槽贴图(模块级缓存)。同样要 flip —— 不然"上亮下暗"会倒过来。"""
-    global _SLOT_TEX
-    if _SLOT_TEX is not None:
-        return _SLOT_TEX
-    w, h = 64, 36
-    t = Texture.create(size=(w, h), colorfmt="rgba", mipmap=True)
-    t.blit_buffer(bytes(_slot_buffer(w, h)), colorfmt="rgba", bufferfmt="ubyte")
-    t.flip_vertical()
-    t.mag_filter = "linear"
-    t.min_filter = "linear_mipmap_linear"
-    _SLOT_TEX = t
-    return t
-
 
 # 震动: 工作线程 + 系统服务代理缓存 + 单次计时(2026-09-14)。
 # ⚠️ 和发声同一个理由, 而且它还多一处浪费:
@@ -5606,19 +5435,6 @@ _VIB_LOCK = threading.Lock()
 _VIB_PROXY = [None]              # [缓存的 Vibrator 代理]
 _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的描述]
 
-# 方向守卫 / 沉浸重申的**主线程耗时**统计: [方向累计秒, 方向单次最慢秒, 方向次数,
-# 沉浸累计秒, 沉浸次数]。⚠️ **必须定义在模块级**(不是某个类的类属性) —— 用它的人
-# (`_orient_guard` / `_enter_immersive` / `_start_benchmark` / `_bench_collect_diag`)
-# 写的都是**裸名**, 裸名找的是模块全局; 写成类属性会 NameError(本文件踩过一次)。
-# 为什么单独立一个计数器: 这两条链**每 0.7 秒**在主线程各跑一次, 而且**跑分期间照跑**。
-# 已经排掉的都是"事件路径、每球一次"的东西, 剩下能解释"1%Low 卡在某个数上不去"的,
-# 恰恰是这种**周期性**的主线程停顿 —— 1%Low 只看最差的 1%(约十几帧), 每 0.7 秒来一记,
-# 25 秒就是 35 记, 足够把那一档全占满。
-# ⚠️ 这个 app 里 JNI/Binder 已经实测过是**灾难级的慢**(`SoundPool.play()` 单次 143.6ms、
-#    平均 53.5ms) —— 所以"每 0.7 秒一次 system_server 往返"完全够格当 1%Low 的天花板。
-# ⚠️ 桌面量不到(`platform != "android"` 直接 return), 只能靠真机跑分面板读那一行。
-#    在没有这个数之前**不要动它** —— 砍错了没有门禁会红(selftest/fx_probe 都不走
-#    android 分支), 而它管的是宽屏设备横拿抢 fullSensor、以及系统栏复活后重新隐藏。
 # 方向守卫 / 沉浸重申的耗时统计:
 #   [0]主线程投递累计秒 [1]主线程单次最慢秒 [2]发起次数
 #   [3]工作线程累计秒   [4]工作线程单次最慢秒 [5]工作线程失败次数
@@ -5627,15 +5443,16 @@ _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的�
 #    线程里, 所以既不出现在 `_frame` 的剖析中, 也不在"主线程实算"里。桌面剖过: 我们的
 #    Python 代码(整个 `_frame`)只占帧时间的 **0.9%**, 而"每帧实算"里那一大块是 Kivy 的
 #    on_draw + 安卓的 Java 线程。要动安卓特有的周期性开销, 只剩这一条能量。
-# ⚠️ **必须定义在模块级**(不是某个类的类属性) —— 用它的人写的都是**裸名**,
+# ⚠️ **必须定义在模块级**(不是某个类的类属性) —— 用它的人 (`_guard_worker` /
+# `_guard_post` / `_start_benchmark` / `_bench_collect_diag`) 写的都是**裸名**,
 # 裸名找的是模块全局; 写成类属性会 NameError(本文件踩过一次, 探针逮住的)。
 # 为什么单独立一个计数器: 这两条链**每 0.7 秒**各跑一次, 而且**跑分期间照跑** ——
 # 它们是全 app 唯一的常驻周期性主线程 JNI, 而 1%Low 只看最差的 1%(约十几帧),
-# 每 0.7 秒来一记正好能把那一档占满。搬出主线程之后判据是**两档对比**:
-# 主线程那档该接近 0、工作线程那档接手(两边都看得见才知道是真搬走了还是没跑)。
-# ⚠️ 这个 app 里 JNI/Binder 已实测过是**灾难级的慢**(SoundPool.play 单次 143.6ms),
-#    所以"每 0.7 秒一次 system_server 往返"完全够格当 1%Low 的天花板。
-# ⚠️ 桌面量不到(platform != "android" 直接 return), 只能靠真机跑分面板读那一行。
+# 每 0.7 秒来一记正好能把那一档占满。搬出主线程之后, 判据变成:
+# **主线程那一档要接近 0, 而工作线程那一档接手**(两边都看得见, 才知道是真搬走了还是没跑)。
+# ⚠️ 这个 app 里 JNI/Binder 已实测过是**灾难级的慢**(`SoundPool.play()` 单次 143.6ms、
+#    平均 53.5ms) —— 所以"每 0.7 秒一次 system_server 往返"完全够格当 1%Low 的天花板。
+# ⚠️ 桌面量不到(`platform != "android"` 直接 return), 只能靠真机跑分面板读那一行。
 _JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0, 0.0]
 
 # 上一帧 `_frame` **自己**在**本线程**上花了多少毫秒(由 `_frame_timed` 写)。
@@ -5764,11 +5581,11 @@ def _vibrate(ms, amp=255):
         pass
 
 # ============ 方向守卫 / 沉浸重申: 搬出主线程(2026-09-14) ============
-# 这两条链原来**每 0.7 秒各在主线程跑一次**, 而且是全 app 唯一的**常驻周期性主线程 JNI**。
-# JNI/Binder 在本工程已实测过是灾难级的慢(SoundPool.play 单次 143.6ms), 所以它们是
-# "每帧实算只有 4.7ms、却有一批**不分阶段**的慢帧(待机那帧都能烧 26.5ms CPU)"的头号嫌疑。
-# 改法与发声/震动同策, 而且是本工程**已经验证过两次**的那套: 主线程只投递, 工作线程去付
-# IPC 的钱; 队列建不起来就退回同步(= 改之前的行为), 绝不静默失效。
+# 病根与判据见下面 `_guard_post`。这里先给结论: 这两条链原来**每 0.7 秒各在主线程跑一次**,
+# 而且是全 app 唯一的**常驻周期性主线程 JNI**。JNI/Binder 在本工程已实测过是灾难级的慢
+# (`SoundPool.play()` 单次 143.6ms), 所以它们是"每帧实算只有 4.7ms、却有一批不分阶段的
+# 慢帧"的头号嫌疑。改法与发声/震动同策, 而且是本工程**已经验证过两次**的那套:
+# 主线程只投递, 工作线程去付 IPC 的钱; 建不起队列就退回同步(= 今天的行为), 绝不静默失效。
 _GUARD_Q = None                  # 守卫工作队列(None = 还没建, False = 建不起来)
 _GUARD_LOCK = threading.Lock()
 
@@ -5788,10 +5605,10 @@ def _guard_orient_now():
 def _guard_immersive_now():
     """沉浸重申的**真身**(只在工作线程上跑)。
 
-    ⚠️ 真正的 View 操作本来就在 UI 线程上(`runOnUiThread` 投递), 这里搬走的只是
+    ⚠️ 真正的 View 操作本来就已经在 UI 线程上(`runOnUiThread` 投递), 这里搬走的只是
     **`runOnUiThread` 这一次 JNI 调用**。
-    ⚠️ `_immersive_task()` 是类级缓存 + 启动期预热过, 所以这里只是一次属性读 ——
-    **绝不在工作线程上现造 PythonJavaClass**(那一步注册 Java 代理, 留在主线程)。
+    ⚠️ `_immersive_task()` 是类级缓存 + 启动期预热过(见 prebake_step), 所以这里只是一次
+    属性读 —— **绝不在工作线程上现造 PythonJavaClass**(那一步注册 Java 代理, 留在主线程)。
     """
     from jnius import autoclass
     act = autoclass("org.kivy.android.PythonActivity").mActivity
@@ -5824,8 +5641,9 @@ def _guard_worker():
 def _guard_warm():
     """启动期焐热: 建工作线程 + 预热沉浸 Runnable。
 
-    ⚠️ Runnable **必须在主线程上建**(它要注册 Java 代理)。顺手把 autoclass 查表热一次,
-    工作线程第一次用不必现付 AttachCurrentThread。
+    ⚠️ **预热 Runnable 必须在主线程做**(它要注册 Java 代理)。顺手也把
+    `org.kivy.android.PythonActivity` 的 autoclass 查表热一次 —— 工作线程第一次用
+    不必现付 JNI 的 AttachCurrentThread。
     """
     if platform != "android":
         return
@@ -5873,12 +5691,13 @@ def _guard_post(tag):
 # 病根: `_save_config()` 是 open + json.dump + close, **每球一次**(settle 里调), 跑在主线程。
 # 安卓上这是一次**阻塞的文件写**(走 FUSE), 而它落在"落袋"那一帧 —— 同一帧还要做结算、
 # 排揭晓、槽位白闪。这一类"事件路径上的阻塞调用"本工程已经栽过两次
-# (SoundPool.play() 143.6ms / 震动 Binder), 修法也都是同一套: 主线程只投递。
-# ⚠️ **只保留最新一份**(后写覆盖先写): 配置是"当前状态"不是流水账, 中间态没有保留价值。
-# ⚠️ 落盘走 **临时文件 + os.replace** 原子替换 —— 写一半被杀不会留下半个 JSON。
-#    老写法 open(path,"w") 是先截断再写, 那种时刻被杀就是文件损坏(下次启动读不出来
-#    = 进度清零)。这算顺带修的一个真 bug, 不只是性能。
-# ⚠️ 切后台(on_pause)会 flush 一次, 保证切走时一定落了盘。
+# (`SoundPool.play()` 143.6ms / 震动 Binder), 修法也都是同一套: 主线程只投递。
+# ⚠️ **只保留最新一份**(后写覆盖先写): 配置是"当前状态"不是流水账, 中间态没有保留价值,
+#    所以不需要队列、不需要去重, 一个格子 + 一个 Event 就够。
+# ⚠️ 落盘走 **临时文件 + `os.replace`** 原子替换 —— 写一半被杀不会留下半个 JSON。
+#    老写法 `open(path, "w")` 是先截断再写, 那种时刻被杀就是文件损坏(下次启动读不出来,
+#    白名单一挡 = 进度清零)。这算顺带修的一个真 bug, 不只是性能。
+# ⚠️ 切后台(`on_pause`)会 flush 一次, 保证切走时一定落了盘。
 _CFG_EVT = None
 _CFG_PENDING = [None]        # (cfg, path) 或 None
 _CFG_OK = [None]             # None=还没建, True=工作线程可用, False=建不起来
@@ -5966,7 +5785,6 @@ def _vibrate_tick(gain):
     _vibrate(int(round(10 + 8 * g)), int(round(80 + 140 * g)))
 
 
-
 # "弹珠落容器"(装杯演出)的**触发**延后多少秒(用户 2026-09-11 定案)。
 # 用户给的规格:
 #   当前   —— 第0秒进倍率槽: 立即播声音 + **立即(第0秒)触发落容器事件**
@@ -5983,14 +5801,13 @@ CUP_TRIGGER_DELAY = 0.15
 #    带上「年月日」就没有歧义(`fx_probe [13]` 有功能性断言钉住这两条)。
 BUILD_TIME_FMT = '%Y年%m月%d日 %H:%M'
 
-
 def _vibrate_double_now(ms=35, gap=40, amp=255):
     """短促双震的**真身**(只在工作线程上跑)。
 
     ⚠️ 2026-09-14 从 `_vibrate_double` 里抽出来 —— 原来它是**同步 JNI**: 在调用线程上直接
        `autoclass` + `activity.getSystemService(VIBRATOR_SERVICE)`(**这本身就是一次 Binder
        往返**) + `vibrate`。而它唯一的调用点是**彩蛋路径的 `settle` 那一帧**。
-       同一条规矩本工程已经执行过四次(发声 665 / 震动 666 / 守卫 671 / 落盘 677):
+       同一条规矩本工程已经执行过三次(发声 665 / 震动 666 / 守卫 671 / 落盘 677):
        **事件路径上的阻塞调用一律挪到工作线程**。
     ⚠️ 顺带复用 `_vib_get()` 的缓存代理 —— 原来每次都要现取一次系统服务。
     """
@@ -6034,7 +5851,6 @@ def _vibrate_double(ms=35, gap=40, amp=255):
     except Exception:
         pass
 
-
 def number_voice_names(n):
     """整数 → 中文朗读的语音名列表(队列拼接用, 对标 Clac 项目方案)。
     1250 → ['voice_d_1','voice_u_1000','voice_d_2','voice_u_100','voice_d_5','voice_u_10']
@@ -6053,7 +5869,6 @@ def number_voice_names(n):
         names.append("voice_u_10000")
     names.extend(_read_4digits(rest, is_highest=(wan == 0)))
     return names or ["voice_d_0"]
-
 
 def _read_4digits(n, is_highest=True):
     """朗读 0~9999, 返回语音名列表。二/两规则: 千位的 2 读"两"。"""
@@ -6092,9 +5907,7 @@ def _read_4digits(n, is_highest=True):
         parts.append("voice_d_%d" % ge)
     return parts
 
-
 from kivy.animation import Animation
-
 
 # =============================================================================
 # 横屏反旋转层(2026-08-17 定案: 画面永远保持竖拿构图, 横拿时玩家扭头看/转回竖屏玩)
@@ -6104,7 +5917,6 @@ from kivy.animation import Animation
 # =============================================================================
 _DEVICE_WIDE_MIN = 9.0 / 16.0    # 短边/长边 ≥ 9:16 = 宽屏(16:9 及更宽/更方)
 _device_wide_cache = None        # 开机量一次物理屏比例, 之后不再变
-
 
 def _device_is_wide():
     """本机物理屏是否 16:9 及更宽(平板类, 允许横屏旋转)。
@@ -6127,7 +5939,6 @@ def _device_is_wide():
         _device_wide_cache = aspect >= _DEVICE_WIDE_MIN
     return _device_wide_cache
 
-
 def _land_angle():
     """横屏渲染旋转角(度, Kivy Rotate 逆时针为正): 抵消系统转屏, 让画面在屏幕上的
     构图与竖拿时完全一致。Display.getRotation(): 1(ROTATION_90)->+90, 3(ROTATION_270)->-90,
@@ -6142,11 +5953,9 @@ def _land_angle():
     except Exception:
         return 90
 
-
 def _land_layer():
     app = App.get_running_app()
     return getattr(app, "layer", None)
-
 
 class LandLayer(FloatLayout):
     """Android 12L+ 大屏锁竖屏会被 letterbox 政策/ZUI 塞进半屏兼容盒(app 改不了窗口
@@ -6252,7 +6061,6 @@ class LandLayer(FloatLayout):
     def on_touch_up(self, touch):
         return self._pass_touch(super().on_touch_up, touch)
 
-
 class RotPopup(Popup):
     """挂 LandLayer 的 Popup: 横屏时随层旋转, 坐标系统一为等效竖屏窗口。
     Kivy 2.3 ModalView.open() 硬编码挂 Window, 这里照抄其 open/_real_remove_widget
@@ -6293,7 +6101,6 @@ class RotPopup(Popup):
         self._is_open = False
         self._window = None
 
-
 class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
     静态元素(墙/钉/槽/弧)重绘只在尺寸变化或换盘面时; 球/力度条/柱塞每帧只改 pos;
@@ -6308,7 +6115,7 @@ class GameArea(FloatLayout):
         self._slot_cols = []
         self._lamp_cols = []
         self._peg_cols = {}            # (px,py)→Color 钉子受击高亮
-        self._peg_nodes = {}           # (px,py)→Rectangle(钉子贴图), 受击时改 col.rgb + 尺寸
+        self._peg_ellipses = {}        # (px,py)→Ellipse 钉子半径形变
         self._peg_flash = {}           # (px,py)→born_time 动画计时
         self._ball_e = None
         self._meter_fill = None
@@ -6392,13 +6199,9 @@ class GameArea(FloatLayout):
             Rectangle(pos=self.pos, size=self.size)
             Color(*hex_rgb(COL_LANE))
             Rectangle(**self._rect(LANE_L, 0, RIGHT_INNER, FLOOR))
-            # 墙改成金属渐变贴图(灰度 + Color 染色, 颜色语义零变化)。
-            # 轴按矩形宽高比选: 纹理的**行**永远映射到矩形的高, 所以竖墙必须用横过来的纹理。
             Color(*hex_rgb(COL_WALL))
             for w in g.geo["walls"]:
-                x0, y0, x1, y1 = w
-                Rectangle(texture=wall_ramp("v" if (x1 - x0) >= (y1 - y0) else "h"),
-                          **self._rect(*w))
+                Rectangle(**self._rect(*w))
             # 发射区导流弧(3~4px 金属细带, 右壁口部弧形导轨, 比钉略细但可见)
             if g.geo["deflectors"]:
                 pts = []
@@ -6410,36 +6213,25 @@ class GameArea(FloatLayout):
                 Line(points=pts, width=max(1.0, 3.5 * s), cap="round", joint="round")
             # 钉阵(每颗独立 Color+Ellipse, 支持单颗受击高亮/形变)
             self._peg_cols.clear()
-            self._peg_nodes.clear()
-            # ⚠️ 钉子**保持矢量 Ellipse** —— 2026-09-13 试过贴图化两次, 都退回来了:
-            #    ① 第一版(无 mipmap): 钉子贴图 64px、屏幕上只有约 12px ⇒ 5 倍缩小,
-            #       而 Kivy 缩小时只取 2x2 纹素 ⇒ **欠采样、边缘出阶梯**。玩家:「锯齿感更强了」。
-            #    ② 第二版(开 mipmap): 锯齿没了, 但边缘被 mip 层**平均成一片发虚的光晕**,
-            #       而且整体显小 —— 变成"锯齿 vs 模糊"的取舍, 两头不讨好。
-            #    ⇒ 这个尺寸上**矢量才是最优**: `Ellipse` 是显卡直接光栅化的, 边缘既清晰又平滑
-            #      (还有 2x MSAA 兜着), 既不欠采样也不过采样。
-            #    **判据: 屏幕上 < ~24px 的元素别走贴图这条路。**
-            #    (mipmap 本身是好东西, 已开给球/玻璃/墙/槽 —— 它们在演出缩放时是真的在缩小。)
+            self._peg_ellipses.clear()
             for px, py in g.geo["pegs"]:
                 col = Color(*hex_rgb(COL_PEG))
                 e = Ellipse(**self._circle(px, py, PEG_R))
                 self._peg_cols[(px, py)] = col
-                self._peg_nodes[(px, py)] = e
+                self._peg_ellipses[(px, py)] = e
             # 槽隔板
             Color(*hex_rgb(COL_BUMPER))
             for d in g.geo["dividers"]:
-                Rectangle(texture=wall_ramp("h"), **self._rect(*d))   # 隔板是细竖条 -> 横轴
+                Rectangle(**self._rect(*d))
             # 倍率槽(圆角, 颜色随盘面)
             self._slot_cols = []
             for i in range(NUM_SLOTS):
                 col = Color(*hex_rgb(slot_color(g.multipliers[i])))
                 self._slot_cols.append(col)
-                # 槽块从 RoundedRectangle 纯色改成"灰度明暗贴图 + slot_color 染色" ——
-                # 白闪(把 col.rgb 置白再恢复)原样工作, 档位色相语义也一点不丢。
-                Rectangle(texture=slot_texture(),
-                          **self._rect(FIELD_L + i * SLOT_W + 2, SLOT_TOP + 3,
-                                       FIELD_L + (i + 1) * SLOT_W - 2, FLOOR - 3))
-            # 槽倍率文字(CoreLabel 烘成纹理; 逻辑 20px 跟盘面缩放, 手机上≈11sp)
+                RoundedRectangle(radius=[max(1.0, 6 * s)],
+                                 **self._rect(FIELD_L + i * SLOT_W + 2, SLOT_TOP + 3,
+                                              FIELD_L + (i + 1) * SLOT_W - 2, FLOOR - 3))
+            # 槽倍率文字(走 `slot_text_tex` 的缓存; 逻辑 20px 跟盘面缩放, 手机上≈11sp)
             fs = max(12, int(20 * s))
             for i in range(NUM_SLOTS):
                 m = g.multipliers[i]
@@ -6463,17 +6255,14 @@ class GameArea(FloatLayout):
                 Ellipse(**self._circle(cx, ly, 5))
             # 力度条底槽 + 哑火红线(玩家必须看得见阈值在哪)
             Color(*hex_rgb("#1b2b4a"))
-            Rectangle(texture=wall_ramp("h"),      # 横截面明暗 -> 一根管子, 不是一块色板
-                      **self._rect(RIGHT_INNER - 9, SLOT_TOP - 210,
+            Rectangle(**self._rect(RIGHT_INNER - 9, SLOT_TOP - 210,
                                    RIGHT_INNER - 4, SLOT_TOP - 6))
             Color(*hex_rgb(COL_FIRE))
             ty = (SLOT_TOP - 8) - MISFIRE_POWER * 200
             Rectangle(**self._rect(RIGHT_INNER - 12, ty - 1, RIGHT_INNER - 1, ty + 1))
             # 力度填充(动态)
             self._meter_col = Color(*hex_rgb(COL_METER))
-            # ⚠️ 填充是**每帧改 pos/size 且改 col.rgb** 的(见下面 `if g.power > 0.01` 那段),
-            #    贴图是灰度的、只挂这一次 ⇒ 蓄力那套"灰蓝 → 金黄"的变色动画一行都不用动。
-            self._meter_fill = Rectangle(texture=wall_ramp("h"), pos=(0, 0), size=(0, 0))
+            self._meter_fill = Rectangle(pos=(0, 0), size=(0, 0))
             # 弹簧凹槽(发射槽下方暗色井区, 跟随 PLUNGER_Y; 从球底延伸到画布底)
             Color(*hex_rgb("#060e18"))
             Rectangle(**self._rect(LANE_L, PLUNGER_Y + BALL_R, RIGHT_INNER, CH))
@@ -6523,14 +6312,12 @@ class GameArea(FloatLayout):
         # ⚠️ **缩放入场走 GPU `Scale`, 绝不再逐帧写 `font_size`**(2026-09-13 性能优化)。
         #    原来 tick_draw 里写 `main.font_size = fs`(fs 每帧都变) —— font_size 在 Kivy 里
         #    属于 `_font_properties`, 每次赋值都会触发 `_trigger_texture` ⇒ **重新测量字形
-        #    宽度 + 重新光栅化整段文字 + 重建纹理**。桌面实测: 一次中奖/未中大字(1.8s)要重测
-        #    ~110 次 × 2 个 Label(main + shadow), 10 秒内 277 次, 占**全部文字重建的 65%**。
-        #    同理 `color` 也在这张表里(颜色是**烘进字形纹理**的, Label 画布里那条 Color
-        #    恒为 (1,1,1,1)), 所以淡出 alpha 也改成"量化 + 值没变就不写", 见 BIG_TEXT_ALPHA_STEPS。
-        #    `Scale` 只是乘进 modelview 矩阵: 纹理一次生成、GPU 免费放大缩小。观感完全一致
-        #    (1.0→1.2→1.0 的弹入曲线一个字没改, 且 font_size 恒定后动画更连续, 没有整数台阶)。
+        #    宽度 + 重新光栅化整段文字 + 重建纹理 + 每帧上传新纹理**。桌面实测: 一次中奖/
+        #    未中大字(1.8s)要重测 ~110 次 × 2 个 Label(main + shadow), 10 秒内 277 次,
+        #    占**全部文字重建的 65%**。`Scale` 只是乘进 modelview 矩阵, 纹理一次生成、
+        #    GPU 免费放大缩小。观感完全一致(1.0→1.2→1.0 的弹入曲线一个字都没改)。
         #    放大 1.2 倍用线性插值, 对粗体大字只是极轻微发虚 —— 比"缩小"安全(缩小没 mipmap
-        #    会闪), 所以基准纹理仍按 `size` 光栅化, 不做"按峰值预放大"。
+        #    会闪), 所以基准纹理仍然按 `size` 光栅化, 不做"按峰值预放大"。
         for _lb in (main, shadow):
             with _lb.canvas.before:
                 PushMatrix()
@@ -6641,7 +6428,7 @@ class GameArea(FloatLayout):
         # 钉子高亮动画: 60ms 电光金 + 240ms 渐回原色 + 半径微扩 1.2x(经典版 30+120 太短, 加长一倍)
         for (px, py), t0 in list(self._peg_flash.items()):
             col = self._peg_cols.get((px, py))
-            e = self._peg_nodes.get((px, py))
+            e = self._peg_ellipses.get((px, py))
             if col is None:
                 del self._peg_flash[(px, py)]
                 continue
@@ -6649,16 +6436,11 @@ class GameArea(FloatLayout):
             if elapsed > 0.30:
                 col.rgb = hex_rgb(COL_PEG)
                 if e is not None:
-                    kw = self._circle(px, py, PEG_R)
-                    e.pos, e.size = kw["pos"], kw["size"]
+                    r = PEG_R * self._s
+                    e.size = (2 * r, 2 * r)
                 del self._peg_flash[(px, py)]
             else:
-                # ⚠️ 闪光色必须**避开球的颜色**。原来是电光金 #ffe500 —— 而主球是 #eab308 那一族金,
-                #    撞上去两颗"球"贴在一起, 读不出"撞了"(玩家 2026-09-13 指出)。
-                #    换成冰蓝: 与金球冷暖对撞最清楚, 又还在板面/钉子的冷色家族里
-                #    (板 #0e1524、钉 #7b8fad、槽 #... 都是冷色), 不显得像外来元素。
-                #    ⚠️ 改球色的话这里要一起看 —— 这两处是"同屏必须拉开"的一对。
-                flash = (0.498, 0.910, 1.0)   # 冰蓝 #7fe8ff(原为电光金 #ffe500)
+                flash = (1.0, 0.898, 0.0)     # 电光金 #ffe500
                 base = hex_rgb(COL_PEG)
                 if elapsed < 0.06:
                     col.rgb = flash
@@ -6669,12 +6451,8 @@ class GameArea(FloatLayout):
                                flash[2] + (base[2] - flash[2]) * f)
                 scale = 1.0 if elapsed < 0.06 else (1.2 - 0.2 * (elapsed - 0.06) / 0.24)
                 if e is not None:
-                    # ⚠️ 必须**同时**复位 pos 和 size。原来(Ellipse)只写 size, 中心会偏
-                    #    (1 - 1/scale)/2 个半径 —— 放大 1.2 倍时偏 0.1×半径, 碰钉瞬间一晃而过看不出来;
-                    #    换成 Rectangle 后左上角不动、往右下长, 偏得更显眼。
-                    #    `_circle()` 本来就返回"以 (px,py) 为圆心、半径 R"的完整 pos+size, 直接用它。
-                    kw = self._circle(px, py, PEG_R * scale)
-                    e.pos, e.size = kw["pos"], kw["size"]
+                    r = PEG_R * self._s * scale
+                    e.size = (2 * r, 2 * r)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
@@ -6762,14 +6540,13 @@ class GameArea(FloatLayout):
                     shadow.color = (0, 0, 0, _q * 0.6)
                 main.center = (e["cx"], e["cy"] + rise)
                 shadow.center = (e["cx"] + 2, e["cy"] + rise - 2)
-                # 缩放 = 纯 GPU 变换(见创建处 `_pop_sc` 的说明)。
+                # 缩放 = 纯 GPU 变换(见 `_big_text` 里 `_pop_sc` 处的说明)。
                 # ⚠️ `origin` 必须是**写完 center 之后**的当前中心 —— 大字一边缩放一边上浮,
                 #    锚点不跟就会看到"绕着一个飘走的点放大"。shadow 多偏 (2,-2), 各自锚自己。
                 for _lb in (main, shadow):
                     _ps = _lb._pop_sc
                     _ps.origin = _lb.center
                     _ps.x = _ps.y = sc
-
 
 def _app_version():
     """本包版本号(如 "v0.6.30"); 拿不到返回 ""。
@@ -6800,7 +6577,6 @@ def _app_version():
         pass
     return ""
 
-
 def _startup_title():
     """「启动信息」那个弹窗的**标题**。玩家 2026-09-11 定稿:
     「启动信息调整  从启动信息改为 跳跳的弹珠机v0.x.x」, 随后补一句「**加一个空格**」
@@ -6814,7 +6590,6 @@ def _startup_title():
     except Exception:
         v = ""
     return ("跳跳的弹珠机 %s" % v) if v else "跳跳的弹珠机"
-
 
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
@@ -7866,7 +7641,7 @@ class RootWidget(BoxLayout):
         self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
         self._bench_toast_evt = Clock.schedule_interval(self._bench_toast_tick, 0.5)
         # ⚠️ **等启动预热跑完再采样**(2026-09-14)。采样窗口只有 7~12 秒
-        #    (_target_launches = 3), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
+        #    (`_target_launches = 3`), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
         #    预热单步要 100~200 毫秒(球纹理烘焙; 桌面只要 16.6), 常常还没跑完。
         #    混进采样里会把 1%Low 压下去, 而且量到的是**启动期**的数, 不是玩家平时玩的数。
         #    桌面逐帧归因实测: 最慢的 11 帧**全部**落在启动 0.6 秒内(= 预热链), 而那些帧
@@ -7893,8 +7668,6 @@ class RootWidget(BoxLayout):
         self._bench_gc_t0 = 0.0
         self._bench_cpu0 = time.process_time()
         self._bench_cpu_prev = self._bench_cpu0
-        self._bench_thr_prev = _THREAD_TIME()
-        _TEXUPD[0] = 0
         _SND_STAT[0] = 0.0
         _SND_STAT[1] = 0.0
         _SND_STAT[2] = ""
@@ -7960,19 +7733,19 @@ class RootWidget(BoxLayout):
         return "待机"
 
     def _on_flip(self, win):
-        # 量帧间隔必须用**单调钟**, 不能用 time.time(): 那是 CLOCK_REALTIME, 会被 NTP 校时/
-        # 用户改时间**跳变**; 而这里记下的差值就是面板「平均帧率 / 1%Low / 10%Low / p99 / p90」
-        # 的全部输入。一次 +30ms 的跳变会被原样记成"一帧 30 毫秒", 直接落进 1%Low 那一档
-        # (那档只有 6~10 帧)。
-        # 别顺手把别处的 time.time() 也换掉 -- 动画时间轴要的就是墙钟绝对值。
+        # ⚠️ **量帧间隔必须用单调钟, 不能用 `time.time()`**(2026-09-14 修)。
+        #    `time.time()` 是 **CLOCK_REALTIME** —— 会被 NTP 校时、用户改时间、时区/夏令时
+        #    调整**跳变**。而这里记下来的差值, 就是面板上「平均帧率 / 1%Low / 10%Low / p99 /
+        #    p90」的**全部输入**。一次 +30ms 的校时跳变会被原样记成"一帧 30 毫秒", 直接落进
+        #    1%Low 那一档(那档只有 6~10 帧)。
+        #    `perf_counter` 单调、高精度, 正是量间隔该用的钟。
+        #    ⚠️ 别顺手把**别处**的 `time.time()` 也换掉 —— 动画时间轴要的就是墙钟绝对值
+        #    (切后台回来"直接跳终态"依赖它), 那个语义是对的。
         now = time.perf_counter()
         cpu = time.process_time()
         prev = self._flip_times[-1] if self._flip_times else None
         pcpu = self._bench_cpu_prev
         self._bench_cpu_prev = cpu
-        _tt = _THREAD_TIME()
-        _FRAME_THR[0] = (_tt - self._bench_thr_prev) * 1000.0
-        self._bench_thr_prev = _tt
         self._flip_times.append(now)
         if prev is not None:
             # ⚠️ 第三个字段是**这一帧真的烧了多少 CPU**(process_time 差)。
@@ -8062,6 +7835,7 @@ class RootWidget(BoxLayout):
         by_worst = sorted(fr, key=lambda x: -x[0])[:3]
         # 每一帧带上"自算"(_frame 在本线程上的耗时, 第 6 个字段)。
         # [帧间隔, 场景, 全进程实算, 本线程自算, 这一帧是不是启动预热]
+        # [帧间隔, 场景, 全进程实算, 自算, 是否预热, 本帧最大的两笔子步骤]
         # [帧间隔, 场景, 全进程实算, 主线程, 自算, 是否预热, 本帧最大的两笔子步骤]
         # [帧间隔, 场景, 全进程实算, 主线程(x[7]), 自算(x[5]), 是否预热(x[6]), 子步骤(x[8])]
         out["worst"] = [[x[0], x[1], x[2], (x[7] if len(x) > 7 else 0.0),
@@ -8073,10 +7847,12 @@ class RootWidget(BoxLayout):
         _self_sorted = sorted((x[5] if len(x) > 5 else 0.0) for x in fr)
         out["self_p50"] = _self_sorted[len(_self_sorted) // 2] if _self_sorted else 0.0
         out["self_max"] = _self_sorted[-1] if _self_sorted else 0.0
-        # 主线程 CPU 与"自算"的**差额 = `_frame` 外面那一大块**(Kivy 渲染 / 延迟文字重排)。
-        # ⚠️ 索引别记错: 帧记录尾部依次是 ..., _FRAME_SELF, _FRAME_PROBE[2], _FRAME_THR, breaks
-        #    ⇒ **主线程在 [7]、子步骤在 [8]**。v0.6.82 写反了, 于是 thr_p50 拿到元组, 面板那行
-        #    `%.1f` TypeError, 外面那个 except 把整块诊断**静默**返回空串。
+        # 主线程 CPU(线程级时钟) —— 它与"自算"的**差额就是 `_frame` 外面那一大块**
+        # (Kivy 渲染 / 延迟的文字重排 / 其它 Clock 回调)。见 _FRAME_THR 处的说明。
+        # ⚠️ 索引别记错: 帧记录尾部依次是 `..., _FRAME_SELF, _FRAME_PROBE[2], _FRAME_THR, breaks`
+        #    ⇒ **主线程在 [7]、子步骤在 [8]**。v0.6.82 把这两个写反了, 于是 `thr_p50` 拿到的是
+        #    **元组**, 面板那行 `%.1f` 直接 TypeError, 而它外面那个 except 把整块诊断**静默**
+        #    返回成了空串 —— 一个专抓静默的面板自己静默了(2026-09-14 实测踩到)。
         _thr_sorted = sorted((x[7] if len(x) > 7 else 0.0) for x in fr)
         out["thr_p50"] = _thr_sorted[len(_thr_sorted) // 2] if _thr_sorted else 0.0
         out["thr_max"] = _thr_sorted[-1] if _thr_sorted else 0.0
@@ -8105,9 +7881,12 @@ class RootWidget(BoxLayout):
         out["vib_worst"] = _VIB_STAT[1] * 1000.0
         out["vib_sum"] = _VIB_STAT[0] * 1000.0
         out["vib_worst_name"] = _VIB_STAT[2]
-        # 方向守卫 / 沉浸重申: 每 0.7 秒各一次的主线程 JNI, **跑分期间照跑**。
-        # 它是"周期性停顿"这一类里唯一的常驻项, 而 1%Low 只看最差的那十几帧 ——
-        # 每 0.7 秒来一记正好能把那一档占满。单次够大(几毫秒以上)就该把它挪出主线程。
+        # 方向守卫 / 沉浸重申: 每 0.7 秒各一次, **跑分期间照跑**(2026-09-14 已搬出主线程)。
+        # 它是"周期性停顿"里唯一的常驻项, 而 1%Low 只看最差的那十几帧 —— 每 0.7 秒来一记
+        # 正好能把那一档占满。搬走之后要看的是**两档的对比**:
+        #   主线程档 ≈ 0 且 工作线程档 接手  ⇒ 真搬走了(慢帧该跟着消失);
+        #   主线程档仍然大                ⇒ 没投出去(队列建不起来 / 满了), 等于没改;
+        #   失败次数 > 0                  ⇒ 守卫在真机上抛异常了(原来被 except 静默吞掉)。
         out["jni_n"] = _JNI_STAT[2]
         out["jni_main_worst"] = _JNI_STAT[1] * 1000.0
         out["jni_main_sum"] = _JNI_STAT[0] * 1000.0
@@ -8258,7 +8037,8 @@ class RootWidget(BoxLayout):
         # ⚠️ 这一屏**不放**版本/制作日期(用户 2026-09-11 定稿: "性能测试的成绩面板别加").
         # ⚠️ **2026-09-14 玩家改主意了**: 跑完分要能一眼看出"这是哪个版本的包跑出来的"
         #    (他手上有 PC 与两代 Y700 好几份成绩互相对照, 没版本号根本对不上号)。
-        #    按他给的方案加在 **"安卓版本后面"**(不是标题后面), 和机器名排在一起。
+        #    按他给的方案加在 **"安卓版本后面"**(不是标题后面), 和机器名排在一起 ——
+        #    读成绩的人先看"哪台机器", 紧接着就是"哪个包"。
         #    成绩面板只放成绩; 版本/日期在长按标题的**菜单弹窗**里(见 _show_bench_menu)。
         # 排版(玩家 2026-09-13: "窗口高度增加一些 / 布局稍微美化下"):
         #   成绩块(亮色大字) → 细分隔线 → 诊断块(次级色、小一号)。
@@ -8327,23 +8107,24 @@ class RootWidget(BoxLayout):
             #    写成 `('A' if c>=1 else 'B') % (g,t,c)` 会在 B 分支抛 TypeError, 而外层那个
             #    except 会把它**静默吞掉**(面板诊断整块消失, 不报错)。踩过一次了。
             # ⚠️ `_FRAME_SELF`(自算) **只包了 `_frame`** —— 启动预热、方向守卫、进度提示
-            #    这些都跑在别的 Clock 回调里, 在它外面; Kivy 自己的 on_draw 也在它外面。
-            #    所以"自算很小"**不等于**"我们没干活": 桌面实测那几帧 实算 62.5 而自算 0.1,
-            #    正是预热(球纹理烘焙)干的。所以**预热帧必须直接标出来**。
+            #    这些都跑在别的 Clock 回调里, 在它外面。所以"自算很小"**不等于**"我们没干活":
+            #    桌面实测那几帧 实算 62.5 而自算 0.1, 正是预热(球纹理烘焙)干的。
+            #    所以**预热帧必须直接标出来**, 否则会被误读成"主线程在等"。
             def _frame_cell(_g, _t, _c, _h, _s, _b, _k=()):
                 # ⚠️ 占位符个数不同的分支**必须分开格式化** —— 写成
-                #    ('A' if c else 'B') % (g,t,c) 会在一个分支抛 TypeError, 而外层
+                #    `('A' if c else 'B') % (g,t,c)` 会在一个分支抛 TypeError, 而外层
                 #    那个 except 会把它静默吞掉(面板诊断整块消失)。踩过一次了。
-                # **实算 / 主线程 / 自算** 并排 —— 玩家 2026-09-14 质疑"9 毫秒是不是小头",
-                # 那三帧的账确实对不上(36毫秒那帧自算只有 0.3)。"主线程"是能看见 Kivy 渲染
-                # 那一块的那一格。
+                # **实算 / 主线程 / 自算** 三个数并排 —— 玩家 2026-09-14 质疑"9 毫秒是不是小头",
+                # 那三帧的账确实对不上(36毫秒那帧自算只有 0.3, 23.5 毫秒的超出不在 `_frame` 里),
+                # 而"主线程"才是能看见 Kivy 渲染那一块的那一格。
                 if _c >= 1.0 or _s >= 1.0:
                     _x = '%.0f毫秒(%s·实算%.1f·主线程%.1f·自算%.1f)' % (_g, _t, _c, _h, _s)
                 else:
                     _x = '%.0f毫秒(%s)' % (_g, _t)
                 if _b:
                     _x += '·预热'
-                # 本帧最大的两笔子步骤 —— **"那 9 毫秒到底花在哪"的直接答案**。
+                # 本帧最大的两笔子步骤 —— **这是"那 9 毫秒到底花在哪"的直接答案**。
+                # ⚠️ 标签之间用 '/' 分隔而不是空格: 面板那一行本来就长, 空格会让它读不清哪里断开。
                 for _ms, _nm in (_k or ()):
                     _x += '|%s%.1f' % (_nm, _ms)
                 return _x
@@ -8384,8 +8165,8 @@ class RootWidget(BoxLayout):
                             ('（%s）' % _vn) if _vn else '',
                             d.get("vib_sum", 0.0)))
             # 方向守卫 / 沉浸重申那一行 —— 只在这两条链**真的跑过**时出(桌面是 0 次)。
-            # 判据: "单次最慢 ≥ 5 毫秒" 就值得把它挪出主线程 —— 它每 0.7 秒来一次,
-            # 1%Low 只看最差十几帧, 25 秒里它有 35 次机会把那一档占满。
+            # 2026-09-14 起它们**已搬到工作线程**, 所以这里报的是两档对比:
+            # 主线程那档该接近 0(证明真搬走了), 工作线程那档接手。
             if d.get("jni_n"):
                 parts.append('方向守卫： %d 次（每0.7秒）· 主线程单次最慢 %.2f 毫秒 · 累计 %.1f 毫秒'
                              '　工作线程累计 %.0f 毫秒（最慢 %.1f）· 失败 %d 次'
@@ -8393,7 +8174,7 @@ class RootWidget(BoxLayout):
                                 d.get("jni_main_sum", 0.0), d.get("jni_bg_sum", 0.0),
                                 d.get("jni_bg_worst", 0.0), d.get("jni_err", 0)))
             # 系统栏那一次重申的**真实代价** —— 跑在 Java UI 线程上, 只有这里看得见。
-            # 判据: 单次 >=5 毫秒 ⇒ 每 0.7 秒重申一次是在拿 UI 线程换一个系统本来就会
+            # 判据: 单次 ≥5 毫秒 ⇒ 每 0.7 秒重申一次是在拿 UI 线程换一个系统本来就会
             # 自动隐藏的东西(IMMERSIVE_STICKY 自己会收回), 那就该把周期拉长。
             if d.get("ui_n"):
                 parts.append('系统栏重申： %d 次 · 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒（UI线程，不在主线程实算里）'
@@ -8413,11 +8194,13 @@ class RootWidget(BoxLayout):
             #   (GPU 出图 / 垂直同步); 快追平 = 处理器就是瓶颈。
             _cpu = float(d.get("cpu_per_frame", 0.0))
             _p50 = float(d["p50"])
-            # ⚠️ **Windows 上这一整行不成立**(2026-09-14 补): `process_time` 的精度只有
-            #    15.6ms(上面刚写过), 可"瓶颈"仍然拿它除帧间隔, 于是 PC 上会打出
-            #    「处理器算不过来 · 每帧实算 18.4 / 帧间隔 16.5」这种自相矛盾的结论
-            #    (同一份面板里还有"20毫秒(待机·实算31.2)" —— 20ms 的帧不可能烧 31ms)。
-            #    正是本仓库警告过的形状: **一个专抓静默归因的面板, 自己在做静默归因**。
+            # ⚠️ **Windows 上这一整行不成立, 必须说清楚**(2026-09-14 补)。
+            #    本文件上面自己写着"Windows 的 `process_time` 精度只有 15.6ms, 桌面跑分里
+            #    恒为 0.0, 纯噪声" —— 可"瓶颈"判断仍然拿它去除帧间隔, 于是 PC 上会打出
+            #    「处理器算不过来 · 每帧实算 18.4 / 帧间隔 16.5」这种**自相矛盾**的结论
+            #    (玩家 2026-09-14 实测: 同一份面板里"最慢三帧 20毫秒(待机·实算31.2)" ——
+            #     20 毫秒的帧不可能烧 31 毫秒, 那就是量化台阶本身)。
+            #    这正是本仓库警告过的那个形状: **一个专抓静默归因的面板, 自己在做静默归因**。
             _win = (sys.platform == "win32")
             if _win:
                 _v = "本机测不准"
@@ -8435,8 +8218,10 @@ class RootWidget(BoxLayout):
             # GC 那一栏后面挂上"最坏那次是哪一代" —— gen-2 全量回收与 gen-0 差一个量级,
             # 不写清是哪一代, 读者没法判断这是"轻微抖动"还是"扫了整个对象图"。
             _gn = {0: "轻度", 1: "中度", 2: "全量"}.get(d.get("gc_worst_gen", -1), "—")
-            # 三个数并排才能分流"谁在吃时间": 实算大·主线程小 => 工作线程在忙;
-            # 主线程大·_frame 小 => **Kivy 渲染 / 文字重排**在吃; _frame 大 => 我们自己的代码。
+            # 三个数并排才能分流"谁在吃时间"(见 _FRAME_THR 处的说明):
+            #   实算(全进程)大 · 主线程小 => 工作线程在忙;
+            #   主线程大 · _frame 小      => **Kivy 渲染 / 文字重排**在吃;
+            #   _frame 大                => 就是我们自己的代码。
             _win_s = max(0.001, d.get("p50", 12.5) * max(1, d.get("n", 0)) / 1000.0)
             parts.append('瓶颈： %s · 每帧实算 %.1f / 主线程 %.1f（其中 _frame %.1f，最坏 %.1f）'
                          '/ 帧间隔 %.1f 毫秒'
@@ -8450,8 +8235,8 @@ class RootWidget(BoxLayout):
             # 冻结生效与否**必须显示** —— 否则"GC 没再拖后腿"既可能是真冻结了, 也可能是
             # 根本没跑到(这个仓库专门栽过这种静默)。
             if d.get("gc_frozen"):
-                # 冻结**前后各强制做一次全量回收**的实测读数 —— 这是"冻结到底买到了什么"在
-                # 真机上的直接答案, 不用靠推断(桌面量不出来: 30 秒总共才 0.6 毫秒的 GC)。
+                # 冻结**前后各强制做一次全量回收**的实测读数 —— 这是"冻结到底买到了什么"
+                # 在真机上的直接答案, 不用靠推断(桌面量不出来: 30 秒总共才 0.6 毫秒的 GC)。
                 parts.append('内存冻结： 已冻结 %d 个常驻对象 · 全量回收 %.1f -> %.1f 毫秒'
                              % (d.get("gc_frozen", 0), d.get("gc_frz_before", 0.0),
                                 d.get("gc_frz_after", 0.0)))
@@ -9270,6 +9055,7 @@ class RootWidget(BoxLayout):
             self._auto_reset_on_start = True   # UI还没建, 延后到 _build_ui 之后
 
     def _save_config(self):
+        """存设定。**默认走工作线程**(见 `_cfg_post` 处说明), 建不起线程就同步写。"""
         try:
             cfg = {
                 "max_plays": self.max_plays,
@@ -9872,8 +9658,9 @@ class RootWidget(BoxLayout):
         #    演出, 数字再滚一遍纯属重复。而且代价不小 —— 滚动期内**每帧都在改
         #    `balance_lbl.text`**, 而 `text` 是 Kivy `Label._font_properties` 之一:
         #    一次赋值 = **重测字形 + 重光栅化整段文字 + 重建纹理**, 还会连锁触发挂在它上面的
-        #    自适应字号 `_fit1`。实测(桌面, 数次数): 滚动时余额文字每秒变几十次,
-        #    去掉之后 **53.8 秒只变 2 次**。
+        #    自适应字号 `_fit1`。桌面实测 `_fit1` 是 `_frame` 里**最大的单块**开销 ——
+        #    45 秒累计 **1.06 秒**(每秒 24 毫秒), 是板面重画 `tick_draw`(0.26 秒) 的 4 倍。
+        #    现在只在余额**真的变了**那一帧才动文字 ⇒ 每球一次, 不再是每帧一次。
         # ⚠️ **揭晓前仍然不许动**(`_anim_pending`): 数字必须跟大字/语音在同一刻出来,
         #    提前跳上去就是剧透 —— 这条语义一个字没改, 只是把"滚过去"换成了"直接给"。
         if not self._anim_pending:
@@ -9898,7 +9685,6 @@ class RootWidget(BoxLayout):
         # ⚠️ 它后面**不能再有早退**。下面 charging 分支的 `return` 在它之前是安全的:
         #    蓄力期不可能有装杯演出(演出期输入是锁的), `_a_dim_now` 此时本来就是 0。
         self._sync_hud_dim()
-
 
 # =============================================================================
 # App 入口 / 冒烟
@@ -9984,7 +9770,6 @@ VEIL_TITLE_IN_SEC = 0.22             # 整行**一起**淡入的时长 —— �
 #    抗锯齿不一样, 交接时字会"变一下", 玩家报「有闪屏」。同一个字在两个渲染器里长得不一样,
 #    这件事没法规避 —— 所以 presplash 保持**纯色**, 这页照旧淡入。
 
-
 # 那条填充线**扫完整行**要多久(秒)。
 # ⚠️ 它只决定「整行扫完要多久」, **粒度仍是像素级的**(靠那条裁剪, 不是逐字跳) ——
 #    所以圆点能停在某个字的中间。
@@ -9992,11 +9777,9 @@ VEIL_TITLE_IN_SEC = 0.22             # 整行**一起**淡入的时长 —— �
 #    (「以字为单位快速改动 每0.1s改1个字的颜色」)。
 VEIL_TITLE_SWEEP = 0.62
 
-
 def _veil_title_round_len():
     """一轮(**先停一下** -> 填充线从左扫到右 -> 再停一下)有多长。"""
     return VEIL_TITLE_LEAD + VEIL_TITLE_SWEEP + VEIL_TITLE_ROUND_GAP
-
 
 def _veil_title_state(t):
     """开场动画在"这一页开了 t 秒"时, 六个字各自的状态 —— **纯函数**(探针直接钉它)。
@@ -10031,7 +9814,6 @@ def _veil_title_state(t):
     p = 0.0 if p <= 0.0 else (1.0 if p >= 1.0 else p)
     p = p * p * (3.0 - 2.0 * p)                          # smoothstep
     return lit, p, k, rl
-
 
 class _LoadVeil(Widget):
     """冷启动"音效库烘焙中"的加载页: 盖住整屏 + 吞掉所有触摸。
@@ -10267,10 +10049,10 @@ class _LoadVeil(Widget):
     def on_touch_up(self, touch):
         return True
 
-
 # 给几个"大头"挂上子步骤计时(必须在**类都定义完之后**执行 —— 这里是 App 类之前)。
-# ⚠️ "装杯"是**嵌套在"板面"里面**的(tick_draw -> win_fx.tick -> _redraw), 面板上这几个数
-#    **不能相加**, 只按"谁最大"读。
+# 只包四个: 板面动态重画 / 重掷盘面 / 自适应字号 / 装杯重画。见 `_FRAME_BRK` 处的说明。
+# ⚠️ "装杯"是**嵌套在"板面"里面**的(tick_draw -> win_fx.tick -> _redraw), 所以面板上
+#    这几个数**不能相加**, 只按"谁最大"读。
 _brk_wrap(GameArea, "tick_draw", "板面")
 _brk_wrap(RootWidget, "park_ball", "重掷")
 _brk_wrap(RootWidget, "_fit1", "字号")
@@ -10324,8 +10106,8 @@ class PlinkoApp(App):
             #    而这条的 `setSystemUiVisibility` 跑在 **Java UI 线程**, 每 0.7 秒让窗口
             #    重算一次 inset + 走一趟 SurfaceFlinger。桌面剖析证明我们的 Python 只占
             #    帧时间 0.9%, 所以安卓特有的周期性开销只剩这一条。
-            #    为什么敢拉长: ① 回前台有 on_resume() 兜(那条不动); ② 转屏有 _frame 的
-            #    窗口尺寸轮询立即重申(双保险); ③ **IMMERSIVE_STICKY 本身就是"玩家从边缘
+            #    为什么敢拉长: ① 回前台有 `on_resume()` 兜(那条不动); ② 转屏有 `_frame`
+            #    的窗口尺寸轮询立即重申(双保险); ③ **IMMERSIVE_STICKY 本身就是"玩家从边缘
             #    划出来、几秒后系统自动收回"** —— 我们每 0.7 秒重申一次, 收的是一个系统
             #    自己就会收的东西。2.5s 只是"万一系统没收干净"的保险, 不是主路径。
             #    ⚠️ 万一真机上发现系统栏会赖着不走, 把它调回 0.7 即可 —— 代价就是那条尾巴。
@@ -10368,12 +10150,20 @@ class PlinkoApp(App):
     def _orient_guard(self, dt):
         """常驻方向守卫: 按设备分流持续重申方向请求(幂等, 系统无感)。
         宽屏: 横置(rotation=1/3)时重申 fullSensor, 顶掉 SDL 竖屏自报;
-        瘦长手机: 持续重申竖屏锁(7), 任何运行时横屏自报都被顶掉。"""
+        瘦长手机: 持续重申竖屏锁(7), 任何运行时横屏自报都被顶掉。
+
+        ⚠️ 2026-09-14: **真身已搬到工作线程**(见 `_guard_orient_now` / `_guard_post`)。
+           这里只剩一次 `put_nowait`。逻辑一个字没改, 频率一个字没改。
+           为什么搬: 它是全 app 唯一的**常驻周期性主线程 JNI**(每 0.7 秒一次), 而真机跑分里
+           "每帧实算只有 4.7ms、却有一批**不分阶段**的慢帧(待机那帧都能烧 26.5ms CPU)"
+           —— 周期性、跨阶段、纯 CPU, 只有它和沉浸重申两条。判据看面板那行:
+           **主线程那档要掉到接近 0, 工作线程那档接手**; 若主线程档没掉, 说明没投出去。
+        """
         if platform != "android":
             return
         _t0 = time.perf_counter()
         ok = _guard_post("orient")
-        if not ok:                       # 队列建不起来 / 满: 退回同步 = 改之前的行为
+        if not ok:                       # 队列建不起来 / 满: 退回同步 = 今天的行为
             try:
                 _guard_orient_now()
             except Exception:
@@ -10404,7 +10194,7 @@ class PlinkoApp(App):
                     #    根本不出现在 `_frame` 的剖析里, 也测不到"主线程实算"里。
                     #    而 `setSystemUiVisibility` 会让窗口重算 inset + 走一趟
                     #    SurfaceFlinger, 代价**每台机器差很多**。2026-09-14 给它单独计时:
-                    #    判据 —— 若单次 >=5 毫秒, 那"每 0.7 秒重申一次"就是在拿 UI 线程
+                    #    判据 —— 若单次 ≥5 毫秒, 那"每 0.7 秒重申一次"就是在拿 UI 线程
                     #    换一个系统本来就自动隐藏的东西(IMMERSIVE_STICKY 会自己收回)。
                     _t0 = time.perf_counter()
                     try:
@@ -10453,7 +10243,6 @@ class PlinkoApp(App):
         if _d > _JNI_STAT[1]:
             _JNI_STAT[1] = _d
 
-
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
         try:
@@ -10489,7 +10278,6 @@ class PlinkoApp(App):
         except Exception:
             pass
         return True
-
 
 def _smoke():
     """桌面自动冒烟: 建窗 -> 蓄力发射 -> 截图 -> 必中盘(验证中奖特效) -> 哑火。"""
@@ -10677,7 +10465,6 @@ def _smoke():
     Clock.schedule_once(when_ready(s9, "s9"), 20.0)
     app.run()
 
-
 def main():
     global SOUND_ENABLED
     if "--nosound" in sys.argv:
@@ -10690,7 +10477,6 @@ def main():
         _smoke()
         return
     PlinkoApp().run()
-
 
 if __name__ == "__main__":
     main()
