@@ -49,7 +49,6 @@ try:
 except Exception:
     pass
 
-
 def hex_rgb(h):
     """'#rrggbb' -> (r,g,b) 0~1 浮点(Kivy Color 用)。"""
     h = h.lstrip("#")
@@ -153,6 +152,9 @@ ARC_E = 0.50                 # [死代码] 弧面法向反弹: 物理层已不�
 ARC_VISUAL = 1.4             # 弧面碰撞半径系数(=渲染层 BALL_VIEW): 球视觉半径 12.6 比碰撞
                              # 半径 9 大 3.6px, 弧面碰撞必须用视觉半径, 球才"与弧面相切"而非
                              # 嵌进弧面 3.6px —— 曲线相切是常识, 球要给足运动空间
+# 弧面碰撞的实际作用半径 —— 与 `_collide_arc` 里算的 r 必须是**同一个值**
+# (y 带粗筛要用它当 reach; 两处不同步就会漏碰, 而且是静默的)。
+_ARC_REACH = BALL_R * ARC_VISUAL
 ARC_OUT_ANGLE = 35.0         # 弧面缓动出口角(相对竖直向左): 25°→35° 修复落格偏置
                              # (被动化后球总落右侧: 25° 右三槽63%/左5%; 35° 右47%/左14%;
                              # 37° 分布最好(26/34)但球沿钉缝直穿(行穿行0.10s 太急)——
@@ -220,7 +222,6 @@ KNOB_CEIL_BOOST = [  # 天花板力度: 撞顶后 vx,vy 同乘系数(加速≤25
     [(1.02, 34), (1.25, 16), (0.68, 20), (0.82, 30)],                        # 1.00
 ]
 
-
 def _sample_table(table, rng):
     """按权重概率从 [(值, 权重), ...] 抽一个值(权重非负, 自动归一化)。"""
     vals = [v for v, _ in table]
@@ -235,7 +236,6 @@ def _sample_table(table, rng):
         if r <= acc:
             return v
     return vals[-1]
-
 
 def _power_band(power):
     """连续力度 → 最近力度档索引(0..9)。等价于把 [0.15, 1.0] 切成 10 个区间。"""
@@ -350,7 +350,6 @@ def build_pegs():
     rows.append(div_pegs)
     return rows
 
-
 def build_dividers():
     """底部矮槽之间的竖直隔板。"""
     divs = []
@@ -358,7 +357,6 @@ def build_dividers():
         x = FIELD_L + k * SLOT_W
         divs.append((x - DIV_W / 2.0, DIV_TOP, x + DIV_W / 2.0, FLOOR))
     return divs
-
 
 def build_walls():
     """轴对齐矩形墙: 上/左/右/下外墙 + 通道隔墙(部分高度, 顶部留开口)。"""
@@ -369,7 +367,6 @@ def build_walls():
         (0, FLOOR, CW, CH),                     # 底
         (FIELD_R, LANE_WALL_TOP, LANE_L, FLOOR),  # 通道隔墙(y>=110 才有)
     ]
-
 
 def build_deflectors():
     """发射区导流弧: 球纯竖直上升时, 以 20° 入射角碰接触段, 被反射向左上抛体进钉阵。
@@ -405,13 +402,11 @@ def build_geo():
         "deflectors": build_deflectors(),
     }
 
-
 # =============================================================================
 # 纯物理层 (不依赖 tkinter)
 # =============================================================================
 def clamp(v, lo, hi):
     return lo if v < lo else (hi if v > hi else v)
-
 
 def _reflect(b, nx, ny, e):
     """沿法线反弹, 返回撞击前的法向接近速率(>0 表示真的撞上了, 供音效定音量)。"""
@@ -421,7 +416,6 @@ def _reflect(b, nx, ny, e):
         b.vy -= (1 + e) * vn * ny
         return -vn
     return 0.0
-
 
 def _mark(b, bit, sp):
     """记录碰撞事件位 + 该类碰撞本帧的最大撞击速率(GUI 读后清零)。"""
@@ -433,87 +427,89 @@ def _mark(b, bit, sp):
     if sp > amp.get(bit, 0.0):
         amp[bit] = sp
 
-
-def _collide_pegs(b, pegs):
+def _collide_pegs(b, rows):
     rr = BALL_R + PEG_R
     rng = getattr(b, "_rng", None) or random    # 确定性: 预演/真发共享同一 rng
-    for px, py in pegs:
-        dx = b.x - px
-        dy = b.y - py
-        d2 = dx * dx + dy * dy
-        if d2 < rr * rr:
-            d = math.sqrt(d2)
-            if d > 1e-9:
-                nx, ny = dx / d, dy / d
-            else:
-                a = rng.uniform(0, math.tau)
-                nx, ny = math.cos(a), math.sin(a)
-            b.x = px + nx * rr
-            b.y = py + ny * rr
-            vn = -(b.vx * nx + b.vy * ny)           # 法向接近速率
-            if vn > 0:                               # 真反弹才处理
-                vy_pre = b.vy                        # 碰前 vy(比例保底用)
-                # e(v): 低速弹得高(逃逸卡死), 高速粘(保持节奏)
-                if abs(nx) > abs(ny):
-                    E_eff = E_SIDE                  # 侧碰低弹: 擦面滑下不弹(治横滑), 回弹感搬到冠碰
+    for _row in rows:
+        # ⚠️ y 带粗筛(2026-09-13 性能): 整行的 y 离球超过 rr ⇒ 该行一颗都碰不到 ——
+        #    "最近点距离 < rr" 的判据下, dy 已经 >= rr 了。**每次重读 b.y**:
+        #    上面某颗钉会改 b.y, 缓存住就会漏碰(那就不是等价, 是静默错)。
+        if _row[0][1] < b.y - rr or _row[0][1] > b.y + rr:
+            continue
+        for px, py in _row:
+            dx = b.x - px
+            dy = b.y - py
+            d2 = dx * dx + dy * dy
+            if d2 < rr * rr:
+                d = math.sqrt(d2)
+                if d > 1e-9:
+                    nx, ny = dx / d, dy / d
                 else:
-                    E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
-                E_eff *= rng.uniform(0.92, 1.08)   # 反弹高度 ±8% 随机(用户定稿: 每个反弹略不同, 更真实)
-                # 法线扰动(模拟表面粗糙度): 幅度 0.04/±0.15。注意: 曾试加大到 0.08/±0.25
-                # 想增加回弹, 但副作用是侧碰反射横向分量被放大 → "凭空横向移动"(用户报告 bug)。
-                # 横向稳定性优先, 回弹靠 E_eff 提升, 不靠放大法线扰动。
-                g = rng.gauss(0, 0.04)
-                g = clamp(g, -0.15, 0.15)
-                tx_, ty_ = -ny, nx                   # 切向
-                njx = nx + tx_ * g
-                njy = ny + ty_ * g
-                nrm = math.hypot(njx, njy)
-                njx /= nrm; njy /= nrm
-                hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
-                # 改法A crown: 同钉再访检测 —— 本颗钉是否与上次碰撞的是同一颗(治"同一颗钉反复碰")
-                rehit = (b.hit_peg == (px, py))
-                # [已删侧碰 GLANCE_UP] 侧碰不再被向上踢(那是"横滑"的发动机), 回弹感搬到冠碰(顶击)
-                # crown: 顶冠再访强制分离(治"球冻在钉顶原地微弹")——vy 抬到≥70 向下离开,
-                # vx 沿原方向抬到 ±PEG_CROWN_ESCAPE 给横向逃逸(软化: vx==0 不硬给, 避免"看不见的手")
-                if rehit and abs(ny) >= abs(nx):
-                    if b.vy < PEG_BOUNCE_VY_MIN:
-                        b.vy = PEG_BOUNCE_VY_MIN
-                    if b.vx != 0:
-                        b.vx = math.copysign(max(abs(b.vx), PEG_CROWN_ESCAPE), b.vx)
-                # 回弹限幅(QA 对照实验定稿): 允许向上弹起(回弹感), 150 限幅弹高≤11px≤一行
-                # 钉距 + PEG_BOUNCE_VY_MIN=70 比例保底已防黏滞(QA 实测去守卫后滞留帧
-                # 2.2/发 < 留守卫 4.1/发, 卡死仍 0; 历史黏滞的根因是弹高无上限反复碰同钉)。
-                if b.vy < -PEG_BOUNCE_VY_MAX:
-                    b.vy = -PEG_BOUNCE_VY_MAX    # 弹起限幅: 弹高≤11px≤一行钉距
-                if b.vy >= 0 and b.vy < max(PEG_BOUNCE_VY_MIN, vy_pre * PEG_KEEP_VY):
-                    b.vy = max(PEG_BOUNCE_VY_MIN, vy_pre * PEG_KEEP_VY)
-                    # 比例保底: 碰后 vy 至少保留碰前一半(轻快弹开甜点 0.45~0.65),
-                    # 且不注入能量(碰后≤碰前)。固定保底 70 对高速碰钉是"失速"(ratio 0.2)
-                if abs(b.vx) > PEG_REFLECT_VX_MAX:   # 碰钉反射横速限幅: 球碰钉后横向速度
-                    b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)  # 受限, 横穿距离
-                                                    # ≤1 钉距, 消除"横向跳"(真实弹珠机球不会横向滑翔)
-                if abs(nx) > abs(ny) and b.vy >= 0 and b.vy < PEG_MIN_ESCAPE:
-                    # 逃逸顺导(治横滑): 侧碰后沿重力向下补速, 不再沿法线横向推(撤掉"凭空横向移动"源)
-                    b.vy = PEG_MIN_ESCAPE
-                if PEG_SPRINT and py == 570:    # 隔板钉(末段): 软化冲刺 —— 保留 vy 下限
-                    b.vx *= 0.7                  # 防贴钉+落袋干净, 但不再把横速刹死:
-                    if 0.0 <= b.vy < 160.0:      # 0.5→0.7 保留末段横向多样性(末段决策迟到,
-                        b.vy = 160.0             # 悬念落在玩家盯最紧的落袋区)。条件 0.0<=vy<160:
-                                                  # 只兜底"仍在向下且不够快"的球, 不抹掉碰钉顶刚
-                                                  # 反射的向上分量(治 SPRINT vy 下限压球的顶碰机关枪)
-                b.vx *= PEG_FRICTION            # 碰钉摩擦(物理专家组): 摩擦乘反射后的 vy 直接杀
-                b.vy *= PEG_FRICTION_VY          # 回弹, vx 用 0.95 防贴钉滑行, vy 用 0.97 少砍
-                                                  # 法向(保留弹起), 避免垂直分量失控
-                _mark(b, EV_PEG, hit)
-                b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
-                b.hit_peg = (px, py)                   # 被撞钉子坐标(物理"同钉再访"判断用)
-                b.peg_flash = (px, py)                 # 被撞钉子坐标(渲染高亮用, 每次碰撞都置)
-                b.squash = 1.0 - 0.05 * clamp(vn / E_VREF, 0.0, 1.0)  # 压扁(高速5%,掠射≈0%)
-                b.squash_nx = njx; b.squash_ny = njy
-                b.spin += (b.vx * njy - b.vy * njx) * 0.02  # 自转积分
-
-
-
+                    a = rng.uniform(0, math.tau)
+                    nx, ny = math.cos(a), math.sin(a)
+                b.x = px + nx * rr
+                b.y = py + ny * rr
+                vn = -(b.vx * nx + b.vy * ny)           # 法向接近速率
+                if vn > 0:                               # 真反弹才处理
+                    vy_pre = b.vy                        # 碰前 vy(比例保底用)
+                    # e(v): 低速弹得高(逃逸卡死), 高速粘(保持节奏)
+                    if abs(nx) > abs(ny):
+                        E_eff = E_SIDE                  # 侧碰低弹: 擦面滑下不弹(治横滑), 回弹感搬到冠碰
+                    else:
+                        E_eff = E_SLOW - (E_SLOW - E_FAST) * clamp(vn / E_VREF, 0.0, 1.0)
+                    E_eff *= rng.uniform(0.92, 1.08)   # 反弹高度 ±8% 随机(用户定稿: 每个反弹略不同, 更真实)
+                    # 法线扰动(模拟表面粗糙度): 幅度 0.04/±0.15。注意: 曾试加大到 0.08/±0.25
+                    # 想增加回弹, 但副作用是侧碰反射横向分量被放大 → "凭空横向移动"(用户报告 bug)。
+                    # 横向稳定性优先, 回弹靠 E_eff 提升, 不靠放大法线扰动。
+                    g = rng.gauss(0, 0.04)
+                    g = clamp(g, -0.15, 0.15)
+                    tx_, ty_ = -ny, nx                   # 切向
+                    njx = nx + tx_ * g
+                    njy = ny + ty_ * g
+                    nrm = math.hypot(njx, njy)
+                    njx /= nrm; njy /= nrm
+                    hit = _reflect(b, njx, njy, E_eff)   # 用扰动后法线+e(v)反射
+                    # 改法A crown: 同钉再访检测 —— 本颗钉是否与上次碰撞的是同一颗(治"同一颗钉反复碰")
+                    rehit = (b.hit_peg == (px, py))
+                    # [已删侧碰 GLANCE_UP] 侧碰不再被向上踢(那是"横滑"的发动机), 回弹感搬到冠碰(顶击)
+                    # crown: 顶冠再访强制分离(治"球冻在钉顶原地微弹")——vy 抬到≥70 向下离开,
+                    # vx 沿原方向抬到 ±PEG_CROWN_ESCAPE 给横向逃逸(软化: vx==0 不硬给, 避免"看不见的手")
+                    if rehit and abs(ny) >= abs(nx):
+                        if b.vy < PEG_BOUNCE_VY_MIN:
+                            b.vy = PEG_BOUNCE_VY_MIN
+                        if b.vx != 0:
+                            b.vx = math.copysign(max(abs(b.vx), PEG_CROWN_ESCAPE), b.vx)
+                    # 回弹限幅(QA 对照实验定稿): 允许向上弹起(回弹感), 150 限幅弹高≤11px≤一行
+                    # 钉距 + PEG_BOUNCE_VY_MIN=70 比例保底已防黏滞(QA 实测去守卫后滞留帧
+                    # 2.2/发 < 留守卫 4.1/发, 卡死仍 0; 历史黏滞的根因是弹高无上限反复碰同钉)。
+                    if b.vy < -PEG_BOUNCE_VY_MAX:
+                        b.vy = -PEG_BOUNCE_VY_MAX    # 弹起限幅: 弹高≤11px≤一行钉距
+                    if b.vy >= 0 and b.vy < max(PEG_BOUNCE_VY_MIN, vy_pre * PEG_KEEP_VY):
+                        b.vy = max(PEG_BOUNCE_VY_MIN, vy_pre * PEG_KEEP_VY)
+                        # 比例保底: 碰后 vy 至少保留碰前一半(轻快弹开甜点 0.45~0.65),
+                        # 且不注入能量(碰后≤碰前)。固定保底 70 对高速碰钉是"失速"(ratio 0.2)
+                    if abs(b.vx) > PEG_REFLECT_VX_MAX:   # 碰钉反射横速限幅: 球碰钉后横向速度
+                        b.vx = PEG_REFLECT_VX_MAX * (1.0 if b.vx > 0 else -1.0)  # 受限, 横穿距离
+                                                        # ≤1 钉距, 消除"横向跳"(真实弹珠机球不会横向滑翔)
+                    if abs(nx) > abs(ny) and b.vy >= 0 and b.vy < PEG_MIN_ESCAPE:
+                        # 逃逸顺导(治横滑): 侧碰后沿重力向下补速, 不再沿法线横向推(撤掉"凭空横向移动"源)
+                        b.vy = PEG_MIN_ESCAPE
+                    if PEG_SPRINT and py == 570:    # 隔板钉(末段): 软化冲刺 —— 保留 vy 下限
+                        b.vx *= 0.7                  # 防贴钉+落袋干净, 但不再把横速刹死:
+                        if 0.0 <= b.vy < 160.0:      # 0.5→0.7 保留末段横向多样性(末段决策迟到,
+                            b.vy = 160.0             # 悬念落在玩家盯最紧的落袋区)。条件 0.0<=vy<160:
+                                                      # 只兜底"仍在向下且不够快"的球, 不抹掉碰钉顶刚
+                                                      # 反射的向上分量(治 SPRINT vy 下限压球的顶碰机关枪)
+                    b.vx *= PEG_FRICTION            # 碰钉摩擦(物理专家组): 摩擦乘反射后的 vy 直接杀
+                    b.vy *= PEG_FRICTION_VY          # 回弹, vx 用 0.95 防贴钉滑行, vy 用 0.97 少砍
+                                                      # 法向(保留弹起), 避免垂直分量失控
+                    _mark(b, EV_PEG, hit)
+                    b.last_nx = njx; b.last_ny = njy      # 记录接触法线(兜底滚落用)
+                    b.hit_peg = (px, py)                   # 被撞钉子坐标(物理"同钉再访"判断用)
+                    b.peg_flash = (px, py)                 # 被撞钉子坐标(渲染高亮用, 每次碰撞都置)
+                    b.squash = 1.0 - 0.05 * clamp(vn / E_VREF, 0.0, 1.0)  # 压扁(高速5%,掠射≈0%)
+                    b.squash_nx = njx; b.squash_ny = njy
+                    b.spin += (b.vx * njy - b.vy * njx) * 0.02  # 自转积分
 def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
     cx = max(rx1, min(b.x, rx2))
     cy = max(ry1, min(b.y, ry2))
@@ -564,7 +560,6 @@ def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
         if ev and hit > 0.0:
             _mark(b, EV_CEIL if is_ceil else ev, hit)
 
-
 def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
     """弧面"接触帧缓动带球"(P5 方案, 新专家组设计): 球碰弧面瞬间不按反射弹开,
     而是被设定到弧面切线方向的出口速度, 方向在 ARC_EASE_FRAMES 帧内从竖直缓动到
@@ -612,7 +607,6 @@ def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
     st[0], st[1] = n, lf
     _mark(b, EV_ARC, -vn)
 
-
 def physics_step(b, geo, dt):
     """推进一帧(拆 SUBSTEPS 子步)。落袋返回槽序号, 否则 None。"""
     sub = dt / SUBSTEPS
@@ -640,11 +634,23 @@ def physics_step(b, geo, dt):
             #    它从来没有改过 b.x —— 只改 vy 和 y。所以落格分布一位不变。
             if w[1] == FLOOR:
                 continue
+            _ylo = w[1] if w[1] < w[3] else w[3]
+            _yhi = w[3] if w[1] < w[3] else w[1]
+            if _yhi < b.y - BALL_R or _ylo > b.y + BALL_R:
+                continue
             _collide_rect(b, w[0], w[1], w[2], w[3], WALL_E, EV_WALL)
         for s in geo["deflectors"]:
+            _ylo = s[1] if s[1] < s[3] else s[3]
+            _yhi = s[3] if s[1] < s[3] else s[1]
+            if _yhi < b.y - _ARC_REACH or _ylo > b.y + _ARC_REACH:
+                continue
             _collide_arc(b, s[0], s[1], s[2], s[3], _ARC_FRAME)  # 缓动带球: 贴轨转向, 静音接触
-        _collide_pegs(b, geo["pegs"])
+        _collide_pegs(b, geo["peg_rows"])
         for d in geo["dividers"]:
+            _ylo = d[1] if d[1] < d[3] else d[3]
+            _yhi = d[3] if d[1] < d[3] else d[1]
+            if _yhi < b.y - BALL_R or _ylo > b.y + BALL_R:
+                continue
             _collide_rect(b, d[0], d[1], d[2], d[3], E, EV_DIV)
         if b.y + BALL_R >= FLOOR - 0.5:
             # 落袋 = 终态(2026-09-11 用户定稿): 就地钉住横速 + 贴地。
@@ -663,11 +669,9 @@ def physics_step(b, geo, dt):
             return max(0, min(NUM_SLOTS - 1, i))
     return None
 
-
 def power_u(power):
     """有效蓄力区间 [MISFIRE_POWER, 1.0] 归一化到 [0, 1]。低于阈值的是哑火, 不走这里。"""
     return clamp((power - MISFIRE_POWER) / (1.0 - MISFIRE_POWER), 0.0, 1.0)
-
 
 class Ball:
     """弹珠物理状态。__slots__ 消除 dict 哈希开销(每发 ~18000 次查找→0)。
@@ -692,7 +696,6 @@ class Ball:
     def get(self, key, default=None):
         return getattr(self, key, default)
 
-
 def launch_ball(power, rng=None):
     """按蓄力比例 power 生成一颗向上发射的球(位于弹簧柱塞处)。
 
@@ -712,12 +715,10 @@ def launch_ball(power, rng=None):
                 hit_peg=None, squash=1.0, squash_nx=0.0, squash_ny=-1.0, spin=0.0,
                 arc_ease=None, peg_flash=None, ceil_knob=None)
 
-
 def misfire_speed(power):
     """哑火发射速度: 蓄力越小升得越低(线性)。上限 980 保证 apex y≈237 > 160。"""
     u = clamp(power / MISFIRE_POWER, 0.0, 1.0)
     return MISFIRE_V_MIN + (MISFIRE_V_MAX - MISFIRE_V_MIN) * u
-
 
 def launch_misfire(power):
     """力度不足: 球照样弹出去, 只是升不过隔墙顶, 会掉回柱塞。"""
@@ -725,7 +726,6 @@ def launch_misfire(power):
     b.vy = -misfire_speed(power)
     b.misfire = True
     return b
-
 
 def advance_misfire(b):
     """竖井内一维升降(实测全程零碰撞, x 恒=PLUNGER_X)。归位返回 True。
@@ -741,7 +741,6 @@ def advance_misfire(b):
         return True
     return False
 
-
 def advance_flight(b, geo):
     """推进一帧(GUI/selftest 共用): 弧形导轨越顶 + 物理。
     球完全被动: 纯重力+碰撞, 无任何引导/干预。落袋不减速(删 SLOT_BRAKE:
@@ -749,7 +748,6 @@ def advance_flight(b, geo):
     global _ARC_FRAME
     _ARC_FRAME += 1                # 弧面缓动帧计数
     return physics_step(b, geo, FIXED_DT)
-
 
 def benchmark_trajectories(duration=0.7, runs=5):
     """性能测试: 每次固定 duration 秒(短, 不触发 CPU 降频), 数帧数, 跑 runs 次取中位。
@@ -785,7 +783,6 @@ def benchmark_trajectories(duration=0.7, runs=5):
         total_frames += frames
     return total_flights, total_frames, fps_list
 
-
 def _pick(dist):
     """按 {取值: 概率} 的累计阈值掷一个取值(概率和须=1)。"""
     r = random.random()
@@ -795,7 +792,6 @@ def _pick(dist):
         if r < acc:
             return value
     return max(dist)          # 浮点误差兜底: 落在最后一段
-
 
 # 盘面生成 = 掷 k 个奖格填倍率, 坏盘必重抽(最多 MAX_REROLL 次):
 #   坏盘 = (x2 占比 >= PITY_RATIO, 即"几乎全 x2") 或 (>=2 个高倍率 >=x5)
@@ -864,7 +860,6 @@ K_DIST = {        # 每盘有奖格数(低档第1版原样, 高档减格子换 x
     50.0: {9: 1.0},
 }
 
-
 def _shape_of(rtp):
     """取**归一化后**的形状 —— 表里允许写整数权重(和不必为 1)。
 
@@ -874,7 +869,6 @@ def _shape_of(rtp):
     sh = VALUE_SHAPE[rtp]
     tot = float(sum(sh.values()))
     return {v: w / tot for v, w in sh.items()} if tot else sh
-
 
 def _effective_rtp(p2, rtp):
     """给定 x2 权重 p2, 闭式算出含坏盘重抽后的 RTP(= E[盘面倍率和]/9)。
@@ -905,7 +899,6 @@ def _effective_rtp(p2, rtp):
     factor = sum(p_bad ** i for i in range(1, MAX_REROLL + 1))   # P + P^2
     return (e_sum + factor * (e_sum - e_bad_cond)) / NUM_SLOTS
 
-
 def _solve_p2(rtp):
     """二分反解 x2 权重, 使含软重随机后的 RTP 精确等于档位。x2 权重不手写就不会手滑写漂,
     改 VALUE_SHAPE/K_DIST/P_PITY/P_CEIL 任何一项都会自动重新配平。"""
@@ -919,7 +912,6 @@ def _solve_p2(rtp):
             hi = mid
     return (lo + hi) / 2
 
-
 # 每档完整倍率分布(x2 权重解出后拼成), 并断言 RTP 精确=档位。
 VALUE_DIST = {}
 for _rtp in (0.80, 1.20, 2.00, 3.60, 10.0, 20.0, 50.0):
@@ -932,7 +924,6 @@ for _rtp in (0.80, 1.20, 2.00, 3.60, 10.0, 20.0, 50.0):
     VALUE_DIST[_rtp].update({v: (1 - _p2) * w for v, w in _shape_of(_rtp).items()})
     assert abs(sum(VALUE_DIST[_rtp].values()) - 1) < 1e-12, "配平失败: %.2f" % _rtp
     assert abs(_effective_rtp(_p2, _rtp) - _rtp) < 1e-9, "RTP 漂移: %.4f" % _rtp
-
 
 def roll_multipliers(rtp=0.80):
     """掷 k 格填倍率; 坏盘(几乎全 x2 或 >=2 个高倍率)必重抽, 最多 MAX_REROLL 次。
@@ -991,11 +982,9 @@ NOTE = {"C4": 261.63, "D4": 293.66, "E4": 329.63, "F4": 349.23, "G4": 392.00,
         "G5": 783.99, "A5": 880.00, "C6": 1046.50, "D6": 1174.66, "E6": 1318.51,
         "G6": 1567.98, "C7": 2093.00}
 
-
 # ----------------------------- 合成基元 -----------------------------------
 def _buf(dur):
     return [0.0] * int(SR * dur)
-
 
 def _noise(n, lp=0.5):
     """单极点低通白噪声: lp 越小越闷(1.0=白噪, 0.1=低频轰隆)。"""
@@ -1006,7 +995,6 @@ def _noise(n, lp=0.5):
         z += lp * (_ARNG.uniform(-1.0, 1.0) - z)
         out[i] = z * comp
     return out
-
 
 def _add_partials(buf, t0, f0, parts, gain=1.0):
     """叠加指数衰减正弦分音。parts = [(频率倍数, 幅度, 衰减时间常数s)]。"""
@@ -1025,7 +1013,6 @@ def _add_partials(buf, t0, f0, parts, gain=1.0):
             if e < 1e-4:                     # 衰减到 -80dB 以下, 提前收尾
                 break
 
-
 def _add_chirp(buf, t0, f1, f2, dur, amp, tau, curve=1.0):
     """扫频(弹簧/滑音): f1 -> f2, curve>1 前段变化快。"""
     n = len(buf)
@@ -1043,7 +1030,6 @@ def _add_chirp(buf, t0, f1, f2, dur, amp, tau, curve=1.0):
         buf[i] += amp * e * math.sin(ph)
         e *= dec
 
-
 def _add_noise(buf, t0, dur, amp, tau, lp=0.5):
     """噪声瞬态(撞击的"咔"/"沙")。"""
     n = len(buf)
@@ -1058,7 +1044,6 @@ def _add_noise(buf, t0, dur, amp, tau, lp=0.5):
         buf[i] += amp * e * v
         e *= dec
 
-
 def _add_bell(buf, t0, f0, amp=1.0, tau=0.35, bright=1.0):
     """钟/马林巴音色: 谐波分音, 高次衰减更快 -> 温暖不刺耳。"""
     _add_partials(buf, t0, f0, [
@@ -1068,7 +1053,6 @@ def _add_bell(buf, t0, f0, amp=1.0, tau=0.35, bright=1.0):
         (4.02, 0.08 * amp * bright, tau * 0.22),
     ])
     _add_noise(buf, t0, 0.003, 0.09 * amp, 0.0012, 0.85)   # 琴槌敲击感
-
 
 def _reverb(buf, mix=0.20, rt=0.45):
     """极简梳状混响: 给铃声/中奖音一点空间感, 不再像干巴巴的蜂鸣。"""
@@ -1090,7 +1074,6 @@ def _reverb(buf, mix=0.20, rt=0.45):
             wet[i] += v * 0.25
     for i in range(n):
         buf[i] += mix * wet[i]
-
 
 def _pack(buf, peak=0.6, fi=0.0006, fo=0.005):
     """归一化到 peak + 首尾淡入淡出(防爆音) -> 16bit 单声道 PCM 字节。
@@ -1121,13 +1104,11 @@ def _pack(buf, peak=0.6, fi=0.0006, fo=0.005):
         out[i] = int(v * 32767.0)
     return out.tobytes()
 
-
 def pcm_to_wav(pcm):
     """裸 PCM -> 标准 WAV 容器字节(供 winsound.SND_MEMORY / --dumpwav)。"""
     return (b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt " +
             struct.pack("<IHHIIHH", 16, 1, 1, SR, SR * 2, 2, 16) +
             b"data" + struct.pack("<I", len(pcm)) + pcm)
-
 
 # ----------------------------- 音效配方 -----------------------------------
 def _sfx_tink(f0):
@@ -1139,7 +1120,6 @@ def _sfx_tink(f0):
     _add_noise(b, 0.0, 0.004, 0.28, 0.0015, 0.60)
     return _pack(b, 0.72)
 
-
 def _sfx_wall(f0):
     """撞墙: 闷"咚"(塑料/木质), 低频为主。"""
     b = _buf(0.13)
@@ -1149,7 +1129,6 @@ def _sfx_wall(f0):
     _add_noise(b, 0.0, 0.008, 0.35, 0.004, 0.18)
     return _pack(b, 0.59)
 
-
 def _sfx_div(f0):
     """撞隔板: 中频"嗒"。"""
     b = _buf(0.105)
@@ -1158,7 +1137,6 @@ def _sfx_div(f0):
                                (3.91, 0.16, 0.007)])
     _add_noise(b, 0.0, 0.005, 0.30, 0.002, 0.35)
     return _pack(b, 0.65)
-
 
 def _sfx_rail():
     """天花板金属弧: 钟形"锵", 带一点混响余韵。"""
@@ -1171,7 +1149,6 @@ def _sfx_rail():
     _reverb(b, 0.18, 0.35)
     return _pack(b, 0.65)
 
-
 def _sfx_launch():
     """发射: 柱塞"咔" + 弹簧下滑 boing(不含风声 — 风声交给 flight 连续音)。"""
     b = _buf(0.28)
@@ -1181,7 +1158,6 @@ def _sfx_launch():
                                     (2.40, 0.25, 0.06)])    # 弹簧余振
     return _pack(b, 0.75)
 
-
 # 飞行音包络: 实测 400 次飞行的中位速度曲线(归一化), 每 0.1s 一点。
 # 形状 = 出膛最快 -> 碰弧面缓动转向(0.63s) -> 抛体上升减速 -> 顶部滞空(0.97s 谷)
 #      -> 俯冲加速 -> 首次撞钉收尾淡出。电磁弹射器(出口×0.7~1.0)后重测:
@@ -1190,7 +1166,6 @@ FLIGHT_ENV = [1.00, 0.91, 0.82, 0.72, 0.63, 0.54, 0.45, 0.30,
               0.23, 0.18, 0.18, 0.21, 0.27, 0.32, 0.34, 0.25]
 FLIGHT_DUR = 1.50
 FLIGHT_GRAIN_END = 0.65      # 颗粒(滚动感)淡出时刻: 球此时已碰弧面离开竖井钢轨, 之后是空中气流
-
 
 def _sfx_flight():
     """一条连续飞行音: 球压着竖井钢轨滚上去 -> 越顶离轨后化为气流, 一直铺到首次撞钉。
@@ -1232,7 +1207,6 @@ def _sfx_flight():
     _add_chirp(b, 0.00, 150.0, 96.0, 0.34, 0.10, 0.26, 1.0)  # 竖井内的低频管腔感
     return _pack(b, 0.57, fi=0.004, fo=0.110)
 
-
 def _sfx_top(hard):
     """球冲到顶点转向: 顶部一声碰撞。中频金属"铛", 比撞墙的闷咚亮得多(手机小喇叭也听得清)。
     hard=1 是接近满蓄力那档(真撞上顶墙): 更亮、余韵更长。"""
@@ -1246,7 +1220,6 @@ def _sfx_top(hard):
     _reverb(b, 0.10, 0.22)
     return _pack(b, 0.78 if hard else 0.52)
 
-
 def _sfx_ratchet(lev):
     """蓄力棘轮: lev 0..5, 越高越亮越响(配合间隔变密 = 越蓄越急)。
     峰值/亮度都比初版高一截: 初版低档 340Hz、峰值 0.22、有效时长仅 20ms, 手机喇叭低频响应
@@ -1257,7 +1230,6 @@ def _sfx_ratchet(lev):
                                                (2.70, 0.52, 0.005)])
     return _pack(b, 0.6 + lev * 0.032)
 
-
 def _sfx_charge_full():
     """满蓄力"顶到底": 弹簧压实的闷响 + 一声高音扣锁 → 听到就知道可以松手了。"""
     b = _buf(0.19)
@@ -1265,7 +1237,6 @@ def _sfx_charge_full():
     _add_noise(b, 0.000, 0.009, 0.40, 0.004, 0.30)
     _add_partials(b, 0.014, 1260.0, [(1.00, 0.45, 0.020), (2.02, 0.18, 0.010)])
     return _pack(b, 0.6)
-
 
 def _sfx_pocket():
     """入袋确认: 深长闷响 + 金属锁扣"咔哒"(球坐进槽底卡住; 复用撞钉 tink 的非谐词汇)。"""
@@ -1280,7 +1251,6 @@ def _sfx_pocket():
     _add_noise(b, 0.006, 0.003, 0.18, 0.0012, 0.75)         # 锁扣的清脆瞬态
     return _pack(b, 0.74)
 
-
 def _sfx_bounce():
     """落地弹跳: 钢珠撞槽底, 短亮带金属"叮"瞬态(逐跳渐弱在播放层按 vy 做)。"""
     b = _buf(0.11)
@@ -1288,7 +1258,6 @@ def _sfx_bounce():
     _add_partials(b, 0.0, 3200.0, [(1.00, 0.10, 0.008)])    # 金属"叮"(非谐高频, 钢珠指纹, 削刺 0.18→0.10)
     _add_noise(b, 0.0, 0.005, 0.30, 0.0022, 0.45)           # 亮噪声攻击瞬态
     return _pack(b, 0.50)
-
 
 def _sfx_riser():
     """入袋前铺垫: 球穿出最后一排钉进入无钉区(y>495)时响。
@@ -1309,7 +1278,6 @@ def _sfx_riser():
         b[i] += 0.12 * z * (t ** 2.0)
     return _pack(b, 0.40, fi=0.003, fo=0.015)
 
-
 WIN_TIERS = [
     # (音符序列, 音间隔, 总长, 混响, 峰值, 低音支撑)
     (["C5", "E5", "G5"], 0.085, 0.72, 0.14, 0.50, None),
@@ -1320,7 +1288,6 @@ WIN_TIERS = [
     (["C5", "E5", "G5", "C6", "E6", "G6", "C7", "E6"], 0.064, 1.60, 0.36, 0.78, 55.0),        # tier5 x50
     (["C5", "E5", "G5", "C6", "E6", "G6", "C7", "G6", "C7"], 0.062, 1.80, 0.42, 0.85, 41.2),  # tier6 x100
 ]
-
 
 def _sfx_win(tier):
     """中奖琶音 7 档: 0=x2 1=x3 2=x5 3=x10 4=x20 5=x50 6=x100, 音数/混响/低音支撑随档位递增,
@@ -1344,7 +1311,6 @@ def _sfx_win(tier):
     _reverb(b, rv, 0.70 if tier >= 4 else 0.45)
     return _pack(b, peak)
 
-
 def _sfx_lose():
     """未中: 柔和下行两音(F4 -> C4), 轻描淡写地过去 — 别反复强调失败。"""
     lead = SFX_RESULT_LEAD
@@ -1354,14 +1320,12 @@ def _sfx_lose():
     _reverb(b, 0.10, 0.26)
     return _pack(b, 0.44)
 
-
 def _sfx_click():
     """UI 按键: 极短软咔。"""
     b = _buf(0.035)
     _add_noise(b, 0.0, 0.0025, 0.50, 0.0012, 0.75)
     _add_partials(b, 0.0, 940.0, [(1.00, 0.50, 0.006), (2.60, 0.20, 0.003)])
     return _pack(b, 0.52)
-
 
 def _sfx_error():
     """珠子不足: 低频颤音"嗡"。"""
@@ -1374,14 +1338,12 @@ def _sfx_error():
                 0.16 * math.sin(5 * w * i)) * trem * env
     return _pack(b, 0.44)
 
-
 def _sfx_coin():
     """计分滚动的细碎"叮"(数字翻滚时连播)。"""
     b = _buf(0.035)
     _add_partials(b, 0.0, 2280.0, [(1.00, 1.00, 0.007), (2.02, 0.40, 0.004)])
     _add_noise(b, 0.0, 0.002, 0.18, 0.001, 0.90)
     return _pack(b, 0.47)
-
 
 def _sfx_ready():
     """新球滚进柱塞就位。"""
@@ -1390,7 +1352,6 @@ def _sfx_ready():
     _add_noise(b, 0.000, 0.050, 0.14, 0.030, 0.25)
     _add_partials(b, 0.075, 300.0, [(1.00, 0.50, 0.016)])
     return _pack(b, 0.49)
-
 
 def _sfx_cash():
     """重置珠子: 一串硬币落盘。"""
@@ -1403,7 +1364,6 @@ def _sfx_cash():
     _reverb(b, 0.14, 0.25)
     return _pack(b, 0.59)
 
-
 def _sfx_bead(f0):
     """中奖金雨珠子到账: 玻璃珠轻"叮"(比 coin 高一点圆润一点, 逐颗到账的计数感)。
     三个音高变体轮播, 倾泻时听感是"叮叮叮"上行计数而非同一声复读。"""
@@ -1412,7 +1372,6 @@ def _sfx_bead(f0):
                                (2.42, 0.35, 0.007)])
     _add_noise(b, 0.0, 0.002, 0.22, 0.001, 0.85)
     return _pack(b, 0.50)
-
 
 # ---- 2026-09-10: 试过给中奖装杯做一组"玻璃音" cup0..3 + cupland, 已回退, 别重做 ----
 # 做法: 4 个音高变体(1960/2180/2290/2540Hz), 每颗一套非谐分音(2.42/2.76/2.19/2.55 倍),
@@ -1460,7 +1419,6 @@ def iter_bank():
     for i, f0 in enumerate((1960.0, 2320.0, 2760.0)):   # 金雨珠子到账(追加末尾, 不扰既有音色)
         yield "bead%d" % i, _sfx_bead(f0)
 
-
 def bake_bank():
     """合成全部音效 -> {名字: PCM字节}。约 11.5s 素材, 耗时 ~350ms(后台线程跑)。"""
     return dict(iter_bank())
@@ -1496,7 +1454,6 @@ except Exception:
 
 _WAVE_MAPPER = 0xFFFFFFFF
 _WHDR_DONE = 1
-
 
 class _WaveOut:
     """winmm 多声道输出: 撞钉/中奖/滚分可以真正同时响, 且写入不阻塞 GUI。
@@ -1617,7 +1574,6 @@ def _sfx_cache_dir():
         pass
     return d
 
-
 def _sfx_code_tag():
     """缓存指纹: 本文件的 mtime+size(装了新 APK 就变) + 合成种子 + 采样率。
     音效配方改了 -> main.py 变了 -> 指纹变 -> 旧 WAV 整目录作废, 不会拿旧配方冒充新的。
@@ -1628,14 +1584,12 @@ def _sfx_code_tag():
     except Exception:
         return "%d.%d.nofile" % (SFX_SEED, SR)
 
-
 def _wav_write(path, pcm):
     """原子写: 先写 .tmp 再 replace。半截文件绝不能留在缓存里被下次启动当成有效音效。"""
     tmp = path + ".tmp"
     with open(tmp, "wb") as f:
         f.write(pcm_to_wav(pcm))
     os.replace(tmp, path)
-
 
 def _wav_wipe(d):
     for fn in os.listdir(d):
@@ -1645,11 +1599,9 @@ def _wav_wipe(d):
             except Exception:
                 pass
 
-
 def _voice_dir():
     """预录语音目录(与 main.py 同级; 目录不存在时静默为空 —— 语音是安卓版附加功能)。"""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice")
-
 
 def _voice_files():
     """{语音名: wav 路径}。语音是 edge-tts 预录文件(tools/generate_voice.py 生成),
@@ -1663,7 +1615,6 @@ def _voice_files():
         pass
     return out
 
-
 def _read_wav_pcm(path):
     """读 22050Hz 16bit mono wav -> 裸 PCM 字节(winmm pcm 模式用; 格式不符直接拒)。"""
     import wave
@@ -1671,7 +1622,6 @@ def _read_wav_pcm(path):
         if (wf.getnchannels(), wf.getsampwidth(), wf.getframerate()) != (1, 2, SR):
             raise ValueError("voice wav 不是 %dHz 16bit mono: %s" % (SR, path))
         return wf.readframes(wf.getnframes())
-
 
 class _SoundPoolOut:
     """Android SoundPool: 短音效全部解压进内存, 并发交给硬件 mixer。
@@ -1867,7 +1817,6 @@ class _SoundPoolOut:
         except Exception:
             pass
 
-
 class _KivySoundOut:
     """桌面后备: Kivy SoundLoader(SDL2)。能同时响, 但延迟/叠加不如 winmm/SoundPool。"""
     mode = "named"
@@ -1915,9 +1864,7 @@ class _KivySoundOut:
                 pass
         self._sounds.clear()
 
-
 _BACKEND_ERRORS = []     # [(名字, 异常文本)] —— open_output 降级链每一级失败都记一笔
-
 
 def _backend_error(name):
     """取某个后端构造失败的原文(诊断用)。"""
@@ -1925,7 +1872,6 @@ def _backend_error(name):
         if _n == name:
             return _e
     return ""
-
 
 def open_output():
     """按优先级选后端: Android SoundPool > winmm > Kivy SoundLoader > 静音。
@@ -1955,10 +1901,8 @@ def open_output():
         _BACKEND_ERRORS.append(("Kivy-SoundLoader", "%s: %s" % (type(exc).__name__, exc)))
     return None
 
-
 # ======================= 音效总线 =======================
 _VARIANT_FAMILIES = ("peg", "wall", "div", "top")
-
 
 def _throttle_key(name):
     """节流键: 同一族的随机变体**共用一个闸门**(peg0..5 / wall0..1 / div0..1 / top0..1)。
@@ -1974,7 +1918,6 @@ def _throttle_key(name):
         if name.startswith(_p) and name[len(_p):].isdigit():
             return _p
     return name
-
 
 class Sfx:
     """合成一次(后台线程), 之后每次发声只做取样+送声卡。
@@ -2997,16 +2940,13 @@ TAPER = 1.43               # 圆肩: 底半径/堆高(对应休止角 ~35 度)
 # 杯底加宽并放缓收口：底/口宽约 0.80，避免旧版漏斗感；必须与生成器同源。
 _WALL_BEZ = ((39.0, 80.0), (65.0, 262.0), (110.0, 404.0))  # 左壁 bezier(生成器同源)
 
-
 def _bez_at(t):
     u = 1.0 - t
     x = u * u * _WALL_BEZ[0][0] + 2 * u * t * _WALL_BEZ[1][0] + t * t * _WALL_BEZ[2][0]
     y = u * u * _WALL_BEZ[0][1] + 2 * u * t * _WALL_BEZ[1][1] + t * t * _WALL_BEZ[2][1]
     return x, y
 
-
 _HW_TABLE = None
-
 
 def _build_hw_table(n=160):
     pts = []
@@ -3015,7 +2955,6 @@ def _build_hw_table(n=160):
         pts.append((FLOOR_Y - y, CX - x))        # (h, halfwidth)
     pts.sort()
     return pts
-
 
 def halfwidth(h):
     """离地 h 高度处"画出来的"杯内壁半宽(design px), 表外钳制。"""
@@ -3038,11 +2977,9 @@ def halfwidth(h):
     h1, w1 = tab[hi]
     return w0 + (w1 - w0) * (h - h0) / (h1 - h0)
 
-
 def floor_radius():
     """碗底平面可用半径(壁内)。"""
     return halfwidth(0.0)
-
 
 class PileSpec(object):
     def __init__(self, count, r_dp=11.5, seed=0, dp2px=DESIGN_W / 430.0,
@@ -3095,7 +3032,6 @@ class PileSpec(object):
         #    (实测 x100 的 24 个合法层间序列里只有 12 个能装下 100 颗, 配额再一变就更挑。)
         self.quota = tuple(quota) if quota else None
 
-
 def _volume_H(spec):
     """体积守恒初值: N 球体积 / 格盘密度 = 半椭球堆体积 (2/3)pi R^2 H, R=TAPER*H。"""
     v_total = spec.count * (4.0 / 3.0) * math.pi * spec.r ** 3 / PACK_PHI
@@ -3103,14 +3039,12 @@ def _volume_H(spec):
     cap = (FLOOR_Y - RIM_Y) * 0.78        # 大珠档允许堆到内壁 78%(×100 要有"半坛"体积感)
     return max(spec.r * 2.0, min(H, cap))
 
-
 _SCATTER_MAX = 10       # 自由摆放生效的档位上限。
 # 为什么是 10: x2/x3/x5/x10 这四个档加起来占中奖场次约 90%, 而它们在地板层的
 # 可用半径有 245 —— 把 10 颗球平铺开需要的半径只有 sqrt(10*r^2/0.9) ≈ 167, 绰绰有余。
 # 原来这四档都挤在离轴 60~88 那一小圈里(格点由内而外取的), 自由摆放一上来就能甩到 ±245。
 # x20 不在此列: 20 颗球平铺需要半径 ~237, 已经顶到 245 的边, 而且"贴壁一圈"那种摆法
 # 圆周长只够放 15 颗(2*pi*a/(2r) = 15.3), 放 20 颗必然重叠 —— 它继续走格点 + 层间注册。
-
 
 def _scatter_floor(spec, a):
     """单层小档的自由摆放: 返回 [(x, z), ...] 或 None(表示"走老格点")。
@@ -3154,7 +3088,6 @@ def _scatter_floor(spec, a):
                 pts.append((x, z))
                 break
     return pts if len(pts) == n else None
-
 
 def _enumerate(spec, H, wall_mode=False):
     """给定堆高 H 做确定性格点枚举: 返回 (beads, H, R)。放不满则调用方增大 H。
@@ -3264,7 +3197,6 @@ def _enumerate(spec, H, wall_mode=False):
         k += 1
     return beads, H, R
 
-
 def build_pile(spec):
     """确定性 3D 球堆终态(生成期一次算完): 大 N 走壁填充"一坛子"; 小 N 体积初值 ->
     不足则长高 -> 截断到 N -> xz 重叠抛光 -> 断言(在壁内/不重叠/不沉底/颗数=倍率)。"""
@@ -3301,7 +3233,6 @@ def build_pile(spec):
     meta = {"count": len(beads), "H": H, "R": R, "ms": cost_ms}
     return beads, meta
 
-
 def _polish(beads, spec):
     """仅消重叠的 xz 推开(3D 距离判定, 纵层距不动), ≤spec.polish 轮, 与 R5 无冲突;
     推开后把球钳回本层壁内圆(抛光不可把球挤出杯)。"""
@@ -3337,7 +3268,6 @@ def _polish(beads, spec):
         if not moved:
             break
 
-
 def _assert_pile(beads, spec):
     r = spec.r
     r2 = 2.0 * r
@@ -3355,7 +3285,6 @@ def _assert_pile(beads, spec):
             dz = bi["z"] - bj["z"]
             dh = bi["h"] - bj["h"]
             assert dx * dx + dz * dz + dh * dh > (r2 - slop) ** 2, "unresolved overlap"
-
 
 def project_pile(beads):
     """(x,h,z) -> 屏幕 design px 斜投影(k1=0 纯纵剪), 返回画家序(远先近后)绘制表。"""
@@ -3613,7 +3542,6 @@ RESULT_FADE = 0.25     # 可见的离开(**恒定, 不随档位变** —— 离�
 # 见 `busy()`。最长非交互段 ≈ WINDUP + 最后一颗落定 ≈ 5~6s, 9s 绰绰有余。
 FX_MAX_SEC = 9.0
 
-
 def hold_for(m):
     """装满后的**最短停留**(秒) —— 全项目唯一真源。
 
@@ -3768,7 +3696,6 @@ RIM_BAND_STRIPS = 12
 RIM_BAND_ALPHA_TOP = 0.55   # 环最上沿那段补画到多少(1.0 = 完全不压暗)
 _GLASS_RIM_TEX = {}     # id(back_tex) -> (back_tex, [各段子贴图])
 
-
 def _rim_band_alpha(i):
     """第 i 段(0 = 最上)的补画强度 —— 从 RIM_BAND_ALPHA_TOP 线性升到 1.0。"""
     return RIM_BAND_ALPHA_TOP + (1.0 - RIM_BAND_ALPHA_TOP) * (i / float(RIM_BAND_STRIPS - 1))
@@ -3811,7 +3738,6 @@ _PILE_QUOTA = ((18, 26, 25, 31), (17, 26, 31, 26), (19, 26, 26, 29), (19, 26, 29
 # ⚠️ 它**单独用是无效的**(只改相位不改形状, 见下), 现在是配合层间注册/摆法一起用。
 _PILE_ROT_STEP = 137.508
 
-
 def _r_dp_for(n):
     """球半径(dp)。**所有档同一个值** —— 玩家 2026-09-11 定稿: 「球一样大」。
 
@@ -3828,10 +3754,8 @@ def _r_dp_for(n):
     """
     return 27.0
 
-
 def _mix_rgb(a, b, amount):
     return tuple(int(x + (y - x) * amount) for x, y in zip(a, b))
-
 
 def _ball_texture(bet):
     """主游戏 ball_texture() 的彩色版: 同一套猫眼渐变外形, 只换球身颜色。
@@ -3910,7 +3834,6 @@ def _ball_texture(bet):
     _CUP_BALL_TEX[bet] = tex
     return tex
 
-
 def _glass_textures():
     """玻璃后层/前层 + 兼容整图; 分层失败回退整图, 再失败返回空三元组。
 
@@ -3940,7 +3863,6 @@ def _glass_textures():
             print("CUP-TEX MISSING: assets/glass_tumbler*.png 都没加载到, 中奖杯不会显示")
     return _GLASS_TEX
 
-
 def _beads_from_baked(count, v):
     """查离线烘的球堆坐标表(tools/android_part_piledata.py)。命中返回 beads, 否则 None。
 
@@ -3963,7 +3885,6 @@ def _beads_from_baked(count, v):
         except (ValueError, TypeError):
             return None                       # 任何一项解不开 -> 整表当坏, 走回退
     return out if len(out) == count else None
-
 
 def _support_map(proj, r):
     """算"谁必须先落"的偏序: 对每颗球 j 找出所有 h 更低、且水平距 < 2r 的球 i。
@@ -4002,7 +3923,6 @@ def _support_map(proj, r):
                 pre.append(ms[i])
         out[ms[j]] = pre
     return out
-
 
 def _topo_deal(proj, rng):
     """随机拓扑序: 每次从"支撑已全部发牌"的球里**均匀随机**挑一颗, 返回 proj 下标排列。
@@ -4044,7 +3964,6 @@ def _topo_deal(proj, rng):
         # 有环(只可能来自坏数据) -> 安静退回画家序, 绝不锁死演出(见本模块"绝不软锁"那条)
         return ms
     return out
-
 
 def _pile_projected(count, seed):
     """(count, seed) -> 投影绘制表, 带缓存。同 (count,seed) 逐球心一致可复现。
@@ -4091,7 +4010,6 @@ def _pile_projected(count, seed):
             _PILE_CACHE.pop(_PILE_ORDER.pop(0), None)
     return proj
 
-
 def _rim_back_strips(back_tex):
     """把 back 贴图里**需要补画到压暗之上**的那几段切成条带, 返回可直接画的列表。
 
@@ -4136,7 +4054,6 @@ def _rim_back_strips(back_tex):
     except Exception:
         return None
     return out
-
 
 class WinPileFX(Widget):
     """中奖覆盖层: 压暗 -> 玻璃后层 -> 已落定球(画家序) -> 飞行球 -> 玻璃前层。
@@ -4879,7 +4796,6 @@ H_INFO = 26                  # 弹珠 + 统计(缩高, 腾空间给底部留白)
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不能动)
 
-
 def slot_color(m):
     """槽位底色(m=0 空槽, 否则按倍数取色, WoW 品质色调整版)。"""
     if m <= 0:
@@ -4890,7 +4806,6 @@ def slot_txt(m):
     """槽位数字字色: ×100 深橙白字对比 2.3 太低(大奖会糊), 故黑字(8.0)最跳;
     其余档白字(低档绿蓝红干净醒目, 深红/紫暗底白字最亮)。"""
     return "#0b1220" if m >= 100 else "#ffffff"
-
 
 # ---------------- 单行自适应字号(把"太长就折行"从根上掐掉) ----------------
 # 病根: Kivy 的 Label 只有**两种**行为 —— 设了 `text_size` 就折行, 没设就溢出
@@ -4910,7 +4825,6 @@ FIT_HARD_FLOOR = 0.42       # 阶梯全试完后的硬下限(只防"小到看不
                             # (0.5 时实测 1.5 倍字体 + 5 个档位按钮下 "5000%" 还差 5px)
 _FIT_PX = {}
 
-
 def text_px(text, fs, bold=False):
     """一段文字在字号 fs 下的**单行宽度**(px)。结果缓存。"""
     if not text:
@@ -4928,7 +4842,6 @@ def text_px(text, fs, bold=False):
             _FIT_PX.clear()
         _FIT_PX[key] = got
     return got
-
 
 def fit_font_size(text, base_fs, avail_w, bold=False):
     """挑一个"单行塞得进 avail_w"的最大字号档;**返回绝对字号(px)**。
@@ -4959,9 +4872,7 @@ def fit_font_size(text, base_fs, avail_w, bold=False):
             _hi = _mid
     return _lo
 
-
 _BALL_TEX = None
-
 
 def ball_texture():
     """程序化径向渐变小球贴图(对应 tkinter 版 PIL 渐变, 纯 Python 生成, 零依赖)。"""
@@ -5035,7 +4946,6 @@ def ball_texture():
     _BALL_TEX = tex
     return tex
 
-
 def _vibrate(ms, amp=255):
     """单次震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。
     取服务必须用 Context.VIBRATOR_SERVICE 字符串 —— 传 autoclass("android.os.Vibrator")
@@ -5062,7 +4972,6 @@ def _vibrate(ms, amp=255):
     except Exception:
         pass
 
-
 def _vibrate_tick(gain):
     """装杯落珠的**单次轻震**(只有 Android 有; 其它平台静默)。
 
@@ -5083,7 +4992,6 @@ def _vibrate_tick(gain):
     _vibrate(int(round(10 + 8 * g)), int(round(80 + 140 * g)))
 
 
-
 # "弹珠落容器"(装杯演出)的**触发**延后多少秒(用户 2026-09-11 定案)。
 # 用户给的规格:
 #   当前   —— 第0秒进倍率槽: 立即播声音 + **立即(第0秒)触发落容器事件**
@@ -5099,7 +5007,6 @@ CUP_TRIGGER_DELAY = 0.15
 # ⚠️ 年月日写成**汉字**: `2026-09-11` 这种全数字写法在中文语境下容易被读反(有人按 日/月 读),
 #    带上「年月日」就没有歧义(`fx_probe [13]` 有功能性断言钉住这两条)。
 BUILD_TIME_FMT = '%Y年%m月%d日 %H:%M'
-
 
 def _vibrate_double(ms=35, gap=40, amp=255):
     """短促双震(彩蛋用): 两下短脉冲, 手机读作"发现惊喜"; 区别于单次长震的大奖之感。
@@ -5122,7 +5029,6 @@ def _vibrate_double(ms=35, gap=40, amp=255):
     except Exception:
         pass
 
-
 def number_voice_names(n):
     """整数 → 中文朗读的语音名列表(队列拼接用, 对标 Clac 项目方案)。
     1250 → ['voice_d_1','voice_u_1000','voice_d_2','voice_u_100','voice_d_5','voice_u_10']
@@ -5141,7 +5047,6 @@ def number_voice_names(n):
         names.append("voice_u_10000")
     names.extend(_read_4digits(rest, is_highest=(wan == 0)))
     return names or ["voice_d_0"]
-
 
 def _read_4digits(n, is_highest=True):
     """朗读 0~9999, 返回语音名列表。二/两规则: 千位的 2 读"两"。"""
@@ -5180,9 +5085,7 @@ def _read_4digits(n, is_highest=True):
         parts.append("voice_d_%d" % ge)
     return parts
 
-
 from kivy.animation import Animation
-
 
 # =============================================================================
 # 横屏反旋转层(2026-08-17 定案: 画面永远保持竖拿构图, 横拿时玩家扭头看/转回竖屏玩)
@@ -5192,7 +5095,6 @@ from kivy.animation import Animation
 # =============================================================================
 _DEVICE_WIDE_MIN = 9.0 / 16.0    # 短边/长边 ≥ 9:16 = 宽屏(16:9 及更宽/更方)
 _device_wide_cache = None        # 开机量一次物理屏比例, 之后不再变
-
 
 def _device_is_wide():
     """本机物理屏是否 16:9 及更宽(平板类, 允许横屏旋转)。
@@ -5215,7 +5117,6 @@ def _device_is_wide():
         _device_wide_cache = aspect >= _DEVICE_WIDE_MIN
     return _device_wide_cache
 
-
 def _land_angle():
     """横屏渲染旋转角(度, Kivy Rotate 逆时针为正): 抵消系统转屏, 让画面在屏幕上的
     构图与竖拿时完全一致。Display.getRotation(): 1(ROTATION_90)->+90, 3(ROTATION_270)->-90,
@@ -5230,11 +5131,9 @@ def _land_angle():
     except Exception:
         return 90
 
-
 def _land_layer():
     app = App.get_running_app()
     return getattr(app, "layer", None)
-
 
 class LandLayer(FloatLayout):
     """Android 12L+ 大屏锁竖屏会被 letterbox 政策/ZUI 塞进半屏兼容盒(app 改不了窗口
@@ -5340,7 +5239,6 @@ class LandLayer(FloatLayout):
     def on_touch_up(self, touch):
         return self._pass_touch(super().on_touch_up, touch)
 
-
 class RotPopup(Popup):
     """挂 LandLayer 的 Popup: 横屏时随层旋转, 坐标系统一为等效竖屏窗口。
     Kivy 2.3 ModalView.open() 硬编码挂 Window, 这里照抄其 open/_real_remove_widget
@@ -5380,7 +5278,6 @@ class RotPopup(Popup):
                             on_keyboard=self._handle_keyboard)
         self._is_open = False
         self._window = None
-
 
 class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
@@ -5831,7 +5728,6 @@ class GameArea(FloatLayout):
                     _ps.origin = _lb.center
                     _ps.x = _ps.y = sc
 
-
 def _app_version():
     """本包版本号(如 "v0.6.30"); 拿不到返回 ""。
 
@@ -5861,7 +5757,6 @@ def _app_version():
         pass
     return ""
 
-
 def _startup_title():
     """「启动信息」那个弹窗的**标题**。玩家 2026-09-11 定稿:
     「启动信息调整  从启动信息改为 跳跳的弹珠机v0.x.x」, 随后补一句「**加一个空格**」
@@ -5875,7 +5770,6 @@ def _startup_title():
     except Exception:
         v = ""
     return ("跳跳的弹珠机 %s" % v) if v else "跳跳的弹珠机"
-
 
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
@@ -6915,6 +6809,7 @@ class RootWidget(BoxLayout):
         self._bench_gc = {}              # gen -> [次数, 总秒, 最坏秒]
         self._bench_gc_t0 = 0.0
         self._bench_cpu0 = time.process_time()
+        self._bench_cpu_prev = self._bench_cpu0
         self._bench_wall0 = time.time()
         import gc
         try:
@@ -6962,10 +6857,20 @@ class RootWidget(BoxLayout):
 
     def _on_flip(self, win):
         now = time.time()
+        cpu = time.process_time()
         prev = self._flip_times[-1] if self._flip_times else None
+        pcpu = self._bench_cpu_prev
+        self._bench_cpu_prev = cpu
         self._flip_times.append(now)
         if prev is not None:
-            self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag()))
+            # ⚠️ 第三个字段是**这一帧真的烧了多少 CPU**(process_time 差)。
+            #    真机(Y700 二代)实测最慢帧有 130~156ms —— 光知道"当时在飞行"不够,
+            #    必须能分清它是**算出来的**(实算接近帧间隔 ⇒ 处理器瓶颈) 还是
+            #    **等出来的**(实算很小 ⇒ GC/IO/显卡/驱动在阻塞)。这是分流的那一刀。
+            #    Linux/安卓 上 process_time 是 clock_gettime(CLOCK_PROCESS_CPUTIME_ID),
+            #    纳秒级; Windows 上精度只有 15.6ms, 所以桌面看不出分辨力, 真机才有效。
+            self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag(),
+                                       (cpu - pcpu) * 1000.0))
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
@@ -7011,19 +6916,21 @@ class RootWidget(BoxLayout):
         fr = list(getattr(self, "_bench_frames", []) or [])
         if not fr:
             return out
-        gaps = sorted(g for g, _ in fr)
+        gaps = sorted(g for g, _t, _c in fr)
         nn = len(gaps)
         pk = lambda q: gaps[min(nn - 1, int(nn * q))]
         out["n"] = nn
         out["p50"] = pk(0.50)
         out["p99"] = pk(0.99)
         out["max"] = gaps[-1]
-        # 最慢的 3 帧 + 当时在演什么(定性的那一半: 数字只说"多慢", 标签才说"卡在哪")
+        # 最慢的 3 帧 + 当时在演什么 + **那一帧真烧了多少 CPU**。
+        # 后两个数一起看才分流: 实算 ≈ 帧间隔 ⇒ 算出来的(处理器瓶颈);
+        # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
         by_worst = sorted(fr, key=lambda x: -x[0])[:3]
-        out["worst"] = [(g, t) for g, t in by_worst]
+        out["worst"] = [(g, t, c) for g, t, c in by_worst]
         # 分场景: 飞行 vs 装杯(跑分把装杯也采样进去了, 不分就分不清是谁在拖)
         grp = {}
-        for g, t in fr:
+        for g, t, _c in fr:
             grp.setdefault(t, []).append(g)
         out["groups"] = {}
         for t, xs in grp.items():
@@ -7195,7 +7102,9 @@ class RootWidget(BoxLayout):
             parts = []
             parts.append('每帧耗时： 一半的帧 ≤%.1f 毫秒 · 最慢的 1%% ≤%.1f · 最慢一帧 %.1f'
                          % (d["p50"], d["p99"], d["max"]))
-            w = '  '.join('%.0f毫秒(%s)' % (g, t) for g, t in d["worst"])
+            # "实算"= 那一帧真的烧掉的 CPU。它接近帧间隔就是**算出来的**(处理器瓶颈);
+            # 很小就是**等出来的**(GC/IO/显卡/驱动)。真机上这两个数一对一比就见分晓。
+            w = '  '.join('%.0f毫秒(%s·实算%.1f)' % (g, t, c) for g, t, c in d["worst"])
             parts.append('最慢三帧： ' + w)
             _ord = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
             gs = d["groups"]
@@ -7212,8 +7121,10 @@ class RootWidget(BoxLayout):
                       else ("处理器比较吃紧" if _r >= 0.4 else "在等画面（画面是瓶颈）"))
             else:
                 _v = "—"
-            parts.append('瓶颈： %s（每帧实算 %.1f / 帧间隔 %.1f 毫秒）· 内存回收停顿 %.1f 毫秒'
-                         % (_v, _cpu, _p50, d["gc_total"] * 1000.0))
+            parts.append('瓶颈： %s（每帧实算 %.1f / 帧间隔 %.1f 毫秒）· 内存回收 %.1f 毫秒'
+                         '（%d 次，最坏一次 %.1f）'
+                         % (_v, _cpu, _p50, d["gc_total"] * 1000.0, d["gc_n"],
+                            d["gc_worst"] * 1000.0))
             return '\n'.join(parts)
         except Exception:
             return ''
@@ -8648,7 +8559,6 @@ class RootWidget(BoxLayout):
         #    蓄力期不可能有装杯演出(演出期输入是锁的), `_a_dim_now` 此时本来就是 0。
         self._sync_hud_dim()
 
-
 # =============================================================================
 # App 入口 / 冒烟
 # =============================================================================
@@ -8733,7 +8643,6 @@ VEIL_TITLE_IN_SEC = 0.22             # 整行**一起**淡入的时长 —— �
 #    抗锯齿不一样, 交接时字会"变一下", 玩家报「有闪屏」。同一个字在两个渲染器里长得不一样,
 #    这件事没法规避 —— 所以 presplash 保持**纯色**, 这页照旧淡入。
 
-
 # 那条填充线**扫完整行**要多久(秒)。
 # ⚠️ 它只决定「整行扫完要多久」, **粒度仍是像素级的**(靠那条裁剪, 不是逐字跳) ——
 #    所以圆点能停在某个字的中间。
@@ -8741,11 +8650,9 @@ VEIL_TITLE_IN_SEC = 0.22             # 整行**一起**淡入的时长 —— �
 #    (「以字为单位快速改动 每0.1s改1个字的颜色」)。
 VEIL_TITLE_SWEEP = 0.62
 
-
 def _veil_title_round_len():
     """一轮(**先停一下** -> 填充线从左扫到右 -> 再停一下)有多长。"""
     return VEIL_TITLE_LEAD + VEIL_TITLE_SWEEP + VEIL_TITLE_ROUND_GAP
-
 
 def _veil_title_state(t):
     """开场动画在"这一页开了 t 秒"时, 六个字各自的状态 —— **纯函数**(探针直接钉它)。
@@ -8780,7 +8687,6 @@ def _veil_title_state(t):
     p = 0.0 if p <= 0.0 else (1.0 if p >= 1.0 else p)
     p = p * p * (3.0 - 2.0 * p)                          # smoothstep
     return lit, p, k, rl
-
 
 class _LoadVeil(Widget):
     """冷启动"音效库烘焙中"的加载页: 盖住整屏 + 吞掉所有触摸。
@@ -9016,7 +8922,6 @@ class _LoadVeil(Widget):
     def on_touch_up(self, touch):
         return True
 
-
 class PlinkoApp(App):
     def build(self):
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
@@ -9152,7 +9057,6 @@ class PlinkoApp(App):
         except Exception:
             pass
 
-
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
         try:
@@ -9182,7 +9086,6 @@ class PlinkoApp(App):
         except Exception:
             pass
         return True
-
 
 def _smoke():
     """桌面自动冒烟: 建窗 -> 蓄力发射 -> 截图 -> 必中盘(验证中奖特效) -> 哑火。"""
@@ -9370,7 +9273,6 @@ def _smoke():
     Clock.schedule_once(when_ready(s9, "s9"), 20.0)
     app.run()
 
-
 def main():
     global SOUND_ENABLED
     if "--nosound" in sys.argv:
@@ -9383,7 +9285,6 @@ def main():
         _smoke()
         return
     PlinkoApp().run()
-
 
 if __name__ == "__main__":
     main()
