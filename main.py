@@ -5132,8 +5132,14 @@ _VIB_LOCK = threading.Lock()
 _VIB_PROXY = [None]              # [缓存的 Vibrator 代理]
 _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的描述]
 
-# 方向守卫 / 沉浸重申的耗时统计: [主线程投递累计秒, 主线程单次最慢秒, 发起次数,
-# 工作线程累计秒, 工作线程单次最慢秒, 工作线程失败次数]。
+# 方向守卫 / 沉浸重申的耗时统计:
+#   [0]主线程投递累计秒 [1]主线程单次最慢秒 [2]发起次数
+#   [3]工作线程累计秒   [4]工作线程单次最慢秒 [5]工作线程失败次数
+#   [6]UI线程累计秒     [7]UI线程次数        [8]UI线程单次最慢秒
+# ⚠️ [6]~[8] 量的是 `setSystemUiVisibility` 本身 —— 它在 **Java UI 线程**上跑, 不在我们的
+#    线程里, 所以既不出现在 `_frame` 的剖析中, 也不在"主线程实算"里。桌面剖过: 我们的
+#    Python 代码(整个 `_frame`)只占帧时间的 **0.9%**, 而"每帧实算"里那一大块是 Kivy 的
+#    on_draw + 安卓的 Java 线程。要动安卓特有的周期性开销, 只剩这一条能量。
 # ⚠️ **必须定义在模块级**(不是某个类的类属性) —— 用它的人 (`_guard_worker` /
 # `_guard_post` / `_start_benchmark` / `_bench_collect_diag`) 写的都是**裸名**,
 # 裸名找的是模块全局; 写成类属性会 NameError(本文件踩过一次, 探针逮住的)。
@@ -5144,7 +5150,7 @@ _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的�
 # ⚠️ 这个 app 里 JNI/Binder 已实测过是**灾难级的慢**(`SoundPool.play()` 单次 143.6ms、
 #    平均 53.5ms) —— 所以"每 0.7 秒一次 system_server 往返"完全够格当 1%Low 的天花板。
 # ⚠️ 桌面量不到(`platform != "android"` 直接 return), 只能靠真机跑分面板读那一行。
-_JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0]
+_JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0, 0.0]
 
 
 def _vib_get():
@@ -7235,6 +7241,9 @@ class RootWidget(BoxLayout):
         _JNI_STAT[3] = 0.0
         _JNI_STAT[4] = 0.0
         _JNI_STAT[5] = 0
+        _JNI_STAT[6] = 0.0
+        _JNI_STAT[7] = 0
+        _JNI_STAT[8] = 0.0
         self._bench_wall0 = time.time()
         import gc
         try:
@@ -7401,6 +7410,10 @@ class RootWidget(BoxLayout):
         out["jni_bg_sum"] = _JNI_STAT[3] * 1000.0
         out["jni_bg_worst"] = _JNI_STAT[4] * 1000.0
         out["jni_err"] = _JNI_STAT[5]
+        # UI 线程那档(沉浸重申本身)。**这是本面板唯一能看到"不在我们线程上"的开销的地方。**
+        out["ui_sum"] = _JNI_STAT[6] * 1000.0
+        out["ui_n"] = _JNI_STAT[7]
+        out["ui_worst"] = _JNI_STAT[8] * 1000.0
         # 音频后端名 —— 这个仓库栽过一次: SoundPool 构造失败会**静默降级**到 Kivy-SoundLoader,
         # 而后者走 SDL_mixer, 阻塞行为完全不同。不知道后端就分不清是哪一个在卡。
         try:
@@ -7631,6 +7644,13 @@ class RootWidget(BoxLayout):
                              % (d.get("jni_n", 0), d.get("jni_main_worst", 0.0),
                                 d.get("jni_main_sum", 0.0), d.get("jni_bg_sum", 0.0),
                                 d.get("jni_bg_worst", 0.0), d.get("jni_err", 0)))
+            # 系统栏那一次重申的**真实代价** —— 跑在 Java UI 线程上, 只有这里看得见。
+            # 判据: 单次 ≥5 毫秒 ⇒ 每 0.7 秒重申一次是在拿 UI 线程换一个系统本来就会
+            # 自动隐藏的东西(IMMERSIVE_STICKY 自己会收回), 那就该把周期拉长。
+            if d.get("ui_n"):
+                parts.append('系统栏重申： %d 次 · 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒（UI线程，不在主线程实算里）'
+                             % (d.get("ui_n", 0), d.get("ui_worst", 0.0),
+                                d.get("ui_sum", 0.0)))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
                 parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
@@ -9506,7 +9526,17 @@ class PlinkoApp(App):
             # 全屏沉浸: buildozer fullscreen=1 之外的运行时双保险。
             # 弹窗/切后台回前台后系统栏会复活, 与方向守卫同节奏持续重申(幂等)。
             Clock.schedule_once(lambda *_: self._enter_immersive(), 1.0)
-            Clock.schedule_interval(self._enter_immersive, 0.7)
+            # ⚠️ **周期从 0.7s 拉到 2.5s**(2026-09-14)。原来这条和方向守卫同节奏, 但两者
+            #    的代价**根本不在同一个线程上**: 方向守卫那趟 IPC 已经搬到工作线程(v0.6.71),
+            #    而这条的 `setSystemUiVisibility` 跑在 **Java UI 线程**, 每 0.7 秒让窗口
+            #    重算一次 inset + 走一趟 SurfaceFlinger。桌面剖析证明我们的 Python 只占
+            #    帧时间 0.9%, 所以安卓特有的周期性开销只剩这一条。
+            #    为什么敢拉长: ① 回前台有 `on_resume()` 兜(那条不动); ② 转屏有 `_frame`
+            #    的窗口尺寸轮询立即重申(双保险); ③ **IMMERSIVE_STICKY 本身就是"玩家从边缘
+            #    划出来、几秒后系统自动收回"** —— 我们每 0.7 秒重申一次, 收的是一个系统
+            #    自己就会收的东西。2.5s 只是"万一系统没收干净"的保险, 不是主路径。
+            #    ⚠️ 万一真机上发现系统栏会赖着不走, 把它调回 0.7 即可 —— 代价就是那条尾巴。
+            Clock.schedule_interval(self._enter_immersive, 2.5)
             # ⚠️ **守卫的工作线程要在这里就焐热, 不能等 prebake_step**(2026-09-14)。
             #    守卫第一次触发在 **0.7s**, 而预热链第一步在 ~1.6s —— 等它等于让第一次守卫
             #    现建线程 + 现 AttachCurrentThread(与 v0.6.69 修震动踩的是同一个坑)。
@@ -9581,6 +9611,13 @@ class PlinkoApp(App):
 
                 @java_method('()V')
                 def run(self):
+                    # ⚠️ 这一段跑在 **Java UI 线程**上, 不是我们的 Python 线程 —— 所以它
+                    #    根本不出现在 `_frame` 的剖析里, 也测不到"主线程实算"里。
+                    #    而 `setSystemUiVisibility` 会让窗口重算 inset + 走一趟
+                    #    SurfaceFlinger, 代价**每台机器差很多**。2026-09-14 给它单独计时:
+                    #    判据 —— 若单次 ≥5 毫秒, 那"每 0.7 秒重申一次"就是在拿 UI 线程
+                    #    换一个系统本来就自动隐藏的东西(IMMERSIVE_STICKY 会自己收回)。
+                    _t0 = time.perf_counter()
                     try:
                         from jnius import autoclass
                         act = autoclass("org.kivy.android.PythonActivity").mActivity
@@ -9592,6 +9629,14 @@ class PlinkoApp(App):
                             | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                             | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
                             | View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                    except Exception:
+                        pass
+                    try:
+                        _d = time.perf_counter() - _t0
+                        _JNI_STAT[6] += _d
+                        _JNI_STAT[7] += 1
+                        if _d > _JNI_STAT[8]:
+                            _JNI_STAT[8] = _d
                     except Exception:
                         pass
 
