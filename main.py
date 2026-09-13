@@ -4224,6 +4224,7 @@ class WinPileFX(Widget):
         self._abx = self._aby = 0.0
         self._abw = self._abh = 1.0
         self._dirty = False
+        self._result_busy = True          # 非 result 态一律照常重绘(见 tick 里那段说明)
         self.bind(size=self._sync_geom, pos=self._sync_geom)
 
     # ------------------------------ 几何 ------------------------------
@@ -4558,11 +4559,17 @@ class WinPileFX(Widget):
             if t >= self._last_settle:
                 self._settled_at = now
                 self.mode = "result"
+        self._result_busy = True          # 非 result 态一律照常重绘(下面 result 分支会覆盖)
         if self.mode == "result":
             # 尾巴: 没弹完的球继续把弹跳播完(用户定稿"球继续弹, 只提前 T")。
             # ⚠️ 这一段**不能停** —— _ball_screen 对未落定的球是按 tt 插值的, 不推进的话
             # 它们会冻在半空(而不是落到堆里)。
+            _was = sum(1 for b in self._balls if not b["settled"])
             self._advance_balls(now - self._t0)
+            _unst = sum(1 for b in self._balls if not b["settled"])
+            # "这一帧画面会变吗": 还有球在动 ⇒ 会; **有球刚停稳** ⇒ 也会
+            #   (停稳那一帧它从 tt 插值位置跳到终值, 少画一次就会留在旧位置)。
+            self._result_busy = (_unst > 0) or (_unst != _was)
             # 退场**不再自动** —— 等玩家点击(见 request_close)。**跑分期间例外**: 跑分是
             # 自动连续发射的, 等人点击会把整轮跑分卡死(玩家 2026-09-12 定稿), 那一路仍到点自己走。
             if (not self._closing_at and self._auto_close
@@ -4579,6 +4586,19 @@ class WinPileFX(Widget):
         #   被 _reveal_done 吞掉)。最惨的是"中奖后不再发射"—— 没有下一局, 中奖音**永久丢失**,
         #   就是玩家报的"完全不播放中奖声音"。
         self._pump_reveal(now)
+        # ⚠️ **装满静止、还没开始退场时, 画布一个像素都不会变, 就别重建它**
+        #    (2026-09-14 中风险优化, 由真机数据推动):
+        #    `_redraw` 在 x100 时要重建 **684 条指令**(桌面实测 0.79ms/次 ⇒ 真机约 2.8ms,
+        #    占一帧 22%), 而"等玩家点击"那段可能持续好几秒 —— 那几秒里每帧都在白烧。
+        #    条件里带上 `_dirty` 是为了**只多画不少画**: 任何真心需要重画的状态变化都会置它。
+        # ⚠️⚠️ **`_closing_at` 必须单独判**(踩过一次, 是探针抓出来的):
+        #    退场那 0.25s 每帧都在淡出 + 上浮, **必须逐帧重绘**。我第一版想当然地以为
+        #    `_result_busy` 已经涵盖了它 —— 并没有, 那个旗子**只看球有没有在动**。
+        #    少判这一下的后果实测: 点击后 0.5 秒里只重绘了 **1 次**(应为约 30 次),
+        #    整个淡出动画被掐成"啪一下消失"。
+        if (self.mode == "result" and not self._dirty and not self._result_busy
+                and not self._closing_at):
+            return
         self._redraw()
 
     def _pump_reveal(self, now):
