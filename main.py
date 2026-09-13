@@ -132,8 +132,29 @@ E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
 VMAX = 2400.0                # 限速(需 >= 最大发射速度, 防穿透)
 FIXED_DT = 1.0 / 60.0
+# 一帧最多补几个物理步(超出的积压**丢掉**, 不往下攒)。见 `_clamp_accum` 的说明。
+MAX_STEPS_PER_FRAME = 4
 FRAME_MS = 16
 SUBSTEPS = 6                 # 子步数(增加: 高速下防穿透)
+
+
+def _clamp_accum(a):
+    """把固定步长累加器的积压**截到单帧上限**。
+
+    ⚠️ 为什么必须截(2026-09-14, 冲 1%Low): 真机实测过"单帧最大 dt **625 毫秒** ——
+       一帧跑了 **37 个物理步**"(跑分阶段 1 的原话, 见 android/CLAUDE.md)。帧被拖慢之后,
+       累加器会把积压的时间**全塞进那一帧** —— 那一帧于是更慢, 而它补出来的步又产生新的
+       耗时 ⇒ **"帧慢 → 补更多物理步 → 更慢"的正反馈放大器**(工程文档里点名过这一条)。
+       截断之后最坏一帧只补 MAX_STEPS 步, 长停顿不再自我放大。
+
+    ⚠️ **代价是丢掉时间**: 截断 = 那一帧只推进 MAX_STEPS 步, 而墙钟走了更多 ⇒ 球在那一瞬
+       **走得比墙钟慢一点**。这是**刻意的取舍**: 停顿时球慢一瞬, 好过整台机器卡 600 毫秒。
+       (反过来"把积压留着下帧再还"是错的 —— 那会让之后每帧都跑满上限, 拖出一长串慢帧。)
+    ⚠️ 上限别调小: 60Hz 上一帧正常就是 1 步, 30Hz 是 2 步。取 4 留足余量,
+       只在真正卡顿时才生效。
+    """
+    _lim = MAX_STEPS_PER_FRAME * FIXED_DT
+    return _lim if a > _lim else a
 JITTER = 6.0                 # 撞钉切向随机扰动(大幅降低: 防方向突变 + 防卡死)
 
 LAUNCH_MIN = 1077.0          # 最小发射(随 G=1000 回调, apex≈57 不撞顶)
@@ -9202,7 +9223,7 @@ class RootWidget(BoxLayout):
             self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
-            self._accumulator += dt
+            self._accumulator = _clamp_accum(self._accumulator + dt)
             landed = None
             tick_ev = 0
             tick_amp = {}
@@ -9287,7 +9308,7 @@ class RootWidget(BoxLayout):
             if tick_ev:
                 self._play_events(tick_ev, tick_amp, self.ball)
         elif self.state == "misfire":
-            self._accumulator += dt
+            self._accumulator = _clamp_accum(self._accumulator + dt)
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
                 self._misfire_frames += 1     # 每物理步 +1(与飞行分支/selftest 同构, 防刷新率漂移)
@@ -9309,7 +9330,7 @@ class RootWidget(BoxLayout):
                 if b.vy < LAND_BOUNCE_MIN_VY:
                     b.vy = LAND_BOUNCE_MIN_VY
                 b.vy *= random.uniform(*LAND_BOUNCE_JITTER)
-            self._accumulator += dt
+            self._accumulator = _clamp_accum(self._accumulator + dt)
             floor_y = FLOOR - BALL_R
             while self._accumulator >= FIXED_DT:
                 self._accumulator -= FIXED_DT
