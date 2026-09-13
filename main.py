@@ -1996,6 +1996,50 @@ _FRAME_PROBE = [0, 0, 0]         # [本帧发声次数, 本帧震动次数, 本�
 #    包装本身有开销, 包多了反而把被测量的东西改变掉。
 _FRAME_BRK = {}                  # 本帧累计(会被 _on_flip 读走并清空)
 _BRK_KEYS = ("板面", "重掷", "字号", "装杯")
+_FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
+_TEXUPD = [0]                    # 文字重排累计次数(Label.texture_update 被调了几次)
+
+# ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
+#    真机面板上那三帧的账**对不上** —— 40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
+#    36毫秒(飞行·实算26.2·**自算0.3**) 整帧 23.5 毫秒的超出**几乎全不在 `_frame` 里**。
+#    而面板此前能看到的只有 `_frame` 自己。**主线程上还有一大块在 `_frame` 外面**:
+#      · **Kivy 自己的渲染**(canvas 遍历 + GL 提交);
+#      · **Kivy 用 Clock 延后去做的 `Label.texture_update`**(重测+重光栅化+重建纹理+上传);
+#      · 其它 Clock 回调。
+#    `time.thread_time()` 是**线程级** CPU 时钟(安卓/linux 纳秒级), 覆盖本线程上跑过的一切,
+#    又天然排除发声/震动/守卫那几条工作线程。三个数一摆就能分流:
+#      实算(全进程)大 · 主线程小   => 工作线程在忙;
+#      主线程大 · `_frame` 小      => **Kivy 渲染 / 文字重排**在吃;
+#      `_frame` 大                => 就是我们自己的代码。
+# ⚠️ **这几个名字必须定义在这里**: `_on_flip` / `_start_benchmark` / `_bench_collect_diag`
+#    引用它们时用的是**裸名**。漏定义的话 `--selftest`/`--smoke` 都测不出来(它们不跑跑分),
+#    一到真机跑分就 NameError 崩 —— 这个坑 2026-09-14 已经踩过一次(见 v0.6.83 提交说明)。
+_THREAD_TIME = getattr(time, "thread_time", None) or time.process_time
+
+
+def _texupd_wrap():
+    """给 `Label.texture_update` 挂计数器 —— "文字重排每秒几次"的直接读数。
+
+    ⚠️ 一次文字重排 = 重测字形 + 重光栅化 + 重建纹理 + 上传, 真机字形表更贵。它由 Kivy 用
+       Clock **延后**执行, 跑在 `_frame` 外面。去掉余额滚动(0.6.79)就是冲它去的,
+       这一格是**验证那一步到底有没有生效**的判据。
+    """
+    try:
+        from kivy.uix.label import Label as _L
+    except Exception:
+        return
+    _orig = getattr(_L, "texture_update", None)
+    if _orig is None or getattr(_orig, "_probe_wrapped", False):
+        return
+    def texture_update(self, *a, **k):
+        _TEXUPD[0] += 1
+        return _orig(self, *a, **k)
+    texture_update._probe_wrapped = True
+    texture_update.__name__ = "texture_update"
+    _L.texture_update = texture_update
+
+
+_texupd_wrap()
 
 
 def _brk_add(tag, t0):
@@ -5011,7 +5055,28 @@ class WinPileFX(Widget):
         _FRAME_PROBE[2] += 1      # 本帧跑了预热(供跑分面板把"启动慢"与"玩起来卡"分开)
         if _FONT_WARM_SIZES is None:
             # 首次走到这里才按**当时的窗口密度**算(模块导入时窗口还没建, 那时 sp() 是错的)。
-            globals()["_FONT_WARM_SIZES"] = (sp(36), sp(48), sp(26), sp(30))
+            # ⚠️ **必须用 `_qfs` 落同一个网格**(2026-09-14 修一个我自己引入的回归):
+            #    `fit_font_size` 现在探的第一个档是 `_qfs(base*1.0)`, 而这里原来烘的是**裸的**
+            #    `sp(48)` —— 两个值差最多 0.25px, 而 Kivy 的字体缓存**按精确字号索引** ⇒
+            #    预热等于白烘, **每次创建中奖大字都要现开一次字形表**(桌面 26 毫秒, 真机更贵)。
+            #    真机证据(0.6.81 均衡模式那份): "65毫秒(落袋·实算56.3·**自算48.8**)" /
+            #    "60毫秒(装杯·实算48.7·**自算40.7**)" —— `_frame` 自己一帧烧 41~49 毫秒,
+            #    而那两帧正是**创建大字**的时刻。性能模式下同一份面板是 10.8 毫秒(核频高、字形表便宜)。
+            # ⚠️ **必须把整个阶梯都烘掉, 不能只烘第一档**(2026-09-14)。
+            #    原来只烘 `sp(36)/sp(48)/sp(26)/sp(30)` 四个裸值, 而 `fit_font_size` 是**阶梯**:
+            #    第一档放不下就试 0.94 / 0.88 / 0.82 / 0.76 / 0.70, 再不行还有六轮二分 ——
+            #    **每一档都是一个新的精确字号, 每一次都要现开一次字形表**(桌面 26 毫秒, 真机更贵)。
+            #    而中奖大字的文字是 `+N`, 位数一多(隐藏档 +500000 / x100 的 +10000)第一档就放不下,
+            #    必然往下走。而 `big_result_text` 是**在 `_frame` 里面**跑的
+            #    (tick_draw -> win_fx.tick -> _pump_reveal -> _reveal_win) ⇒ 那几档冷开**直接记在
+            #    `_frame` 头上**。
+            #    真机证据(0.6.81 均衡模式): "65毫秒(落袋·**自算48.8**)" / "60毫秒(装杯·**自算40.7**)"
+            #    —— `_frame` 自己一帧烧 41~49 毫秒, 而性能模式同一份面板只有 10.8 毫秒
+            #    (核频高、字形表便宜)。那两帧正是**创建大字**的时刻。
+            #    代价: 预热从 4 步变 24 步(一步 0.05s, 多 1 秒启动期), 而跑分已经会等预热跑完。
+            globals()["_FONT_WARM_SIZES"] = tuple(
+                _qfs(_b * _k) for _b in (sp(36), sp(48), sp(26), sp(30))
+                for _k in FIT_SCALES)
         if self._font_prebaked < len(_FONT_WARM_SIZES):
             # ⚠️ **一帧只碰一个字号**(2026-09-14 改)。原来是 4 个字号挤在**同一帧**里跑,
             #    而"碰一个新字号"= 重新打开一次 TTF 字形表 = 桌面 26ms ⇒ 那一帧至少 **100ms**,
@@ -7750,10 +7815,11 @@ class RootWidget(BoxLayout):
         # [帧间隔, 场景, 全进程实算, 本线程自算, 这一帧是不是启动预热]
         # [帧间隔, 场景, 全进程实算, 自算, 是否预热, 本帧最大的两笔子步骤]
         # [帧间隔, 场景, 全进程实算, 主线程, 自算, 是否预热, 本帧最大的两笔子步骤]
-        out["worst"] = [[x[0], x[1], x[2], (x[8] if len(x) > 8 else 0.0),
+        # [帧间隔, 场景, 全进程实算, 主线程(x[7]), 自算(x[5]), 是否预热(x[6]), 子步骤(x[8])]
+        out["worst"] = [[x[0], x[1], x[2], (x[7] if len(x) > 7 else 0.0),
                          (x[5] if len(x) > 5 else 0.0),
                          (x[6] if len(x) > 6 else 0),
-                         (x[7] if len(x) > 7 else ())] for x in by_worst]
+                         (x[8] if len(x) > 8 else ())] for x in by_worst]
         # 全程自算的中位数 —— 与"实算"并排看: 两者都小 ⇒ 主线程既没算也没被我们的代码占,
         # 帧时间就是框架/出图的开销(优化我们的代码没用)。
         _self_sorted = sorted((x[5] if len(x) > 5 else 0.0) for x in fr)
@@ -7761,7 +7827,11 @@ class RootWidget(BoxLayout):
         out["self_max"] = _self_sorted[-1] if _self_sorted else 0.0
         # 主线程 CPU(线程级时钟) —— 它与"自算"的**差额就是 `_frame` 外面那一大块**
         # (Kivy 渲染 / 延迟的文字重排 / 其它 Clock 回调)。见 _FRAME_THR 处的说明。
-        _thr_sorted = sorted((x[8] if len(x) > 8 else 0.0) for x in fr)
+        # ⚠️ 索引别记错: 帧记录尾部依次是 `..., _FRAME_SELF, _FRAME_PROBE[2], _FRAME_THR, breaks`
+        #    ⇒ **主线程在 [7]、子步骤在 [8]**。v0.6.82 把这两个写反了, 于是 `thr_p50` 拿到的是
+        #    **元组**, 面板那行 `%.1f` 直接 TypeError, 而它外面那个 except 把整块诊断**静默**
+        #    返回成了空串 —— 一个专抓静默的面板自己静默了(2026-09-14 实测踩到)。
+        _thr_sorted = sorted((x[7] if len(x) > 7 else 0.0) for x in fr)
         out["thr_p50"] = _thr_sorted[len(_thr_sorted) // 2] if _thr_sorted else 0.0
         out["thr_max"] = _thr_sorted[-1] if _thr_sorted else 0.0
         out["texupd"] = _TEXUPD[0]
