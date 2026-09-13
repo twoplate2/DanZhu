@@ -959,7 +959,14 @@ SR = 22050                   # 采样率
 #       前端值 143.6 毫秒, 若明显下降就是这个方向对了; 若纹丝不动说明慢在别处(音频 HAL 唤醒等)。
 #    ⚠️ 反向风险(为什么只敢翻倍、不敢更大): 并发流越多, 音频线程的混音/重采样越重。
 #       16 条短音对现代 SoC 是小事, 但 32 条就没把握了 —— 别再往上加。
-SFX_VOICES = 16              # 并发声道数(可同时叠加的音效数)
+# ⚠️ 2026-09-14 **改回 8**。当初 8 -> 16 的理由是"声道不够 -> SoundPool 抢流 ->
+#    主线程卡几十毫秒", 但那条因果链**在 v0.6.65 就已经断了**: `SoundPool.play()` 现在跑在
+#    **发声工作线程**上, 抢流只会让工作线程多阻塞一会儿(队列满了就丢一声), **再也到不了
+#    主线程**。留下的只有代价那半边 —— 上面自己写着"并发流越多, 音频线程的混音/重采样越重";
+#    而文档还记着满了的行为是"把还在响的流当场掐断", 那本来是 16 想避免的、现在由队列兜着。
+#    也就是说: 16 相对 8 **没有任何已证实的收益**, 只有"更多 AudioTrack 同时活着"这一项开销。
+#    ⚠️ 这是一条"把无收益的改动退回去"的**低风险**改动, 不是新优化 —— 没有观感变化。
+SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数)
 SFX_MASTER = 1.0             # 总音量 (0~1), 手机喇叭需要满幅
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
 SFX_RESULT_LEAD = 0.18       # 结果音(中奖/未中)前置静音: 让入袋声先落地 + 放大揭晓前定格
@@ -1616,16 +1623,35 @@ def _voice_dir():
     """预录语音目录(与 main.py 同级; 目录不存在时静默为空 —— 语音是安卓版附加功能)。"""
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "voice")
 
+_VOICE_FILES_CACHE = [None]      # None = 还没列过; 列到东西了才缓存(见下)
+
+
 def _voice_files():
     """{语音名: wav 路径}。语音是 edge-tts 预录文件(tools/generate_voice.py 生成),
-    不是 bake_bank 的合成品, 不参与 iter_bank 的"顺序即音色"体系。"""
+    不是 bake_bank 的合成品, 不参与 iter_bank 的"顺序即音色"体系。
+
+    ⚠️ 2026-09-14 **加缓存**。原来每次调用都是一次 `os.listdir(voice/)`(**63 项**) ——
+    在安卓上走 FUSE, 目录列举不是免费的; 而且老写法还把 `_voice_dir()` 重复算 63 次
+    (`os.path.join(_voice_dir(), fn)`)。它挂在**主线程**上(`voice_duration` 由 `Sfx.play`
+    和 `_play_voice_sequence` 调用), 而 `_play_voice_sequence` 一轮要查 4~8 段 ——
+    就是**同一帧里 4~8 次目录列举**。
+    目录内容运行期不会变(语音是打包进来的), 所以缓存是安全的。
+    ⚠️ **只缓存非空结果**: 首次调用若目录还没解包出来(listdir 抛异常或空), 不能把空字典
+    缓存住 —— 那会让语音**永久静默失效**。拿不到就下次再列。
+    """
+    got = _VOICE_FILES_CACHE[0]
+    if got is not None:
+        return got
     out = {}
     try:
-        for fn in os.listdir(_voice_dir()):
+        d = _voice_dir()
+        for fn in os.listdir(d):
             if fn.endswith(".wav"):
-                out[fn[:-4]] = os.path.join(_voice_dir(), fn)
+                out[fn[:-4]] = os.path.join(d, fn)
     except Exception:
         pass
+    if out:
+        _VOICE_FILES_CACHE[0] = out
     return out
 
 def _read_wav_pcm(path):
@@ -5450,6 +5476,84 @@ def _guard_post(tag):
         return False                          # 队列满: 丢这一次(幂等), 不回主线程补
 
 
+# ---- 设定落盘: 搬出主线程(2026-09-14) ----
+# 病根: `_save_config()` 是 open + json.dump + close, **每球一次**(settle 里调), 跑在主线程。
+# 安卓上这是一次**阻塞的文件写**(走 FUSE), 而它落在"落袋"那一帧 —— 同一帧还要做结算、
+# 排揭晓、槽位白闪。这一类"事件路径上的阻塞调用"本工程已经栽过两次
+# (`SoundPool.play()` 143.6ms / 震动 Binder), 修法也都是同一套: 主线程只投递。
+# ⚠️ **只保留最新一份**(后写覆盖先写): 配置是"当前状态"不是流水账, 中间态没有保留价值,
+#    所以不需要队列、不需要去重, 一个格子 + 一个 Event 就够。
+# ⚠️ 落盘走 **临时文件 + `os.replace`** 原子替换 —— 写一半被杀不会留下半个 JSON。
+#    老写法 `open(path, "w")` 是先截断再写, 那种时刻被杀就是文件损坏(下次启动读不出来,
+#    白名单一挡 = 进度清零)。这算顺带修的一个真 bug, 不只是性能。
+# ⚠️ 切后台(`on_pause`)会 flush 一次, 保证切走时一定落了盘。
+_CFG_EVT = None
+_CFG_PENDING = [None]        # (cfg, path) 或 None
+_CFG_OK = [None]             # None=还没建, True=工作线程可用, False=建不起来
+_CFG_STAT = [0.0, 0.0, 0]    # [累计秒, 单次最慢秒, 次数]
+
+
+def _cfg_worker():
+    while True:
+        try:
+            _CFG_EVT.wait()
+        except Exception:
+            return
+        _CFG_EVT.clear()
+        item = _CFG_PENDING[0]
+        _CFG_PENDING[0] = None
+        if item is None:
+            continue
+        cfg, path = item
+        _t0 = time.perf_counter()
+        try:
+            tmp = path + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(cfg, f)
+            os.replace(tmp, path)
+        except Exception:
+            pass
+        _d = time.perf_counter() - _t0
+        _CFG_STAT[0] += _d
+        _CFG_STAT[2] += 1
+        if _d > _CFG_STAT[1]:
+            _CFG_STAT[1] = _d
+
+
+def _cfg_warm():
+    global _CFG_EVT
+    if _CFG_OK[0] is not None:
+        return
+    try:
+        _CFG_EVT = threading.Event()
+        threading.Thread(target=_cfg_worker, daemon=True).start()
+        _CFG_OK[0] = True
+    except Exception:
+        _CFG_OK[0] = False
+
+
+def _cfg_post(cfg, path):
+    """把一份设定交给工作线程落盘。返回 True = 已投递(主线程不付那次文件写)。"""
+    _cfg_warm()
+    if _CFG_OK[0] is not True:
+        return False
+    _CFG_PENDING[0] = (cfg, path)
+    try:
+        _CFG_EVT.set()
+        return True
+    except Exception:
+        return False
+
+
+def _cfg_flush(timeout=1.0):
+    """等挂着的设定落完盘(切后台/退出前)。**绝不长等** —— 超时就放弃。"""
+    if _CFG_OK[0] is not True:
+        return
+    _t0 = time.perf_counter()
+    while _CFG_PENDING[0] is not None and time.perf_counter() - _t0 < timeout:
+        time.sleep(0.005)
+
+
 def _vibrate_tick(gain):
     """装杯落珠的**单次轻震**(只有 Android 有; 其它平台静默)。
 
@@ -7342,6 +7446,9 @@ class RootWidget(BoxLayout):
         _JNI_STAT[6] = 0.0
         _JNI_STAT[7] = 0
         _JNI_STAT[8] = 0.0
+        _CFG_STAT[0] = 0.0
+        _CFG_STAT[1] = 0.0
+        _CFG_STAT[2] = 0
         self._bench_wall0 = time.time()
         import gc
         try:
@@ -7553,6 +7660,9 @@ class RootWidget(BoxLayout):
         out["gc_frozen"] = _GC_FROZEN[0]
         out["gc_frz_before"] = _GC_FROZEN[1]
         out["gc_frz_after"] = _GC_FROZEN[2]
+        out["cfg_sum"] = _CFG_STAT[0] * 1000.0
+        out["cfg_worst"] = _CFG_STAT[1] * 1000.0
+        out["cfg_n"] = _CFG_STAT[2]
         return out
 
     def _wait_idle_then_bench(self, dt=0):
@@ -7824,6 +7934,9 @@ class RootWidget(BoxLayout):
                          % (_v, _cpu, d.get("self_p50", 0.0), d.get("self_max", 0.0),
                             _p50, d["gc_total"] * 1000.0,
                             d["gc_worst"] * 1000.0, _gn))
+            if d.get("cfg_n"):
+                parts.append('　存档落盘： %d 次（工作线程）· 单次最慢 %.1f 毫秒'
+                             % (d["cfg_n"], d.get("cfg_worst", 0.0)))
             # 冻结生效与否**必须显示** —— 否则"GC 没再拖后腿"既可能是真冻结了, 也可能是
             # 根本没跑到(这个仓库专门栽过这种静默)。
             if d.get("gc_frozen"):
@@ -8647,6 +8760,7 @@ class RootWidget(BoxLayout):
             self._auto_reset_on_start = True   # UI还没建, 延后到 _build_ui 之后
 
     def _save_config(self):
+        """存设定。**默认走工作线程**(见 `_cfg_post` 处说明), 建不起线程就同步写。"""
         try:
             cfg = {
                 "max_plays": self.max_plays,
@@ -8657,7 +8771,10 @@ class RootWidget(BoxLayout):
                 "plays": self.plays,
                 "hits": self.hits,
             }
-            with open(self._config_path(), "w") as f:
+            path = self._config_path()          # 路径在主线程算好(App 不能从工作线程问)
+            if _cfg_post(cfg, path):
+                return
+            with open(path, "w") as f:          # 兜底: 与改之前逐字相同
                 json.dump(cfg, f)
         except Exception:
             pass
@@ -9705,6 +9822,10 @@ class PlinkoApp(App):
                 _guard_warm()
             except Exception:
                 pass
+            try:
+                _cfg_warm()          # 落盘线程也焐热: 别等第一球落袋才现建
+            except Exception:
+                pass
         return self.layer
 
     # ---- 方向策略(2026-08-19 按屏幕比例分流): manifest+SDL 全四方向(fullSensor)。
@@ -9829,6 +9950,12 @@ class PlinkoApp(App):
     def on_pause(self):
         try:
             self.rootw.sfx.pause_out()       # 切后台静音(SoundPool.autoPause)
+        except Exception:
+            pass
+        # 设定是**异步落盘**的: 切后台前必须把挂着的那一份等完, 否则切走那一刻的
+        # 余额/次数可能还没写下去(下次启动读到旧值)。超时就放弃, 绝不卡住系统回调。
+        try:
+            _cfg_flush()
         except Exception:
             pass
         return True
