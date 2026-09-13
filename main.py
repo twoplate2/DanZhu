@@ -4898,6 +4898,12 @@ class WinPileFX(Widget):
                 _vib_warm()
             except Exception:
                 pass
+            try:
+                # 守卫工作线程 + 沉浸 Runnable 一起焐热(理由同震动: 别在采样窗口里现建线程)。
+                # ⚠️ Runnable **必须在主线程上建**(它要注册 Java 代理)。
+                _guard_warm()
+            except Exception:
+                pass
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         if _FONT_WARM_SIZES is None:
@@ -5126,20 +5132,19 @@ _VIB_LOCK = threading.Lock()
 _VIB_PROXY = [None]              # [缓存的 Vibrator 代理]
 _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的描述]
 
-# 方向守卫 / 沉浸重申的**主线程耗时**统计: [方向累计秒, 方向单次最慢秒, 方向次数,
-# 沉浸累计秒, 沉浸次数]。⚠️ **必须定义在模块级**(不是某个类的类属性) —— 三处用它的人
-# (`_orient_guard` / `_enter_immersive` / `_start_benchmark` / `_bench_collect_diag`)
-# 写的都是**裸名**, 裸名找的是模块全局; 写成类属性会 AttributeError/NameError。
-# 为什么单独立一个计数器: 这两条链**每 0.7 秒**在主线程各跑一次, 而且**跑分期间照跑**。
-# 已经排掉的都是"事件路径、每球一次"的东西, 剩下能解释"1%Low 卡在某个数上不去"的,
-# 恰恰是这种**周期性**的主线程停顿 —— 1%Low 只看最差的 1%(约十几帧), 每 0.7 秒来一记,
-# 25 秒就是 35 记, 足够把那一档全占满。
-# ⚠️ 这个 app 里 JNI/Binder 已经实测过是**灾难级的慢**(`SoundPool.play()` 单次 143.6ms、
+# 方向守卫 / 沉浸重申的耗时统计: [主线程投递累计秒, 主线程单次最慢秒, 发起次数,
+# 工作线程累计秒, 工作线程单次最慢秒, 工作线程失败次数]。
+# ⚠️ **必须定义在模块级**(不是某个类的类属性) —— 用它的人 (`_guard_worker` /
+# `_guard_post` / `_start_benchmark` / `_bench_collect_diag`) 写的都是**裸名**,
+# 裸名找的是模块全局; 写成类属性会 NameError(本文件踩过一次, 探针逮住的)。
+# 为什么单独立一个计数器: 这两条链**每 0.7 秒**各跑一次, 而且**跑分期间照跑** ——
+# 它们是全 app 唯一的常驻周期性主线程 JNI, 而 1%Low 只看最差的 1%(约十几帧),
+# 每 0.7 秒来一记正好能把那一档占满。搬出主线程之后, 判据变成:
+# **主线程那一档要接近 0, 而工作线程那一档接手**(两边都看得见, 才知道是真搬走了还是没跑)。
+# ⚠️ 这个 app 里 JNI/Binder 已实测过是**灾难级的慢**(`SoundPool.play()` 单次 143.6ms、
 #    平均 53.5ms) —— 所以"每 0.7 秒一次 system_server 往返"完全够格当 1%Low 的天花板。
 # ⚠️ 桌面量不到(`platform != "android"` 直接 return), 只能靠真机跑分面板读那一行。
-#    在没有这个数之前**不要动它** —— 砍错了没有门禁会红(selftest/fx_probe 都不走
-#    android 分支), 而它管的是宽屏设备横拿抢 fullSensor、以及系统栏复活后重新隐藏。
-_JNI_STAT = [0.0, 0.0, 0, 0.0, 0]
+_JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0]
 
 
 def _vib_get():
@@ -5250,6 +5255,113 @@ def _vibrate(ms, amp=255):
         _VIB_Q.put_nowait((ms, amp))
     except Exception:
         pass
+
+# ============ 方向守卫 / 沉浸重申: 搬出主线程(2026-09-14) ============
+# 病根与判据见下面 `_guard_post`。这里先给结论: 这两条链原来**每 0.7 秒各在主线程跑一次**,
+# 而且是全 app 唯一的**常驻周期性主线程 JNI**。JNI/Binder 在本工程已实测过是灾难级的慢
+# (`SoundPool.play()` 单次 143.6ms), 所以它们是"每帧实算只有 4.7ms、却有一批不分阶段的
+# 慢帧"的头号嫌疑。改法与发声/震动同策, 而且是本工程**已经验证过两次**的那套:
+# 主线程只投递, 工作线程去付 IPC 的钱; 建不起队列就退回同步(= 今天的行为), 绝不静默失效。
+_GUARD_Q = None                  # 守卫工作队列(None = 还没建, False = 建不起来)
+_GUARD_LOCK = threading.Lock()
+
+
+def _guard_orient_now():
+    """方向守卫的**真身**(只在工作线程上跑)。逻辑与原来一字不差。"""
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    if _device_is_wide():
+        rot = act.getWindowManager().getDefaultDisplay().getRotation()
+        if rot in (1, 3):
+            act.setRequestedOrientation(10)
+    else:
+        act.setRequestedOrientation(7)
+
+
+def _guard_immersive_now():
+    """沉浸重申的**真身**(只在工作线程上跑)。
+
+    ⚠️ 真正的 View 操作本来就已经在 UI 线程上(`runOnUiThread` 投递), 这里搬走的只是
+    **`runOnUiThread` 这一次 JNI 调用**。
+    ⚠️ `_immersive_task()` 是类级缓存 + 启动期预热过(见 prebake_step), 所以这里只是一次
+    属性读 —— **绝不在工作线程上现造 PythonJavaClass**(那一步注册 Java 代理, 留在主线程)。
+    """
+    from jnius import autoclass
+    act = autoclass("org.kivy.android.PythonActivity").mActivity
+    act.runOnUiThread(PlinkoApp._immersive_task())
+
+
+def _guard_worker():
+    """守卫工作线程。队列满就**丢这一次** —— 两条链都是幂等的, 丢一次毫无影响。"""
+    while True:
+        try:
+            item = _GUARD_Q.get()
+        except Exception:
+            return
+        if item is None:
+            return
+        _t0 = time.perf_counter()
+        try:
+            if item == "orient":
+                _guard_orient_now()
+            else:
+                _guard_immersive_now()
+        except Exception:
+            _JNI_STAT[5] += 1                 # 失败次数要看得见(原来被 except 静默吞掉)
+        _dt = time.perf_counter() - _t0
+        _JNI_STAT[3] += _dt
+        if _dt > _JNI_STAT[4]:
+            _JNI_STAT[4] = _dt
+
+
+def _guard_warm():
+    """启动期焐热: 建工作线程 + 预热沉浸 Runnable。
+
+    ⚠️ **预热 Runnable 必须在主线程做**(它要注册 Java 代理)。顺手也把
+    `org.kivy.android.PythonActivity` 的 autoclass 查表热一次 —— 工作线程第一次用
+    不必现付 JNI 的 AttachCurrentThread。
+    """
+    if platform != "android":
+        return
+    global _GUARD_Q
+    if _GUARD_Q is None:
+        with _GUARD_LOCK:
+            if _GUARD_Q is None:
+                try:
+                    import queue as _queue
+                    _GUARD_Q = _queue.Queue(maxsize=16)
+                    threading.Thread(target=_guard_worker, daemon=True).start()
+                except Exception:
+                    _GUARD_Q = False
+    try:
+        from jnius import autoclass
+        autoclass("org.kivy.android.PythonActivity")
+        PlinkoApp._immersive_task()           # 主线程上把代理建好
+    except Exception:
+        pass
+
+
+def _guard_post(tag):
+    """把一次守卫投给工作线程。返回 True = 已投递(主线程没有付 IPC 的钱)。"""
+    global _GUARD_Q
+    _JNI_STAT[2] += 1
+    if _GUARD_Q is None:
+        with _GUARD_LOCK:
+            if _GUARD_Q is None:
+                try:
+                    import queue as _queue
+                    _GUARD_Q = _queue.Queue(maxsize=16)
+                    threading.Thread(target=_guard_worker, daemon=True).start()
+                except Exception:
+                    _GUARD_Q = False
+    if _GUARD_Q is False:
+        return False                          # 建不起来: 调用方退回同步
+    try:
+        _GUARD_Q.put_nowait(tag)
+        return True
+    except Exception:
+        return False                          # 队列满: 丢这一次(幂等), 不回主线程补
+
 
 def _vibrate_tick(gain):
     """装杯落珠的**单次轻震**(只有 Android 有; 其它平台静默)。
@@ -7121,7 +7233,8 @@ class RootWidget(BoxLayout):
         _JNI_STAT[1] = 0.0
         _JNI_STAT[2] = 0
         _JNI_STAT[3] = 0.0
-        _JNI_STAT[4] = 0
+        _JNI_STAT[4] = 0.0
+        _JNI_STAT[5] = 0
         self._bench_wall0 = time.time()
         import gc
         try:
@@ -7276,14 +7389,18 @@ class RootWidget(BoxLayout):
         out["vib_worst"] = _VIB_STAT[1] * 1000.0
         out["vib_sum"] = _VIB_STAT[0] * 1000.0
         out["vib_worst_name"] = _VIB_STAT[2]
-        # 方向守卫 / 沉浸重申: 每 0.7 秒各一次的主线程 JNI, **跑分期间照跑**。
-        # 它是"周期性停顿"这一类里唯一的常驻项, 而 1%Low 只看最差的那十几帧 ——
-        # 每 0.7 秒来一记正好能把那一档占满。单次够大(几毫秒以上)就该把它挪出主线程。
-        out["jni_or_n"] = _JNI_STAT[2]
-        out["jni_or_worst"] = _JNI_STAT[1] * 1000.0
-        out["jni_or_sum"] = _JNI_STAT[0] * 1000.0
-        out["jni_im_n"] = _JNI_STAT[4]
-        out["jni_im_sum"] = _JNI_STAT[3] * 1000.0
+        # 方向守卫 / 沉浸重申: 每 0.7 秒各一次, **跑分期间照跑**(2026-09-14 已搬出主线程)。
+        # 它是"周期性停顿"里唯一的常驻项, 而 1%Low 只看最差的那十几帧 —— 每 0.7 秒来一记
+        # 正好能把那一档占满。搬走之后要看的是**两档的对比**:
+        #   主线程档 ≈ 0 且 工作线程档 接手  ⇒ 真搬走了(慢帧该跟着消失);
+        #   主线程档仍然大                ⇒ 没投出去(队列建不起来 / 满了), 等于没改;
+        #   失败次数 > 0                  ⇒ 守卫在真机上抛异常了(原来被 except 静默吞掉)。
+        out["jni_n"] = _JNI_STAT[2]
+        out["jni_main_worst"] = _JNI_STAT[1] * 1000.0
+        out["jni_main_sum"] = _JNI_STAT[0] * 1000.0
+        out["jni_bg_sum"] = _JNI_STAT[3] * 1000.0
+        out["jni_bg_worst"] = _JNI_STAT[4] * 1000.0
+        out["jni_err"] = _JNI_STAT[5]
         # 音频后端名 —— 这个仓库栽过一次: SoundPool 构造失败会**静默降级**到 Kivy-SoundLoader,
         # 而后者走 SDL_mixer, 阻塞行为完全不同。不知道后端就分不清是哪一个在卡。
         try:
@@ -7506,14 +7623,14 @@ class RootWidget(BoxLayout):
                             ('（%s）' % _vn) if _vn else '',
                             d.get("vib_sum", 0.0)))
             # 方向守卫 / 沉浸重申那一行 —— 只在这两条链**真的跑过**时出(桌面是 0 次)。
-            # 判据: "单次最慢 ≥ 5 毫秒" 就值得把它挪出主线程 —— 它每 0.7 秒来一次,
-            # 1%Low 只看最差十几帧, 25 秒里它有 35 次机会把那一档占满。
-            if d.get("jni_or_n"):
-                parts.append('方向守卫： %d 次（每0.7秒）· 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒'
-                             '　沉浸重申： %d 次 · 累计 %.0f 毫秒'
-                             % (d.get("jni_or_n", 0), d.get("jni_or_worst", 0.0),
-                                d.get("jni_or_sum", 0.0), d.get("jni_im_n", 0),
-                                d.get("jni_im_sum", 0.0)))
+            # 2026-09-14 起它们**已搬到工作线程**, 所以这里报的是两档对比:
+            # 主线程那档该接近 0(证明真搬走了), 工作线程那档接手。
+            if d.get("jni_n"):
+                parts.append('方向守卫： %d 次（每0.7秒）· 主线程单次最慢 %.2f 毫秒 · 累计 %.1f 毫秒'
+                             '　工作线程累计 %.0f 毫秒（最慢 %.1f）· 失败 %d 次'
+                             % (d.get("jni_n", 0), d.get("jni_main_worst", 0.0),
+                                d.get("jni_main_sum", 0.0), d.get("jni_bg_sum", 0.0),
+                                d.get("jni_bg_worst", 0.0), d.get("jni_err", 0)))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
                 parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
@@ -7523,7 +7640,17 @@ class RootWidget(BoxLayout):
             #   (GPU 出图 / 垂直同步); 快追平 = 处理器就是瓶颈。
             _cpu = float(d.get("cpu_per_frame", 0.0))
             _p50 = float(d["p50"])
-            if _p50 > 0 and _cpu > 0:
+            # ⚠️ **Windows 上这一整行不成立, 必须说清楚**(2026-09-14 补)。
+            #    本文件上面自己写着"Windows 的 `process_time` 精度只有 15.6ms, 桌面跑分里
+            #    恒为 0.0, 纯噪声" —— 可"瓶颈"判断仍然拿它去除帧间隔, 于是 PC 上会打出
+            #    「处理器算不过来 · 每帧实算 18.4 / 帧间隔 16.5」这种**自相矛盾**的结论
+            #    (玩家 2026-09-14 实测: 同一份面板里"最慢三帧 20毫秒(待机·实算31.2)" ——
+            #     20 毫秒的帧不可能烧 31 毫秒, 那就是量化台阶本身)。
+            #    这正是本仓库警告过的那个形状: **一个专抓静默归因的面板, 自己在做静默归因**。
+            _win = (sys.platform == "win32")
+            if _win:
+                _v = "本机测不准"
+            elif _p50 > 0 and _cpu > 0:
                 _r = _cpu / _p50
                 # ⚠️ 第三档**故意不说"画面是瓶颈"**(玩家 2026-09-13 问"是 gpu 还是?"):
                 #    这一项只量"本进程烧了多少 CPU"。"算得少、等得多"既可能是等显卡出图/
@@ -7537,6 +7664,9 @@ class RootWidget(BoxLayout):
             parts.append('瓶颈： %s · 每帧实算 %.1f / 帧间隔 %.1f 毫秒 · 内存回收 %.1f 毫秒（最坏一次 %.1f）'
                          % (_v, _cpu, _p50, d["gc_total"] * 1000.0,
                             d["gc_worst"] * 1000.0))
+            if _win:
+                parts.append('⚠️ 每帧实算这一项在 Windows 上测不准(系统计时粒度 15.6 毫秒), '
+                             '「瓶颈」不判 —— 要看它请用安卓机的成绩')
             return '\n'.join(parts)
         except Exception:
             return ''
@@ -9377,6 +9507,13 @@ class PlinkoApp(App):
             # 弹窗/切后台回前台后系统栏会复活, 与方向守卫同节奏持续重申(幂等)。
             Clock.schedule_once(lambda *_: self._enter_immersive(), 1.0)
             Clock.schedule_interval(self._enter_immersive, 0.7)
+            # ⚠️ **守卫的工作线程要在这里就焐热, 不能等 prebake_step**(2026-09-14)。
+            #    守卫第一次触发在 **0.7s**, 而预热链第一步在 ~1.6s —— 等它等于让第一次守卫
+            #    现建线程 + 现 AttachCurrentThread(与 v0.6.69 修震动踩的是同一个坑)。
+            try:
+                _guard_warm()
+            except Exception:
+                pass
         return self.layer
 
     # ---- 方向策略(2026-08-19 按屏幕比例分流): manifest+SDL 全四方向(fullSensor)。
@@ -9404,24 +9541,26 @@ class PlinkoApp(App):
     def _orient_guard(self, dt):
         """常驻方向守卫: 按设备分流持续重申方向请求(幂等, 系统无感)。
         宽屏: 横置(rotation=1/3)时重申 fullSensor, 顶掉 SDL 竖屏自报;
-        瘦长手机: 持续重申竖屏锁(7), 任何运行时横屏自报都被顶掉。"""
+        瘦长手机: 持续重申竖屏锁(7), 任何运行时横屏自报都被顶掉。
+
+        ⚠️ 2026-09-14: **真身已搬到工作线程**(见 `_guard_orient_now` / `_guard_post`)。
+           这里只剩一次 `put_nowait`。逻辑一个字没改, 频率一个字没改。
+           为什么搬: 它是全 app 唯一的**常驻周期性主线程 JNI**(每 0.7 秒一次), 而真机跑分里
+           "每帧实算只有 4.7ms、却有一批**不分阶段**的慢帧(待机那帧都能烧 26.5ms CPU)"
+           —— 周期性、跨阶段、纯 CPU, 只有它和沉浸重申两条。判据看面板那行:
+           **主线程那档要掉到接近 0, 工作线程那档接手**; 若主线程档没掉, 说明没投出去。
+        """
         if platform != "android":
             return
         _t0 = time.perf_counter()
-        try:
-            from jnius import autoclass
-            act = autoclass("org.kivy.android.PythonActivity").mActivity
-            if _device_is_wide():
-                rot = act.getWindowManager().getDefaultDisplay().getRotation()
-                if rot in (1, 3):
-                    act.setRequestedOrientation(10)
-            else:
-                act.setRequestedOrientation(7)
-        except Exception:
-            pass
+        ok = _guard_post("orient")
+        if not ok:                       # 队列建不起来 / 满: 退回同步 = 今天的行为
+            try:
+                _guard_orient_now()
+            except Exception:
+                _JNI_STAT[5] += 1
         _d = time.perf_counter() - _t0
         _JNI_STAT[0] += _d
-        _JNI_STAT[2] += 1
         if _d > _JNI_STAT[1]:
             _JNI_STAT[1] = _d
 
@@ -9469,14 +9608,16 @@ class PlinkoApp(App):
         if platform != "android":
             return
         _t0 = time.perf_counter()
-        try:
-            from jnius import autoclass
-            act = autoclass("org.kivy.android.PythonActivity").mActivity
-            act.runOnUiThread(PlinkoApp._immersive_task())
-        except Exception:
-            pass
-        _JNI_STAT[3] += time.perf_counter() - _t0
-        _JNI_STAT[4] += 1
+        ok = _guard_post("immerse")
+        if not ok:
+            try:
+                _guard_immersive_now()
+            except Exception:
+                _JNI_STAT[5] += 1
+        _d = time.perf_counter() - _t0
+        _JNI_STAT[0] += _d
+        if _d > _JNI_STAT[1]:
+            _JNI_STAT[1] = _d
 
     # Android 生命周期: on_pause 必须返回 True 保持 GL 上下文
     def on_pause(self):
