@@ -5051,30 +5051,101 @@ def ball_texture():
     _BALL_TEX = tex
     return tex
 
-def _vibrate(ms, amp=255):
-    """单次震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。
-    取服务必须用 Context.VIBRATOR_SERVICE 字符串 —— 传 autoclass("android.os.Vibrator")
-    那个 Class 对象在 pyjnius 下匹配不到 getSystemService(Class<T>) 重载, 会静默失败
-    (整段被 try/except 吞掉, 表现为"权限也给了、代码也跑了, 就是不震")。
+# 震动: 工作线程 + 系统服务代理缓存 + 单次计时(2026-09-14)。
+# ⚠️ 和发声同一个理由, 而且它还多一处浪费:
+#   ① `_vibrate` 原本在**主线程**上调 `Vibrator.vibrate` —— 那是一次**双程 Binder**
+#      (到 system_server 再回来)。真机实测慢帧 14 帧里 2 帧有它(发声是 14/14),
+#      量级比不上发声, 但形状一样: 主线程不该等 IPC。
+#   ② 原本**每次震动都要现取一次系统服务** —— `activity.getSystemService(VIBRATOR_SERVICE)`
+#      **本身就是一次 Binder 往返**。取到的 Vibrator 是系统服务的代理, 长期有效,
+#      缓存它等于每次震动白省一次 IPC。
+_VIB_Q = None                    # 震动工作队列(None = 还没建)
+_VIB_LOCK = threading.Lock()
+_VIB_PROXY = [None]              # [缓存的 Vibrator 代理]
+_VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的描述]
 
-    `amp` 只在 API 26+ 生效; 老机器退回 `vibrate(ms)`, 振幅由系统定。
+
+def _vib_get():
+    """取(并缓存)Vibrator 系统服务代理。
+
+    ⚠️ 必须用 `Context.VIBRATOR_SERVICE` **字符串** —— 传 `autoclass("android.os.Vibrator")`
+    那个 Class 对象在 pyjnius 下匹配不到 `getSystemService(Class<T>)` 重载, 会静默失败
+    (整段被 try/except 吞掉, 表现为"权限也给了、代码也跑了, 就是不震")。
+    ⚠️ 代理失效(Binder 断了)时 `vibrate` 会抛 —— 那时把缓存清掉, 下次重新取。
     """
-    if platform != "android":
-        return
+    v = _VIB_PROXY[0]
+    if v is not None:
+        return v
     try:
         from jnius import autoclass
         activity = autoclass("org.kivy.android.PythonActivity").mActivity
         Context = autoclass("android.content.Context")
-        vib = activity.getSystemService(Context.VIBRATOR_SERVICE)
+        _VIB_PROXY[0] = v = activity.getSystemService(Context.VIBRATOR_SERVICE)
+    except Exception:
+        v = None
+    return v
+
+
+def _vibrate_now(ms, amp):
+    """真正那一次震动调用(只在工作线程上跑)。带单次计时, 供跑分面板归因。"""
+    _t0 = time.perf_counter()
+    try:
+        vib = _vib_get()
         if vib is None:
             return
-        _FRAME_PROBE[1] += 1                 # 记在**真正发起 Binder 调用**这一刻(见 _FRAME_PROBE 说明)
         try:
+            from jnius import autoclass
             VibrationEffect = autoclass("android.os.VibrationEffect")
             vib.vibrate(VibrationEffect.createOneShot(
                 ms, amp))     # 满振幅 255; DEFAULT_AMPLITUDE(-1) 约 50%, 太弱
         except Exception:
             vib.vibrate(ms)                  # API < 26: 没有 VibrationEffect
+    except Exception:
+        _VIB_PROXY[0] = None                 # 代理失效: 清缓存, 下次重取
+    finally:
+        _dt = time.perf_counter() - _t0
+        _VIB_STAT[0] += _dt
+        if _dt > _VIB_STAT[1]:
+            _VIB_STAT[1] = _dt
+            _VIB_STAT[2] = "%dms" % ms
+
+
+def _vib_worker():
+    """震动工作线程。队列满就**丢这一次**(与发声同策) —— 绝不阻塞主线程。"""
+    while True:
+        try:
+            item = _VIB_Q.get()
+        except Exception:
+            return
+        if item is None:
+            return
+        _vibrate_now(item[0], item[1])
+
+
+def _vibrate(ms, amp=255):
+    """单次震动(仅 Android; 其它平台静默)。需要 buildozer.spec 的 VIBRATE 权限。
+
+    ⚠️ **投递即返回, 不等 IPC** —— 见上面那段说明。`amp` 只在 API 26+ 生效;
+    老机器退回 `vibrate(ms)`, 振幅由系统定。
+    """
+    if platform != "android":
+        return
+    global _VIB_Q
+    _FRAME_PROBE[1] += 1                     # 逐帧计数记在**发起**这一刻(工作线程不再属于某一帧)
+    if _VIB_Q is None:
+        with _VIB_LOCK:
+            if _VIB_Q is None:
+                try:
+                    import queue as _queue
+                    _VIB_Q = _queue.Queue(maxsize=32)
+                    threading.Thread(target=_vib_worker, daemon=True).start()
+                except Exception:
+                    _VIB_Q = False       # 建不起来: 退回同步调用, 绝不静默失震
+    if _VIB_Q is False:
+        _vibrate_now(ms, amp)
+        return
+    try:
+        _VIB_Q.put_nowait((ms, amp))
     except Exception:
         pass
 
@@ -6939,7 +7010,10 @@ class RootWidget(BoxLayout):
         self._bench_cpu_prev = self._bench_cpu0
         _SND_STAT[0] = 0.0
         _SND_STAT[1] = 0.0
-        _SND_STAT[2] = "" 
+        _SND_STAT[2] = ""
+        _VIB_STAT[0] = 0.0
+        _VIB_STAT[1] = 0.0
+        _VIB_STAT[2] = "" 
         self._bench_wall0 = time.time()
         import gc
         try:
@@ -7090,6 +7164,9 @@ class RootWidget(BoxLayout):
         out["snd_worst"] = _SND_STAT[1] * 1000.0        # 全程单次最慢(毫秒)
         out["snd_sum"] = _SND_STAT[0] * 1000.0          # 全程累计(毫秒)
         out["snd_worst_name"] = _SND_STAT[2]
+        out["vib_worst"] = _VIB_STAT[1] * 1000.0
+        out["vib_sum"] = _VIB_STAT[0] * 1000.0
+        out["vib_worst_name"] = _VIB_STAT[2]
         # 音频后端名 —— 这个仓库栽过一次: SoundPool 构造失败会**静默降级**到 Kivy-SoundLoader,
         # 而后者走 SDL_mixer, 阻塞行为完全不同。不知道后端就分不清是哪一个在卡。
         try:
@@ -7297,13 +7374,18 @@ class RootWidget(BoxLayout):
             # 是"关掉音效 1% low 就回升", 而那会**连震动一起关掉**, 混在一起分不开);
             # ② **自证探针在工作** —— 看到"全程发声 N 次"就知道计数器真跑了, 否则
             # "慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这仓库栽过这种静默)。
+            # 发声/震动**各占一行** —— 这两个数现在是定位卡顿的主判据, 挤一行读不清。
+            # 后端名并到发声那行(它只跟发声有关)。
             _wn = d.get("snd_worst_name", "")
-            parts.append('发声/震动： %d 次 / %d 次 · 单次最慢 %.1f 毫秒%s · 累计 %.0f 毫秒'
-                         '（后端 %s）'
-                         % (d.get("snd_n", 0), d.get("vib_n", 0),
-                            d.get("snd_worst", 0.0),
+            parts.append('发声： %d 次 · 单次最慢 %.1f 毫秒%s · 累计 %.0f 毫秒（后端 %s）'
+                         % (d.get("snd_n", 0), d.get("snd_worst", 0.0),
                             ('（%s）' % _wn) if _wn else '',
                             d.get("snd_sum", 0.0), d.get("backend", "?")))
+            _vn = d.get("vib_worst_name", "")
+            parts.append('震动： %d 次 · 单次最慢 %.1f 毫秒%s · 累计 %.0f 毫秒'
+                         % (d.get("vib_n", 0), d.get("vib_worst", 0.0),
+                            ('（%s）' % _vn) if _vn else '',
+                            d.get("vib_sum", 0.0)))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
                 parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
