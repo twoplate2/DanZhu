@@ -1630,6 +1630,13 @@ class _SoundPoolOut:
     尚未加载完的 sample 本来就只是返回 0 什么都不做 —— 用不着这个单点故障。"""
     mode = "named"
     name = "SoundPool"
+    # ⚠️ **真机实测: `SoundPool.play()` 会阻塞调用线程几十到一百多毫秒**
+    #    (Y700 二代: 50 次调用累计 2674ms、单次最慢 143.6ms, 而帧间隔只有 12.5ms
+    #     ⇒ 主线程每响一声就被卡几十毫秒, 1%Low 只有 7.8 就是它造成的)。
+    #    声明这一条 ⇒ `Sfx` 会起一个工作线程, 主线程只投递不等待(见 `Sfx._drain`)。
+    #    只给这一个后端开: winmm 桌面实测单次 0.9ms 不值得动; Kivy-SoundLoader 走 SDL,
+    #    从工作线程调它的安全性没有验证过, 不开。
+    needs_worker = True
 
     def __init__(self, voices=SFX_VOICES):
         self._voices = voices
@@ -1909,10 +1916,13 @@ def open_output():
 #    关音效会**连震动一起关掉**, 两条怀疑路径混在一起, 分不出是谁。
 #    这里逐帧记下"发了几次声 / 震了几次", 跑分面板就能报出**慢帧里有几帧在发声/震动** ——
 #    一刀切开。只在跑分采样期读, 平时只多两次列表自增。
-_FRAME_PROBE = [0, 0, 0.0, 0.0]   # [发声次数, 震动次数, 发声累计秒, 单次最慢秒]
-# ⚠️ 后两项**只包住真正那一次后端调用**(`play_pcm` / `play_named`), 不包整个 Sfx.play ——
-#    真机实测慢帧是"纯等"(119ms 的帧只烧 10.4ms CPU), 所以要量的是**那一声到底阻塞了多久**,
-#    而不是节流/查表那点开销。
+_FRAME_PROBE = [0, 0]            # [本帧发声次数, 本帧震动次数]
+# 发声耗时统计: [累计次数, 累计秒, 单次最慢秒, 最慢那一次的音效名]。
+# ⚠️ 它是**全程**的、不是逐帧的 —— 因为发声已经搬到工作线程上了(见 Sfx._drain),
+#    后端耗时不再属于某一帧。真机实测这个数大得离谱: 15 秒窗口里 **50 次调用共 2674 毫秒**
+#    (平均每次 53.5ms, 单次最慢 143.6ms, 后端 SoundPool), 而帧间隔才 12.5ms ⇒
+#    **主线程每响一声就被卡几十毫秒**。记下最慢那一次的名字, 万一元凶是某个特定音效。
+_SND_STAT = [0.0, 0.0, ""]        # [累计秒, 单次最慢秒, 最慢的名字]
 # "慢帧"的判定门槛(毫秒)。只此一处 —— 判据与面板文案都读它, 免得两处各写一个数漂掉。
 BENCH_SLOW_MS = 90.0
 
@@ -1967,11 +1977,68 @@ class Sfx:
         if self.out is None:
             self.enabled = False
             return
+        # 发声工作线程: 把后端调用搬出主线程。见 `_drain` 的说明。
+        self._q = None
+        self._qthread = None
+        if getattr(self.out, "needs_worker", False):
+            try:
+                import queue as _queue
+                self._q = _queue.Queue(maxsize=64)
+                self._qthread = threading.Thread(target=self._drain, daemon=True)
+                self._qthread.start()
+            except Exception:
+                self._q = None
         if sync:
             self._bake()
         else:
             self._thread = threading.Thread(target=self._bake, daemon=True)
             self._thread.start()
+
+    def _backend_call(self, item):
+        """真正那一次后端调用 + 计时(同步路径与工作线程共用, 保证两边统计口径一致)。"""
+        _t0 = time.perf_counter()
+        try:
+            if item[0] == "pcm":
+                self.out.play_pcm(item[1])
+            else:
+                self.out.play_named(item[2], item[1])     # (增益, 名字) —— 名字放最后
+        finally:
+            _dt = time.perf_counter() - _t0
+            _SND_STAT[0] += _dt
+            if _dt > _SND_STAT[1]:
+                _SND_STAT[1] = _dt
+                # ⚠️ 取**最后一项**当名字 —— 两个分支的载荷不同(pcm 是字节, named 是名字+增益),
+                #    所以名字一律放最后。写成 `item[1] if pcm else item[1]` 会把整段 PCM
+                #    字节当名字塞进面板(踩过一次, 面板上刷出几 KB 的二进制)。
+                _SND_STAT[2] = str(item[-1])[:24]
+
+    def _drain(self):
+        """发声工作线程(只在后端声明 `needs_worker` 时才起)。
+
+        ⚠️ **为什么必须把发声搬出主线程**(2026-09-14, 真机实测定案):
+        真机跑分面板测出 `SoundPool.play()` **单次最慢 143.6 毫秒、50 次累计 2674 毫秒**
+        (平均每次 53.5ms) —— 而帧间隔才 12.5ms。也就是说**主线程每响一声就被卡几十毫秒**,
+        整局 1%Low 只有 7.8 就是它造成的(慢帧 14 帧, 14 帧都在发声; 关掉音效 1%Low 立刻回升)。
+        SoundPool 为什么慢是设备/HAL 的事, 这里不赌它变快 —— **只赌"主线程不必等它"**。
+        ⚠️ 线程安全: SoundPool 本身是线程安全的; 而且本工程**早就在后台线程里调它的 JNI**
+        (烘焙线程 `_bake_named` 调 `self._sp.load`), 这条路已经跑了很久。
+        ⚠️ 队列满就**丢这一声**(和 winmm 声道全忙时的处理一致) —— 绝不阻塞主线程,
+        那正是这个线程存在的理由。
+        """
+        q = self._q
+        if q is None:
+            return
+        while True:
+            try:
+                item = q.get()
+            except Exception:
+                return
+            if item is None:
+                return
+            try:
+                self._backend_call(item)
+            except Exception:
+                pass
 
     def _bake(self):
         t0 = time.perf_counter()
@@ -2348,29 +2415,41 @@ class Sfx:
             if data is None:
                 data = pcm if lvl >= 10 else _scale_pcm(pcm, lvl / 10.0)
                 self._scaled[key] = data
-            _t0 = time.perf_counter()
-            self.out.play_pcm(data)
             _FRAME_PROBE[0] += 1
-            _dt = time.perf_counter() - _t0
-            _FRAME_PROBE[2] += _dt
-            if _dt > _FRAME_PROBE[3]:
-                _FRAME_PROBE[3] = _dt
+            if self._q is not None:
+                self._enqueue(("pcm", data, name))
+            else:
+                self._backend_call(("pcm", data, name))
             return True
         # ⚠️ 必须把这个返回值存下来再返回: 它和上面那几个"设计内静默"的 return False 长得一模一样,
         #    但语义完全不同 —— 这一条是"过了 enabled/互斥/已加载/增益/节流五道闸门之后,
         #    后端仍然说没播成", 也就是 README 里那个"首次安装必然没声音"的**正面计数**。
         #    节流那一支在它上面提前 return, 根本走不到这里, 所以天然被排除, 不用额外判断。
+        _FRAME_PROBE[0] += 1
+        self.n_attempt += 1
+        if self._q is not None:
+            # ⚠️ 投递就返回 True —— 与同步路径"后端受理了"同义。返回值还牵着**震动**
+            #    (`_vibrate_tick` 挂在它上面), 所以这里绝不能因为"异步还不知道成败"就返回 False,
+            #    那会让装杯落珠的震动整段消失。
+            self._enqueue(("named", lvl / 10.0, name))
+            return True
         _t0 = time.perf_counter()
         ok = self.out.play_named(name, lvl / 10.0)
-        _FRAME_PROBE[0] += 1
         _dt = time.perf_counter() - _t0
-        _FRAME_PROBE[2] += _dt
-        if _dt > _FRAME_PROBE[3]:
-            _FRAME_PROBE[3] = _dt
-        self.n_attempt += 1
+        _SND_STAT[0] += _dt
+        if _dt > _SND_STAT[1]:
+            _SND_STAT[1] = _dt
+            _SND_STAT[2] = name
         if not ok:
             self.n_missed += 1
         return ok
+
+    def _enqueue(self, item):
+        """投递给发声工作线程。**队列满就丢这一声** —— 绝不阻塞主线程(见 `_drain`)。"""
+        try:
+            self._q.put_nowait(item)
+        except Exception:
+            pass
 
     def impact(self, bit, sp):
         """碰撞音: 撞得越猛越响越亮; 低于阈值不发声。"""
@@ -6858,6 +6937,9 @@ class RootWidget(BoxLayout):
         self._bench_gc_t0 = 0.0
         self._bench_cpu0 = time.process_time()
         self._bench_cpu_prev = self._bench_cpu0
+        _SND_STAT[0] = 0.0
+        _SND_STAT[1] = 0.0
+        _SND_STAT[2] = "" 
         self._bench_wall0 = time.time()
         import gc
         try:
@@ -6919,12 +7001,9 @@ class RootWidget(BoxLayout):
             #    纳秒级; Windows 上精度只有 15.6ms, 所以桌面看不出分辨力, 真机才有效。
             self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag(),
                                        (cpu - pcpu) * 1000.0,
-                                       _FRAME_PROBE[0], _FRAME_PROBE[1],
-                                       _FRAME_PROBE[2] * 1000.0, _FRAME_PROBE[3] * 1000.0))
+                                       _FRAME_PROBE[0], _FRAME_PROBE[1]))
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
-            _FRAME_PROBE[2] = 0.0
-            _FRAME_PROBE[3] = 0.0
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
@@ -7008,8 +7087,9 @@ class RootWidget(BoxLayout):
         # 发声耗时: 单次最慢 + 全程累计。**这是"那一声到底卡了多久"的直接证据** ——
         # 真机实测慢帧是纯等(119ms 只烧 10.4ms CPU), 所以要看的就是这个数:
         # 单次调用能到几十毫秒 ⇒ 卡的就是它。
-        out["snd_worst"] = max((x[6] for x in fr), default=0.0)
-        out["snd_sum"] = sum(x[5] for x in fr)
+        out["snd_worst"] = _SND_STAT[1] * 1000.0        # 全程单次最慢(毫秒)
+        out["snd_sum"] = _SND_STAT[0] * 1000.0          # 全程累计(毫秒)
+        out["snd_worst_name"] = _SND_STAT[2]
         # 音频后端名 —— 这个仓库栽过一次: SoundPool 构造失败会**静默降级**到 Kivy-SoundLoader,
         # 而后者走 SDL_mixer, 阻塞行为完全不同。不知道后端就分不清是哪一个在卡。
         try:
@@ -7217,11 +7297,13 @@ class RootWidget(BoxLayout):
             # 是"关掉音效 1% low 就回升", 而那会**连震动一起关掉**, 混在一起分不开);
             # ② **自证探针在工作** —— 看到"全程发声 N 次"就知道计数器真跑了, 否则
             # "慢帧里 0 帧在发声"既可能是真的、也可能是计数器根本没跑(这仓库栽过这种静默)。
-            parts.append('发声/震动： %d 次 / %d 次 · 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒'
+            _wn = d.get("snd_worst_name", "")
+            parts.append('发声/震动： %d 次 / %d 次 · 单次最慢 %.1f 毫秒%s · 累计 %.0f 毫秒'
                          '（后端 %s）'
                          % (d.get("snd_n", 0), d.get("vib_n", 0),
-                            d.get("snd_worst", 0.0), d.get("snd_sum", 0.0),
-                            d.get("backend", "?")))
+                            d.get("snd_worst", 0.0),
+                            ('（%s）' % _wn) if _wn else '',
+                            d.get("snd_sum", 0.0), d.get("backend", "?")))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
             if d.get("slow_n"):
                 parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声 / %d 帧在震动'
