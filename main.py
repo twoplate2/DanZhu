@@ -26,7 +26,7 @@ from kivy.clock import Clock
 from kivy.core.text import LabelBase, Label as CoreLabel
 from kivy.core.window import Window
 from kivy.graphics import (Color, Rectangle, Line, Ellipse, RoundedRectangle,
-                            PushMatrix, PopMatrix, Rotate,
+                            PushMatrix, PopMatrix, Rotate, Scale,
                             StencilPush, StencilPop, StencilUse, StencilUnUse)
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
@@ -1957,6 +1957,25 @@ def open_output():
 
 
 # ======================= 音效总线 =======================
+_VARIANT_FAMILIES = ("peg", "wall", "div", "top")
+
+
+def _throttle_key(name):
+    """节流键: 同一族的随机变体**共用一个闸门**(peg0..5 / wall0..1 / div0..1 / top0..1)。
+
+    ⚠️ 不能按变体名各自计时 —— 那等于把聚合速率乘以变体数。实测 `peg` 是 6 倍:
+       `impact()` 里写的是 `throttle=0.08`(意图"机关枪连珠只响第一声"), 但 idx 是
+       按撞击强度 + randint 选出来的, 6 个变体各有一个计时器轮流放行 ⇒ 上限 75 次/秒。
+       每一次通过闸门的播放都是一次 `SoundPool.play` 的 JNI 往返, 在骁龙 870 这类
+       机器上足以把帧时间顶过 16.67ms 的预算 —— 表现就是"弹珠在飞的时候一卡一卡"。
+       (2026-09-13 玩家实测: 关掉音效后 1% low 大幅回升, 是这个问题存在的直接证据。)
+    """
+    for _p in _VARIANT_FAMILIES:
+        if name.startswith(_p) and name[len(_p):].isdigit():
+            return _p
+    return name
+
+
 class Sfx:
     """合成一次(后台线程), 之后每次发声只做取样+送声卡。
     pcm 后端(winmm): gain 量化 10 档缓存缩放后的 PCM。
@@ -2362,9 +2381,10 @@ class Sfx:
         if lvl <= 0:
             return False
         if throttle > 0.0:
-            if now - self._last.get(name, 0.0) < throttle:
+            _tk = _throttle_key(name)      # 按族计时, 见 _throttle_key 处
+            if now - self._last.get(_tk, 0.0) < throttle:
                 return False
-            self._last[name] = now
+            self._last[_tk] = now
         if pcm_mode:
             key = (name, lvl)
             data = self._scaled.get(key)
@@ -3543,6 +3563,15 @@ TEXT_CY_WIN = 150.0                                 # 中奖大字让位后的�
 # 上浮 38px/s × 1.8s ≈ 68px, 从 150 飘到 82, 不越过钉阵顶, 也不拖进下一局的蓄力期。
 BIG_TEXT_LIFE = 1.8
 
+# 中奖/未中大字淡出时的 **alpha 量化档数**(性能, 2026-09-13)。
+# ⚠️ 为什么必须量化: `color` 是 Kivy `Label._font_properties` 之一, 会被**烘进字形纹理**
+#    (实测 Label 画布里那条 Color 恒为 (1,1,1,1), 颜色不在那儿) ⇒ 赋一次值就重测字形 +
+#    重光栅化 + 重建纹理 + 上传。而淡出段 alpha 每帧都在变 ⇒ 不量化就等于**每帧重画一遍大字**。
+#    量化到 20 档: 0.81s 的淡出分成每 40ms 一档、每档 5% alpha —— 配着同一时刻的上浮与缩放,
+#    肉眼分辨不出台阶; 代价从"每帧一次"降到"一次演出 20 次"。
+#    调小它 → 台阶可见; 调大它 → 白花性能(超过 ~24 档对 0.8s 的淡出已无意义)。
+BIG_TEXT_ALPHA_STEPS = 20
+
 # ---- 时序(秒) ----
 WINDUP = 0.50          # 用户定案: 结算后先停 0.5s, 让槽位白闪/绿灯先被看见
 # ⚠️ 退场计时的基准是 `_last_settle`(最后一颗球**回弹停住**、杯子装满静止), 不是揭晓那个
@@ -4125,6 +4154,7 @@ class WinPileFX(Widget):
         # (见 dim_alpha 的说明: 两边必须是**同一个数**, 不能各取一次时间)。
         self._a_dim_now = 0.0
         self._glass_prebaked = False     # prebake_step 的一次性开关(玻璃贴图预热)
+        self._font_prebaked = False      # prebake_step 的一次性开关(大字/飘字字号预热)
         self._balls = []
         self._value = DEFAULT_BET
         self._seq = 0
@@ -4777,6 +4807,29 @@ class WinPileFX(Widget):
                 _glass_textures()
             except Exception:
                 pass
+            Clock.schedule_once(self.prebake_step, 0.05)
+            return
+        # ---- 字体预热(2026-09-13 补) --------------------------------------------------
+        # ⚠️ 为什么必须做: `fit_font_size()` 走 `text_px()` 新建 CoreLabel 再光栅化, 而
+        #    **每碰上一个新字号都要重新打开一次 TTF 字形表** —— 实测桌面 **26ms**,
+        #    且**换文本不重付、换字号才重付**(同一个字号上量第二串文本只要 0.05ms)。
+        #    界面其它文字是 13~22sp, 启动布局时就顺手烘热了; 而**大字用的 sp(36)/sp(48)、
+        #    飘字用的 sp(26)/sp(30) 在第一次落袋之前从来没人用过** ⇒ 冷启动后的**每一次
+        #    落袋**都要现开一次字形表。
+        #    实测归因(桌面, 逐帧计时): 最慢帧 28.8ms 里 `big_result_text` 占 **26.7ms**,
+        #    而 `big_result_text` 里 `fit_font_size` 占 26.0ms —— 尖峰就是这一处。
+        #    对得上玩家报的"1% low 6fps"(167ms/帧, 真机上字形表更贵)。
+        #    ⚠️ 这一条**正是本方法存在的理由**(见上面玻璃贴图那段): "别在中奖那帧现做"。
+        #    ⚠️ 预热的是**字号**不是文本 —— 所以只要把这几个字号各碰一次就够, 之后不管
+        #    出 "+2" 还是 "+500000" 都是 0.05ms。`_FIT_PX` 清空也冲不掉它: 那 26ms 的开销
+        #    记在 Kivy 自己的按字号字体缓存里, 不在 `_FIT_PX` 里。
+        if not self._font_prebaked:
+            self._font_prebaked = True
+            for _fs in (sp(36), sp(48), sp(26), sp(30)):
+                try:
+                    text_px("未中", _fs, True)
+                except Exception:
+                    pass
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         cur = getattr(getattr(self.area, "game", None), "bet", DEFAULT_BET)
@@ -5539,6 +5592,32 @@ class GameArea(FloatLayout):
         shadow = Label(text=text, font_size=size, bold=True,
                        color=(0, 0, 0, 0.6), size_hint=(None, None))
         shadow.bind(size=lambda w, _: setattr(w, "text_size", w.size))
+        # ⚠️ **缩放入场走 GPU `Scale`, 绝不再逐帧写 `font_size`**(2026-09-13 性能优化)。
+        #    原来 tick_draw 里写 `main.font_size = fs`(fs 每帧都变) —— font_size 在 Kivy 里
+        #    属于 `_font_properties`, 每次赋值都会触发 `_trigger_texture` ⇒ **重新测量字形
+        #    宽度 + 重新光栅化整段文字 + 重建纹理 + 每帧上传新纹理**。桌面实测: 一次中奖/
+        #    未中大字(1.8s)要重测 ~110 次 × 2 个 Label(main + shadow), 10 秒内 277 次,
+        #    占**全部文字重建的 65%**。`Scale` 只是乘进 modelview 矩阵, 纹理一次生成、
+        #    GPU 免费放大缩小。观感完全一致(1.0→1.2→1.0 的弹入曲线一个字都没改)。
+        #    放大 1.2 倍用线性插值, 对粗体大字只是极轻微发虚 —— 比"缩小"安全(缩小没 mipmap
+        #    会闪), 所以基准纹理仍然按 `size` 光栅化, 不做"按峰值预放大"。
+        for _lb in (main, shadow):
+            with _lb.canvas.before:
+                PushMatrix()
+                _lb._pop_sc = Scale(origin=_lb.center, x=1.0, y=1.0)
+            # ⚠️⚠️ **PopMatrix 绝不能省**(2026-09-13 实修, 玩家抓到的)。
+            #    Kivy 的 `Scale`/`Rotate` 是**持久变换**: 它一进画布指令流就管到"下一次被改"
+            #    为止, 不会自动弹栈。而本项目的子控件画布是**绝对(窗口)坐标、父级不做平移**
+            #    (见 CLAUDE.md 坐标系那条坑) ⇒ 挂在 GameArea 子控件 `canvas.before` 上的
+            #    这个 Scale 会**泄漏给它之后画的每一个控件** —— 也就是 HUD 五行。
+            #    实测症状: 大字活着的那 1.8s 里, 底部"信息行 + 底行"被按 `sc` 缩放位移
+            #    (sc 峰值 1.2 时往下推 ~80px), **整块推出窗口, 看起来就是凭空消失**;
+            #    大字一撤, Scale 跟着指令一起没了, 那两行又回来 ——
+            #    玩家录像里"飞行结束后下面的文字和按钮不见了"就是它。
+            #    夹住之后: 缩放只作用于这个 Label 自己的绘制(Label 没有子控件, 所以
+            #    `canvas.after` 正好落在它画完的那一刻)。
+            with _lb.canvas.after:
+                PopMatrix()
         self.add_widget(shadow)
         self.add_widget(main)
         # 中奖时大字上移到杯顶之上(逻辑 cy = TEXT_CY_WIN, 现行值见 android_part_pile.py 顶部常量;
@@ -5731,17 +5810,26 @@ class GameArea(FloatLayout):
                 else:
                     sc = 1.2 - ((p - 0.5) / 0.5) * 0.2  # 后50%: 1.2→1.0 慢收
                 alpha = max(0.0, 1.0 - max(0.0, p - 0.55) / 0.45)
-                fs = max(8, int(e["size"] * sc))
                 rise = 38 * (now - e["born"])
                 main, shadow = e["ws"]
-                if fs != e.get("_last_fs", 0):     # 仅值变了才写 font_size, 跳过冗余纹理重建
-                    main.font_size = fs
-                    shadow.font_size = fs
-                    e["_last_fs"] = fs
-                main.color = e["rgb"] + (alpha,)
-                shadow.color = (0, 0, 0, alpha * 0.6)
+                # ⚠️ 只在**量化后的 alpha 真的变了**时才写 `color` —— 见 BIG_TEXT_ALPHA_STEPS
+                #    处的说明。原来是无条件每帧写, 而 alpha 在淡出段每帧都变 ⇒ 每帧把整段
+                #    大字重新光栅化一遍(桌面实测 `未中` 12 秒内重建 530 次, 占全部文字重建
+                #    的 65%)。alpha 恒定那 55% 的生命里现在一次都不写。
+                _q = int(alpha * BIG_TEXT_ALPHA_STEPS + 0.5) / float(BIG_TEXT_ALPHA_STEPS)
+                if _q != e.get("_qa"):
+                    e["_qa"] = _q
+                    main.color = e["rgb"] + (_q,)
+                    shadow.color = (0, 0, 0, _q * 0.6)
                 main.center = (e["cx"], e["cy"] + rise)
                 shadow.center = (e["cx"] + 2, e["cy"] + rise - 2)
+                # 缩放 = 纯 GPU 变换(见 `_big_text` 里 `_pop_sc` 处的说明)。
+                # ⚠️ `origin` 必须是**写完 center 之后**的当前中心 —— 大字一边缩放一边上浮,
+                #    锚点不跟就会看到"绕着一个飘走的点放大"。shadow 多偏 (2,-2), 各自锚自己。
+                for _lb in (main, shadow):
+                    _ps = _lb._pop_sc
+                    _ps.origin = _lb.center
+                    _ps.x = _ps.y = sc
 
 
 def _app_version():
@@ -6822,13 +6910,62 @@ class RootWidget(BoxLayout):
     def _start_benchmark(self):
         """阶段1: 真实屏幕采样(on_flip, 自动发球3发), 发满后切阶段2物理吞吐。"""
         self._flip_times = []
+        # ---- 诊断(2026-09-13 加): 光有"平均帧率/1%Low"没法定位卡在哪 —— 见 _bench_tag ----
+        self._bench_frames = []          # [(帧间隔ms, 场景标签)]
+        self._bench_gc = {}              # gen -> [次数, 总秒, 最坏秒]
+        self._bench_gc_t0 = 0.0
+        self._bench_cpu0 = time.process_time()
+        self._bench_wall0 = time.time()
+        import gc
+        try:
+            gc.callbacks.append(self._bench_gc_cb)
+        except Exception:
+            pass
         Window.bind(on_flip=self._on_flip)
         self._launch_count = 0
         self._target_launches = 3
         self._auto_evt = Clock.schedule_interval(self._auto_launch_tick, 0.5)
 
+    def _bench_gc_cb(self, phase, info):
+        """量每一次 GC 的耗时。安卓上 GC 停顿直接表现为掉帧, 而本工程从来没调过 gc。"""
+        try:
+            if phase == "start":
+                self._bench_gc_t0 = time.perf_counter()
+                return
+            d = time.perf_counter() - self._bench_gc_t0
+            e = self._bench_gc.setdefault(info.get("generation", -1), [0, 0.0, 0.0])
+            e[0] += 1
+            e[1] += d
+            if d > e[2]:
+                e[2] = d
+        except Exception:
+            pass
+
+    def _bench_tag(self):
+        """这一帧"屏幕上在演什么"。跑分现在会把装杯演出一起采样(25s 窗口被拉到 ~15s),
+        所以只看总平均分不清"飞行卡"还是"装杯卡" —— 分场景统计才能回答玩家问的那句
+        「球在飞的时候一卡一卡的」。"""
+        fx = getattr(self.game_area, "win_fx", None)
+        md = getattr(fx, "mode", "idle") if fx is not None else "idle"
+        if md in ("pending", "win", "result"):
+            return "装杯"
+        st = getattr(self, "state", "ready")
+        if st == "flying":
+            return "飞行"
+        if st == "landing":
+            return "落袋"
+        if st == "misfire":
+            return "哑火"
+        if st == "charging":
+            return "蓄力"
+        return "待机"
+
     def _on_flip(self, win):
-        self._flip_times.append(time.time())
+        now = time.time()
+        prev = self._flip_times[-1] if self._flip_times else None
+        self._flip_times.append(now)
+        if prev is not None:
+            self._bench_frames.append(((now - prev) * 1000.0, self._bench_tag()))
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
@@ -6846,16 +6983,62 @@ class RootWidget(BoxLayout):
             self._auto_evt = None
         Window.unbind(on_flip=self._on_flip)
         flips = self._flip_times or []
+        self._render_lows = {}
         if len(flips) >= 2:
             gaps = [flips[i + 1] - flips[i] for i in range(len(flips) - 1)]
             s = sorted(gaps)
             self._render_fps = 1.0 / s[len(s) // 2] if s[len(s) // 2] > 0 else 0.0
-            n = max(1, int(len(s) * 0.01))
-            self._render_1low = 1.0 / (sum(s[-n:]) / n)  # 1% low FPS(最慢1%帧的平均帧率)
+            # 低帧率分位(玩家 2026-09-13 要的 1%/3%/10%): "最慢 N% 的帧"平均下来是多少 FPS。
+            # 三个一起看才分得清"偶发一次长停顿"(1% 掉、10% 不掉) 和"整体都慢"(三个一起掉)。
+            for _pct in (1, 3, 10):
+                n = max(1, int(len(s) * _pct / 100.0))
+                self._render_lows[_pct] = 1.0 / (sum(s[-n:]) / n) if sum(s[-n:]) > 0 else 0.0
+            self._render_1low = self._render_lows[1]
         else:
             self._render_fps = 0.0
             self._render_1low = 0.0
+        self._bench_diag = self._bench_collect_diag()
         self._wait_idle_then_bench()
+
+    def _bench_collect_diag(self):
+        """把采样到的原始帧信息整理成可读诊断。**只读采样结果, 不改任何行为。**"""
+        import gc
+        try:
+            gc.callbacks.remove(self._bench_gc_cb)
+        except Exception:
+            pass
+        out = {}
+        fr = list(getattr(self, "_bench_frames", []) or [])
+        if not fr:
+            return out
+        gaps = sorted(g for g, _ in fr)
+        nn = len(gaps)
+        pk = lambda q: gaps[min(nn - 1, int(nn * q))]
+        out["n"] = nn
+        out["p50"] = pk(0.50)
+        out["p99"] = pk(0.99)
+        out["max"] = gaps[-1]
+        # 最慢的 3 帧 + 当时在演什么(定性的那一半: 数字只说"多慢", 标签才说"卡在哪")
+        by_worst = sorted(fr, key=lambda x: -x[0])[:3]
+        out["worst"] = [(g, t) for g, t in by_worst]
+        # 分场景: 飞行 vs 装杯(跑分把装杯也采样进去了, 不分就分不清是谁在拖)
+        grp = {}
+        for g, t in fr:
+            grp.setdefault(t, []).append(g)
+        out["groups"] = {}
+        for t, xs in grp.items():
+            xs.sort()
+            out["groups"][t] = (len(xs), xs[len(xs) // 2])
+        # 每帧真正花在计算上的时间(全进程 CPU / 帧数)。面板的"瓶颈"判断读它:
+        # 它离"帧间隔"越近, 越是处理器顶不住; 差得远就是大头在等画面。
+        _cpu_tot = time.process_time() - getattr(self, "_bench_cpu0", 0.0)
+        out["cpu_per_frame"] = _cpu_tot * 1000.0 / max(1, out["n"])
+        # GC 停顿: 次数 / 总时长 / 最坏一次
+        gcs = getattr(self, "_bench_gc", {}) or {}
+        out["gc_n"] = sum(v[0] for v in gcs.values())
+        out["gc_total"] = sum(v[1] for v in gcs.values())
+        out["gc_worst"] = max((v[2] for v in gcs.values()), default=0.0)
+        return out
 
     def _wait_idle_then_bench(self, dt=0):
         """等球落地(主线程空闲)再启动物理 benchmark, 避免抢 CPU 干扰结果。"""
@@ -6949,19 +7132,45 @@ class RootWidget(BoxLayout):
                                          halign='center', color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
-        data = ('%s\n'
-                '运算速度：每秒 %d 步模拟\n'
-                '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
-                '平均帧率： %.1f\n'
-                '1%%Low帧率：%.1f') % (
-                    dev, int(phys_fps), avg_frames, cost_ms, render_fps, render_1low)
+        _lows = getattr(self, "_render_lows", {}) or {}
+        if _lows:
+            _low_txt = ('平均帧率： %.1f    1%%Low：%.1f\n'
+                        '3%%Low：%.1f    10%%Low：%.1f') % (
+                            render_fps, _lows.get(1, 0.0), _lows.get(3, 0.0),
+                            _lows.get(10, 0.0))
+        else:
+            _low_txt = '平均帧率： %.1f\n1%%Low帧率：%.1f' % (render_fps, render_1low)
         # ⚠️ 这一屏**不放**版本/制作日期(用户 2026-09-11 定稿: "性能测试的成绩面板别加").
         #    成绩面板只放成绩; 版本/日期在长按标题的**菜单弹窗**里(见 _show_bench_menu)。
-        data_lbl = Label(text=data, font_size='17sp', halign='left', valign='top',
-                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(160))
-        self._auto_h(data_lbl, dp(120), dp(8))
-        content.add_widget(data_lbl)
-        popup = self._popup(0.90, 300, title='', content=content,
+        # 排版(玩家 2026-09-13: "窗口高度增加一些 / 布局稍微美化下"):
+        #   成绩块(亮色大字) → 细分隔线 → 诊断块(次级色、小一号)。
+        #   两块都走 `_auto_h`(按真实排版撑高), 所以折行只会让弹窗长高, 不会把字裁掉 ——
+        #   上一版是**一整块** label, 诊断四行挤进去之后底部被裁(玩家截图里 "分场景"
+        #   那行折行、最后一行露出半个)。
+        score = ('%s\n'
+                 '运算速度：每秒 %d 步模拟\n'
+                 '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
+                 '%s') % (dev, int(phys_fps), avg_frames, cost_ms, _low_txt)
+        score_lbl = Label(text=score, font_size='17sp', halign='left', valign='top',
+                          color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
+        self._auto_h(score_lbl, dp(130), dp(6))
+        content.add_widget(score_lbl)
+
+        _sep = Widget(size_hint_y=None, height=dp(1))
+        with _sep.canvas.before:                      # 同 `_row_bg` 的写法
+            Color(*hex_rgb(COL_DIV))
+            _sep._line = Rectangle(pos=_sep.pos, size=_sep.size)
+        _sep.bind(pos=lambda w, *_: setattr(w._line, "pos", w.pos),
+                  size=lambda w, *_: setattr(w._line, "size", w.size))
+        content.add_widget(_sep)
+
+        diag_lbl = Label(text=self._bench_diag_text(), font_size='15sp',
+                         halign='left', valign='top',
+                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
+        self._auto_h(diag_lbl, dp(0), dp(0))
+        content.add_widget(diag_lbl)
+
+        popup = self._popup(0.90, 460, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         popup.open()
         self._popup_fit_content(popup, content)
@@ -6969,6 +7178,45 @@ class RootWidget(BoxLayout):
         self._set_controls_enabled(True)
         self._bench_running = False
         self._bench_start = 0.0
+
+    def _bench_diag_text(self):
+        """性能测试成绩面板的**诊断追加行**(2026-09-13 加)。
+
+        为什么要加: 原来的成绩只有"平均帧率 / 1%Low", 而玩家报的是"球在飞行的时候
+        一卡一卡的" —— 光看两个数**分不清卡在哪儿**: 是在飞行, 还是在装杯演出?
+        是处理器顶不住, 还是画面在拖?
+        ⚠️ 措辞一律用白话(玩家 2026-09-13: "我有点看不太懂 比如墙钟"): 不用"p50/p99/
+          墙钟/GC"这些行话, 直接说"一半的帧""内存回收停顿""在等画面 / 算不过来"。
+        任何一项取不到都返回空串, 面板与旧版逐字相同 —— 绝不让诊断把成绩挤没。"""
+        d = getattr(self, "_bench_diag", None)
+        if not d:
+            return ''
+        try:
+            parts = []
+            parts.append('每帧耗时： 一半的帧 ≤%.1f 毫秒 · 最慢的 1%% ≤%.1f · 最慢一帧 %.1f'
+                         % (d["p50"], d["p99"], d["max"]))
+            w = '  '.join('%.0f毫秒(%s)' % (g, t) for g, t in d["worst"])
+            parts.append('最慢三帧： ' + w)
+            _ord = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
+            gs = d["groups"]
+            seg = ['%s %.1f' % (t, gs[t][1]) for t in _ord if t in gs]
+            if seg:
+                parts.append('各阶段每帧： ' + ' · '.join(seg) + ' 毫秒')
+            # 瓶颈判断: 每帧真正花在计算上的时间 vs 帧间隔。差得远 = 大头在等画面
+            #   (GPU 出图 / 垂直同步); 快追平 = 处理器就是瓶颈。
+            _cpu = float(d.get("cpu_per_frame", 0.0))
+            _p50 = float(d["p50"])
+            if _p50 > 0 and _cpu > 0:
+                _r = _cpu / _p50
+                _v = ("算不过来（处理器是瓶颈）" if _r >= 0.8
+                      else ("处理器比较吃紧" if _r >= 0.4 else "在等画面（画面是瓶颈）"))
+            else:
+                _v = "—"
+            parts.append('瓶颈： %s（每帧实算 %.1f / 帧间隔 %.1f 毫秒）· 内存回收停顿 %.1f 毫秒'
+                         % (_v, _cpu, _p50, d["gc_total"] * 1000.0))
+            return '\n'.join(parts)
+        except Exception:
+            return ''
 
     def _show_bench_history(self):
         """弹珠发射性能测试历史弹窗(最近100次, 每行只显示每秒步数)。"""
