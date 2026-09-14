@@ -2082,7 +2082,10 @@ _THREAD_TIME = getattr(time, "thread_time", None) or time.process_time
 # ⚠️ **设计取舍的完整理由见 `_texupd_wrap` 的 docstring** —— 一句话: Kivy 的
 #    `CoreLabel.refresh()` 在**尺寸没变**时会 `texture.ask_update(...)` **原地重画进同一张纹理**,
 #    所以跨标签共享会让 A 改字时把 B 正在显示的字悄悄改掉。按标签存零风险。
-_TEXTEX_PER_LABEL = 12      # 每个标签最多记几张(状态栏一局循环十来句, 12 够)
+# ⚠️ **必须是 64 而不是 12**(2026-09-14 改): 状态栏现在要存 **10 条固定文案 + 35 条带数字的**
+#    (见 `_build_texwarm` 的枚举预热) = 45 项。上限留在 12 的话它会**自己把自己挤掉** ——
+#    烘一个丢一个, 命中率反而跌回去, 而且**不报错**。
+_TEXTEX_PER_LABEL = 64
 _TEXEX_HIT = [0]            # 跑分采样期命中次数(进日志, 用来验证这层到底有没有生效)
 _TEXEX_MISS = [0]
 
@@ -2217,7 +2220,7 @@ def _texex_apply(lbl, cl):
     return True
 
 
-def _build_texwarm(rw):
+def _build_texwarm(rw, bet=None):
     """列出"启动期该提前烘好的 (标签, 文案, 颜色)"。
 
     ⚠️ 为什么值得单列一张表(2026-09-14): `texture_update` 那条缓存把**重复**变免费了
@@ -2228,6 +2231,9 @@ def _build_texwarm(rw):
        它们的值域是无限的 —— 那部分只能靠缓存命中重复值, 见计划文件 1.3 的诚实估算。
     ⚠️ **颜色必须一起列**: Kivy 把颜色烘进纹理, 同一个字符串换个色就是另一张图。
        `_set_controls_enabled` 每发球都会改那三个标签的 `.color`, 那一块就靠这里预先烘好。
+    ⚠️ `bet` = **当前投注档**。带数字的"中奖! +N (xM)"里 `payout = bet x m`,
+       四个投注档全铺是 28 条(1.4 秒启动), 而**一局里投注档通常不变** ——
+       所以只烘当前档那 7 条, 别的档第一次用到时走懒缓存(一次 4~7 毫秒, 之后命中)。
     """
     out = []
     if rw is None:
@@ -2242,6 +2248,23 @@ def _build_texwarm(rw):
         for _t in ("按住蓄力发射", "已重置", "蓄力中", "力度不足,未扣弹珠", "发射!", "未中",
                    "即将入袋…", "弹跳中…", "入场中…", "性能测试中…", str(_st.text)):
             out.append((_st, _t, _c))
+        # ---- 带数字的那两句: **取值域有限, 所以能枚举**(2026-09-14) ----
+        # 真机 v0.7.26 的 `重建来源` 里 "状态栏 6 次" 全是这两句; 缓存吃不到(每次数字都变),
+        # 只能靠**提前烘好所有可能的组合**。
+        # ⚠️ 倍率与投注档**从代码里派生, 不许手抄一份** —— 抄的那份迟早和真值脱钩,
+        #    而脱钩的表现是"预热白做、还不报错"(静默失败, 本工程最贵的一类坑)。
+        #    倍率的真源是 `VALUE_SHAPE` 的键(再并上 x2, 它由 `_solve_p2` 单独给)。
+        # ⚠️ 枚举不全**不会出错**: 没预到的组合第一次照旧走 Kivy 老路(4~7 毫秒), 之后命中。
+        #    失败模式是"没赚到", 不是"画面坏了"。
+        try:
+            _mults = sorted({2} | {int(_k) for _d in VALUE_SHAPE.values() for _k in _d})
+            for _m in _mults:
+                out.append((_st, "命中 x%d · 结算中" % _m, _c))
+            _my_bet = bet if bet in PRESETS else (PRESETS[0] if PRESETS else 1)
+            for _m in _mults:
+                out.append((_st, "中奖! +%d (x%d)" % (_my_bet * _m, _m), _c))
+        except Exception:
+            pass
     # ---- 音效按钮: 两句话 x 两种颜色(`_refresh_mute_btn` 里那两个)----
     _mb = getattr(rw, "mute_btn", None)
     if _mb is not None:
@@ -2259,9 +2282,9 @@ def _build_texwarm(rw):
         if _lb is None:
             continue
         try:
-            _t = str(_lb.text)
-            for _c in (hex_rgb(COL_SUB) + (1,), hex_rgb(COL_GRAY) + (0.6,)):
-                out.append((_lb, _t, _c))
+            # ⚠️ 只烘**一个色**了(2026-09-14): 这两个标签的 `.color` 从此恒定, 亮/暗改走
+            #    画布染色(`_set_lbl_tint`)⇒ 纹理只有一张, 不会再因为变色重建。
+            out.append((_lb, str(_lb.text), tuple(_lb.color)))
         except Exception:
             pass
     return out
@@ -5725,7 +5748,8 @@ class WinPileFX(Widget):
         # ⚠️ 一帧只走一个组合 —— 和字号预热同一个理由(挤在一帧就是自己造一记长帧)。
         if not getattr(self, "_texwarm_done", False):
             if getattr(self, "_texwarm_list", None) is None:
-                self._texwarm_list = _build_texwarm(getattr(self.area, "game", None))
+                self._texwarm_list = _build_texwarm(getattr(self.area, "game", None),
+                                                  getattr(getattr(self.area, "game", None), "bet", None))
             _tw_i = getattr(self, "_texwarm_i", 0)
             if _tw_i < len(self._texwarm_list):
                 self._texwarm_i = _tw_i + 1
@@ -7571,6 +7595,51 @@ def _fade_set(col, alpha):
         return False
 
 
+def _tint_from(baked_hex, target_hex, alpha=1.0):
+    """算出"画布染色"的系数: 把烘成 `baked_hex` 的纹理, 乘多少能得到 `target_hex`。
+
+    ⚠️ **必须逐通道算, 不能拍一个 0.5 这种数**。Kivy 的着色是 **RGB 相乘**:
+       最终 = 纹理RGB x 画布Color ⇒ 想要 target, 系数只能是 target/baked(逐通道)。
+       三个通道的比例不一样(比如 COL_GRAY/COL_TEXT 是 0.39/0.45/0.56), 用同一个数乘会偏色。
+    ⚠️ 这个公式**实测钉过**(2026-09-14, 直接烘 `CoreLabel` 读 `texture.pixels` 最亮像素):
+         color=GRAY@0.6  ⇒ rgba (90, 106, 140, 153)   ← RGB 仍是 GRAY, 只有 A = 0.6 x 255
+         color=TEXT@1.0  ⇒ rgba (232, 238, 252, 255)
+       ⇒ **Kivy 不预乘 RGB**, 所以"烘 TEXT + 乘 GRAY/TEXT + alpha 0.6"**精确等于**老做法。
+    """
+    _b = hex_rgb(baked_hex)
+    _t = hex_rgb(target_hex)
+    return (_t[0] / max(1e-6, _b[0]), _t[1] / max(1e-6, _b[1]),
+            _t[2] / max(1e-6, _b[2]), alpha)
+
+
+# `_set_controls_enabled` 用的染色系数。⚠️ **必须排在 `_tint_from` 之后** ——
+# 它是模块级调用, 放前面会 NameError(第一版就踩了)。
+_TINT_BRIGHT = (1.0, 1.0, 1.0, 1.0)
+_TINT_DIM = {"sub": _tint_from(COL_TEXT, COL_GRAY, 0.6),
+             "text": _tint_from(COL_TEXT, COL_GRAY, 0.6)}
+
+
+def _set_lbl_tint(lbl, rgba):
+    """给标签**染色**而不重建纹理。成功返回 True; 拿不到画布那条 Color 就返回 False。
+
+    ⚠️ 为什么不用 `lbl.color = ...`(2026-09-14): Kivy 把颜色**烘进字形纹理**, 写一次
+       `label.color` 就是一次"重测字形 + 重光栅化 + 重建纹理 + 上传"(真机实测 4~7 毫秒)。
+       而 `_set_controls_enabled` 每发球要改 3 个标签的颜色、而且**正好落在"回 ready"那一拍**。
+       改画布那条 `Color` 的 rgba 只是一次 uniform 写入, **零重建**。这条范式工程里早就有
+       (`_lbl_canvas_color` / `_fade_set`, 中奖大字的淡出就是它)。
+    ⚠️ 拿不到就返回 False, 调用方**必须退回写 `lbl.color`** —— 绝不静默不染色
+       (那会变成"状态卡住时看不出按钮是暗的")。
+    """
+    _c = _lbl_canvas_color(lbl)
+    if _c is None:
+        return False
+    try:
+        _c.rgba = tuple(rgba)
+        return True
+    except Exception:
+        return False
+
+
 def _app_version():
     """本包版本号(如 "v0.6.30"); 拿不到返回 ""。
 
@@ -8177,6 +8246,9 @@ class RootWidget(BoxLayout):
         #    而 Kivy 把颜色烘进纹理, 于是每发球禁用/启用各改一次 = 每发球 6 次重建。
         #    打标 + 预热两种颜色之后, 那一块**一次都不用重建**。
         _tag_texupd(self._rtp_title_lbl, "返还率标题")
+        # 染色基色: 纹理烘成 COL_TEXT(最亮), 亮/暗两态靠画布乘系数 —— 见 `_tint_from`。
+        self._rtp_title_lbl._tint_base_rgba = hex_rgb(COL_TEXT) + (1,)
+        self._rtp_title_lbl._tint_key = "sub"
         rtp.add_widget(self._rtp_title_lbl)
         # ⚠️ **这个"右侧留空"的 Widget 必须先加**(在按钮之前加进 `rtp`) —— `_add_rtp_button`
         #    靠它定位: 把新按钮插到它**左边**(Kivy 的 `children[0]` 在最右, 所以"更大 index = 更左")。
@@ -8207,6 +8279,9 @@ class RootWidget(BoxLayout):
         #    而 Kivy 把颜色烘进纹理, 于是每发球禁用/启用各改一次 = 每发球 6 次重建。
         #    打标 + 预热两种颜色之后, 那一块**一次都不用重建**。
         _tag_texupd(self._bet_title_lbl, "投注标题")
+        # 染色基色: 纹理烘成 COL_TEXT(最亮), 亮/暗两态靠画布乘系数 —— 见 `_tint_from`。
+        self._bet_title_lbl._tint_base_rgba = hex_rgb(COL_TEXT) + (1,)
+        self._bet_title_lbl._tint_key = "sub"
         bets.add_widget(self._bet_title_lbl)
         self.bet_btns = {}
         for v in PRESETS:
@@ -8237,6 +8312,9 @@ class RootWidget(BoxLayout):
         self.stats_lbl = self._mk_label("", "15sp", COL_TEXT, "center", True,
                                         size_hint_x=0.70)
         _tag_texupd(self.stats_lbl, "统计")
+        # 染色基色: 纹理烘成 COL_TEXT(最亮), 亮/暗两态靠画布乘系数 —— 见 `_tint_from`。
+        self.stats_lbl._tint_base_rgba = hex_rgb(COL_TEXT) + (1,)
+        self.stats_lbl._tint_key = "text"
         info.add_widget(self.stats_lbl)
         # 余额/统计/“弹珠：”都是单行; 余额涨到 8 位数以上时**缩字号**而不是折行
         self._install_fit(self._bead_lbl, self.balance_lbl, self.stats_lbl)
@@ -8313,23 +8391,23 @@ class RootWidget(BoxLayout):
             self._restyle_selects()
             self._refresh_mute_btn()
             self.round_btn.background_color = hex_rgb(COL_GREEN) + (1,)
-            bright = hex_rgb(COL_SUB) + (1,)
-            white = hex_rgb(COL_TEXT) + (1,)
-            self._rtp_title_lbl.color = bright
-            self._bet_title_lbl.color = bright
-            self.stats_lbl.color = white
+            # ⚠️ **不写 `.color`** —— 写它就是一次字形纹理重排(4~7 毫秒), 而这一拍正是"回 ready"。
+            #    染色走画布那条 Color; 拿不到才退回写 `.color`(绝不静默不染色)。
+            for _lbl in (self._rtp_title_lbl, self._bet_title_lbl, self.stats_lbl):
+                if not _set_lbl_tint(_lbl, _TINT_BRIGHT):
+                    _lbl.color = _lbl._tint_base_rgba
         else:
             off = hex_rgb(COL_BTN_OFF) + (1,)
-            dim = hex_rgb(COL_GRAY) + (0.6,)
             self.fire_btn.background_color = off
             self.reset_btn.background_color = hex_rgb("#1a1a22") + (1,)
             for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
                 btn.background_color = off
             self.round_btn.background_color = off
             self.mute_btn.background_color = off
-            self._rtp_title_lbl.color = dim
-            self._bet_title_lbl.color = dim
-            self.stats_lbl.color = dim
+            # 同上一支: 变暗走染色, 不重建纹理。系数 = 目标色 / 烘的那个色(逐通道)。
+            for _lbl in (self._rtp_title_lbl, self._bet_title_lbl, self.stats_lbl):
+                if not _set_lbl_tint(_lbl, _TINT_DIM[_lbl._tint_key]):
+                    _lbl.color = hex_rgb(COL_GRAY) + (0.6,)
 
     def on_touch_down(self, touch):
         """锁输入期间把 HUD 的触摸统一吞掉(见 `_set_controls_enabled` 的说明)。
