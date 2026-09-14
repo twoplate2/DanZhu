@@ -6385,7 +6385,7 @@ class FpsCurve(Widget):
                     elapsed += gap
                 # 浅底上使用深灰蓝：逐帧尖峰足够清楚，又不抢走坐标与统计信息。
                 Color(0.24, 0.29, 0.35, 1)
-                Line(points=raw_points, width=1.2, joint="round")
+                Line(points=raw_points, width=1.15, joint="round")
 
         self._label(self.canvas, "%.0f" % hi, x0 - dp(5), y0 + ph - dp(5), "right")
         for value in range(0, int(hi), 30):
