@@ -5833,10 +5833,23 @@ class WinPileFX(Widget):
                                      Rectangle(texture=_t, pos=(0, 0), size=(0, 0)),
                                      _f0, _fh, _a))
             # ⑤ 球层: **原始顺序单趟**(红线 1)
+            # ⚠️⚠️ **每颗球必须自带 PushMatrix/PopMatrix**(红线 4, 2026-09-14 画面事故实修)。
+            #    Kivy 的 `Rotate` 是**上下文指令** —— 它作用于**其后所有**指令, 直到被 Pop 掉。
+            #    `_draw_bead`(老实现)一直是 `Color/PushMatrix/Rotate/Rectangle/PopMatrix`
+            #    五条一组, 而持久指令表的第一版**把这一对漏了** ⇒ 第 2 颗球的旋转叠在第 1 颗
+            #    上, 第 3 颗再叠…… 20 颗球就是 20 个旋转的复合。
+            #    最惨的不是球本身: **球层后面紧跟着前层玻璃**, 那 20 个未 Pop 的旋转全叠到了
+            #    杯子的前层矩形上 ⇒ 整块玻璃被拧飞。玩家原话:「**落杯动画一塌糊涂**」。
+            #    ⚠️ 这一条**当时没有门禁覆盖**: 第一版验收探针把两版指令流 dump 出来逐条比,
+            #       却报"逐条一致" —— 因为那个探针的 `SRC = sys.argv[1]` **赋了值却从没被用过**,
+            #       它永远 `import main`, 等于把同一份文件跟自己比了两遍(假绿灯)。
+            #       现在由 `fx_probe [21]` 钉死: Push/Pop 必须**配对**且**包住**每一条 Rotate。
             for _b in self._balls:
                 _c = Color(1.0, 1.0, 1.0, 0.0)
+                PushMatrix()
                 _ro = Rotate(angle=0.0, origin=(0, 0))
                 _r = Rectangle(texture=_ball_texture(_b["value"]), pos=(0, 0), size=(0, 0))
+                PopMatrix()
                 self._bd.append((_c, _ro, _r, _b))
             # ⑥ 前层玻璃(必须在球**之后**)
             self._fx_post.append(("front", Color(1.0, 1.0, 1.0, 0.0),
@@ -9769,10 +9782,18 @@ class RootWidget(BoxLayout):
         #    口径反而报"恶化"(9→12 帧) —— 因为 1%Low 已贴着 90 门槛, 计数在门槛附近抖动。
         #    同一份数据按"中位帧 50%"算是 7→6 帧, 与 1%Low **同向**。
         #    定稿: 慢帧 = 中位帧率的 50% ⇒ 帧时间 >= 2 × 中位帧时间。
+        # ⚠️⚠️ **这两个键必须叫 `slow2_*`, 不能叫 `slow_n`/`slow_ms`**(2026-09-14 实修)。
+        #    上面(收尾统计那段)已经把 `out["slow_n"]` 定义成「中位帧率 <75%」的帧数 ——
+        #    那是**成绩面板**读的数; 而这里这一批是**归因分析集**(≥2 倍中位帧时间, 即 <50%),
+        #    是给"长停顿的节拍/在不在发声/在不在震动"用的。
+        #    原来这里写的是 `out["slow_n"] = len(_slow)`, **把面板那个数原地覆盖成了 5**,
+        #    面板再套一层 `max(slow_n, jank_n)` 兜底 ⇒ 印出来**恒等于卡顿帧**。
+        #    真机 v0.7.35 实测: <75% 真值 **168 帧**, 被覆盖成 5, 面板印的却是 9(= 卡顿帧)。
+        #    玩家原话:「慢帧<75% 的实际帧率数量也是错的吧, 他目前和卡顿帧一直相同」。
         _slow_ms = 2.0 * out["p50"]
-        out["slow_ms"] = _slow_ms
+        out["slow2_ms"] = _slow_ms
         _slow = [x for x in fr if x[0] >= _slow_ms]
-        out["slow_n"] = len(_slow)
+        out["slow2_n"] = len(_slow)
         out["slow_beat"] = (sum(g for g, *_r in fr) / len(_slow)) if _slow else 0.0
         out["slow_snd"] = sum(1 for x in _slow if x[3] > 0)
         out["slow_vib"] = sum(1 for x in _slow if x[4] > 0)
@@ -10090,7 +10111,7 @@ class RootWidget(BoxLayout):
                              float(getattr(self, "_render_fps", 0.0)),
                              float(getattr(self, "_render_median_fps", 0.0)),
                              float(getattr(self, "_render_1low", 0.0))))
-            _lines.append("# 慢帧门槛 %.2f 毫秒(中位帧 %.2f 毫秒 × 2 = 中位帧率的 50%%; 命中 %d 帧)"
+            _lines.append("# 长停顿门槛 %.2f 毫秒(中位帧 %.2f 毫秒 × 2 = 中位帧率的 50%%; 命中 %d 帧)"
                           % (_thr, _p50, len(_slow_idx)))
         except Exception:
             pass
@@ -10147,6 +10168,14 @@ class RootWidget(BoxLayout):
         _lines.append("# ★ 参考带「中位帧率 55%%~75%%」(%.1f~%.1f fps): %d 帧  ·  中位帧 %.2f 毫秒"
                       "   ← 这**不是**指标, 只用来看趋势(跟着上面的硬指标一起降才对)"
                       % (1000.0 / _th90, 1000.0 / _th_ref, len(_refband), _p50b))
+        # ★ 成绩面板「慢帧（<75%）」那一档的**自证行**。
+        # ⚠️ 为什么必须单独印: 面板读的是 `_bench_diag["slow_n"]`, 而这个数在收尾统计里
+        #    算一遍、又有可能被后面的段落覆盖一次(v0.7.39 就踩了, 印出来恒等于卡顿帧)。
+        #    印成 `N = 低于55% + 参考带` 之后, **下次读日志当场就能验** —— 对不上就是又脱钩了。
+        _lines.append("# ★ 慢帧「中位帧率 <75%%」(%.1f fps): %d 帧 = 低于55%% %d + 参考带 %d"
+                      "   ← 成绩面板「慢帧（<75%%）」读的就是这个数"
+                      % (1000.0 / _th_ref, len(_below90) + len(_refband),
+                         len(_below90), len(_refband)))
         _cnt = {}
         for _t in _tags_all:
             _cnt[_t] = _cnt.get(_t, 0) + 1
@@ -10289,7 +10318,7 @@ class RootWidget(BoxLayout):
                              float(d.get("vib_sum", 0.0))))
         except Exception:
             pass
-        _lines.append("# 各阶段: 帧数 / 占总帧 / 中位ms / p99ms / 慢帧数 / 该阶段慢帧率")
+        _lines.append("# 各阶段: 帧数 / 占总帧 / 中位ms / p99ms / 长停顿数 / 该阶段长停顿率")
         for _s in STAGE_ORDER:
             _v = [gaps[_i] for _i in range(len(gaps)) if tags[_i] == _s]
             if not _v:
@@ -10842,13 +10871,18 @@ class RootWidget(BoxLayout):
                              % (d.get("ui_n", 0), d.get("ui_worst", 0.0),
                                 d.get("ui_sum", 0.0)))
             # 慢帧那一行只在真有慢帧时出(它回答的是"停顿长什么样", 没停顿就没什么可说的)。
-            if d.get("slow_n"):
+            if d.get("slow2_n"):
                 # ⚠️ "几帧在预热"必须单独报 —— 那几帧是**启动期**的账, 与稳态卡顿不是一回事
                 #    (桌面实测: 最慢的 11 帧全在启动 0.6 秒内, 而那些帧我们自己的代码只花了
                 #    0.03~0.10 毫秒)。混在一起看会把"启动慢"误读成"玩起来卡"。
-                parts.append('慢帧： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声'
+                # ⚠️ 这里叫「长停顿」不叫「慢帧」: 「慢帧」已经被成绩面板占成
+                #    「中位帧率 <75%」(那一档有 168 帧), 而这一行说的是「≥2 倍中位帧时间」
+                #    (<50%, 只有 5 帧)。**同一个词两个含义**正是本工程栽过的那类静默脱钩
+                #    (实测同一份日志里两个"慢帧"差 33 倍)。代码里这个现象一直叫"长停顿"
+                #    (见 159/2009/9570/9774/10819 行), 这里跟着叫它。
+                parts.append('长停顿： %d 帧≥%.0f毫秒（平均每 %.2f 秒一次）· 其中 %d 帧在发声'
                              ' / %d 帧在震动 / %d 帧在启动预热'
-                             % (d["slow_n"], d.get("slow_ms", 25.0), d["slow_beat"] / 1000.0,
+                             % (d["slow2_n"], d.get("slow2_ms", 25.0), d["slow_beat"] / 1000.0,
                                 d.get("slow_snd", 0), d.get("slow_vib", 0),
                                 d.get("slow_bake", 0)))
             # 瓶颈判断: 每帧真正花在计算上的时间 vs 帧间隔。差得远 = 大头在等画面
@@ -10996,6 +11030,11 @@ class RootWidget(BoxLayout):
             # ⚠️ **不变量: 慢帧(75%) 一定 ⊇ 卡顿帧(55%)** —— 两个阈值同一个分母, 宽的必然
             #    包含窄的。老 diag 字典/异常兜底里可能没有 `slow_n`, 直接印 0 就会出现
             #    "卡顿帧 6 / 慢帧 0" 这种**自相矛盾**的两行(探针夹具上当场撞到过)。
+            # ⚠️⚠️ 但这个 `max` 是**兜底, 不是定义**(2026-09-14 实修): 它曾经把
+            #    「`slow_n` 被覆盖成 5」这件事**盖住了** —— `max(5, 9) = 9`, 于是面板印的
+            #    慢帧**恒等于卡顿帧**, 看起来"合理"却完全失真。真正的数来自 `_bench_collect_diag`
+            #    里那句 `<75%` 的统计(真机 v0.7.35 = 168 帧), 对应的自证行是日志头的
+            #    `# ★ 慢帧「中位帧率 <75%」`。**改这里之前先去看那一行对不对得上。**
             _jn = int(d.get("jank_n", 0))
             _sn = max(int(d.get("slow_n", 0)), _jn)
             parts.append('卡顿帧（<55%%）：共 %d 帧' % _jn)
