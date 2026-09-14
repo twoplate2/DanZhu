@@ -2052,6 +2052,15 @@ _FRAME_FIT = [0, 0]
 #      · 是某个标签的基准压根没进表(或它的 bold 在运行期变了) ⇒ 得从标签那边修。
 #    我在这件事上已经猜错过两次(先说"冷开只要 1.4ms"、又把桌面探针测到的那个当成了真机的),
 #    所以这次不猜了 —— 把 (字号, bold, 标签) 原样印进日志头部。
+# 跑分采样期**按阶段采样到的屏幕刷新率**: {(阶段, Hz): 次数}。
+# ⚠️⚠️ 为什么必须有这一栏(2026-09-14 玩家报的): 「**发射的时候必然会降低帧率上限**」——
+#    如果屏幕上真的降到 60/120Hz, 那么那一段的帧间隔会**自然变长**(60Hz = 16.7 毫秒),
+#    于是:
+#      ① 那些帧会被判成"卡顿", 而其实**画面是满帧的**, 不是我们的锅;
+#      ② 新判据的分母是**中位帧间隔**, 窗口里混进一段低频会把中位往大推 ⇒ 判据线跟着动。
+#    现在这份日志只印**采集那一刻**的 Hz(一个点), 答不了"窗口中间变没变"。
+#    这一栏按阶段采样, 直接回答"发射/蓄力期到底降没降"。
+_BENCH_HZ = {}
 _COLD_FS = []
 _COLD_FS_TAG = ["?"]
 # 多慢才算「冷」—— 下限设 3 毫秒: 热字号一次量出来是 0.02~1.5 毫秒(桌面实测),
@@ -9199,6 +9208,13 @@ class RootWidget(BoxLayout):
         #    第一行(那种"凭空冒出来的 40 毫秒"没人解释得了)。
         _FRAME_SWAP[0] = 0.0
         _FRAME_BRK.clear()
+        # 屏幕刷新率采样(见 `_BENCH_HZ` 处说明): 清零 + 起一个 0.5 秒的 tick。
+        # ⚠️ tick 自己会在采样结束时返回 False 摘掉自己, 不用另找地方 unschedule。
+        _BENCH_HZ.clear()
+        try:
+            Clock.schedule_interval(self._bench_hz_tick, 0.5)
+        except Exception:
+            pass
         # 同上, 「字号」的分解计数必须跟着归零 —— 不归零的话采样窗口第一帧会背着
         # "上次采样结束以来"的全部累计, 印出一个没人解释得了的"叫了 300 次"。
         _FRAME_FIT[0] = 0
@@ -9443,6 +9459,24 @@ class RootWidget(BoxLayout):
         _TEXUPD_ACTIVE[0] = False
         self._wait_idle_then_bench()
 
+    def _bench_hz_tick(self, _dt=0.0):
+        """采样期每 0.5 秒记一次「当时在演什么 + 屏幕刷新率」。见 `_BENCH_HZ` 处说明。
+
+        ⚠️ `_screen_hz()` 在安卓上走 JNI, **绝不能每帧调** —— 0.5 秒一次可以忽略。
+        ⚠️ 采样期一结束就**自己停**(返回 False 让 Clock 摘掉它); 不然跑完分还在后台
+           每 0.5 秒戳一次 JNI。
+        """
+        if not _TEXUPD_ACTIVE[0]:
+            return False
+        try:
+            _hz = round(float(_screen_hz() or 0.0), 1)
+            if _hz > 0.0:
+                _k = (self._bench_tag(), _hz)
+                _BENCH_HZ[_k] = _BENCH_HZ.get(_k, 0) + 1
+        except Exception:
+            pass
+        return True
+
     def _bench_collect_diag(self):
         """把采样到的原始帧信息整理成可读诊断。**只读采样结果, 不改任何行为。**"""
         import gc
@@ -9480,7 +9514,7 @@ class RootWidget(BoxLayout):
         # ⚠️ 玩家 2026-09-14 定稿的两档: **<50% 要尽量消除; 50%~70% 只作参考**。
         #    所以这里只收 <50% 的那一档进 `jank_*`, 50%~70% 留在日志里当趋势看, **不上面板**。
         _med = float(out.get("p50") or 0.0)
-        _jank = [x for x in fr if _med > 0.0 and x[0] > _med / 0.5]
+        _jank = [x for x in fr if _med > 0.0 and x[0] > _med / 0.55]
         out["jank_n"] = len(_jank)
         _jg = {}
         for _x in _jank:
@@ -9948,9 +9982,9 @@ class RootWidget(BoxLayout):
         #    所以下面印**两行** —— 一行硬判据、一行参考带, 别把参考带的帧混进硬指标里。
         # ⚠️ 写法沿用既有约定:「中位帧×70%」= **中位帧率的 70%**, 阈值 = `p50 / 0.7`。
         _p50b = sorted(gaps)[len(gaps) // 2]
-        _th90 = _p50b / 0.5
+        _th90 = _p50b / 0.55
         _below90 = [_i for _i in range(len(gaps)) if gaps[_i] > _th90]
-        _th_ref = _p50b / 0.7
+        _th_ref = _p50b / 0.75
         _refband = [_i for _i in range(len(gaps)) if _th_ref < gaps[_i] <= _th90]
         # ⚠️ **就地取, 不引用上面的 `tex`/`tags`** —— 那两个列表在本函数里定义得**很晚**
         #    (在"各阶段统计表"那一段之后), 而这一段的插入点在头部 ⇒ 直接引用会 NameError。
@@ -9981,11 +10015,11 @@ class RootWidget(BoxLayout):
         # ⚠️ `1%%Low` 的双百分号**不能省**: 这一行是 `%` 格式化的, 写成 `1%Low` 会被当成
         #    格式符(`%L`), 报的是 "not enough arguments for format string" —— 报错信息
         #    指向 `%d` 的个数, 而**真正的原因在后面那个 `%`**。
-        _lines.append("# ★ 低于「中位帧率 50%%」(%.1f fps) 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d / 带字号 %d"
+        _lines.append("# ★ 低于「中位帧率 55%%」(%.1f fps) 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d / 带字号 %d"
                       "   ← **跨版本比较用这一条, 别用 1%%Low**"
                       % (1000.0 / _th90, len(_below90), _b90_tex, _b90_face, _b90_fit))
         # 参考带单独一行(玩家定稿: 50%~70% 只作参考, 不进硬指标)。
-        _lines.append("# ★ 参考带「中位帧率 50%%~70%%」(%.1f~%.1f fps): %d 帧  ·  中位帧 %.2f 毫秒"
+        _lines.append("# ★ 参考带「中位帧率 55%%~75%%」(%.1f~%.1f fps): %d 帧  ·  中位帧 %.2f 毫秒"
                       "   ← 这**不是**指标, 只用来看趋势(跟着上面的硬指标一起降才对)"
                       % (1000.0 / _th90, 1000.0 / _th_ref, len(_refband), _p50b))
         _cnt = {}
@@ -10017,6 +10051,32 @@ class RootWidget(BoxLayout):
         # ⚠️ `or ()` 不能省: 这两个表的初始值是 `None`(预热链还没跑到就算不出来),
         #    直接 `len()` 会 TypeError —— 而外层 `_copy_bench_log` 会把异常吞成**空串**,
         #    玩家看到的是"没有可复制的数据"。门禁的夹具(不跑预热直接出日志)当场就把它逮住了。
+        # ---- 采样期屏幕刷新率**变过没有**(见 `_BENCH_HZ` 处说明) ----
+        # ⚠️ 这一段存在的理由: 玩家报「**发射的时候必然会降低帧率上限**」。
+        #    屏幕上真降频的话, 那一段的帧间隔会**自然变长** —— 既可能被误判成"卡顿",
+        #    又会把"中位帧间隔"(新判据的分母)往大推。**先把事实印出来再谈归因。**
+        if _BENCH_HZ:
+            _hz_vals = sorted({_k[1] for _k in _BENCH_HZ})
+            _by = {}
+            for (_st, _h), _c in _BENCH_HZ.items():
+                _by.setdefault(_h, {})
+                _by[_h][_st] = _by[_h].get(_st, 0) + _c
+            if len(_hz_vals) <= 1:
+                _lines.append("# 屏幕刷新率(采样期, 每 0.5 秒记一次): 恒为 %.1f Hz —— "
+                              "**没变过**, 长帧与降频无关" % _hz_vals[0])
+            else:
+                _lines.append("# ⚠️ 屏幕刷新率(采样期)**变过**: %s"
+                              % " · ".join(
+                                  "%.1fHz{%s}" % (_h, " ".join(
+                                      "%s %d" % (_st, _c) for _st, _c in
+                                      sorted(_by[_h].items(), key=lambda kv: -kv[1])))
+                                  for _h in _hz_vals))
+                _lines.append("#   ← 降频那一段的帧间隔会**自然变长**(60Hz=16.7ms / 120Hz=8.3ms): "
+                              "既可能被误判成卡顿, 也会把「中位帧间隔」(判据的分母)往大推")
+        else:
+            # ⚠️ 采不到也要**明说**。本工程反复踩过"没印"被读成"没发生" —— 屏幕上没有这一行,
+            #    读数的人分不清是"刷新率没变"还是"这一栏根本没在跑"。
+            _lines.append("# 屏幕刷新率(采样期): **采不到**(桌面预览 / 无权限 / `_screen_hz()` 返回 0)")
         _lines.append("# 字号预热表: %d 项 (Kivy 字体缓存上限约 64, 超了就互相挤)"
                       % (len(_FONT_WARM_HUD or ()) + len(_FONT_WARM_SIZES or ())))
         # ⚠️ 顺带把这两句读法写进日志 —— 下一份日志不用再回来翻源码就知道怎么读。
@@ -10798,7 +10858,7 @@ class RootWidget(BoxLayout):
             #    意义(165Hz 的机器上"低于 60fps"是地板级要求, 而且它的分子分母都是全窗口,
             #    跟上面"卡顿帧"那批根本不是同一批帧)。玩家 2026-09-14 定稿改成:
             #    **卡顿帧(帧率 < 中位帧率的 50%), 一共有 X 帧** —— 门槛跟着本机中位走。
-            parts.append('卡顿帧（帧率 < 中位帧率的 50%%）：共 %d 帧'
+            parts.append('卡顿帧（帧率 < 中位帧率的 55%%）：共 %d 帧'
                          % int(d.get("jank_n", 0)))
             return '\n'.join(parts)
         except Exception:
@@ -10920,13 +10980,18 @@ class RootWidget(BoxLayout):
             #     压掉一半**(玩家截图实证)。改成 `_auto_h`: 高度跟真实排版走(本工程所有多行正文
             #     的标准做法, 这里是漏掉的一个)。`**中位数**` 那种星号是 markdown 残留, Kivy 不认,
             #     会在屏幕上原样显示 —— 强调一律用「」。
+            # ⚠️⚠️ 2026-09-14 玩家定稿两处:
+            #   ① **去掉开头的「口径：」三个字** —— 那两行本身就是注释, 前面再挂个标签是废话。
+            #   ② **解释文字换成金色 `COL_BALL`**(原来是最闷的次级色 `COL_SUB`) ——
+            #      这是这个面板里唯一"有信息量"的注释, 用次级色等于让人不想看。
+            #      选金色是因为它本来就是本作「主数字」的颜色(见 `弹珠金色主数字` 那条注释),
+            #      在深蓝底上最抓眼, 又和近白的成绩正文天然分开。
             foot = Label(
-                text=('口径：\n'
-                      '  中位跑分：物理引擎每秒模拟步数的中位数\n'
+                text=('  中位跑分：物理引擎每秒模拟步数的中位数\n'
                       '  波动：(最大跑分-最小跑分)/中位数跑分'),
                 font_size='12sp', halign='left', valign='top',
-                color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
-            self._auto_h(foot, dp(56))
+                color=hex_rgb(COL_BALL) + (1,), size_hint_y=None)
+            self._auto_h(foot, dp(44))
             content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
