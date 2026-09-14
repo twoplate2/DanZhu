@@ -45,6 +45,10 @@ from kivy.uix.label import Label
 from kivy.uix.widget import Widget
 from kivy.uix.popup import Popup
 from kivy.uix.scrollview import ScrollView
+# ⚠️ 2026-09-15 加: 本文件**第一处**用到 Kivy 属性类(`GlyphLabel` 的 text/font_size/bold)。
+#    必须走 `Property` 而不是普通实例属性 —— `_install_fit` 靠 `w.bind(text=...)` 挂
+#    "文字一变就重挑字号"的钩子(见 8488), 普通属性绑不上, 表现是**余额再也不缩字号**。
+from kivy.properties import StringProperty, NumericProperty, BooleanProperty
 from kivy.utils import platform
 
 # 中文字体: 用 name="Roboto" 覆盖 Kivy 默认字体, 所有控件全局生效(否则 Android 上汉字全豆腐块)
@@ -6209,32 +6213,36 @@ class WinPileFX(Widget):
                         continue
                     _seen.add((_v, _bd))
                     _hud.append((_v, _bd))
-            # ★ **大字基准 `sp(36)` 的 FIT_FINE 也要烘**(2026-09-14)。
-            # 病根(740 真机 + 桌面探针**双向确证**, 尺寸一字不差):
-            #   冷字号的真身是**大字号行上的长文案**(`_fit_line(lb, 36)` 那类 —— 它把
-            #   `font_size` 设成 `sp(36)`, 配的字是"累计…"这种长句), 窄可用宽下被
-            #   `fit_font_size` 一路逼到 0.42 档。740 的四条冷字号**基准全是 57.2375**,
-            #   而设备 `sp(36) = 36 x 1.5899 = 57.2375`; 桌面探针给
-            #   `fit_font_size("累计999投999中(100%)", 57.2375, 60.0, True)` 返回 **24.0397**、
-            #   冷开记录里同时出现 `24.0397` 与 `35.4872` —— 与 740 **一字不差**。
-            # ⚠️ 四条冷字号**全是 FIT_FINE 档**(0.66/0.62/0.50/0.42), **一条 FIT_SCALES 档
-            #    都没有** ⇒ SCALES 那几档已被别的基准去重覆盖, 只有 FINE 是真空。
-            #    所以**只补 FINE** 就够, 补 SCALES 是白花名额(缓存上限 64 很紧)。
-            # ⚠️ **只补 sp(36)**: 12 个 HUD 基准 x 13 档 = 156, 必然爆 64; "全都烘上"在这台
-            #    引擎上是**反效果**(v0.7.31 实测: 155 项把前面全挤掉)。
-            # ⚠️ `sp(48)` 暂不补 —— 大字 `+N` 最多 6 位(`+500000`), 实测停在前几档;
-            #    哪天真冷了, 冷字号榜会指名道姓(它现在记的是**真值**: 基准 + 文案)。
-            # ⚠️ **整条阶梯, 不只是 FINE**: 桌面实测(密度 1.0, 撞不上别的基准)先冷在
-            #    SCALES 档(0.94/0.88/0.76/0.70)。设备上那几档是靠"和别的基准撞号"被去重
-            #    覆盖的 —— 桌面复现不出来, 但**不能靠那个巧合**。k=1.0 那档已在
-            #    `_FONT_WARM_SIZES` 里, 跳过以免重复占名额。
-            _big36 = sp(36)
-            for _k in FIT_SCALES[1:] + FIT_FINE:
-                _v3 = _big36 * _k
-                if (_v3, True) in _seen:
-                    continue
-                _seen.add((_v3, True))
-                _hud.append((_v3, True))
+            # ⚠️⚠️ **2026-09-15 撤回: 这里曾经补烘 `sp(36)` 的 `FIT_FINE` 那 11 项, 已删。**
+            #    (v0.7.42 加的。当时真机冷字号榜四条基准全是 57.2375, 就顺手把 sp(36) 的
+            #     整条细分阶梯都 ho 上了 —— **方向想对了, 做法违反上面那条硬规矩**。)
+            #    撤它的三条理由:
+            #    ① **和上面那段直接矛盾**: 6185-6195 明写"只能烘 FIT_SCALES, 不能连
+            #       FIT_FINE 一起烘"(全烘 155 项把前面的全挤掉, 低90 从 8 帧退回 10 帧),
+            #       而这一段干的正是那件事。
+            #    ② **它在真机上没起作用** —— 这一点是实测, 但**机理未定, 别照猜**。
+            #       v0.7.42 真机日志的三条 FIT_FINE 冷字号(`fs=37.7767 / 26.3292 / 24.0397`)
+            #       全印着 **`预热时量过=否`**, 且它们的"最近预热档差"是 **0.18 / 1.08 / 3.37**
+            #       —— 差这么大 ⇒ **表里根本没有那个字号**(有就是差 0, 那几档是精确的
+            #       `base x k`)。也就是说: **占了名额, 一项都没兑现。**
+            #       ⚠️ 我当时给的解释是"预热链没排到尾部那几项", **桌面探针把这个解释打掉了**:
+            #          `temp/warm_table_probe.py` 在 63 项时读到 `_font_prebaked = 63/63`、
+            #          `_WARM_DID` 63 个 —— **全跑完了**。真机上到底为什么没有, **尚未定论**
+            #          (待查方向: 设备上这里算出的 `sp(36)` 与标签 `_fit_base` 是不是同一个
+            #          浮点值)。**在有直接证据之前, 谁也不许照某个猜测改这里。**
+            #    ③ **它挤掉的是游玩路径上的字号**。日志自报"超了! 会互相挤, 必须减字号
+            #       总数"(判据 10382-10385), 而被挤掉的那条正是
+            #       `fs=45.1875 [累计1投1中(100] 预热时量过=是 却仍冷` —— 落在帧724 上,
+            #       **15.9 毫秒, 占该帧 22.5 毫秒的 71%**。这一条是**真·被挤出**的
+            #       (`=是` 的语义就是"预热真的量过它")。
+            #    ⇒ 删完**桌面实测回到 52 项**(`_FONT_WARM_HUD` 48 + `_FONT_WARM_SIZES` 4),
+            #      与 6251 行注释里写的口径对上。
+            #      阴性对照(把这段塞回去重跑探针): ① 立刻变回 63 并判失败 —— 判据有分辨力。
+            #      ⚠️ **设备上会落到几项, 取决于哪几档和别的基准撞号, 没验证过** ——
+            #         下一份真机日志里"字号预热表: N 项"那行会直接给出答案(判据 10382-10385)。
+            #    ⚠️ 真要在"窄可用宽 + 长文案"上省那一次冷开, 正确的位置是
+            #      `_fit_font_size_slow` 那条链本身(别让长文案一路滑到 FINE 档),
+            #      **不是往预热表里加项** —— 这张表的上限是硬的, 加多少就挤掉多少。
             globals()["_FONT_WARM_HUD"] = tuple(_hud)
             # ⚠️⚠️ **大字/飘字那批(sp(36/48/26/30))故意不烘** —— 见上面那段: 加上它们就是
             #    48 + 24 = 72 项, 仍然超 64 的上限, 又会开始互相挤。取舍:
@@ -6306,6 +6314,17 @@ class WinPileFX(Widget):
             #    表现是"启动预热 5.8 秒变 90 秒"(探针测出来的), 而**画面上什么都看不出来**。
             Clock.schedule_once(self.prebake_step, 0.02)
             return
+        # ---- 字形图集预热(见 `_GLYPH_CHARS` 那一大块) ----
+        # ⚠️ 一次一档, 与上面字号预热同一条理由: 一帧烘 11 个字形 = 一记自己造的长帧。
+        # ⚠️ 放在**字号预热之后、球纹理之前** —— 球纹理单步真机 100~200 毫秒, 别和它挤一帧。
+        if not getattr(self, "_glyph_done", False):
+            try:
+                if _glyph_warm_step(self.area):
+                    Clock.schedule_once(self.prebake_step, 0.02)   # ⚠️ 这一句不能少(见上面那条教训)
+                    return
+            except Exception:
+                pass
+            self._glyph_done = True
         cur = getattr(getattr(self.area, "game", None), "bet", DEFAULT_BET)
         order = [cur] + [b for b in (1, 10, 50, 100) if b != cur]
         todo = [b for b in order if b not in _CUP_BALL_TEX]
@@ -6723,6 +6742,222 @@ _JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0, 0.0]
 #    桌面已经用 cProfile 剖过一遍(整个 `_frame` 只占帧时间 0.9%), 但真机没有剖析器,
 #    只能靠这一格。
 _FRAME_SELF = [0.0]
+
+
+# ============================================================================
+# 预烘字形图集: **白色字形 + 画布染色**, 把 Kivy 那句文字光栅化整条掐掉
+# ============================================================================
+# 病根(v0.7.42 真机日志逐帧重算, `video/plinko_fps_20260914_235002.txt`):
+#   · **所有慢于 12.7 毫秒的帧, 全部带文字重建**; 无文字重建的帧最大只有 10.48 毫秒;
+#   · 最慢 4 帧(20.5 / 21.8 / 22.5 / 22.8)主线程 17.0~17.6 毫秒, 而 `_frame` 自算只 3.5~4.1
+#     ⇒ 中间约 13 毫秒全在文字上, 最大一笔就是 `填纹`(= `CoreLabel._texture_fill`,
+#     Kivy 文字**两趟渲染的第二趟**, 9.2~10.9 毫秒);
+#   · 反事实重算: 把这笔拿掉, 1%Low 从 98.3 → 109~112。
+# ⇒ 别再去别处找 1%Low 了, **尾巴就是这一件事**。
+#
+# 为什么"逐字贴图"能成立(全部实测, 不是推的):
+#   · 项目字体 `fonts/NotoSansSC-Medium.otf` 上, `0123456789+` 这 11 个字的 **advance 逐字相同**
+#     (48 号时全是 27)、**纹理高全部相同**;
+#   · `sum(逐字宽) == 整串宽` 在 8 个字号 x 8 个串上**精确相等**(差 0.000)。
+#     含空格/斜杠的串**不**成立 ⇒ 所以有下面 `_GLYPH_CHARS` 这条**硬边界**。
+#   · `.pixels` 的 RGB 恒为 255、A 是覆盖率(**不预乘**)⇒ **白字图集 x 画布色 == 现在烘色**,
+#     逐通道相等(同 `_tint_from` 那条已钉过的结论)。
+#
+# ⚠️⚠️ **Kivy 把颜色烘进字形纹理**(见 `_texex_key` 的注释), 所以现在"彩色大字"和"黑影子"
+#    是**两张图、两次光栅化**、而且落在同一帧。这里烘成白色之后, **两者共用同一批贴图**,
+#    只差画布上那一条 `Color` —— 那一半是白拿的。
+# ⚠️ **不进 `_TEXEX_G`**: 那条路缓存的是"整段文字一张纹理", 而这里的目标恰恰是
+#    "一张整段纹理都不产生"。两条路各自独立, 互不干扰。
+# ⚠️ 图集**一个 fontid 都不多占**: 实测这些标签只落到 2 个字号(`sp(48)`=48.0 与 `sp(19)`=19.0),
+#    两个都**本来就在字号预热表里**(见 `_FONT_WARM_SIZES` / `_bases`)。
+#    这一点是硬约束 —— 刚因为往预热表多塞 11 项把游玩路径的字号挤出缓存(v0.7.42 帧724 那
+#    15.9 毫秒), **别再往 Kivy 的 64 个 fontid 上添东西**。
+_GLYPH_CHARS = "0123456789+"
+_GLYPH_ON = False                # 总开关(阴性对照 + 线上紧急关, 与 `_TEXEX_ON` 同策)
+# ⚠️⚠️ 2026-09-15 **暂时关着**: 见 `GlyphLabel` 处那段"未解释的 1 像素"说明。
+#    打开它之前必须先把那个差解释掉 —— 本工程的规矩是"每一个差异像素都要能解释"。
+_GLYPH_FONT = "Roboto"           # 就是项目注册的那个中文字体(见文件头部 LabelBase.register)
+_GLYPH_ATLAS = {}                # {(fs, bold, font): rec}
+_GLYPH_ORDER = []
+_GLYPH_MAX_KEYS = 8              # 只 2 档, 给足余量; 上限是"别再撑爆字形表"的兜底
+_GLYPH_MAX_CHARS = 12            # 最长串 `+10000`(6 字符, = 投注 100 x x100, 玩家 2026-09-15 确认)
+_GLYPH_HIT = [0]
+_GLYPH_MISS = [0]                # 退化次数 —— **收益归零是静默的, 所以必须记账**
+
+
+def _glyph_key(fs, bold):
+    # ⚠️ **不 round**(见 6199 那段真机实证): 运行期算的是 `base * k` 的原值,
+    #    round 过就是**另一个 fontid**, 预热/图集全白做。
+    return (float(fs), bool(bold), _GLYPH_FONT)
+
+
+def _glyph_bake(fs, bold):
+    """烘一档(11 个字形)。任何一步不对**返回 None** ⇒ 这一档永不启用, 那三个标签退回普通 Label。
+
+    ⚠️ 三道门禁都是**真的会失败**的, 不是"看起来对":
+      ① 每个字形 `bind()` 之后**必须**数得出 alpha>0 的像素 —— 这就是 `_texex_bake` 那条
+         "`refresh()` 只量宽高, `bind()` 才触发第二趟真光栅化"的账。漏了它的症状是
+         **图集全空、画面没字, 而且不报错**。
+      ② 11 个字的高度必须**完全一致** —— 否则"同一条基线"这条假设不成立, 拼出来会歪。
+      ③ 逐字宽相加 == `text_px` 整串量(**`force=True`**) —— 把"已实测的等式"变成运行期门禁。
+         `force` 不能省: `_FIT_PX` 的 key 含 text, 命中的话这一句什么都不做(见 6284 那条教训)。
+    """
+    try:
+        rec = {"fs": float(fs), "bold": bool(bold), "adv": {}, "tex": {}, "keep": [],
+               "h": 0, "ok": False}
+        # ⚠️⚠️ **必须把 11 个字当一整串烘一次, 再按 advance 切** ——
+        #    **绝不可以一个字一个 CoreLabel 地烘**。2026-09-15 逐像素对照实测:
+        #    单独烘出来的字形, 竖直落点比"在整串里"的**高半个像素** —— 剖面上一眼看得出:
+        #    笔画中段两边逐行完全相同(454/454), 只有**顶边那一行**不同(Label 267 / Glyph 317),
+        #    整块字差 704 个像素。这是 SDL 的次像素定位, 不是我们算错了坐标
+        #    (平移 ±2 行扫过一遍, 0 偏移最优 ⇒ 不是位移, 是渲染本身不同)。
+        #    一整串烘 + 按 advance 切就没有这一层: 同一个 pass、同一支笔、同样的整数步进。
+        _cl = CoreLabel(text=_GLYPH_CHARS, font_size=float(fs), bold=bool(bold),
+                        font_name=_GLYPH_FONT, text_size=(None, None))
+        _cl.refresh()
+        _t = _cl.texture
+        if _t is None:
+            return None
+        _t.bind()                                       # ⚠️ 门禁①的前提: 第二趟必须在这里付掉
+        _W, _H = _t.size
+        if _H <= 0:
+            return None
+        _adv = [int(text_px(c, float(fs), bool(bold), force=True)) for c in _GLYPH_CHARS]
+        # 门禁③: 逐字宽相加 == 整串纹理宽。这一条不过就整档作废(宁可退回 Label, 不许拼歪)。
+        if sum(_adv) != _W:
+            return None
+        # 门禁①: 每个字都真的画出了东西(空字形 = 这档废掉, 别静默拼出一串空白)
+        _px = _t.pixels
+        _x = 0
+        for _c, _w in zip(_GLYPH_CHARS, _adv):
+            if _w <= 0:
+                return None
+            _n = 0
+            for _xx in range(_x, min(_x + _w, _W)):
+                for _yy in range(_H):
+                    if _px[(_yy * _W + _xx) * 4 + 3] > 8:
+                        _n += 1
+            if _n == 0:
+                return None                             # ① 空字形 ⇒ 整档作废
+            _st = _t.get_region(_x, 0, _w, _H)
+            _st.mag_filter = "linear"
+            _st.min_filter = "linear"
+            rec["adv"][_c] = _w
+            rec["tex"][_c] = _st
+            _x += _w
+        rec["h"] = _H
+        rec["keep"].append(_cl)                         # ⚠️ 强引用: 子纹理靠父纹理活着(会被 GC 掉)
+        # 门禁②: 逐字宽相加 == `text_px` 整串量(拿几个真串验, 不只验字符集本身)
+        for s in ("0", "8", "+2", "+10000", "273300", "1234567890"):
+            if sum(rec["adv"][c] for c in s) != text_px(s, float(fs), bool(bold), force=True):
+                return None
+        rec["ok"] = True
+        return rec
+    except Exception:
+        return None
+
+
+def _glyph_put(fs, bold, rec):
+    k = _glyph_key(fs, bold)
+    if k in _GLYPH_ATLAS:
+        return
+    _GLYPH_ATLAS[k] = rec
+    _GLYPH_ORDER.append(k)
+    while len(_GLYPH_ORDER) > _GLYPH_MAX_KEYS:
+        _GLYPH_ATLAS.pop(_GLYPH_ORDER.pop(0), None)
+
+
+def _glyph_rec(fs, bold):
+    if not _GLYPH_ON or not fs:
+        return None
+    _r = _GLYPH_ATLAS.get(_glyph_key(fs, bold))
+    return _r if (_r and _r.get("ok")) else None
+
+
+def _glyph_quads(rec, text):
+    """-> `([(子纹理, x偏移, 宽)...], 总宽)`; 出现字符集外的字符**立刻返回 None**。
+
+    ⚠️ **这条 `None` 是硬边界, 不许绕过**: `未中` 这两个汉字、任何含空格或斜杠的串
+       (实测那种串"逐字和"与"整串宽"差 1~8px)**必须**退回普通 `Label`。
+       静默拼出来 = 字距错、宽度错, 而画面"看着差不多"。
+    """
+    out, x = [], 0
+    for ch in text:
+        t = rec["tex"].get(ch)
+        if t is None:
+            return None
+        w = rec["adv"][ch]
+        out.append((t, x, w))
+        x += w
+    return out, x
+
+
+def _glyph_keys_reachable(rw):
+    """枚举**运行期真的会用到**的档 —— 不许手抄阶梯, 一律让 `fit_font_size` 自己算。
+
+    ⚠️ 为什么值得这么绕(与 `_build_texwarm` 同一个理由): 每开一个新字号在真机上是一次
+       字形表的打开, 而 Kivy 的字形缓存只有 64 项(见 6188 那次实测)。实测这里只产出
+       **2 档**(sp(48) 与 sp(19), 且都已在预热表里)。
+    ⚠️ `未中`(sp(36))**故意不烘** —— 它不在 `_GLYPH_CHARS` 里, 必退 Label。
+    """
+    out = []
+
+    def _add(fs, bd):
+        k = (float(fs), bool(bd))
+        if k[0] > 0 and k not in out:
+            out.append(k)
+
+    try:      # 结算大字: 文案 = "+N", N = 投注档 x 倍率(与 `_build_texwarm` 同一个值域)
+        mults = sorted({2} | {int(_k) for _d in VALUE_SHAPE.values() for _k in _d})
+        bets = list(PRESETS) + [int(getattr(rw, "bet", DEFAULT_BET) or DEFAULT_BET)]
+        _aw = max(80.0, float(getattr(rw, "width", 540) or 540) * 0.94)   # 与 `big_result_text` 同一句
+        for _b in bets:
+            for _m in mults:
+                _add(fit_font_size("+%d" % (_b * _m), sp(48), _aw, True), True)
+    except Exception:
+        pass
+    try:      # 余额: 数字等宽 ⇒ 位数就决定档, 用全 8 代表
+        _lb = getattr(rw, "balance_lbl", None)
+        _base = float(getattr(_lb, "_fit_base", 0.0) or 0.0)   # 与 6178 读 `_fit_base` 同一个理由
+        if _base > 0:
+            _av = max(1.0, float(_lb.width))
+            for _n in ("8", "88", "888", "8888", "88888", "888888", "8888888"):
+                _add(fit_font_size(_n, _base, _av, True), True)
+    except Exception:
+        pass
+    return out[:_GLYPH_MAX_KEYS]
+
+
+def _glyph_warm_step(area):
+    """`prebake_step` 里一次烘一档(自链式, 别一帧烘完 —— 一帧 11 次字形表 = 一记长帧)。"""
+    if not _GLYPH_ON:
+        return False
+    _rw = getattr(area, "game", None)
+    if getattr(_rw, "_glyph_keys", None) is None:
+        _rw._glyph_keys = _glyph_keys_reachable(_rw)
+        _rw._glyph_i = 0
+    _keys = _rw._glyph_keys
+    _i = int(getattr(_rw, "_glyph_i", 0))
+    if _i < len(_keys):
+        _rw._glyph_i = _i + 1
+        _fs, _bd = _keys[_i]
+        _r = _glyph_bake(_fs, _bd)
+        if _r is not None:
+            _glyph_put(_fs, _bd, _r)
+        return True
+    return False
+
+
+def _fx_fade_set(w, col, alpha):
+    """特效淡出。⚠️ 比 `_fade_set` 多乘一个**基色 alpha**。
+
+    为什么必须有这一条: `_fade_set` 只写 alpha、保留 rgb, 老路上没问题 —— 因为那时
+    **颜色(含阴影的 0.6)是烘在纹理里的**, 画布那条 Color 只管透明度。
+    换成白字图集之后**基色搬到了画布上**, 于是 `_fade_set(col, 0.5)` 会把阴影的
+    `0.6` **覆盖成 0.5** ⇒ 阴影在淡出段比基线**更黑**, 撤场那一下尤其明显。
+    普通 `Label` 没有 `_alpha0` ⇒ 默认 1.0 ⇒ 与改动前**完全一致**。
+    """
+    return _fade_set(col, alpha * float(getattr(w, "_glyph_alpha0", 1.0) or 1.0))
 
 
 def _vib_get():
@@ -7537,6 +7772,160 @@ class FpsCurve(Widget):
                                   size=(dp(6.0), dp(6.0)))
                     self._label(self.canvas, _n, x0 + _ox + dp(9.0), _ly - dp(1.0))
 
+class GlyphLabel(Widget):
+    """把"Kivy 文字光栅化"换成"预烘字形图集 + 画布染色"。**零 `texture_update`、零填纹。**
+
+    为什么是一个新控件而不是给 `Label` 换纹理: `Label` 的纹理由 Kivy 的 `texture_update`
+    管着, 而那条路正是要消灭的东西(第二趟光栅化 4~10.7 毫秒, 由 Texture 回调在"纹理下次
+    被用到时"触发, 跑在 `_frame` 外面)。这里**根本不产生文字纹理** —— 每个字是一条
+    `Rectangle` 贴预先烘好的白色字形贴图。
+
+    ⚠️ 它不是 `Label` 子类, 是故意的:
+       · 不碰 `style.kv` 里那条 `Rectangle(texture=self.texture)`(那个在 `texture=None` 时
+         会画一块**实心色块**);
+       · 不碰全局那个 `Label.texture_update` 补丁(见 `_texupd_wrap`)。
+    ⚠️ `_glyph_alpha0` = 这个控件基色的 alpha。阴影基色是 `(0,0,0,0.6)` ⇒ 淡出必须乘 0.6,
+       见 `_fx_fade_set`。**这是老路上不存在的一步**(老路把 0.6 烘在纹理里)。
+
+    ==========================================================================
+    ⚠️⚠️ **2026-09-15: 这条路做完了但暂时关着(`_GLYPH_ON = False`, 见那里的说明)。
+       卡在一个我**没能解释**的 1 像素差上 —— 打开之前必须先把它解释掉。**
+    ==========================================================================
+    已经**证明**的部分(都是实测, 不是推断):
+      · 图集纹理与"整串渲染"**逐像素完全相同** —— 按字符对字符比过 `+2000 / 273300 /
+        1234567890 / +10000 / 0`(每个字、每个串, alpha 差>3 的像素都是 **0**);
+        `Label` 与 `CoreLabel` 的纹理也**完全相同**(0 差、墨迹行一致)。
+        `${temp}/glyph_tex_cmp.py` 与 `temp/label_vs_corelabel.py` 是那两个探针。
+      · 摆位坐标与 `Label` **完全相同**: `GlyphLabel` 的 `rect0.pos=(332,685)`,
+        `Label` 的 kv 矩形 `pos=(72,685)`, 同一个 y、同一个高度 70、同一个宽 135。
+      · `mag_filter` 换 `linear` / `nearest` **结果一模一样**(704 个差异像素, 一个不差)。
+      · **同位置**分两次截图比对(排除跨位置疑点)结果也是 704; 单字 `"0"`(单块四边形)
+        也是同一形状的差(181 个像素)。
+      · `_GLYPH_ON = False` 时(本控件退化成普通 `Label` 子控件) 同位置比对是 **0 个差异像素**
+        ⇒ **接线本身干净**, 差 100% 在图集这条路上。
+    **没解释的部分**: 屏幕上 GlyphLabel 那一块的字, 顶边 AA **多出恰好一行**
+      (墨迹 36 行 -> 37 行, 底边行号不变 ⇒ 不是整体位移, 像被拉了 1 像素)。
+      纹理相同 + 矩形相同 + 过滤无关 ⇒ 按推理不该有差, 但它稳定复现
+      (两次不同位置、两次运行都是 704)。
+    **下一步该查的方向**(还没做): `TextureRegion` 的 `tex_coords` 在**全幅 region** 上
+      是否真的恒等; 以及 Kivy 的 `Rectangle` 用 region 时有没有半像素 inset。
+      `temp/glyph_same_pos.py` 是那个"同位置分两次截图"的探针, 复现只要一条命令。
+    """
+
+    text = StringProperty("")
+    font_size = NumericProperty(0.0)
+    bold = BooleanProperty(True)
+    fit_box = BooleanProperty(False)      # True: 像 HUD 那样排在"控件矩形"里(余额用), 见 `_glyph_place`
+
+    def __init__(self, color=(1, 1, 1, 1), **kw):
+        self._rgba0 = tuple(color)
+        self._glyph_alpha0 = float(self._rgba0[3])
+        self._quads = None
+        self._text_w = 0
+        self._fb = None                   # 退化用的普通 Label(见 `_degrade`)
+        self._degraded = False
+        self.padding = [0, 0, 0, 0]       # `_fit1` 会读它
+        super().__init__(**kw)
+        with self.canvas:
+            self._gcol = Color(rgba=self._rgba0)      # ⚠️ 唯一一条 Color ⇒ `_lbl_canvas_color` 必找到它
+            self._grects = [Rectangle(size=(0.0, 0.0)) for _ in range(_GLYPH_MAX_CHARS)]
+        self.bind(text=self._glyph_sync, font_size=self._glyph_sync, bold=self._glyph_sync,
+                  pos=self._glyph_place, size=self._glyph_place)
+        self._glyph_sync()
+
+    def _degrade(self):
+        """图集没这一档(或出现字符集外的字)时, 挂一个**普通 Label 当孩子** —— 行为与旧版一致。
+
+        ⚠️ 只挂一次, 且**不撤**回到图集: 一个标签一局里要么一直走图集, 要么一直走老路。
+           中途来回换会让"这一帧到底画了哪个"变成不确定的东西, 逐像素比对就没法做了。
+        """
+        if self._degraded:
+            return
+        self._degraded = True
+        _GLYPH_MISS[0] += 1
+        try:
+            self._fb = Label(text=self.text, font_size=self.font_size, bold=self.bold,
+                             color=self._rgba0,
+                             halign=("left" if self.fit_box else "center"),
+                             valign="middle", size_hint=(None, None))
+            self._fb.bind(size=lambda w, _: setattr(w, "text_size", w.size))
+            if self.fit_box:
+                self._fb.size = self.size
+                self._fb.pos = (0.0, 0.0)
+                self.bind(size=lambda *a: setattr(self._fb, "size", self.size))
+            else:
+                self._fb.center = self.center
+                self.bind(center=lambda *a: setattr(self._fb, "center", self.center))
+            self.add_widget(self._fb)
+        except Exception:
+            pass
+
+    def _glyph_sync(self, *_a):
+        # ⚠️ **只在这里**还原画布颜色。淡出会改它的 alpha(`_fx_fade_set`), 放到 `_glyph_place`
+        #    里重置会让大字**永不淡出**(而那是每帧都在摆位的路径)。
+        self._usecol = self._rgba0
+        try:
+            self._gcol.rgba = self._rgba0
+        except Exception:
+            pass
+        if self._fb is not None:
+            self._fb.text = self.text
+            self._fb.font_size = self.font_size
+            return
+        _rec = _glyph_rec(self.font_size, self.bold)
+        _q = _glyph_quads(_rec, self.text) if _rec is not None else None
+        if _q is None:
+            self._quads = None
+            for _r in self._grects:
+                _r.size = (0.0, 0.0)
+            self._degrade()
+            return
+        self._quads, self._text_w = _q
+        _GLYPH_HIT[0] += 1
+        self._glyph_place()
+
+    def _glyph_place(self, *_a):
+        """摆位。⚠️ **绝不碰 `_gcol`** —— 中奖大字每帧都在改 center(上浮), 在这里重置颜色 = 永不淡出。
+
+        坐标照抄 `style.kv` 那条 `Rectangle` 的算法(`pos = int(center - texture_size/2)`),
+        **用 `int()` 截断, 不是 `math.floor`**(负数方向两者不同)。
+
+        ⚠️⚠️ **必须从 `x/y/width/height` 现算中心, 不能读 `self.center`**(2026-09-15 实踩,
+        桌面探针抓出来的, 症状是"字画在屏幕左下角、x 对但 y 不动"):
+           `Widget.center` 是 `ReferenceListProperty(center_x, center_y)`, 而 `center_x`/`center_y`
+           是 **`cache=True` 的 `AliasProperty`**。给 `w.center = (a, b)` 赋值时它会**先设
+           `center_x` 再设 `center_y`**, 而设 `center_x` 那一下就会派发 `pos` ⇒ 我们的回调
+           **在 `center_y` 还没设之前**跑了一次; 等 `center_y` 真设好时, 别名缓存还没失效,
+           回调里读到的仍是**旧值** ⇒ 只有 x 跟着动, y 永远停在初始化那一次的值。
+           读主属性就没有这层缓存。`int(center - size/2)` 与 `int(x + width/2 - size/2)`
+           在整数 `size` 下完全等价(`Widget` 的 x/y/width/height 恒为整数或 .0)。
+        """
+        if not self._quads:
+            return
+        _rec = _GLYPH_ATLAS.get(_glyph_key(self.font_size, self.bold))
+        if _rec is None:
+            return
+        _th = _rec["h"]
+        _cx = self.x + self.width / 2.0
+        _cy = self.y + self.height / 2.0
+        if self.fit_box:
+            # 排进"控件矩形": 横向 `halign='left'` ⇒ x 从左边起; 纵向 `valign='middle'`.
+            _x0 = int(_cx - self.width / 2.0) + int(self.padding[0])
+            _y0 = int(_cy - self.height / 2.0) + int((self.height - _th) / 2.0)
+        else:
+            # 居中: 老路上的可见矩形就是 `texture_size`(= 逐字宽之和 x 字高)。
+            _x0 = int(_cx - self._text_w / 2.0)
+            _y0 = int(_cy - _th / 2.0)
+        for _i, _r in enumerate(self._grects):
+            if _i < len(self._quads):
+                _t, _dx, _w = self._quads[_i]
+                _r.texture = _t
+                _r.size = (_w, _th)
+                _r.pos = (_x0 + _dx, _y0)
+            else:
+                _r.size = (0.0, 0.0)
+
+
 class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
     静态元素(墙/钉/槽/弧)重绘只在尺寸变化或换盘面时; 球/力度条/柱塞每帧只改 pos;
@@ -7801,14 +8190,27 @@ class GameArea(FloatLayout):
             size = sp(36)
         # 同上: 手绘文字, 按可见宽缩字号(隐藏档 5000% 时 "+500000" 会比屏幕还宽)
         size = fit_font_size(text, size, max(80.0, float(self.width) * 0.94), True)
-        main = Label(text=text, font_size=size, bold=True,
-                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
-        main.bind(size=lambda w, _: setattr(w, "text_size", w.size))
-        shadow = Label(text=text, font_size=size, bold=True,
-                       color=(0, 0, 0, 0.6), size_hint=(None, None))
-        shadow.bind(size=lambda w, _: setattr(w, "text_size", w.size))
-        _tag_texupd(main, "结算大字")
-        _tag_texupd(shadow, "结算阴影")
+        # ---- 白字图集路线: 彩色大字与黑影子**共用同一批字形贴图** ----
+        # ⚠️ 老路上 Kivy 把颜色烘进纹理, 所以 main/shadow 是**两张图、两次光栅化**, 而且
+        #    就落在同一帧(真机实测那一帧的 `填纹` 9.2~10.9 毫秒)。图集烘成白色之后,
+        #    两者只差画布上那一条 `Color`。
+        # ⚠️ 走不了(未中 / 没烘到这一档)就**原样退回 Label**, 一个字都不改 ——
+        #    `_glyph_quads` 对 `未中` 返回 None 是硬边界, 见那里的说明。
+        _grec = _glyph_rec(size, True)
+        if _grec is not None and _glyph_quads(_grec, text) is not None:
+            main = GlyphLabel(text=text, font_size=size, bold=True,
+                              color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+            shadow = GlyphLabel(text=text, font_size=size, bold=True,
+                                color=(0, 0, 0, 0.6), size_hint=(None, None))
+        else:
+            main = Label(text=text, font_size=size, bold=True,
+                         color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+            main.bind(size=lambda w, _: setattr(w, "text_size", w.size))
+            shadow = Label(text=text, font_size=size, bold=True,
+                           color=(0, 0, 0, 0.6), size_hint=(None, None))
+            shadow.bind(size=lambda w, _: setattr(w, "text_size", w.size))
+            _tag_texupd(main, "结算大字")
+            _tag_texupd(shadow, "结算阴影")
         # ⚠️ **缩放入场走 GPU `Scale`, 绝不再逐帧写 `font_size`**(2026-09-13 性能优化)。
         #    原来 tick_draw 里写 `main.font_size = fs`(fs 每帧都变) —— font_size 在 Kivy 里
         #    属于 `_font_properties`, 每次赋值都会触发 `_trigger_texture` ⇒ **重新测量字形
@@ -8094,7 +8496,10 @@ class GameArea(FloatLayout):
                 #    两个 Label 的贴图颜色在**创建时**就已经烘好了(main 是倍率色、shadow 是
                 #    半透明黑), 所以这里只需要给它们乘一个 alpha。
                 _cols = e.get("cols") or [None, None]
-                _ok = (_fade_set(_cols[0], alpha) and _fade_set(_cols[1], alpha))
+                # ⚠️ 走 `_fx_fade_set` 而**不是** `_fade_set`: 图集把阴影的基色 alpha(0.6)
+                #    搬到了画布上, `_fade_set` 只写 alpha、会把 0.6 覆盖掉 ⇒ 阴影在淡出段
+                #    比基线更黑。普通 `Label` 没有 `_glyph_alpha0`, 那一支与改动前完全一致。
+                _ok = (_fx_fade_set(main, _cols[0], alpha) and _fx_fade_set(shadow, _cols[1], alpha))
                 if not _ok:
                     # 兜底: 拿不到画布 Color 就退回老路(写 label.color + 量化), 绝不静默不淡出
                     _q = int(alpha * BIG_TEXT_ALPHA_STEPS + 0.5) / float(BIG_TEXT_ALPHA_STEPS)
@@ -11145,7 +11550,8 @@ class RootWidget(BoxLayout):
             #        (给"文字重建"这条优化线用的), 玩家看了没有任何用处; 数据在保存的 txt 里
             #        一条不少(`_bench_frame_log`)。
             #      · `最慢帧：… · 主线程 9.8 / 游戏逻辑 8.5 毫秒` —— **删掉"主线程/游戏逻辑"**,
-            #        那是开发者术语; 「最慢一帧多少毫秒、发生在哪个阶段」这一半留着, 玩家看得懂。
+            #        那是开发者术语; 「最慢一帧是多少**帧/秒**、发生在哪个阶段」这一半留着,
+            #        玩家看得懂(2026-09-15 又从"毫秒"改成了"帧/秒", 见下面 `_worst_line`)。
             #      · `各阶段出慢帧比例：…` 与 `低于 60 FPS 的帧：N / M` —— **留**。前者回答
             #        "卡在哪一段", 后者就是判据本身。
             _grp = d.get("groups") or {}
@@ -11159,8 +11565,11 @@ class RootWidget(BoxLayout):
 
                 ⚠️ 卡顿帧与慢帧**共用这一个函数** —— 两处各写一份格式化迟早会漂成
                    两种排版(本工程在"口径"上栽过太多次)。
-                ⚠️ 百分比的分母是**该阶段的帧数**("占这一阶段多少"),
-                   与两档那行的分母(**窗口总帧数**)不是一回事, 两处不可互比。
+                ⚠️ `x/y` 的分母是**该阶段的帧数**("占这一阶段多少"), 与两档那行的分母
+                   (**窗口总帧数**)不是一回事, 两处不可互比。
+                ⚠️ **只印 `x/y`, 不印百分比**(玩家 2026-09-15:「去掉百分比 只有 x/y 这样的格式」)。
+                   但**排序仍按比率**(`_rw` 里的 `r[0]`) —— 分数大小一样时, 比率才是
+                   "哪个阶段更容易卡"的正确次序; 按绝对帧数排会把长阶段顶到前面。
                 ⚠️ 该档为 0 帧时**整行不印**(见调用处的说明), 别印一个空分布。
                 """
                 _st = (groups or []) if d.get(n_key) else []
@@ -11171,7 +11580,7 @@ class RootWidget(BoxLayout):
                     _rw.append(((100.0 * _cnt / _tot) if _tot > 0 else -1.0,
                                 _name, int(_cnt), _tot))
                 _rw.sort(key=lambda r: -r[0])
-                _rt = [('%s %.1f%%（%d/%d）' % (r[1], r[0], r[2], r[3])) if r[3] > 0
+                _rt = [('%s %d/%d' % (r[1], r[2], r[3])) if r[3] > 0
                        else ('%s %d帧' % (r[1], r[2])) for r in _rw]
                 return (label + '：' + ' · '.join(_rt)) if _rt else ''
 
@@ -11185,7 +11594,13 @@ class RootWidget(BoxLayout):
                 _gap, _stage = float(_worst[0]), _worst[1]
                 # ⚠️ 分隔符统一用**全角冒号** —— 上一版这里写的是半角 ": ", 三行里两行全角
                 #    一行半角, 截图上一眼看出来不齐(玩家说过"排版废话很多", 别再送把柄)。
-                _worst_line = '最慢一帧：%.0f 毫秒（%s）' % (_gap, _stage)
+                # ⚠️ **2026-09-15 玩家要求改成帧率**(原为「最慢一帧：48 毫秒（装杯）」)。
+                #    单位跟本面板其余几行走**中文「帧/秒」, 不用 `fps`** —— 上面两档门槛印的
+                #    就是「低于 91 帧/秒」, 同一块面板混两种单位, 正是上一版被打回过的那种
+                #    "排版送把柄"(见下面那条全角冒号的注释)。
+                #    `_gap` 是帧间隔毫秒, 所以帧率 = `1000 / _gap` —— 和门槛那两行**同一个换算**。
+                _worst_line = ('最慢一帧：%.1f 帧/秒（%s）' % (1000.0 / _gap, _stage)
+                               if _gap > 0 else '')
             else:
                 _worst_line = ''
             # ⚠️ 原来这一行是「低于 60 FPS 的帧: N / M」—— **绝对帧率**的门槛在高刷机上没有
@@ -11255,8 +11670,15 @@ class RootWidget(BoxLayout):
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         # 这是“数据表”而不是一段左对齐正文：三列标题与数值均居中，扫视同一
         # 行时能更快对应；时间列仍固定足够宽，完整年份不会被压缩。
+        # ⚠️⚠️ **2026-09-15 玩家定稿: 标题金色、备注灰色 —— 与 2026-09-14 那版正好对调。**
+        #    玩家原话:「这里应该是标题用金色 备注用灰色？ 2个颜色换下」。
+        #    对调后整块面板的层次是: **标题金(主) > 数据近白 > 表头/备注灰(次)** ——
+        #    表头本来就是 `COL_SUB`, 备注改用同一档次色, 视觉上归成"说明文字"一类。
+        #    ⚠️ 这是**有意反转** 11389-11394 那条旧决定(那里写"解释文字换成金色"), 不是漂移,
+        #       别照着旧注释改回去。金色 `COL_BALL` 仍是本作「主数字」的颜色, 只是现在
+        #       挂在标题上, 不再挂在备注上。
         title_lbl = self._fit_line(Label(text='测试历史（渲染 / SoC）', bold=True,
-                                         halign='center', color=hex_rgb(COL_TEXT) + (1,),
+                                         halign='center', color=hex_rgb(COL_BALL) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
         if not self.bench_history:
@@ -11374,15 +11796,16 @@ class RootWidget(BoxLayout):
             #     会在屏幕上原样显示 —— 强调一律用「」。
             # ⚠️⚠️ 2026-09-14 玩家定稿两处:
             #   ① **去掉开头的「口径：」三个字** —— 那两行本身就是注释, 前面再挂个标签是废话。
-            #   ② **解释文字换成金色 `COL_BALL`**(原来是最闷的次级色 `COL_SUB`) ——
-            #      这是这个面板里唯一"有信息量"的注释, 用次级色等于让人不想看。
-            #      选金色是因为它本来就是本作「主数字」的颜色(见 `弹珠金色主数字` 那条注释),
-            #      在深蓝底上最抓眼, 又和近白的成绩正文天然分开。
+            #   ② ~~解释文字换成金色 `COL_BALL`~~ —— **2026-09-15 玩家又改回去了**:
+            #      「标题用金色 备注用灰色, 2个颜色换下」⇒ 备注回到 `COL_SUB`, 金色挪给标题
+            #      (见 `title_lbl` 上面那段)。**别照着被划掉的这条改回来。**
+            #      留下来的道理是"两块颜色要分开": 备注仍然用次级色、标题用主数字色, 只是
+            #      谁是谁对调了。
             foot = Label(
                 text=('  中位跑分：物理引擎每秒模拟步数的中位数\n'
                       '  波动：(最大跑分-最小跑分)/中位数跑分'),
                 font_size='12sp', halign='left', valign='top',
-                color=hex_rgb(COL_BALL) + (1,), size_hint_y=None)
+                color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
             self._auto_h(foot, dp(44))
             content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
