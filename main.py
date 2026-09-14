@@ -7505,6 +7505,13 @@ class RootWidget(BoxLayout):
         触发把数字剧透了)。
         `_hud_dim_last` 短路是性能考虑: 演出之外这一层恒为 0, 不必每帧去动那两个 Color。
         """
+        # 跑分时信息栏承担进度提示，不能再被中奖落珠的 HUD 压暗层盖灰。
+        # 其它控件本身仍由 disabled 样式表明不可操作，不需要整块额外蒙黑。
+        if getattr(self, "_bench_running", False):
+            if self._hud_dim_last != 0.0:
+                self._hud_dim_last = 0.0
+                self._paint_hud_dim(0.0)
+            return
         a = self.game_area.win_fx.dim_alpha(HUD_ALPHA)
         if a == self._hud_dim_last:
             return
@@ -8870,15 +8877,21 @@ class RootWidget(BoxLayout):
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(empty)
         else:
-            columns = Label(text='平均/1%Low　　每秒步数 / 波动', font_size='12sp',
-                            halign='left', valign='middle', color=hex_rgb(COL_SUB) + (1,),
-                            size_hint_y=None, height=dp(22))
-            columns.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+            time_w, fps_w = dp(112), dp(68)
+            columns = BoxLayout(size_hint_y=None, height=dp(22))
+            for text, width in (("时间", time_w), ("平均/1%Low", fps_w), ("每秒步数 / 波动", None)):
+                head = Label(text=text, font_size='12sp', halign='left', valign='middle',
+                             color=hex_rgb(COL_SUB) + (1,),
+                             size_hint_x=None if width else 1)
+                if width:
+                    head.width = width
+                head.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+                columns.add_widget(head)
             content.add_widget(columns)
             scroll = ScrollView(size_hint=(1, 1))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
-            rows = []
+            time_rows, fps_rows, soc_rows = [], [], []
             for r in reversed(self.bench_history[-100:]):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
@@ -8898,16 +8911,27 @@ class RootWidget(BoxLayout):
                 else:
                     soc_text = '%d/%.1f%%' % (
                         r.get('phys_fps', 0), float(spread))
-                row = Label(text='%s　%s　%s' % (stamp, fps_text, soc_text),
-                            font_size='13sp', halign='left', valign='middle',
-                            color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(26))
-                row.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
-                rows.append(row)
+                row = BoxLayout(size_hint_y=None, height=dp(26))
+                labels = []
+                for text, width in ((stamp, time_w), (fps_text, fps_w), (soc_text, None)):
+                    lbl = Label(text=text, font_size='13sp', halign='left', valign='middle',
+                                color=hex_rgb(COL_TEXT) + (1,),
+                                size_hint_x=None if width else 1)
+                    if width:
+                        lbl.width = width
+                    lbl.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+                    row.add_widget(lbl)
+                    labels.append(lbl)
+                time_rows.append(labels[0])
+                fps_rows.append(labels[1])
+                soc_rows.append(labels[2])
                 inner.add_widget(row)
             # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
             #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
             #    同一批行 17.0 而别的 17sp 行是 34.0)。
-            self._fit_uniform(rows, sp(13))
+            self._fit_uniform(time_rows, sp(13))
+            self._fit_uniform(fps_rows, sp(13))
+            self._fit_uniform(soc_rows, sp(13))
             scroll.add_widget(inner)
             content.add_widget(scroll)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
