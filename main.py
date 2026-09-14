@@ -12,13 +12,12 @@ os.environ.setdefault("KIVY_NO_ARGS", "1")   # 自定义参数(--selftest/--smok
 # 系统只能给 letterbox 兼容盒(ZUI 半屏盒的帮凶), buildozer.spec 放开四方向就会被这里覆盖废掉。
 os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown Landscape LandscapeUpsideDown"
 
-# 必须在导入 Window 之前配置。桌面端关掉 SDL 的 swap interval，才能让 Kivy 的 120Hz
-# 调度真正呈现；否则渲染循环会被显示器/桌面合成器的 60Hz vsync 卡住。Android 则保留
-# vsync，由下面的 Window/显示模式请求把 Surface 提升到 120Hz，避免无意义撕裂和空转。
+# 必须在导入 Window 之前配置。所有平台都保留 SDL 的 swap interval：Windows 上关闭它不会
+# 绕过桌面合成器，实测反而把 60Hz 显示器从稳定 60fps 拖成约 50fps。高刷显示器开启 vsync
+# 会自然按其刷新率呈现；Android 则由下面的 Window/显示模式请求把 Surface 提升到 120Hz。
 from kivy.config import Config
-_BOOT_ON_ANDROID = bool(os.environ.get("ANDROID_ARGUMENT"))
 Config.set("graphics", "maxfps", "120")
-Config.set("graphics", "vsync", "1" if _BOOT_ON_ANDROID else "0")
+Config.set("graphics", "vsync", "1")
 
 import math
 import random
@@ -140,6 +139,10 @@ E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
 VMAX = 2400.0                # 限速(需 >= 最大发射速度, 防穿透)
 FIXED_DT = 1.0 / 60.0
+# 呈现/界面逻辑按 120Hz 调度；物理仍固定在 60Hz，累加器使得每两个呈现 tick 推进一步物理。
+# 低刷屏由 vsync 合并 tick，高刷屏则能获得真正的 120 次画面更新。
+FRAME_TICK_HZ = 120
+FRAME_TICK_DT = 1.0 / FRAME_TICK_HZ
 # 一帧最多补几个物理步(超出的积压**丢掉**, 不往下攒)。见 `_clamp_accum` 的说明。
 MAX_STEPS_PER_FRAME = 4
 FRAME_MS = 16
@@ -2162,7 +2165,7 @@ def _apply_fps_cap():
     try:
         Config.set("graphics", "maxfps", str(int(cap)))
         # 窗口创建前已设过；这里保留运行期状态供诊断，并防止配置被其他代码改回去。
-        Config.set("graphics", "vsync", "1" if platform == "android" else "0")
+        Config.set("graphics", "vsync", "1")
     except Exception:
         pass
     try:
@@ -6964,7 +6967,7 @@ class RootWidget(BoxLayout):
             self._bench_dim_col = Color(0.05, 0.06, 0.09, 0.0)
             self._bench_dim_rect = Rectangle(pos=(0, 0), size=(0, 0))
         self.bind(size=self._relayout_bench_dim, pos=self._relayout_bench_dim)
-        Clock.schedule_interval(self._frame_timed, FIXED_DT)
+        Clock.schedule_interval(self._frame_timed, FRAME_TICK_DT)
         # 中奖杯的球纹理/球堆预热: 分帧摊在启动后做, 别等中奖那一刻现算(低端机单档
         # d=128 纯 Python 合成要 100~200ms, 一次做完就是几个长帧, 而这动画的全部意义
         # 就是丝滑)。排在 _frame 之后, 不影响冷启动的建界面/烘音效。
@@ -8566,7 +8569,7 @@ class RootWidget(BoxLayout):
             _hz, _cap, _mode_hz = _FPS_INFO[0], _FPS_INFO[1], _FPS_INFO[2]
             _platform_rate = (' · Android模式请求 %s' %
                               (('%.0fHz' % _mode_hz) if _mode_hz else '120Hz（模式未知）')
-                              if platform == "android" else ' · 桌面vsync已关闭')
+                              if platform == "android" else ' · 桌面vsync跟随屏幕刷新率')
             parts.append('节拍： 屏幕 %s · 帧率上限 %s · vsync=%s%s'
                          ' · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
                          % (('%.0fHz' % _hz) if _hz else '没读到',
