@@ -2082,11 +2082,22 @@ def _texupd_wrap():
     if _orig is None or getattr(_orig, "_probe_wrapped", False):
         return
     def texture_update(self, *a, **k):
-        if _TEXUPD_ACTIVE[0]:
-            _TEXUPD[0] += 1
-            _tag = getattr(self, "_texupd_tag", "其他文字")
-            _TEXUPD_BY[_tag] = _TEXUPD_BY.get(_tag, 0) + 1
-        return _orig(self, *a, **k)
+        # ⚠️ 2026-09-15: 这里**同时给子步骤计时**。真机 v0.7.20 的数据显示: 每发球稳定产生
+        #    4 个慢帧(周期 252/89/21/423 帧, 签名固定 = 板面/重掷/字号/发射), 每帧主线程烧
+        #    13 毫秒而"板面/重掷/字号/装杯/发射"五个已计时的加起来只有 **2 毫秒** ——
+        #    剩下 11 毫秒**不在我们任何一处已计时的代码里**, 而这几帧**每帧正好 3 次重建**。
+        #    把重排接进 `_brk_add` 之后, 下一次跑那 11 毫秒会自己报名字, 不用再推。
+        _t0 = time.perf_counter()
+        try:
+            if _TEXUPD_ACTIVE[0]:
+                _TEXUPD[0] += 1
+                _tag = getattr(self, "_texupd_tag", "其他文字")
+                _TEXUPD_BY[_tag] = _TEXUPD_BY.get(_tag, 0) + 1
+            return _orig(self, *a, **k)
+        finally:
+            # ⚠️ 只在跑分采样期记 —— 平时 `_FRAME_BRK` 没人读, 记了也是白记。
+            if _TEXUPD_ACTIVE[0]:
+                _brk_add("文字", _t0)
     texture_update._probe_wrapped = True
     texture_update.__name__ = "texture_update"
     _L.texture_update = texture_update
@@ -8944,12 +8955,20 @@ class RootWidget(BoxLayout):
                           % (_gm, _sm, _tm))
             # ⚠️ 判据写死在这里, 免得看日志的人各读各的: 自算>=1ms 就是"我们自己的代码在吃"
             #    (1ms 在 8~12ms 的帧上是 8~12%, 已远超"顺带做一点"的量级)。
-            _n_own = sum(1 for _i in _slow_idx if _self_ms[_i] >= 1.0)
-            _n_out = sum(1 for _i in _slow_idx
-                         if _self_ms[_i] < 1.0 and (_thr_ms[_i] - _self_ms[_i]) >= 1.0)
-            _n_wait = len(_slow_idx) - _n_own - _n_out
-            _lines.append("#   我们的代码(自算>=1ms) %d 帧 · _frame 外面(主线程明显大于自算) %d 帧"
-                          " · 在等(两个都小) %d 帧" % (_n_own, _n_out, _n_wait))
+            # ⚠️ 判据按**主线程占帧长的比例**分, 不是"自算是否 >=1ms"。
+            #    第一版用的就是后者, 结果把 17 个"主线程只跑了 1.9 毫秒、帧却走了 11 毫秒"的帧
+            #    也算进了"`_frame` 外面", 读起来像"钱花在 Kivy 上" —— 而那些帧**主线程
+            #    大部分时间根本没在跑**(在等节拍/合成器/调度)。两者要修的东西完全不同。
+            _n_wait = sum(1 for _i in _slow_idx if _thr_ms[_i] < 0.30 * gaps[_i])
+            _n_half = sum(1 for _i in _slow_idx
+                          if 0.30 * gaps[_i] <= _thr_ms[_i] < 0.70 * gaps[_i])
+            _n_busy = len(_slow_idx) - _n_wait - _n_half
+            _lines.append("#   主线程没在跑(<30%%帧长) %d 帧 = 帧在等, 不是算出来的 · 半跑半等 %d 帧"
+                          " · 一直在算(>=70%%) %d 帧" % (_n_wait, _n_half, _n_busy))
+            _all_ratio = sorted(_thr_ms[_i] / max(0.01, gaps[_i]) for _i in range(len(gaps)))
+            _br_ = _all_ratio[len(_all_ratio) // 2] if _all_ratio else 0.0
+            _lines.append("#   常态帧主线程只占帧长 %.0f%%(拿它当尺子): 慢帧明显低于这个 = 在等;"
+                          " 明显高于 = 真在算" % (100.0 * _br_))
         _lines.append("# 每行: 帧间隔毫秒,阶段,当帧文字重建次数,_frame自算ms,主线程ms,最大子步骤")
         _lines.extend("%.2f,%s,%d,%.2f,%.2f,%s" % (g, t, x, s, m, b)
                       for g, t, x, s, m, b
