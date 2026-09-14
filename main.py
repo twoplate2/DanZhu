@@ -2063,6 +2063,13 @@ _FRAME_FIT = [0, 0]
 _BENCH_HZ = {}
 _COLD_FS = []
 _COLD_FS_TAG = ["?"]
+# 本帧冷字号测量用的**基准字号**(`_fit1` 传进 `fit_font_size` 的那个 `b`)。
+# ⚠️ 为什么要它(2026-09-14 真机 v0.7.35): 榜单上那 5 条冷字号的"离最近预热档差"是
+#    0.18~3.37 —— **差得不像是四舍五入**, 说明它们压根不在表里。而表 = 各标签基准 x FIT_SCALES,
+#    所以它们要么是 `基准 x FIT_FINE`(v0.7.32 为了压到 64 上限以内**故意不烘**的那 7 档),
+#    要么是"某个没进表的基准"。**光看一个 fs 分不出这两者** —— 记下基准之后,
+#    `fs / 基准` 直接就是那个倍率, 一眼能看出它在 FIT_SCALES 里还是在 FIT_FINE 里。
+_COLD_FS_BASE = [0.0]
 # 多慢才算「冷」—— 下限设 3 毫秒: 热字号一次量出来是 0.02~1.5 毫秒(桌面实测),
 # 3 毫秒已经远超它, 不会把热测量混进来。
 COLD_FS_MIN_MS = 3.0
@@ -6281,7 +6288,7 @@ def text_px(text, fs, bold=False):
                 if _nd < 0.0 or _d < _nd:
                     _nd, _nb = _d, _wv
             _COLD_FS.append((_cold_ms, float(fs), bool(bold), _COLD_FS_TAG[0], _nb, _nd,
-                             (float(fs), bool(bold)) in _WARM_DID))
+                             (float(fs), bool(bold)) in _WARM_DID, float(_COLD_FS_BASE[0])))
             _COLD_FS.sort(key=lambda _x: -_x[0])
             del _COLD_FS[5:]
         if len(_FIT_PX) > 512:                   # 余额那类数字会一直变, 别让缓存无限长
@@ -8137,6 +8144,11 @@ class RootWidget(BoxLayout):
         _FRAME_FIT[0] += 1
         # 给"冷字号"归因用(见 `_COLD_FS`): 谁在挑字号。
         _COLD_FS_TAG[0] = getattr(w, "_texupd_tag", None) or type(w).__name__
+        # 记下这次用的基准(见 `_COLD_FS_BASE`): 冷字号的比值靠它才算得出来。
+        try:
+            _COLD_FS_BASE[0] = float(getattr(w, "_fit_base", 0.0) or 0.0)
+        except Exception:
+            _COLD_FS_BASE[0] = 0.0
         if base is not None:
             w._fit_base = float(base)
         # inset 记在控件上: 挂在 width 上的自动重挑(`_install_fit`)也要用同一个内缩量,
@@ -10040,9 +10052,12 @@ class RootWidget(BoxLayout):
             #    只印 4 位小数的话这两种情况长得一模一样 —— 那正是我上一轮读不出来的原因。
             _lines.append("# 最慢的冷字号测量(>%.0f 毫秒才算, 含「离最近预热档的差」): %s"
                           % (COLD_FS_MIN_MS,
-                             " · ".join("%.1fms fs=%r bold=%d [%s] 最近预热档%r 差%.9f 预热时量过=%s"
-                                        % (_c[0], _c[1], int(_c[2]), _c[3], _c[4], _c[5],
-                                           "是" if _c[6] else "**否**")
+                             " · ".join("%.1fms fs=%r bold=%d [%s] 基准%.4f 倍率%.4f "
+                                        "最近预热档%r 差%.4f 预热时量过=%s"
+                                        % (_c[0], _c[1], int(_c[2]), _c[3],
+                                           (_c[7] if len(_c) > 7 else 0.0),
+                                           ((_c[1] / _c[7]) if len(_c) > 7 and _c[7] > 0 else 0.0),
+                                           _c[4], _c[5], "是" if _c[6] else "**否**")
                                         for _c in _COLD_FS)))
         else:
             _lines.append("# 冷字号测量: **一次都没有**(全部命中了预热表)")
@@ -10080,6 +10095,9 @@ class RootWidget(BoxLayout):
         _lines.append("# 字号预热表: %d 项 (Kivy 字体缓存上限约 64, 超了就互相挤)"
                       % (len(_FONT_WARM_HUD or ()) + len(_FONT_WARM_SIZES or ())))
         # ⚠️ 顺带把这两句读法写进日志 —— 下一份日志不用再回来翻源码就知道怎么读。
+        _lines.append("#   读法2: 「倍率」若落在 FIT_SCALES(1.0/0.94/0.88/0.82/0.76/0.70) "
+                      "之外, 那就是 v0.7.32 为了压到 64 上限以内**故意不烘**的 FIT_FINE 档 —— "
+                      "**这是「要么超上限自己挤自己、要么多付一次冷开」的硬取舍, 不是漏烘。**")
         _lines.append("#   读法: 「预热时量过=是」而仍然是冷 ⇒ **被 Kivy 的字体缓存挤掉了**"
                       "(warm 再多也没用, 要减字号总数); 「=否」⇒ 预热那一句被 `text_px` "
                       "自己的缓存挡掉了, 等于没烘。最近预热档的**差**若为 0 就排除"
