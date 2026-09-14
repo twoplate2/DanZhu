@@ -781,18 +781,30 @@ def advance_flight(b, geo):
     _ARC_FRAME += 1                # 弧面缓动帧计数
     return physics_step(b, geo, FIXED_DT)
 
-def benchmark_trajectories(duration=0.7, runs=5):
-    """性能测试: 每次固定 duration 秒(短, 不触发 CPU 降频), 数帧数, 跑 runs 次取中位。
-    返回 (total_flights, total_frames, fps_list) 实测值, 不反推。
-    固定种子可复现。固定短时长(而非固定次数)设备无关: PC/手机都 <1s, 不触发 turbo 降频。"""
-    geo = build_geo()
-    rng = random.Random(12345)   # 固定种子, 不碰全局 random(结果可复现)
+SOC_WARMUP_CPU_SEC = 1.5
+SOC_SAMPLE_CPU_SEC = 1.0
+SOC_SAMPLE_RUNS = 7
 
-    def _run_once():
+
+def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
+                           sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
+                           runs=SOC_SAMPLE_RUNS):
+    """单核物理吞吐：1.5 秒 CPU 时间预热 + 7×1 秒 CPU 时间样本，取中位数。
+
+    用工作线程自身的 ``thread_time`` 作时间基准，排除等待 GIL、渲染和系统调度的墙钟空档；
+    每轮用实际消耗的 CPU 时间作分母，避免旧版「实际跑过 0.7 秒但固定除以 0.7」的偏差。
+    返回 ``(总发数, 总步数, 各轮步/秒, 各轮实际CPU秒)``。
+    """
+    geo = build_geo()
+    cpu_clock = getattr(time, "thread_time", None) or time.process_time
+
+    def _run_once(cpu_seconds, seed):
+        # 每个样本从同一条确定性输入序列起跑，波动反映 SoC 状态，而不是抽到不同球路。
+        rng = random.Random(seed)
         flights = 0
         frames = 0
-        t0 = time.time()
-        while time.time() - t0 < duration:
+        t0 = cpu_clock()
+        while cpu_clock() - t0 < cpu_seconds:
             power = rng.uniform(MISFIRE_POWER, 1.0)
             b = launch_ball(power, rng=rng)
             for _ in range(4000):
@@ -801,19 +813,22 @@ def benchmark_trajectories(duration=0.7, runs=5):
                 if landed is not None:
                     flights += 1
                     break
-        return flights, frames
+        used = max(0.000001, cpu_clock() - t0)
+        return flights, frames, used
 
-    _run_once()   # 预热一次(让 CPU 升频/Python 热身), 不计数
+    _run_once(warmup_cpu_sec, 98765)   # 升频/Python 热身，不计成绩
 
     fps_list = []
+    cpu_seconds_list = []
     total_flights = 0
     total_frames = 0
     for _ in range(runs):
-        flights, frames = _run_once()
-        fps_list.append(frames / duration)
+        flights, frames, used = _run_once(sample_cpu_sec, 12345)
+        fps_list.append(frames / used)
+        cpu_seconds_list.append(used)
         total_flights += flights
         total_frames += frames
-    return total_flights, total_frames, fps_list
+    return total_flights, total_frames, fps_list, cpu_seconds_list
 
 def _pick(dist):
     """按 {取值: 概率} 的累计阈值掷一个取值(概率和须=1)。"""
@@ -7692,7 +7707,7 @@ class RootWidget(BoxLayout):
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='全程约 40 秒（含5次落珠动画）。\n测试两项设备性能：\n1. 自动发 5 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。',
+        desc_lbl = Label(text='全程约 45 秒（含5次落珠动画）。\n测试两项设备性能：\n1. 自动发 5 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。',
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         # 说明是**多行正文** —— 只能用"高度跟着排版走"(缩字号会把整段一起缩小)。
@@ -8333,8 +8348,8 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(self._wait_idle_then_bench, 0.5)
 
     def _run_benchmark(self):
-        flights, frames, fps_list = benchmark_trajectories()
-        Clock.schedule_once(lambda dt: self._bench_done(flights, frames, fps_list), 0)
+        flights, frames, fps_list, cpu_secs = benchmark_trajectories()
+        Clock.schedule_once(lambda dt: self._bench_done(flights, frames, fps_list, cpu_secs), 0)
 
     def _device_info(self):
         if platform == 'android':
@@ -8388,9 +8403,14 @@ class RootWidget(BoxLayout):
             pass
         return ' · '.join(parts)
 
-    def _bench_done(self, flights, frames, fps_list):
+    def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
         self._hide_bench_dim()   # 第2轮结束: 恢复界面
-        phys_fps = sorted(fps_list)[len(fps_list) // 2]   # 物理吞吐中位数
+        _phys_sorted = sorted(fps_list)
+        phys_fps = _phys_sorted[len(_phys_sorted) // 2]   # 物理吞吐中位数
+        phys_min = _phys_sorted[0] if _phys_sorted else 0.0
+        phys_max = _phys_sorted[-1] if _phys_sorted else 0.0
+        phys_spread = 100.0 * (phys_max - phys_min) / phys_fps if phys_fps > 0 else 0.0
+        phys_runs = len(fps_list)
         avg_frames = frames / max(1, flights)
         cost_ms = avg_frames / phys_fps * 1000.0 if phys_fps > 0 else 0.0  # 每发纯物理耗时
         render_fps = getattr(self, "_render_fps", 0.0)
@@ -8404,6 +8424,12 @@ class RootWidget(BoxLayout):
             "cost_ms": round(cost_ms, 1),
             "render_fps": round(render_fps, 1),
             "render_1low": round(render_1low, 1),
+            "phys_runs": phys_runs,
+            "phys_min": int(phys_min),
+            "phys_max": int(phys_max),
+            "phys_spread": round(phys_spread, 1),
+            "phys_cpu_seconds": round(sum(cpu_secs or []), 3),
+            "version": _app_version(),
             "device": dev,
         })
         if len(self.bench_history) > 100:
@@ -8445,9 +8471,11 @@ class RootWidget(BoxLayout):
             _ver = ""
         _dev_ver = (dev + "  " + _ver) if _ver and _ver not in dev else dev
         score = ('%s\n'
-                 '运算速度：每秒 %d 步模拟\n'
+                 '运算速度：%d 轮中位每秒 %d 步模拟\n'
+                 '稳定性：%d～%d 步/秒 · 波动 %.1f%%\n'
                  '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
-                 '%s') % (_dev_ver, int(phys_fps), avg_frames, cost_ms, _low_txt)
+                 '%s') % (_dev_ver, phys_runs, int(phys_fps), int(phys_min), int(phys_max),
+                            phys_spread, avg_frames, cost_ms, _low_txt)
         score_lbl = Label(text=score, font_size='17sp', halign='left', valign='top',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
         self._auto_h(score_lbl, dp(130), dp(6))
@@ -8674,9 +8702,9 @@ class RootWidget(BoxLayout):
             return ''
 
     def _show_bench_history(self):
-        """弹珠发射性能测试历史弹窗(最近100次, 每行只显示每秒步数)。"""
+        """性能测试历史：每次完整测试一张两行卡，同时保留渲染与 SoC 指标。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
-        title_lbl = self._fit_line(Label(text='测试历史（最近100次）', bold=True,
+        title_lbl = self._fit_line(Label(text='测试历史（渲染 / SoC）', bold=True,
                                          halign='center', color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
@@ -8687,9 +8715,9 @@ class RootWidget(BoxLayout):
             content.add_widget(empty)
         else:
             scroll = ScrollView(size_hint=(1, 1))
-            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
+            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
             inner.bind(minimum_height=inner.setter('height'))
-            _rows = []          # 收齐后**整组**定一个字号(见 _fit_uniform)
+            _render_rows, _soc_rows = [], []
             for r in reversed(self.bench_history[-100:]):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
@@ -8697,17 +8725,39 @@ class RootWidget(BoxLayout):
                 #    这里原来是 17sp/30dp —— 全 app 最大的正文, 比主界面正文(14~15)还大一档,
                 #    而它是个要塞很多行的滚动列表。统一到 15sp(Body 档) + 26dp 行高:
                 #    同一个滚动框里能多放约两行(玩家: 「这个设计的目的是放更多内容的」)。
-                row = Label(
-                    text='%s    每秒 %d 步' % (r.get('time', '--'), r.get('phys_fps', 0)),
-                    font_size='15sp', halign='left', valign='middle',
-                    color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(26))
-                row.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
-                _rows.append(row)
-                inner.add_widget(row)
+                card = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(48))
+                render, low = r.get('render_fps'), r.get('render_1low')
+                if render is None or low is None:
+                    render_text = '%s　渲染 —' % r.get('time', '--')
+                else:
+                    render_text = '%s　渲染 %.0f / 1%% %.0f fps' % (
+                        r.get('time', '--'), float(render), float(low))
+                spread = r.get('phys_spread')
+                ver = str(r.get('version') or '')
+                ver_tail = ('　' + ver) if ver else ''
+                if spread is None:
+                    soc_text = 'SoC %d 步/秒%s' % (r.get('phys_fps', 0), ver_tail)
+                else:
+                    soc_text = 'SoC %d 步/秒　波动 %.1f%%%s' % (
+                        r.get('phys_fps', 0), float(spread), ver_tail)
+                render_lbl = Label(text=render_text, font_size='13sp', halign='left',
+                                   valign='middle', color=hex_rgb(COL_TEXT) + (1,),
+                                   size_hint_y=None, height=dp(24))
+                soc_lbl = Label(text=soc_text, font_size='13sp', halign='left',
+                                valign='middle', color=hex_rgb(COL_SUB) + (1,),
+                                size_hint_y=None, height=dp(24))
+                render_lbl.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                soc_lbl.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                card.add_widget(render_lbl)
+                card.add_widget(soc_lbl)
+                _render_rows.append(render_lbl)
+                _soc_rows.append(soc_lbl)
+                inner.add_widget(card)
             # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
             #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
             #    同一批行 17.0 而别的 17sp 行是 34.0)。
-            self._fit_uniform(_rows, sp(15))     # 与另外两个列表弹窗同一个基准(见上)
+            self._fit_uniform(_render_rows, sp(13))
+            self._fit_uniform(_soc_rows, sp(13))
             scroll.add_widget(inner)
             content.add_widget(scroll)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
