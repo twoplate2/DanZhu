@@ -9110,9 +9110,13 @@ class RootWidget(BoxLayout):
         _btns.add_widget(close)
         content.add_widget(_btns)
         # 保存结果**单独一行常驻显示** —— 按钮上的字两秒就变回去了, 而"存到哪了"是要照着去找的。
+        # ⚠️ 高度**必须走 `_auto_h`**: ② 那条提示里带完整路径 + 失败原因, 12sp 下要折
+        #    2~4 行, 写死 `height=dp(30)` 会把尾巴裁掉 —— 而尾巴里正是"① 为什么没成"。
+        #    (对抗性审查 A2 提的, 当时标的是"未验证"; 随后我把文案写得更长, 所以必须一起改。)
         _note = Label(text='', font_size='12sp', halign='center', valign='middle',
                       color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(30))
         _note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+        self._auto_h(_note, dp(30), dp(4))
         content.add_widget(_note)
         popup = self._popup(0.92, 390, title='', content=content,
                             auto_dismiss=True, separator_height=0)
