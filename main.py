@@ -2192,6 +2192,42 @@ def _texex_key(lbl):
     return tuple(_out)
 
 
+# ⚠️⚠️ **全局(跨标签)指纹缓存**(2026-09-15 加)。为什么必须有这一份 ——
+#   结算大字/阴影是**每次中奖现新建的 Label**(`big_result_text` 里 `Label(...)`),
+#   而 `_texex` 存在标签自己身上 ⇒ **每个新标签的缓存都是空的** ⇒
+#   每局中奖都稳定产生 2 次重建(`结算大字` + `结算阴影`), 真机上各 5~10 毫秒,
+#   落在同一帧 ⇒ 那一帧必然越过 11.11 毫秒(v0.7.32 真机: 帧2501/3653/5079 都是重建 2)。
+#
+#  ⚠️ **为什么全局共享在这里是安全的**(这一点必须说清, 因为按标签存本身是有理由的):
+#     当初按标签存, 是因为"直接把 Kivy 给标签建的那张纹理交出去"会被**原地重画** ——
+#     `CoreLabel.refresh()` 在宽高不变时会 `texture.ask_update(...)` 重画进**同一张纹理**,
+#     于是 A 改文字会把 B 正在显示的图改掉。
+#     但**现在不是那样**: `_texex_bake` 烘的是一个**专用的 CoreLabel, 它的 text/options
+#     从此一个字都不动**(见 `_texex_bake` 的说明) ⇒ 那张纹理**再也不会被重画**,
+#     多给几个标签用完全没问题。**前提是"永不改动"这条不破。**
+_TEXEX_G = {}
+_TEXEX_G_ORDER = []
+_TEXEX_G_MAX = 256          # 全局上限: 一张纹理几十 KB, 256 张约十几 MB, 可接受
+
+
+def _texex_key_of(lbl):
+    """按标签当前属性算指纹(抽出来是因为全局缓存那条路也要用)。"""
+    return _texex_key(lbl)
+
+
+def _texex_get_g(key):
+    return _TEXEX_G.get(key)
+
+
+def _texex_put_g(key, cl):
+    if key in _TEXEX_G:
+        return
+    _TEXEX_G[key] = cl
+    _TEXEX_G_ORDER.append(key)
+    while len(_TEXEX_G_ORDER) > _TEXEX_G_MAX:
+        _TEXEX_G.pop(_TEXEX_G_ORDER.pop(0), None)
+
+
 def _texex_get(lbl, key):
     _d = getattr(lbl, "_texex", None)
     return _d.get(key) if _d else None
@@ -2440,6 +2476,10 @@ def _texupd_wrap():
             try:
                 _key = _texex_key(self)
                 _cl = _texex_get(self, _key)
+                if _cl is None:
+                    # ⚠️ 本标签没烘过 ⇒ 查**全局**那一份(见 `_TEXEX_G` 的说明):
+                    #    结算大字/阴影每次中奖都是新标签, 靠这一条才能命中第二次之后的所有局。
+                    _cl = _texex_get_g(_key)
             except Exception:
                 _key, _cl = None, None
             if _cl is not None:
@@ -2464,6 +2504,7 @@ def _texupd_wrap():
                         _TEXEX_MISS[0] += 1
                     if _texex_apply(self, _cl):
                         _texex_put(self, _key, _cl)
+                        _texex_put_g(_key, _cl)      # 两边都存: 下一个新标签才接得上
                         return
                 except Exception:
                     _key = None      # 烘不出来就退回 Kivy 老路, 绝不抛
@@ -9754,11 +9795,20 @@ class RootWidget(BoxLayout):
         self._auto_h(score_lbl, dp(130), dp(6))
         content.add_widget(score_lbl)
 
+        # ⚠️⚠️ 2026-09-15(玩家定稿): **两个按钮都挪到面板底部, 左边「帧率曲线」右边「关闭」**,
+        #    并且**这个面板只能靠「关闭」关掉**(`auto_dismiss=False`) —— 点面板外面不再关它。
+        #    原来「帧率曲线」夹在成绩块和诊断块中间(整条通栏), 而**根本没有关闭按钮**,
+        #    关闭全靠点外面 —— 玩家点空白处想滚动/误触就把成绩面板关掉了。
+        # ⚠️ 横向 `BoxLayout` 里**先 add 的在左边**(Kivy 按 `reversed(children)` 摆位)。
+        _btnrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10),
+                            orientation='horizontal')
         curve_btn = Button(text='帧率曲线', font_size='16sp', bold=True,
-                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
-                           size_hint_y=None, height=dp(46))
+                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
         curve_btn.bind(on_release=lambda *_: self._show_fps_curve())
-        content.add_widget(curve_btn)
+        close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                           background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,))
+        _btnrow.add_widget(curve_btn)
+        _btnrow.add_widget(close_btn)
 
         _sep = Widget(size_hint_y=None, height=dp(1))
         with _sep.canvas.before:                      # 同 `_row_bg` 的写法
@@ -9773,9 +9823,15 @@ class RootWidget(BoxLayout):
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
         self._auto_h(diag_lbl, dp(0), dp(0))
         content.add_widget(diag_lbl)
+        # ⚠️ **必须最后 add** —— 竖向 `BoxLayout` 按 add 的先后从上往下排, 先加的那批在上。
+        #    第一版把这一行加在 `score_lbl` 后面(那是「帧率曲线」原来的位置), 结果两个按钮
+        #    卡在成绩块和诊断块**中间**, 不叫"在界面底部"(截图为证)。
+        content.add_widget(_btnrow)
 
         popup = self._popup(0.90, 460, title='', content=content,
-                            auto_dismiss=True, separator_height=0)
+                            auto_dismiss=False, separator_height=0)
+        # ⚠️ 绑定必须在 `popup` 建出来之后(和隐藏档弹窗同一个写法)。
+        close_btn.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
         _set_label_text(self.status_lbl, getattr(self, '_bench_saved_status', '按住蓄力发射'))
@@ -10645,24 +10701,18 @@ class RootWidget(BoxLayout):
             _n = int(d.get("low1_n", 0))
             _ms = float(d.get("low1_ms", 0.0))
             _stages = d.get("low1_groups") or []
-            if _n:
-                parts.append('1%% Low 定位：最慢 %d 帧平均 %.1f 毫秒' % (_n, _ms))
-            # 各阶段**出慢帧的比例** = 该阶段进最慢 1% 的帧数 / **该阶段的总帧数**。
-            #
-            # ⚠️ 分母**必须**来自 `out["groups"]`(全部帧按阶段分组的帧数), 不能拿 `_n`
-            #    (最慢 1% 的总帧数)当分母。原来这里只印"装杯 37帧 · 飞行 9帧 · 待机 5帧" ——
-            #    那是**条件分布里各阶段的计数**, 而分母是共用的 56。不归一化的话,
-            #    "装杯 37" 只说明**装杯的帧多**, 说明不了**装杯的帧慢**: 跑分是特意把装杯
-            #    演出一起采样进去的(玩家要求保留落袋动画), 它本来就占掉窗口里很大一块。
-            #    一个阶段占的时间越多, 它出现在最慢 1% 里的帧数就越多 —— 这是分母决定的,
-            #    不是性能决定的。除以各阶段自己的总帧数之后, 三个数才可比。
-            #
-            # ⚠️ 比例**必须带着分子分母一起印**: 分母小的阶段(待机可能只有几十帧)会出现
-            #    100% 这种噪声读数, 把 `37/1240` 原样印出来, 一眼就能看出那是噪声还是信号。
-            #    只印百分比等于把"样本量"这条信息丢掉。
-            #
-            # ⚠️ 顺序按**比例降序**, 不按帧数降序 —— 要回答的是"最该查哪个阶段",
-            #    所以第一个就是答案, 而不是"帧数最多"的那个(那基本恒等于占时间最长的)。
+            # ⚠️⚠️ **2026-09-15 玩家点检这一段**(「这个信息是不是没有用了? 如果真没有用就删掉,
+            #    如果有用就保留有用的」)。这是**成绩面板**, 而玩家 2026-09-11 已经定过一条
+            #    原则: **成绩面板只放成绩**(版本/日期都因此挪去了菜单弹窗)。逐行判下来:
+            #      · `1% Low 定位：最慢 N 帧平均 X 毫秒` —— **删**。那是在解释 1%Low 是什么,
+            #        而玩家明说过「大家都知道什么是平均帧和 1%low帧就不用你教学了」。
+            #      · `文字纹理：N 次（余额 8 · 统计 4 · 结算大字 4）` —— **删**。那是**纯埋点**
+            #        (给"文字重建"这条优化线用的), 玩家看了没有任何用处; 数据在保存的 txt 里
+            #        一条不少(`_bench_frame_log`)。
+            #      · `最慢帧：… · 主线程 9.8 / 游戏逻辑 8.5 毫秒` —— **删掉"主线程/游戏逻辑"**,
+            #        那是开发者术语; 「最慢一帧多少毫秒、发生在哪个阶段」这一半留着, 玩家看得懂。
+            #      · `各阶段出慢帧比例：…` 与 `低于 60 FPS 的帧：N / M` —— **留**。前者回答
+            #        "卡在哪一段", 后者就是判据本身。
             _grp = d.get("groups") or {}
             _rows = []
             for _name, _cnt in _stages[:3]:
@@ -10678,17 +10728,9 @@ class RootWidget(BoxLayout):
             _worst = (d.get("worst") or [None])[0]
             if _worst:
                 _gap, _stage = float(_worst[0]), _worst[1]
-                _main = float(_worst[3]) if len(_worst) > 3 else 0.0
-                _logic = float(_worst[4]) if len(_worst) > 4 else 0.0
-                parts.append('最慢帧：%.0f 毫秒（%s）· 主线程 %.1f / 游戏逻辑 %.1f 毫秒' %
-                             (_gap, _stage, _main, _logic))
+                parts.append('最慢一帧：%.0f 毫秒（%s）' % (_gap, _stage))
             parts.append('低于 60 FPS 的帧：%d / %d' %
                          (int(d.get("over60_n", 0)), int(d.get("n", 0))))
-            _tex = d.get("texupd_by") or []
-            if _tex:
-                parts.append('文字纹理：%d 次（%s）' % (
-                    int(d.get("texupd", 0)),
-                    ' · '.join('%s %d' % (name, count) for name, count in _tex[:3])))
             return '\n'.join(parts)
         except Exception:
             return ''
