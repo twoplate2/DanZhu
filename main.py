@@ -6377,26 +6377,14 @@ class FpsCurve(Widget):
                 raw_points = []
                 # 曲线本身不降采样：每一个原始帧间隔都有一个点，x 按真实累计时间定位。
                 # 例如 25 秒、120fps 的一轮大约就是 3000 个原始点。
-                col_low = [None] * max(1, int(math.ceil(pw)))
                 for gap in self._gaps:
                     value = max(lo, min(hi, 1000.0 / gap))
                     x = x0 + elapsed / max(0.01, total_ms) * pw
                     y = y0 + value / hi * ph
                     raw_points.extend([x, y])
-                    col = min(len(col_low) - 1, max(0, int(x - x0)))
-                    old = col_low[col]
-                    col_low[col] = value if old is None else min(old, value)
                     elapsed += gap
                 Color(0.47, 0.49, 0.52, 1)
                 Line(points=raw_points, width=1.15, joint="round")
-                # 屏幕横向像素不足以区分同一列的多帧时，额外画出该列最低 FPS 的红色短标记；
-                # 这不是二次采样，只是把已绘制的原始帧最小值显式保留下来。
-                Color(0.88, 0.30, 0.25, 0.92)
-                for i, value in enumerate(col_low):
-                    if value is not None and value < self._cap * 0.985:
-                        x = x0 + i + 0.5
-                        y = y0 + value / hi * ph
-                        Line(points=[x, y, x, min(y + dp(3), y0 + ph)], width=1)
 
         self._label(self.canvas, "%.0f" % hi, x0 - dp(5), y0 + ph - dp(5), "right")
         for value in range(0, int(hi), 30):
@@ -6756,37 +6744,17 @@ class GameArea(FloatLayout):
             badge.center = (self._px(CW / 2.0), self._py(CH / 2.0) - self.y)
 
     def show_bench_badge(self, text):
-        """显示跑分状态牌：固定在盘面中央，不置灰、不循环飘动。"""
-        badge = self._bench_badge
-        if badge is None:
-            badge = Label(text=text, font_size=sp(18), bold=True, halign="center",
-                          valign="middle", color=hex_rgb(COL_TEXT) + (1,),
-                          size_hint=(None, None))
-            badge.texture_update()
-            badge.size = (badge.texture_size[0] + dp(28), badge.texture_size[1] + dp(20))
-            with badge.canvas.before:
-                Color(0.035, 0.055, 0.10, 0.94)
-                badge._bench_bg = RoundedRectangle(pos=badge.pos, size=badge.size,
-                                                    radius=[dp(10)])
-            badge.bind(pos=lambda w, *_: setattr(w._bench_bg, "pos", w.pos),
-                       size=lambda w, *_: setattr(w._bench_bg, "size", w.size))
-            self._bench_badge = badge
-            self.add_widget(badge)
-        elif badge.text != text:
-            badge.text = text
-            badge.texture_update()
-            badge.size = (badge.texture_size[0] + dp(28), badge.texture_size[1] + dp(20))
-        self._place_bench_badge()
-        self._restack_overlays()
+        """跑分状态放到底部操作区，绝不遮住盘面。"""
+        try:
+            self.game._show_bench_status(text)
+        except Exception:
+            pass
 
     def hide_bench_badge(self):
-        badge = self._bench_badge
-        self._bench_badge = None
-        if badge is not None:
-            try:
-                self.remove_widget(badge)
-            except Exception:
-                pass
+        try:
+            self.game._hide_bench_status()
+        except Exception:
+            pass
 
     def set_lamp(self, i, hex_color):
         if 0 <= i < len(self._lamp_cols):
@@ -7731,6 +7699,23 @@ class RootWidget(BoxLayout):
             self._bet_title_lbl.color = dim
             self.stats_lbl.color = dim
 
+    def _show_bench_status(self, text):
+        """把跑分状态放在底部操作区正上方，复用统计栏而不遮住盘面。"""
+        self._bench_status_active = True
+        _set_label_text(self.stats_lbl, text.replace("\n", "　·　"))
+        self.stats_lbl.color = hex_rgb(COL_FIRE) + (1,)
+        fs = self._font_scale * self._ui_scale
+        self.stats_lbl.font_size = sp(16) * fs
+        self.stats_lbl._fit_base = self.stats_lbl.font_size
+        self._fit1(self.stats_lbl)
+
+    def _hide_bench_status(self):
+        self._bench_status_active = False
+        fs = self._font_scale * self._ui_scale
+        self.stats_lbl.font_size = sp(15) * fs
+        self.stats_lbl._fit_base = self.stats_lbl.font_size
+        self._refresh_stats()
+
     # ------------------------------ 交互 ------------------------------
     def _on_key_down(self, win, key, *rest):
         if key == 32:                     # 空格: 按住蓄力
@@ -8659,11 +8644,11 @@ class RootWidget(BoxLayout):
         avg = float(getattr(self, "_render_fps", 0.0))
         med = float(getattr(self, "_render_median_fps", 0.0))
         low = float(getattr(self, "_render_1low", 0.0))
-        note = Label(text='灰线为逐帧 FPS · 红线标出同像素列最低 FPS · 平均 %.1f · 中位 %.1f · 1%%Low %.1f'
+        note = Label(text='逐帧 FPS　平均 %.1f　中位 %.1f　1%%Low %.1f'
                           % (avg, med, low),
                      font_size='13sp', halign='center', valign='middle',
-                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
-        note.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
+        note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
         content.add_widget(note)
         close = Button(text='关闭', font_size='16sp', bold=True,
                        background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
@@ -8972,6 +8957,8 @@ class RootWidget(BoxLayout):
             self.mute_btn.color = hex_rgb("#c0c8e4") + (1,)
 
     def _refresh_stats(self):
+        if getattr(self, "_bench_status_active", False):
+            return
         rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
         _set_label_text(self.stats_lbl, "累计%d投%d中(%.0f%%)" % (
             self.plays, self.hits, rate))
