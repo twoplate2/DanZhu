@@ -2057,6 +2057,19 @@ _COLD_FS_TAG = ["?"]
 # 多慢才算「冷」—— 下限设 3 毫秒: 热字号一次量出来是 0.02~1.5 毫秒(桌面实测),
 # 3 毫秒已经远超它, 不会把热测量混进来。
 COLD_FS_MIN_MS = 3.0
+# 预热表里**真正传给 `text_px` 的那些值**(原值, 不四舍五入), [(字号, bold), ...]。
+# ⚠️ 为什么要留这一份: v0.7.31 真机逮到 5 个"冷字号", 字号是 `57.2375` 这种带小数尾巴的,
+#    而 v0.7.30 已经把二分的任意值换成固定档了 —— **理论上不该再有**。真相只有两种:
+#      (a) 预热时 `round(_b * _k, 4)` 过、运行期没 round ⇒ 差一点点 ⇒ 是两个 fontid;
+#      (b) 预热用的基准和运行期用的基准根本不是同一个数 ⇒ 差得远。
+#    两者修法完全不同, 而日志上只印一个四舍五入到 4 位的字号**分不出来**。
+#    所以这里存原值, 冷测量时顺手找**最近的同 bold 预热档**并记下差值。
+_FONT_WARM_ALL = []
+# 预热**真的调过 `text_px`** 的那些 (字号, bold)。和 `_FONT_WARM_ALL`(表里列了什么)不同 ——
+# 这一份是"确实开出过这个 fontid"。冷测量时两相对照就能分清最后一层:
+#   表里有 + 量过 + 仍是冷 ⇒ **被 Kivy 的字体缓存挤掉了**(warm 再多也没用, 得减字号总数);
+#   表里有 + 没量过   ⇒ 预热那一句被 `text_px` 自己的缓存挡掉了(等于没烘)。
+_WARM_DID = set()
 # `_frame` **算完那一刻**的 `perf_counter`(0 = 本帧还没算完 / 已经用掉了)。
 # 用途: 在 `flip()` 里算出"自算之后到交画面之间"有多长, 记成子步骤 `尾`。
 # 见 `_swap_wrap` 里 `_brk_add("尾", ...)` 处那段说明。
@@ -5901,12 +5914,18 @@ class WinPileFX(Widget):
                 pass
             _seen = set()
             _hud = []
-            # ⚠️ **2026-09-15: 这里必须把 `FIT_FINE` 也烘上**。真机实测(见 `FIT_FINE` 处):
-            #    运行期冷量到的字号里, 不在预热表的那 11 个**全是二分产出的任意值**;
-            #    二分已经换成固定细分档, 于是"全 app 会出现的字号" = 每个基准 x 这 13 个倍率,
-            #    这里一次全盖上 ⇒ 运行期理论上一个冷字号都不该再有。
-            #    漏一档的后果**是静默的**: 那一档每次用都要现开一次字体表, 真机约 40 毫秒。
-            _all_k = FIT_SCALES + FIT_FINE
+            # ⚠️⚠️ **2026-09-15 更正: 这里只能烘 `FIT_SCALES`, 不能连 `FIT_FINE` 一起烘。**
+            #    上一版我按"全 app 字号 = 基准 x 13 个倍率, 那就全烘上"去做, 结果是
+            #    **低90 从 8 帧退回 10 帧**(v0.7.30 -> v0.7.31, 配比可比)。
+            #    桌面实测(`temp/font_cache_probe.py` 那套): **Kivy 的 SDL2 字体缓存上限是 64** ——
+            #    开过 64 个不同字号之后, **最早那个会被挤掉**(回访时重新变冷, 30 毫秒)。
+            #    而 12 个 HUD 基准 + 4 个大字基准 x 13 档 = **155 项**, 早超上限 ⇒
+            #    预热**自己把自己挤掉**, 表里明明有、也真的量过(`_WARM_DID` 证实),
+            #    运行期一量还是冷(真机日志: `fs=57.2375 [余额] 最近预热档差 0` 就是这么来的)。
+            #    ⇒ 只烘 6 档基础阶梯: 12 x 6 + 4 x 6 = 72, 去重后 ≈48, **在上限以内**。
+            #    细分档(`FIT_FINE`)只在"连 0.7 倍都放不下"时才会走到, 属于少数;
+            #    它们第一次用会冷一次, 之后就被 LRU 留在缓存里了 —— 这比"全烘、结果全被挤掉"好。
+            _all_k = FIT_SCALES
             for _b, _bd in _bases:
                 for _k in _all_k:
                     _v = round(_b * _k, 4)
@@ -5915,9 +5934,26 @@ class WinPileFX(Widget):
                     _seen.add((_v, _bd))
                     _hud.append((_v, _bd))
             globals()["_FONT_WARM_HUD"] = tuple(_hud)
-            globals()["_FONT_WARM_SIZES"] = tuple(
-                _b * _k for _b in (sp(36), sp(48), sp(26), sp(30))
-                for _k in _all_k)
+            # ⚠️⚠️ **大字/飘字那批(sp(36/48/26/30))故意不烘** —— 见上面那段: 加上它们就是
+            #    48 + 24 = 72 项, 仍然超 64 的上限, 又会开始互相挤。取舍:
+            #      · HUD 那批(状态栏/余额/统计/按钮)每局用几十次 ⇒ **必须热**;
+            #      · 大字/飘字一局只用几次, 且 `fit_font_size` 第一档多半就放得下
+            #        ⇒ 首次冷一次(真机约 20~30 毫秒, 落在第一局装杯那一帧), 之后 LRU 会留住。
+            #    ⚠️ 别再"顺手都烘上": v0.7.31 就是这么干的, 结果 155 项把前面全挤掉,
+            #       低90 从 8 帧退回 10 帧 —— 预热**不是越多越好**, 上限是硬的。
+            globals()["_FONT_WARM_SIZES"] = ()
+            # 原值清单(见 `_FONT_WARM_ALL` 处说明): HUD 那批**预热时真的传的是 round 过的值**,
+            # 所以这里必须存 round 后的 —— 要比较的是"预热真正开出去的那个字号",
+            # 不是"我们以为它会开的值"。大字号那批传的是原值, 照存。
+            # ⚠️ 只收**真的进了预热链**的那些 —— 上面把大字那批砍掉之后, 这里也必须跟着砍,
+            #    否则日志里的「最近预热档」会指着一个**从来没烘过**的值, 比我什么都不知道还糟
+            #    (那正是 2026-09-15 实踩到的: `fs=48.0 [状态栏] 最近预热档48.0 差0` 但
+            #     `预热时量过=否` —— 两条自相矛盾, 因为表里列着它、预热链却没碰它)。
+            del _FONT_WARM_ALL[:]
+            for _v, _bd in _hud:
+                _FONT_WARM_ALL.append((float(_v), bool(_bd)))
+            for _v in globals()["_FONT_WARM_SIZES"]:
+                _FONT_WARM_ALL.append((float(_v), True))
         if self._font_prebaked < len(_FONT_WARM_HUD) + len(_FONT_WARM_SIZES):
             # ⚠️ **一帧只碰一个字号**(2026-09-14 改)。原来是 4 个字号挤在**同一帧**里跑,
             #    而"碰一个新字号"= 重新打开一次 TTF 字形表 = 桌面 26ms ⇒ 那一帧至少 **100ms**,
@@ -5934,6 +5970,7 @@ class WinPileFX(Widget):
             self._font_prebaked += 1
             try:
                 text_px("未中", _fs, _bd)
+                _WARM_DID.add((float(_fs), bool(_bd)))
             except Exception:
                 pass
             # ⚠️ **这一步用 0.02 秒, 不是其它步骤的 0.05**(2026-09-14)。
@@ -6146,7 +6183,17 @@ def text_px(text, fs, bold=False):
         #    连**是哪个标签、哪个字号、粗不粗**一起 —— 光有一个毫秒数没法决定怎么修。
         _cold_ms = (time.perf_counter() - _t_cold) * 1000.0
         if _cold_ms >= COLD_FS_MIN_MS:
-            _COLD_FS.append((_cold_ms, round(fs, 4), bool(bold), _COLD_FS_TAG[0]))
+            # 找最近的**同 bold** 预热档(见 `_FONT_WARM_ALL`): 差值小 = 四舍五入对不上,
+            # 差值大 = 基准压根不是一个数。两种病的修法完全不同。
+            _nb, _nd = 0.0, -1.0
+            for _wv, _wb in _FONT_WARM_ALL:
+                if _wb != bool(bold):
+                    continue
+                _d = abs(_wv - float(fs))
+                if _nd < 0.0 or _d < _nd:
+                    _nd, _nb = _d, _wv
+            _COLD_FS.append((_cold_ms, float(fs), bool(bold), _COLD_FS_TAG[0], _nb, _nd,
+                             (float(fs), bool(bold)) in _WARM_DID))
             _COLD_FS.sort(key=lambda _x: -_x[0])
             del _COLD_FS[5:]
         if len(_FIT_PX) > 512:                   # 余额那类数字会一直变, 别让缓存无限长
@@ -9236,6 +9283,16 @@ class RootWidget(BoxLayout):
             self._bench_tex_prev = _TEXUPD[0]
 
     def _auto_launch_tick(self, dt):
+        # ⚠️⚠️ **2026-09-15: 这里逐句埋点。** 真机 v0.7.31 抓到一个 55.92 毫秒的帧:
+        #     帧1201 [自动发51.4] —— **整个 `_auto_launch_tick` 51.4 毫秒, 而它调的两个
+        #     子函数(`槽面` = `_update_slots` / `起蓄` = `start_charge`)**都没进前二
+        #     (没进前二 = 各自 ≤0.2 毫秒)。也就是说那 51 毫秒花在这个方法**自己身上**,
+        #     不在它调的东西里。这个方法剩下能烧时间的只有下面这几句, 所以逐句量开:
+        #     桌面探针当初是 `自动发30.3 / 槽面30.2`(那时钱全在 `_update_slots`), 真机不是
+        #     —— 两边不一样, 不能照搬结论。
+        # ⚠️ `_brk_add` 只在跑分采样期有意义(平时 `_FRAME_BRK` 没人读), 但这几句本身
+        #    就是一次 `perf_counter` + 一次字典累加, 比它包住的赋值贵不了多少, 不另加开关。
+        _ta = time.perf_counter()
         if self._launch_count >= self._target_launches:
             self._finish_render_sample(0)
             return
@@ -9245,6 +9302,7 @@ class RootWidget(BoxLayout):
             #    盘面得在球飞出去之前就定下来。
             #    ⚠️ 只改**值**、不改结构 ⇒ 用 `_update_slots()` 增量更新就够
             #    (它结构对不上时会自己退回完整 `_redraw()`, 不会半更新)。
+            _tb = time.perf_counter()
             try:
                 _bi = self._launch_count
                 self._bench_ball_i = _bi      # 给 `launch()` 派生碰撞随机流用
@@ -9254,9 +9312,15 @@ class RootWidget(BoxLayout):
                     self.game_area._update_slots()
             except Exception:
                 pass
+            _brk_add("发·盘面", _tb)
+            _tc = time.perf_counter()
             self.start_charge()
+            _brk_add("发·起蓄", _tc)
             self._launch_count += 1
+            _td = time.perf_counter()
             Clock.schedule_once(lambda _: (setattr(self, "power", 0.8), self.launch()), 0.1)
+            _brk_add("发·排程", _td)
+        _brk_add("发·整段", _ta)
 
     def _finish_render_sample(self, dt):
         """停止屏幕采样, 统计真实 FPS/掉帧, 等球落地后启动物理 benchmark。"""
@@ -9810,12 +9874,29 @@ class RootWidget(BoxLayout):
         #    所以把 (毫秒, 字号, bold, 标签) 原样印出来, 让下一份日志直接给答案。
         # ⚠️ 同样**不包在 try 里**: 包了出错就被静默吞掉, 玩家只看到"少了一行"。
         if _COLD_FS:
-            _lines.append("# 最慢的冷字号测量(>%.0f 毫秒才算): %s"
+            # ⚠️ 字号印**原值 6 位**、并带上"离最近的同 bold 预热档差多少":
+            #    差值 ~0 ⇒ 只是四舍五入对不上(预热 round 过); 差值大 ⇒ 基准不是同一个数。
+            #    只印 4 位小数的话这两种情况长得一模一样 —— 那正是我上一轮读不出来的原因。
+            _lines.append("# 最慢的冷字号测量(>%.0f 毫秒才算, 含「离最近预热档的差」): %s"
                           % (COLD_FS_MIN_MS,
-                             " · ".join("%.1fms fs=%.4f bold=%d [%s]"
-                                        % (_c[0], _c[1], int(_c[2]), _c[3]) for _c in _COLD_FS)))
+                             " · ".join("%.1fms fs=%r bold=%d [%s] 最近预热档%r 差%.9f 预热时量过=%s"
+                                        % (_c[0], _c[1], int(_c[2]), _c[3], _c[4], _c[5],
+                                           "是" if _c[6] else "**否**")
+                                        for _c in _COLD_FS)))
         else:
             _lines.append("# 冷字号测量: **一次都没有**(全部命中了预热表)")
+        # ⚠️ 预热项数必须**明着印出来**: Kivy 的 SDL2 字体缓存上限是 **64**(桌面实测),
+        #    超了就是"预热自己把自己挤掉"—— 表里有、也量过, 运行期还是冷, 而且**不报错**。
+        # ⚠️ `or ()` 不能省: 这两个表的初始值是 `None`(预热链还没跑到就算不出来),
+        #    直接 `len()` 会 TypeError —— 而外层 `_copy_bench_log` 会把异常吞成**空串**,
+        #    玩家看到的是"没有可复制的数据"。门禁的夹具(不跑预热直接出日志)当场就把它逮住了。
+        _lines.append("# 字号预热表: %d 项 (Kivy 字体缓存上限约 64, 超了就互相挤)"
+                      % (len(_FONT_WARM_HUD or ()) + len(_FONT_WARM_SIZES or ())))
+        # ⚠️ 顺带把这两句读法写进日志 —— 下一份日志不用再回来翻源码就知道怎么读。
+        _lines.append("#   读法: 「预热时量过=是」而仍然是冷 ⇒ **被 Kivy 的字体缓存挤掉了**"
+                      "(warm 再多也没用, 要减字号总数); 「=否」⇒ 预热那一句被 `text_px` "
+                      "自己的缓存挡掉了, 等于没烘。最近预热档的**差**若为 0 就排除"
+                      "「四舍五入/基准不同」这两种解释。")
 
         # ⚠️ **节拍真值必须印在最前面**(2026-09-14 加)。理由见 `_bench_collect_diag` 里
         #    "节拍真值"那段: 屏幕档位一变, 同一份代码的 1%Low 能从 83.3 掉到 42.2。
@@ -10702,13 +10783,11 @@ class RootWidget(BoxLayout):
             #     会在屏幕上原样显示 —— 强调一律用「」。
             foot = Label(
                 text=('口径：\n'
-                      '  中位跑分 —— 物理引擎每秒能模拟多少步（不是渲染帧数），\n'
-                      '　　　　　　取多次跑分的中位数\n'
-                      '  波动 —— 跑分在多次之间浮动多大：\n'
-                      '　　　　　　100 ×（最慢一次 − 最快一次）÷ 中位跑分'),
+                      '  中位跑分：物理引擎每秒模拟步数的中位数\n'
+                      '  波动：（最大 − 最小）÷ 中位跑分，百分比'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
-            self._auto_h(foot, dp(72))
+            self._auto_h(foot, dp(56))
             content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
