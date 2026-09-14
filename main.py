@@ -2010,7 +2010,29 @@ _BRK_KEYS = ("板面", "重掷", "字号", "装杯")
 _FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
 _FRAME_CALLS = [0]               # `_frame` 被调了几次(与"采样了多少帧"比, 见面板"节拍"行)
 _SINCE_LAUNCH = [0]              # 距上一次 `launch()` 过了多少帧(判 C6: 最差帧是不是紧跟在发射后)
-_TEXUPD = [0]                    # 文字重排累计次数(Label.texture_update 被调了几次)
+_TEXUPD = [0]                    # 本轮跑分内的文字重排累计次数
+_TEXUPD_BY = {}                  # {来源标签: 次数}，只在跑分采样窗口统计
+_TEXUPD_ACTIVE = [False]         # 避免启动/成绩弹窗的重排污染游戏采样
+
+
+def _tag_texupd(label, tag):
+    """给会动态变化的 Label 标记来源，供跑分定位文字纹理重建。"""
+    try:
+        label._texupd_tag = str(tag)
+    except Exception:
+        pass
+    return label
+
+
+def _set_label_text(label, text):
+    """只有文本真的变化才触发 Kivy Label 的属性更新与后续纹理检查。"""
+    try:
+        if label.text == text:
+            return False
+        label.text = text
+        return True
+    except Exception:
+        return False
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
 #    真机面板上那三帧的账**对不上** —— 40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
@@ -2045,7 +2067,10 @@ def _texupd_wrap():
     if _orig is None or getattr(_orig, "_probe_wrapped", False):
         return
     def texture_update(self, *a, **k):
-        _TEXUPD[0] += 1
+        if _TEXUPD_ACTIVE[0]:
+            _TEXUPD[0] += 1
+            _tag = getattr(self, "_texupd_tag", "其他文字")
+            _TEXUPD_BY[_tag] = _TEXUPD_BY.get(_tag, 0) + 1
         return _orig(self, *a, **k)
     texture_update._probe_wrapped = True
     texture_update.__name__ = "texture_update"
@@ -6521,6 +6546,8 @@ class GameArea(FloatLayout):
         shadow = Label(text=text, font_size=size, bold=True,
                        color=(0, 0, 0, 0.6), size_hint=(None, None))
         shadow.bind(size=lambda w, _: setattr(w, "text_size", w.size))
+        _tag_texupd(main, "结算大字")
+        _tag_texupd(shadow, "结算阴影")
         # ⚠️ **缩放入场走 GPU `Scale`, 绝不再逐帧写 `font_size`**(2026-09-13 性能优化)。
         #    原来 tick_draw 里写 `main.font_size = fs`(fs 每帧都变) —— font_size 在 Kivy 里
         #    属于 `_font_properties`, 每次赋值都会触发 `_trigger_texture` ⇒ **重新测量字形
@@ -6588,6 +6615,7 @@ class GameArea(FloatLayout):
         _fs = fit_font_size(text, sp(size), _seen, True)
         lbl = Label(text=text, font_size=_fs, bold=True, halign="center",
                     color=hex_rgb(hexcolor) + (1,), size_hint=(None, None))
+        _tag_texupd(lbl, "飘字")
         lbl.texture_update()                      # 立刻出纹理, 尺寸跟文字(center 才摆得准)
         lbl.size = lbl.texture_size
         # ⚠️ 横向同样**不减 `self.x`** —— 理由见 big_result_text 处(子控件 canvas 是绝对
@@ -6739,13 +6767,8 @@ class GameArea(FloatLayout):
                 #    `color` 是 Kivy `Label._font_properties` 之一:**赋一次值就重测字形 +
                 #    重光栅化整段文字 + 重建纹理 + 上传**。原来这里**每帧无条件写**, 于是飘字
                 #    活着的那几秒里, 每帧都要把整段字重新栅格化一遍。
-                #    实测(真机 0.6.87 面板): **"文字重排 33.4 次/秒"** —— 飘字 `life=3.0s`,
-                #    跑分期间 `_bench_toast_tick` 每 3 秒重造一个(内容就是"测试设备性能中"),
-                #    而 alpha 只在生命**后 35%** 才变 ⇒ 0.35 x 80fps ≈ 28 次/秒, 与实测吻合。
-                #    ⚠️ **那个飘字只在跑分期间存在** ⇒ 跑分一直在给**自己**的成绩上刑: 玩家平时
-                #       玩根本见不到它, 而它把 1%Low 与"主线程 CPU"两栏都抬高了。
-                #    (另一处 `center_toast` 是"余额不足""弹珠数量已调整到1000个", 那两条会出现在
-                #     正常游玩里, 所以这个修复对实战也有好处。)
+                #    性能测试不再创建自己的「测试设备性能中」飘字，避免用测试提示污染成绩；
+                #    这里保留的只是真实游戏事件的提示（余额不足、数量调整等）。
                 #    量化到 BIG_TEXT_ALPHA_STEPS 档: 0.35 x 3s = 1.05 秒的淡出分成 20 档,
                 #    每档 5% alpha —— 配着上浮 20px/s 肉眼分辨不出台阶。
                 # ⚠️ **走画布那条 Color**(零重建) —— 拿不到才退回写 `label.color` + 量化。
@@ -7402,6 +7425,7 @@ class RootWidget(BoxLayout):
         right_box = BoxLayout()
         self._top_right = right_box
         self.status_lbl = self._mk_label("按住蓄力发射", "13sp", COL_SUB, "right", False)
+        _tag_texupd(self.status_lbl, "状态栏")
         right_box.add_widget(self.status_lbl)
         top.add_widget(right_box)
         # 文字一变就重挑字号(状态栏在整局里会换成十来种文案, 逐个赋值点去调必漏)
@@ -7468,9 +7492,11 @@ class RootWidget(BoxLayout):
         info.add_widget(self._bead_lbl)
         self.balance_lbl = self._mk_label(str(self.balance), "19sp", COL_BALL,
                                           "left", True, size_hint_x=None, width=dp(80))
+        _tag_texupd(self.balance_lbl, "余额")
         info.add_widget(self.balance_lbl)
         self.stats_lbl = self._mk_label("", "15sp", COL_TEXT, "center", True,
                                         size_hint_x=0.70)
+        _tag_texupd(self.stats_lbl, "统计")
         info.add_widget(self.stats_lbl)
         # 余额/统计/“弹珠：”都是单行; 余额涨到 8 位数以上时**缩字号**而不是折行
         self._install_fit(self._bead_lbl, self.balance_lbl, self.stats_lbl)
@@ -7625,12 +7651,6 @@ class RootWidget(BoxLayout):
         self._bench_dim_col.rgba = (0, 0, 0, 0)
         self._bench_dim_rect.size = (0, 0)
 
-    def _bench_toast_tick(self, dt):
-        for e in self.game_area._effects:
-            if e["kind"] == "toast":
-                return   # 还有 toast 存活, 不重复弹
-        self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
-
     def _check_title_hold(self):
         t = getattr(self, "_bench_start", 0)
         if t > 0 and not self._bench_triggered and time.time() - t >= 3.0:
@@ -7644,7 +7664,9 @@ class RootWidget(BoxLayout):
     def _show_bench_menu(self):
         """弹珠发射性能测试菜单弹窗: 开始测试 / 查看历史。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
-        title_lbl = self._fit_line(Label(text='弹珠发射性能测试', bold=True, halign='center',
+        _ver = _app_version()
+        _title = ('弹珠发射性能测试 ' + _ver) if _ver else '弹珠发射性能测试'
+        title_lbl = self._fit_line(Label(text=_title, bold=True, halign='center',
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
@@ -7719,6 +7741,9 @@ class RootWidget(BoxLayout):
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
         rows = []
+        _ver = _app_version()
+        if _ver:
+            rows.append("游戏版本　%s" % _ver)
         try:
             _info = self._build_info()
         except Exception:
@@ -7894,7 +7919,12 @@ class RootWidget(BoxLayout):
         ⚠️ 后来(2026-09-11)玩家把「音效开关」从 `audio_detail()` 里**整段删掉**了, 所以这里
         那道 `if not r.startswith("音效开关")` 过滤已成**死代码**, 一并删除。"""
         try:
-            return "\n".join(self.sfx.audio_detail())
+            rows = []
+            ver = _app_version()
+            if ver:
+                rows.append("游戏版本　%s" % ver)
+            rows.extend(self.sfx.audio_detail())
+            return "\n".join(rows)
         except Exception:
             return ""
 
@@ -7915,11 +7945,11 @@ class RootWidget(BoxLayout):
         """开始性能测试(菜单点"开始测试"后)。"""
         self._bench_running = True
         self._bench_saved_status = self.status_lbl.text
-        self.status_lbl.text = "性能测试中…"
+        ver = _app_version()
+        _set_label_text(self.status_lbl, ("性能测试中 " + ver) if ver else "性能测试中…")
         self._set_controls_enabled(False)
         self._show_bench_dim()   # 第1阶段就开始: 全屏置灰
-        self.game_area.center_toast("测试设备性能中", hexcolor=COL_TEXT, size=30, life=3.0)
-        self._bench_toast_evt = Clock.schedule_interval(self._bench_toast_tick, 0.5)
+        # 不再额外创建/移动「测试设备性能中」飘字；它会污染跑分本身，顶部状态栏已给出反馈。
         # ⚠️ **等启动预热跑完再采样**(2026-09-14)。采样窗口只有 7~12 秒
         #    (`_target_launches = 3`), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
         #    预热单步要 100~200 毫秒(球纹理烘焙; 桌面只要 16.6), 常常还没跑完。
@@ -7950,6 +7980,9 @@ class RootWidget(BoxLayout):
         self._bench_cpu_prev = self._bench_cpu0
         self._bench_thr_prev = _THREAD_TIME()
         _FRAME_CALLS[0] = 0
+        _TEXUPD[0] = 0
+        _TEXUPD_BY.clear()
+        _TEXUPD_ACTIVE[0] = True
         self._bench_cpusplit0 = _cpu_split()
         _SND_STAT[0] = 0.0
         _SND_STAT[1] = 0.0
@@ -8100,6 +8133,7 @@ class RootWidget(BoxLayout):
             self._render_fps = 0.0
             self._render_1low = 0.0
         self._bench_diag = self._bench_collect_diag()
+        _TEXUPD_ACTIVE[0] = False
         self._wait_idle_then_bench()
 
     def _bench_collect_diag(self):
@@ -8154,6 +8188,7 @@ class RootWidget(BoxLayout):
         out["thr_p50"] = _thr_sorted[len(_thr_sorted) // 2] if _thr_sorted else 0.0
         out["thr_max"] = _thr_sorted[-1] if _thr_sorted else 0.0
         out["texupd"] = _TEXUPD[0]
+        out["texupd_by"] = sorted(_TEXUPD_BY.items(), key=lambda it: -it[1])[:4]
         # 节拍事实: Kivy 的限速旋钮实际是什么值, 以及"逻辑更新几次 vs 呈现了几帧"。
         try:
             from kivy.config import Config as _Cfg
@@ -8330,9 +8365,6 @@ class RootWidget(BoxLayout):
         return ' · '.join(parts)
 
     def _bench_done(self, flights, frames, fps_list):
-        if getattr(self, "_bench_toast_evt", None):
-            self._bench_toast_evt.cancel()
-            self._bench_toast_evt = None
         self._hide_bench_dim()   # 第2轮结束: 恢复界面
         phys_fps = sorted(fps_list)[len(fps_list) // 2]   # 物理吞吐中位数
         avg_frames = frames / max(1, flights)
@@ -8415,7 +8447,7 @@ class RootWidget(BoxLayout):
                             auto_dismiss=True, separator_height=0)
         popup.open()
         self._popup_fit_content(popup, content)
-        self.status_lbl.text = getattr(self, '_bench_saved_status', '按住蓄力发射')
+        _set_label_text(self.status_lbl, getattr(self, '_bench_saved_status', '按住蓄力发射'))
         self._set_controls_enabled(True)
         self._bench_running = False
         self._bench_start = 0.0
@@ -8595,6 +8627,10 @@ class RootWidget(BoxLayout):
                          % (_v, _cpu, d.get("thr_p50", 0.0), d.get("self_p50", 0.0),
                             d.get("self_max", 0.0), _p50, d["gc_total"] * 1000.0,
                             d["gc_worst"] * 1000.0, _gn, d.get("texupd", 0) / _win_s))
+            _tex_by = d.get("texupd_by") or []
+            if _tex_by:
+                parts.append('文字重排来源：' + ' · '.join('%s %d次' % (name, count)
+                                                       for name, count in _tex_by))
             if d.get("cfg_n"):
                 parts.append('　存档落盘： %d 次（工作线程）· 单次最慢 %.1f 毫秒'
                              % (d["cfg_n"], d.get("cfg_worst", 0.0)))
@@ -8698,8 +8734,8 @@ class RootWidget(BoxLayout):
 
     def _refresh_stats(self):
         rate = 100.0 * self.hits / self.plays if self.plays > 0 else 0
-        self.stats_lbl.text = "累计%d投%d中(%.0f%%)" % (
-            self.plays, self.hits, rate)
+        _set_label_text(self.stats_lbl, "累计%d投%d中(%.0f%%)" % (
+            self.plays, self.hits, rate))
 
     def set_bet(self, v, silent=False):
         self.bet = v
@@ -9903,11 +9939,11 @@ class RootWidget(BoxLayout):
                 self._topped = True           # 冲到顶点转向(恒在 0.95~1.00s): 顶部碰撞声
                 self.sfx.top(b.y)
             if b.y > SLOT_TOP - 40:
-                self.status_lbl.text = "即将入袋…"
+                _set_label_text(self.status_lbl, "即将入袋…")
             elif b.y > PEG_TOP:
-                self.status_lbl.text = "弹跳中…"
+                _set_label_text(self.status_lbl, "弹跳中…")
             else:
-                self.status_lbl.text = "入场中…"
+                _set_label_text(self.status_lbl, "入场中…")
             if landed is None:
                 lx, ly = self._last_ball_xy
                 if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
@@ -10049,7 +10085,7 @@ class RootWidget(BoxLayout):
                 and self._reveal_deadline and now >= self._reveal_deadline):
             print("REVEAL 兜底触发: %s" % (self._pending_win,))
             self._settle_cb()
-        self.balance_lbl.text = str(int(round(self.display_balance)))
+        _set_label_text(self.balance_lbl, str(int(round(self.display_balance))))
         self.game_area.tick_draw()
         # 装杯期把整块界面(减去游戏区)压暗 —— 板面那块覆盖不到 GameArea 之外, 见 _build_hud_dim。
         # ⚠️ 位置: 必须在 `tick_draw()` **之后**。演出由 tick_draw -> win_fx.tick() ->
