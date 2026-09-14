@@ -6327,15 +6327,61 @@ class RotPopup(Popup):
         self._window = None
 
 
-class FpsCurve(Widget):
-    """跑分结束后的逐帧提交曲线；横轴每一点都是一个原始 on_flip 帧。"""
+# 阶段条: 每一帧"游戏在干什么"的取色与图例顺序。
+# ⚠️ 名字必须与 `RootWidget._bench_tag()` 的返回值**逐字一致** —— 那张表是唯一的真源,
+#    这里只是给它配颜色。改 `_bench_tag` 的文案就要回来改这里(对不上会退化成灰色)。
+# 取色按语义挑(浅底 0.97 上的中饱和色): 蓝=主玩法, 金=中奖演出, 绿=落袋, 砖红=玩家在按,
+# 灰=哑火, 浅灰蓝="什么都没发生"(待机)。
+STAGE_ORDER = ("飞行", "装杯", "落袋", "蓄力", "哑火", "待机")
+STAGE_COLORS = {
+    "飞行": "#3563d1",
+    "装杯": "#f0b000",
+    "落袋": "#39d98a",
+    "蓄力": "#e0533b",
+    "哑火": "#5a6a8c",
+    "待机": "#b9c3d6",
+}
 
-    def __init__(self, gaps_ms, cap_fps=120.0, **kw):
+class FpsCurve(Widget):
+    """跑分结束后的逐帧提交曲线；横轴每一点都是一个原始 on_flip 帧。
+
+    曲线下方另有一条**阶段条**: 每一帧"游戏当时在干什么", 与曲线**同一根时间轴对齐** ——
+    这样"哪几帧在掉"和"那几帧在演什么"是上下对着看的, 不用再去对表格。
+    """
+
+    def __init__(self, gaps_ms, cap_fps=120.0, tags=None, **kw):
         super().__init__(**kw)
         self._gaps = [max(0.01, float(x)) for x in (gaps_ms or [])]
+        # 每一帧的场景标签(飞行/装杯/…), 与 `_gaps` **同序等长** —— 两个都来自同一批
+        # `on_flip` 采样(见 `_on_flip` 往 `_bench_frames` 里存的那对值)。
+        # ⚠️ 长度对不上就当没有: 曲线照画, 只是不画阶段条 —— 绝不让诊断把曲线本身搞没。
+        _tg = list(tags or [])
+        self._tags = _tg if len(_tg) == len(self._gaps) else []
         self._cap = max(1.0, float(cap_fps or 120.0))
         self.bind(pos=self._draw, size=self._draw)
         Clock.schedule_once(self._draw, 0)
+
+    def _legend_rows(self, pw):
+        """图例按可用宽度折行(360dp 上六个阶段一行放不下)。
+
+        只列**这一轮真出现过的**阶段 —— 没哑火就少一项, 图例自然更短。
+        返回 [[(阶段名, 行内x偏移), ...], ...]。
+        """
+        _names = [n for n in STAGE_ORDER if n in set(self._tags)]
+        if not _names:
+            return []
+        _sw, _pad_name, _pad_item = dp(6.0), dp(6.0), dp(7.0)
+        _rows, _cur, _cur_w = [], [], 0.0
+        for _n in _names:
+            _w = _sw + dp(3.0) + len(_n) * dp(10.0) + _pad_name + _pad_item
+            if _cur and _cur_w + _w > pw:
+                _rows.append(_cur)
+                _cur, _cur_w = [], 0.0
+            _cur.append((_n, _cur_w))
+            _cur_w += _w
+        if _cur:
+            _rows.append(_cur)
+        return _rows
 
     @staticmethod
     def _label(canvas, text, x, y, anchor="left"):
@@ -6353,9 +6399,15 @@ class FpsCurve(Widget):
     def _draw(self, *_):
         if self.width < 40 or self.height < 40:
             return
-        pad_l, pad_r, pad_b, pad_t = dp(32), dp(8), dp(20), dp(18)
+        pad_l, pad_r, pad_t = dp(32), dp(8), dp(18)
+        pw = max(1.0, self.width - pad_l - pad_r)
+        # ⚠️ 底部留白**按内容算**: 阶段条下面是图例, 而图例在 360dp 上会折成两行 ——
+        #    写死 pad_b 的话, 折行的第二行会盖到时间轴上(或掉出控件外面)。
+        _strip = dp(7.0)
+        _rows = self._legend_rows(pw)
+        pad_b = dp(20) + dp(4) + _strip + ((dp(4) + dp(13) * len(_rows)) if _rows else 0.0)
         x0, y0 = self.x + pad_l, self.y + pad_b
-        pw, ph = max(1.0, self.width - pad_l - pad_r), max(1.0, self.height - pad_b - pad_t)
+        ph = max(1.0, self.height - pad_b - pad_t)
         # 固定 0~120（或设备请求的更高档）坐标，跨轮次的曲线才可直接比较。
         lo, hi = 0.0, max(120.0, self._cap)
 
@@ -6387,6 +6439,28 @@ class FpsCurve(Widget):
                 Color(0.24, 0.29, 0.35, 1)
                 Line(points=raw_points, width=1.15, joint="round")
 
+                # ---- 阶段条: 每一帧"游戏在演什么", 与曲线同一根时间轴 ----
+                # ⚠️ 按**连续同标签合并成段**再画, 不是一帧一个矩形: 34.5 秒 5600 帧铺在
+                #    300~700px 上是 8~19 帧/像素, 逐帧画会画出一大堆亚像素矩形(又慢又糊)。
+                #    合并之后通常只剩几十段。合并用的是**真实累计时长**, 与曲线的 x 同一算法 ——
+                #    所以曲线往下掉的尖峰, 正下方那一段就是它当时在演什么。
+                _runs, _t_run, _start, _acc = [], None, 0.0, 0.0
+                for _i, _gap in enumerate(self._gaps):
+                    _tg = self._tags[_i]
+                    if _tg != _t_run:
+                        if _t_run is not None:
+                            _runs.append((_t_run, _start, _acc - _start))
+                        _t_run, _start = _tg, _acc
+                    _acc += _gap
+                if _t_run is not None:
+                    _runs.append((_t_run, _start, _acc - _start))
+                _sy = y0 - dp(4.0) - _strip
+                for _tg, _st, _dur in _runs:
+                    _rx1 = x0 + _st / max(0.01, total_ms) * pw
+                    _rx2 = x0 + (_st + _dur) / max(0.01, total_ms) * pw
+                    Color(*hex_rgb(STAGE_COLORS.get(_tg, COL_GRAY)) + (1,))
+                    Rectangle(pos=(_rx1, _sy), size=(max(0.6, _rx2 - _rx1), _strip))
+
         self._label(self.canvas, "%.0f" % hi, x0 - dp(5), y0 + ph - dp(5), "right")
         for value in range(0, int(hi), 30):
             self._label(self.canvas, "%.0f" % value, x0 - dp(5),
@@ -6394,6 +6468,19 @@ class FpsCurve(Widget):
         duration = sum(self._gaps) / 1000.0
         self._label(self.canvas, "0s", x0, self.y + dp(2))
         self._label(self.canvas, "%.1fs" % duration, x0 + pw, self.y + dp(2), "right")
+
+        # ---- 阶段条的图例(只列这一轮真出现过的阶段) ----
+        # ⚠️ 画在 `with self.canvas` 块**之后**: 这样它在最上层, 且与上面那批坐标标签
+        #    同一种写法(都是往 `self.canvas` 追加指令)。
+        if _rows and self._tags:
+            for _ri, _row in enumerate(_rows):
+                _ly = y0 - dp(4.0) - _strip - dp(3.0) - dp(13.0) * (_ri + 1)
+                for _n, _ox in _row:
+                    with self.canvas:
+                        Color(*hex_rgb(STAGE_COLORS.get(_n, COL_GRAY)) + (1,))
+                        Rectangle(pos=(x0 + _ox, _ly + dp(2.0)),
+                                  size=(dp(6.0), dp(6.0)))
+                    self._label(self.canvas, _n, x0 + _ox + dp(9.0), _ly - dp(1.0))
 
 class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
@@ -8677,16 +8764,97 @@ class RootWidget(BoxLayout):
         self._bench_running = False
         self._bench_start = 0.0
 
+    def _bench_frame_log(self):
+        """把这一轮的**逐帧原始采样**拼成可复制的文本(帧率曲线弹窗的"复制"按钮用)。
+
+        形状: 头部(机器/版本/关键数 + **各阶段统计表**) → 之后每行一帧 `帧间隔毫秒,阶段`。
+        ⚠️ 头部刻意放最前面、且自带**各阶段慢帧率** —— 那是面板上原来印不出来、
+        而定位瓶颈最需要的那个数(要除以各阶段自己的总帧数, 不能拿"最慢 1% 的总帧数"当分母)。
+        这样**即使粘贴被截断**, 我要的结论仍然在开头, 不会因为尾巴丢了就白跑一趟。
+        ⚠️ 阶段名取 `_bench_tag()` 的原值(中文), 不做缩写 —— 缩写表本身又是一份要维护的清单。
+        """
+        gaps = list(getattr(self, "_render_gaps_ms", []) or [])
+        if not gaps:
+            return ""
+        tags = [x[1] for x in (getattr(self, "_bench_frames", []) or []) if len(x) > 1]
+        if len(tags) != len(gaps):
+            tags = ["?"] * len(gaps)          # 对不上就照发原始帧间隔, 不猜阶段
+        _lines = ["# 跳跳的弹珠机 逐帧帧率日志"]
+        try:
+            _ver = str(_app_version() or "")
+            _dev = self._device_info()
+            _lines.append("# %s  %s" % (_dev, _ver))
+        except Exception:
+            pass
+        try:
+            _n1 = max(1, int(len(gaps) * 0.01))
+            _thr = sorted(gaps)[-1 * _n1]      # "最慢 1%"的门槛(毫秒)
+            _lines.append("# 窗口 %.2fs / %d 帧 / 平均 %.1f / 中位 %.1f / 1%%Low %.1f"
+                          % (sum(gaps) / 1000.0, len(gaps),
+                             float(getattr(self, "_render_fps", 0.0)),
+                             float(getattr(self, "_render_median_fps", 0.0)),
+                             float(getattr(self, "_render_1low", 0.0))))
+            _lines.append("# 慢帧门槛 %.2f 毫秒(最慢 %d 帧的临界值)" % (_thr, _n1))
+            _lines.append("# 各阶段: 帧数 / 占总帧 / 中位ms / p99ms / 慢帧数 / 该阶段慢帧率")
+            for _s in STAGE_ORDER:
+                _v = [gaps[_i] for _i in range(len(gaps)) if tags[_i] == _s]
+                if not _v:
+                    continue
+                _vs = sorted(_v)
+                _slow = sum(1 for _x in _v if _x >= _thr)
+                _lines.append("#   %s %d / %.1f%% / %.2f / %.2f / %d / %.2f%%"
+                              % (_s, len(_v), 100.0 * len(_v) / len(gaps),
+                                 _vs[len(_vs) // 2],
+                                 _vs[min(len(_vs) - 1, int(len(_vs) * 0.99))],
+                                 _slow, 100.0 * _slow / len(_v)))
+        except Exception:
+            pass
+        _lines.append("# 每行: 帧间隔毫秒,阶段")
+        _lines.extend("%.2f,%s" % (g, t) for g, t in zip(gaps, tags))
+        return "\n".join(_lines) + "\n"
+
+    def _copy_bench_log(self, btn=None):
+        """把逐帧日志复制到剪贴板。失败**必须说出来** —— 静默失败等于让玩家白等一次出包。"""
+        txt = ""
+        try:
+            txt = self._bench_frame_log()
+        except Exception:
+            txt = ""
+        if not txt:
+            if btn is not None:
+                btn.text = '没有可复制的数据'
+            return False
+        try:
+            from kivy.core.clipboard import Clipboard
+            Clipboard.copy(txt)
+            _ok = True
+        except Exception:
+            _ok = False
+        if not _ok and btn is not None:
+            btn.text = '复制失败(剪贴板不可用)'
+            return False
+        if btn is not None:
+            _n = txt.count("\n") + 1
+            btn.text = '已复制 %d 行' % _n
+            Clock.schedule_once(lambda _d: setattr(btn, 'text', '复制逐帧日志'), 2.0)
+        return True
+
     def _show_fps_curve(self):
         """展示本轮提交帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。"""
         gaps = list(getattr(self, "_render_gaps_ms", []) or [])
+        # 每一帧"当时在演什么", 与 `gaps` **同序等长** —— 两者来自同一批 `on_flip` 采样:
+        # `_on_flip` 一直在往 `_bench_frames` 里存 `(帧间隔, 场景标签)`, 曲线原来只取了前半截。
+        # 接到曲线上之后, "哪几帧在掉" 和 "那几帧在演什么" 就是上下对齐看的, 不用再对表格。
+        # ⚠️ 取不到(长度对不上/老记录)时 `FpsCurve` 会自己退化成不画阶段条, 曲线照旧。
+        tags = [x[1] for x in (getattr(self, "_bench_frames", []) or []) if len(x) > 1]
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title = self._fit_line(Label(text='帧率曲线', bold=True, halign='center',
                                      color=hex_rgb(COL_TEXT) + (1,),
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
         cap = float(_FPS_INFO[1] or FPS_CAP_MAX)
-        curve = FpsCurve(gaps, cap_fps=cap, size_hint_y=None, height=dp(240))
+        curve = FpsCurve(gaps, cap_fps=cap, tags=tags,
+                         size_hint_y=None, height=dp(276))
         content.add_widget(curve)
         avg = float(getattr(self, "_render_fps", 0.0))
         med = float(getattr(self, "_render_median_fps", 0.0))
@@ -8697,12 +8865,19 @@ class RootWidget(BoxLayout):
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
         note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
         content.add_widget(note)
+        # 两个按钮一行: 复制逐帧日志 + 关闭。
+        # ⚠️ 复制是**唯一**能把"逐帧数据"带出这台设备的出口 —— 曲线只能看, 带不走。
+        _btns = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        copy = Button(text='复制逐帧日志', font_size='16sp', bold=True,
+                      background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
         close = Button(text='关闭', font_size='16sp', bold=True,
-                       background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
-                       size_hint_y=None, height=dp(46))
-        content.add_widget(close)
+                       background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,))
+        _btns.add_widget(copy)
+        _btns.add_widget(close)
+        content.add_widget(_btns)
         popup = self._popup(0.92, 390, title='', content=content,
                             auto_dismiss=True, separator_height=0)
+        copy.bind(on_release=lambda *_: self._copy_bench_log(copy))
         close.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
@@ -8915,11 +9090,36 @@ class RootWidget(BoxLayout):
             _n = int(d.get("low1_n", 0))
             _ms = float(d.get("low1_ms", 0.0))
             _stages = d.get("low1_groups") or []
-            _stage_text = ' · '.join('%s %d帧' % (name, count)
-                                     for name, count in _stages[:3])
             if _n:
-                parts.append('1%% Low 定位：最慢 %d 帧平均 %.1f 毫秒%s' % (
-                    _n, _ms, ('（' + _stage_text + '）') if _stage_text else ''))
+                parts.append('1%% Low 定位：最慢 %d 帧平均 %.1f 毫秒' % (_n, _ms))
+            # 各阶段**出慢帧的比例** = 该阶段进最慢 1% 的帧数 / **该阶段的总帧数**。
+            #
+            # ⚠️ 分母**必须**来自 `out["groups"]`(全部帧按阶段分组的帧数), 不能拿 `_n`
+            #    (最慢 1% 的总帧数)当分母。原来这里只印"装杯 37帧 · 飞行 9帧 · 待机 5帧" ——
+            #    那是**条件分布里各阶段的计数**, 而分母是共用的 56。不归一化的话,
+            #    "装杯 37" 只说明**装杯的帧多**, 说明不了**装杯的帧慢**: 跑分是特意把装杯
+            #    演出一起采样进去的(玩家要求保留落袋动画), 它本来就占掉窗口里很大一块。
+            #    一个阶段占的时间越多, 它出现在最慢 1% 里的帧数就越多 —— 这是分母决定的,
+            #    不是性能决定的。除以各阶段自己的总帧数之后, 三个数才可比。
+            #
+            # ⚠️ 比例**必须带着分子分母一起印**: 分母小的阶段(待机可能只有几十帧)会出现
+            #    100% 这种噪声读数, 把 `37/1240` 原样印出来, 一眼就能看出那是噪声还是信号。
+            #    只印百分比等于把"样本量"这条信息丢掉。
+            #
+            # ⚠️ 顺序按**比例降序**, 不按帧数降序 —— 要回答的是"最该查哪个阶段",
+            #    所以第一个就是答案, 而不是"帧数最多"的那个(那基本恒等于占时间最长的)。
+            _grp = d.get("groups") or {}
+            _rows = []
+            for _name, _cnt in _stages[:3]:
+                _info = _grp.get(_name)
+                _tot = int(_info[0]) if isinstance(_info, (tuple, list)) and _info else 0
+                _rows.append(((100.0 * _cnt / _tot) if _tot > 0 else -1.0,
+                              _name, int(_cnt), _tot))
+            _rows.sort(key=lambda r: -r[0])
+            _rate = [('%s %.1f%%（%d/%d）' % (r[1], r[0], r[2], r[3])) if r[3] > 0
+                     else ('%s %d帧' % (r[1], r[2])) for r in _rows]
+            if _rate:
+                parts.append('各阶段出慢帧比例：' + ' · '.join(_rate))
             _worst = (d.get("worst") or [None])[0]
             if _worst:
                 _gap, _stage = float(_worst[0]), _worst[1]
