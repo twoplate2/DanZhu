@@ -6749,6 +6749,16 @@ FIT_HARD_FLOOR = FIT_FINE[-1]   # 硬下限; **只防"小到看不见", 不参�
                                 # (取 0.5 时实测 1.5 倍字体 + 5 个档位按钮下 "5000%" 还差 5px)
 _FIT_PX = {}
 
+# ---- 字体缓存账本(2026-09-15): 记下**每次真的开了一个 fontid** ------------------
+# ⚠️ 为什么需要: 真机冷字号榜里出现「**预热时量过=是** 却仍冷」—— 语义是"预热真的开过它,
+#    但现在又冷了" ⇒ **被挤掉了**。Kivy/SDL2 的字体缓存只有 64 项、按 LRU 淘汰,
+#    所以只要"到现在为止开过的**不同**字号数 > 64", 淘汰就是**必然**的, 不需要再猜。
+#    再看一眼"这次冷开**之前**最近开过哪些字号", 就知道是被**谁**挤的
+#    (猜想: 弹窗那批 12sp/15sp/16sp/17sp/20sp)。
+_FS_OPEN = []            # [(序号, 字号, bold, 调用方/文案前 10 字)] —— 按开的先后
+_FS_OPEN_SET = set()     # {(字号, bold)} 去重后 = 开过的**不同** fontid 数
+_FS_OPEN_MAX = 300       # 只留最近的, 别让它无限长
+
 def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
     """一段文字在字号 fs 下的**单行宽度**(px)。结果缓存。"""
     if not text:
@@ -6767,6 +6777,15 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
         #    一帧能叠到十几回, 见 `_FRAME_FIT` 处的说明)。它和「重建了几次」是两笔账 ——
         #    `text_px` 从不产生纹理, 只量宽度。
         _FRAME_FIT[1] += 1
+        # ⚠️ 这一句就是"开了一个 fontid"的那一刻 —— 记账在这儿, 不在别处(见 `_FS_OPEN`)。
+        try:
+            _FS_OPEN.append((len(_FS_OPEN), float(fs), bool(bold),
+                             ctx or _COLD_FS_TAG[0] or "?"))
+            _FS_OPEN_SET.add((round(float(fs), 4), bool(bold)))
+            if len(_FS_OPEN) > _FS_OPEN_MAX:
+                del _FS_OPEN[0]
+        except Exception:
+            pass
         _t_cold = time.perf_counter()
         try:
             _cl = CoreLabel(text=text, font_size=fs, bold=bold, text_size=(None, None))
@@ -6791,8 +6810,10 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
             #    (它们只在 `_fit1` 里写, 直接调 `fit_font_size` 的路径上是假数)。
             _base = float(base) if base else float(_COLD_FS_BASE[0])
             _ctx = ctx or _COLD_FS_TAG[0]
+            # 第 9 位 = 当时的账本下标, 给日志回溯"这次冷开**之前**最近开过哪些字号"用
             _COLD_FS.append((_cold_ms, float(fs), bool(bold), _ctx, _nb, _nd,
-                             (float(fs), bool(bold)) in _WARM_DID, _base))
+                             (float(fs), bool(bold)) in _WARM_DID, _base,
+                             len(_FS_OPEN) - 1))
             _COLD_FS.sort(key=lambda _x: -_x[0])
             del _COLD_FS[5:]
         if len(_FIT_PX) > 512:                   # 余额那类数字会一直变, 别让缓存无限长
@@ -11199,6 +11220,34 @@ class RootWidget(BoxLayout):
         _lines.append("# 字号预热表: %d 项 (Kivy 字体缓存上限约 64, 超了就互相挤)  %s"
                       % (_wc, "**超了! 会互相挤, 必须减字号总数**" if _wc > 60
                          else ("贴着上限, 别再往上加" if _wc >= 56 else "有余量")))
+        # ---- 字体缓存账本(见 `_FS_OPEN`): 回答"冷字号到底是被谁挤掉的" ----
+        # ⚠️ 判据不靠猜: **一次冷测量 = 真的开了一个 fontid**。
+        #    不同字号数 > 64 ⇒ LRU 淘汰是铁的 —— "预热时量过=是 却仍冷" 就是这么来的。
+        #    再看"这次冷开之前最近开过哪些", 就知道是谁挤的(猜想: 弹窗那批)。
+        try:
+            _nopen = len(_FS_OPEN_SET)
+            _lines.append("# 字体缓存账本: 到现在一共开过 **%d** 个不同字号 (上限约 64) %s"
+                          % (_nopen,
+                             "**必然发生过 LRU 淘汰**" if _nopen > 60
+                             else "还没撑爆"))
+            if _FS_OPEN:
+                _lines.append("#   最近开过的 12 个(字号[调用方]): "
+                              + " · ".join("%.2f[%s]" % (_x[1], str(_x[3])[:10])
+                                             for _x in _FS_OPEN[-12:]))
+            for _c in _COLD_FS[:2]:
+                try:
+                    _li = int(_c[8])
+                    _before = [x for x in _FS_OPEN if x[0] < _li][-8:]
+                    _n_at = len(set((round(x[1], 4), x[2]) for x in _FS_OPEN[:_li + 1]))
+                    _lines.append("#   冷字号 fs=%.4f[%s]: 发生时已开过 %d 个不同字号"
+                                  % (_c[1], str(_c[3])[:10], _n_at))
+                    _lines.append("#     它之前最近开的 8 个: "
+                                  + (" · ".join("%.2f[%s]" % (_x[1], str(_x[3])[:10])
+                                                   for _x in _before) or "无"))
+                except Exception:
+                    pass
+        except Exception:
+            pass
         # ⚠️ 顺带把这两句读法写进日志 —— 下一份日志不用再回来翻源码就知道怎么读。
         _lines.append("#   读法2: 「倍率」若落在 FIT_SCALES(1.0/0.94/0.88/0.82/0.76/0.70) "
                       "之外, 那就是 v0.7.32 为了压到 64 上限以内**故意不烘**的 FIT_FINE 档 —— "
