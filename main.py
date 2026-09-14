@@ -8253,6 +8253,9 @@ class RootWidget(BoxLayout):
         _TEXUPD[0] = 0
         _TEXUPD_BY.clear()
         _TEXUPD_ACTIVE[0] = True
+        # 逐帧文字纹理重建计数(与 `_bench_frames` 同序等长的平行表, 见 `_on_flip` 末尾)
+        self._bench_tex = []
+        self._bench_tex_prev = _TEXUPD[0]
         self._bench_cpusplit0 = _cpu_split()
         _SND_STAT[0] = 0.0
         _SND_STAT[1] = 0.0
@@ -8362,6 +8365,15 @@ class RootWidget(BoxLayout):
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
             _FRAME_PROBE[2] = 0
+            # 这一帧发生了几次**文字纹理重建** —— 与 `_bench_frames` **同序等长的平行表**。
+            # ⚠️ 用平行表, 不往 `_bench_frames` 的元组里加字段: 那个元组的**下标被
+            #    `_bench_collect_diag` 到处按号取**(v0.6.82 就因为把 [7]/[8] 写反, 让整块诊断
+            #    静默返回空串)。平行表不加新下标, 零风险。
+            # ⚠️ `_TEXUPD[0]` 数的是**真的 `Label.texture_update`**(由 Kivy 用 Clock 延后执行,
+            #    跑在 `_frame` 外面) —— 所以它落在"那一笔账被还上"的那一帧, 而不是"改 text"
+            #    的那一帧。这正是要比对的东西: 慢帧当帧有没有在还文字的账。
+            self._bench_tex.append(_TEXUPD[0] - self._bench_tex_prev)
+            self._bench_tex_prev = _TEXUPD[0]
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
@@ -8779,38 +8791,76 @@ class RootWidget(BoxLayout):
         tags = [x[1] for x in (getattr(self, "_bench_frames", []) or []) if len(x) > 1]
         if len(tags) != len(gaps):
             tags = ["?"] * len(gaps)          # 对不上就照发原始帧间隔, 不猜阶段
+        tex = list(getattr(self, "_bench_tex", []) or [])
+        if len(tex) != len(gaps):
+            tex = [0] * len(gaps)
+        _n1 = max(1, int(len(gaps) * 0.01))
+        _order = sorted(range(len(gaps)), key=lambda _i: -gaps[_i])
+        _thr = gaps[_order[_n1 - 1]]          # "最慢 1%"的门槛(毫秒)
+        # ⚠️ "慢帧"的判据**必须与下面各阶段表用同一条**: 都是 `>= 门槛`。
+        #    写成 `set(_order[:_n1])` 的话, 正好卡在门槛上的并列帧会让两边算出**不同的集合**
+        #    (实测 100 帧里 20 帧同值: 一边 1 帧、一边 20 帧), 于是"慢帧当帧有没有文字重建"
+        #    和各阶段慢帧率互相打架。
+        _slow_idx = set(_i for _i in range(len(gaps)) if gaps[_i] >= _thr)
+        d = getattr(self, "_bench_diag", None) or {}
         _lines = ["# 跳跳的弹珠机 逐帧帧率日志"]
         try:
-            _ver = str(_app_version() or "")
-            _dev = self._device_info()
-            _lines.append("# %s  %s" % (_dev, _ver))
+            _lines.append("# %s  %s" % (self._device_info(), str(_app_version() or "")))
         except Exception:
             pass
         try:
-            _n1 = max(1, int(len(gaps) * 0.01))
-            _thr = sorted(gaps)[-1 * _n1]      # "最慢 1%"的门槛(毫秒)
             _lines.append("# 窗口 %.2fs / %d 帧 / 平均 %.1f / 中位 %.1f / 1%%Low %.1f"
                           % (sum(gaps) / 1000.0, len(gaps),
                              float(getattr(self, "_render_fps", 0.0)),
                              float(getattr(self, "_render_median_fps", 0.0)),
                              float(getattr(self, "_render_1low", 0.0))))
             _lines.append("# 慢帧门槛 %.2f 毫秒(最慢 %d 帧的临界值)" % (_thr, _n1))
-            _lines.append("# 各阶段: 帧数 / 占总帧 / 中位ms / p99ms / 慢帧数 / 该阶段慢帧率")
-            for _s in STAGE_ORDER:
-                _v = [gaps[_i] for _i in range(len(gaps)) if tags[_i] == _s]
-                if not _v:
-                    continue
-                _vs = sorted(_v)
-                _slow = sum(1 for _x in _v if _x >= _thr)
-                _lines.append("#   %s %d / %.1f%% / %.2f / %.2f / %d / %.2f%%"
-                              % (_s, len(_v), 100.0 * len(_v) / len(gaps),
-                                 _vs[len(_vs) // 2],
-                                 _vs[min(len(_vs) - 1, int(len(_vs) * 0.99))],
-                                 _slow, 100.0 * _slow / len(_v)))
         except Exception:
             pass
-        _lines.append("# 每行: 帧间隔毫秒,阶段")
-        _lines.extend("%.2f,%s" % (g, t) for g, t in zip(gaps, tags))
+        # ⚠️ **慢帧 × 文字纹理重建的交叉表** —— 这一行是"文字重排到底是不是元凶"的直接读数。
+        #    `Label.texture_update` 由 Kivy 用 Clock **延后**执行(重测字形+重光栅化+重建纹理+
+        #    上传), 跑在 `_frame` 外面; 所以这笔账落在"被还上"的那一帧, 而不是"改 text"的那一帧。
+        #    两边比例一摆就见分晓: 慢帧里占一大半、其余帧里几乎为零 ⇒ 就是它。
+        _s_n = len(_slow_idx)
+        _o_n = len(gaps) - _s_n
+        _s_t = sum(1 for _i in _slow_idx if tex[_i] > 0)
+        _o_t = sum(1 for _i in range(len(gaps)) if _i not in _slow_idx and tex[_i] > 0)
+        # ⚠️ 分母必须是**慢帧集合的真实大小**(`_s_n`), 不是 `_n1` —— 门槛上并列时
+        #    `>= 门槛` 选出来的帧会比 `_n1` 多(夹具实测 20 vs 1, 印出 `20/1 (2000%)`)。
+        #    真机上毫秒值是浮点、几乎不会并列, 两者相等; 但判据必须自洽。
+        _lines.append("# 慢帧当帧发生文字重建: %d/%d (%.0f%%)  ·  其余帧: %d/%d (%.0f%%)"
+                      % (_s_t, _s_n, 100.0 * _s_t / max(1, _s_n),
+                         _o_t, _o_n, 100.0 * _o_t / max(1, _o_n)))
+        _lines.append("# 全程文字重建 %d 次(其中 %d 次落在慢帧上)"
+                      % (sum(tex), sum(tex[_i] for _i in _slow_idx)))
+        try:
+            _by = d.get("texupd_by") or []
+            if _by:
+                _lines.append("# 重建来源: " + " · ".join("%s %d" % (n, c) for n, c in _by[:5]))
+            # 发声 / 震动单次最慢 —— 覆盖另一条假设("关掉音效 1%low 就回升", 而关音效会
+            # 连震动一起关掉, 两条分不开)。这两组埋点一直在跑, 只是很多年没显示了。
+            _lines.append("# 发声 %d 次 · 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒"
+                          % (int(d.get("snd_n", 0)), float(d.get("snd_worst", 0.0)),
+                             float(d.get("snd_sum", 0.0))))
+            _lines.append("# 震动 %d 次 · 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒"
+                          % (int(d.get("vib_n", 0)), float(d.get("vib_worst", 0.0)),
+                             float(d.get("vib_sum", 0.0))))
+        except Exception:
+            pass
+        _lines.append("# 各阶段: 帧数 / 占总帧 / 中位ms / p99ms / 慢帧数 / 该阶段慢帧率")
+        for _s in STAGE_ORDER:
+            _v = [gaps[_i] for _i in range(len(gaps)) if tags[_i] == _s]
+            if not _v:
+                continue
+            _vs = sorted(_v)
+            _slow = sum(1 for _x in _v if _x >= _thr)
+            _lines.append("#   %s %d / %.1f%% / %.2f / %.2f / %d / %.2f%%"
+                          % (_s, len(_v), 100.0 * len(_v) / len(gaps),
+                             _vs[len(_vs) // 2],
+                             _vs[min(len(_vs) - 1, int(len(_vs) * 0.99))],
+                             _slow, 100.0 * _slow / len(_v)))
+        _lines.append("# 每行: 帧间隔毫秒,阶段,当帧文字重建次数")
+        _lines.extend("%.2f,%s,%d" % (g, t, x) for g, t, x in zip(gaps, tags, tex))
         return "\n".join(_lines) + "\n"
 
     def _copy_bench_log(self, btn=None):
