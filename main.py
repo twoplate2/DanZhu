@@ -5181,6 +5181,16 @@ class WinPileFX(Widget):
         self._font_prebaked = 0          # prebake_step 的进度(已烘过几个字号, 见 _FONT_WARM_SIZES)
         self._vib_prebaked = False       # prebake_step 的一次性开关(震动线程+系统服务代理)
         self._balls = []
+        # ---- 持久指令表(2026-09-14): 见 `_redraw` / `_tbl_build` 顶上那几段说明 ----
+        # `_tbl_ok` = 表还能用; 另外三项是**重建判据**(球列表身份 / 三张贴图 / 控件尺寸)。
+        # ⚠️ 球列表必须比**对象身份**: 新一局长度可能一样(8 颗换 8 颗), 只比长度会拿上一局的球继续画。
+        self._tbl_ok = False
+        self._tbl_balls = None
+        self._tbl_tex = None
+        self._tbl_wh = None
+        self._fx_pre = []
+        self._fx_post = []
+        self._bd = []
         self._value = DEFAULT_BET
         self._seq = 0
         self._rng = random.Random()
@@ -5774,92 +5784,188 @@ class WinPileFX(Widget):
                   pos=(x - rx, y - ry), size=(rx * 2, ry * 2))
         PopMatrix()
 
+    def _tbl_key_ok(self, back_tex, front_tex, fb_tex):
+        """持久指令表还能不能用。见 `_redraw` 顶上那段说明。
+
+        ⚠️ `self._balls` 用**对象身份**判, 不用长度 —— 新一局 `play_win` 换掉整个列表时
+           长度完全可能一样(8 颗换 8 颗), 只比长度会拿上一局的球继续画(位置全错)。
+        ⚠️ 尺寸也要进判据: 窗口变了 `_abx/_aby/_abw/_abh` 跟着变, 而杯口环那些子纹理
+           是按建表时的尺寸切/摆的。
+        """
+        return (self._tbl_ok
+                and self._tbl_balls is self._balls
+                and self._tbl_tex == (back_tex, front_tex, fb_tex)
+                and self._tbl_wh == (self.width, self.height))
+
+    def _tbl_build(self, back_tex, front_tex, fb_tex):
+        """**一次性**建出「固定层 + 球层 + 前层玻璃」的持久指令表。
+
+        ⚠️⚠️ **顺序一个字不许动**(红线 2, 实测出来的):
+            接地阴影 < 后层玻璃 < 压暗 < 杯口环补画(48 条) < 弹珠 < 前层玻璃。
+            压暗放到后层玻璃之前 ⇒ 杯内只压 12% 而杯外压 46%(杯子周围反而最亮)。
+        ⚠️⚠️ **球层必须按 `self._balls` 的原始顺序单趟建**(红线 1, 血泪账):
+            改成"落定球 + 飞行球两趟"之后实测 x100 一局 4750 帧里 25.5% 的重叠帧层次错乱、
+            落定那一帧约 46 颗球单帧掉一半像素。那个写法当年之所以没出事, 唯一原因是
+            "发牌序恰好 = z 降序"这个巧合。**别拆组, 别排序。**
+        ⚠️ 不可见的球**不删指令**, 只把 `size` 置 (0,0) —— 指令条数在本局内必须恒定,
+           否则每帧增删反而更贵, 还会打乱画家序。
+        """
+        self.canvas.clear()
+        self._fx_pre = []          # 球**之前**的固定层: (kind, Color, Shape, f0, fh, a)
+        self._fx_post = []         # 球**之后**的固定层(前层玻璃)
+        self._bd = []              # 球层: 每球 (Color, Rotate, Rectangle, ball)
+        with self.canvas:
+            # ① 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
+            self._fx_pre.append(("shadow", Color(0.02, 0.02, 0.03, 0.0),
+                                 Ellipse(pos=(0, 0), size=(0, 0)), None, None, None))
+            # ② 后层玻璃。⚠️ 分层图缺失时把**整图当后层**用(见原注释: 放到"前层"的位置
+            #    会让整张玻璃落在压暗**之上**, 回退局里杯子比正常局亮一大截)。
+            _under = back_tex if back_tex is not None else fb_tex
+            self._fx_pre.append(("under", Color(1.0, 1.0, 1.0, 0.0),
+                                 Rectangle(texture=_under, pos=(0, 0), size=(0, 0)),
+                                 None, None, None))
+            # ③ 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点。
+            self._fx_pre.append(("dim", Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], 0.0),
+                                 Rectangle(pos=(0, 0), size=(0, 0)), None, None, None))
+            # ④ 杯口环补画(后半个杯口环 + 杯底环后半, 各 12 段) —— 见 `_rim_back_strips`。
+            for _t, _f0, _fh, _a in (_rim_back_strips(back_tex) or ()):
+                self._fx_pre.append(("rim", Color(1.0, 1.0, 1.0, 0.0),
+                                     Rectangle(texture=_t, pos=(0, 0), size=(0, 0)),
+                                     _f0, _fh, _a))
+            # ⑤ 球层: **原始顺序单趟**(红线 1)
+            for _b in self._balls:
+                _c = Color(1.0, 1.0, 1.0, 0.0)
+                _ro = Rotate(angle=0.0, origin=(0, 0))
+                _r = Rectangle(texture=_ball_texture(_b["value"]), pos=(0, 0), size=(0, 0))
+                self._bd.append((_c, _ro, _r, _b))
+            # ⑥ 前层玻璃(必须在球**之后**)
+            self._fx_post.append(("front", Color(1.0, 1.0, 1.0, 0.0),
+                                  Rectangle(texture=front_tex, pos=(0, 0), size=(0, 0)),
+                                  None, None, None))
+        self._tbl_ok = True
+        self._tbl_balls = self._balls
+        self._tbl_tex = (back_tex, front_tex, fb_tex)
+        self._tbl_wh = (self.width, self.height)
+
+    def _tbl_apply_fixed(self, a_cup, a_dim, bx, by, bw, bh):
+        """每帧把固定层的**属性**写一遍(不重建指令)。"""
+        for _k, _c, _r, _f0, _fh, _a in self._fx_pre:
+            if _k == "shadow":
+                if a_cup > 0.0:
+                    _fx, _fy, _ = self._map(CX, FLOOR_Y)
+                    _c.rgba = (0.02, 0.02, 0.03, a_cup * 0.35)
+                    _r.pos = (_fx - bw * 0.34, _fy - bh * 0.045)
+                    _r.size = (bw * 0.68, bh * 0.09)
+                else:
+                    _r.size = (0.0, 0.0)
+            elif _k == "under":
+                if a_cup > 0.0 and _r.texture is not None:
+                    _c.rgba = (1.0, 1.0, 1.0, a_cup)
+                    _r.pos = (bx, by)
+                    _r.size = (bw, bh)
+                else:
+                    _r.size = (0.0, 0.0)
+            elif _k == "dim":
+                if a_dim > 0.0:
+                    _c.rgba = (DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], DIM_ALPHA * a_dim)
+                    _r.pos = self.pos
+                    _r.size = self.size
+                else:
+                    _r.size = (0.0, 0.0)
+            else:                                   # "rim"
+                if a_cup > 0.0:
+                    _c.rgba = (1.0, 1.0, 1.0, a_cup * _a)
+                    _r.pos = (bx, by + bh * _f0)
+                    _r.size = (bw, bh * _fh)
+                else:
+                    _r.size = (0.0, 0.0)
+        for _k, _c, _r, _f0, _fh, _a in self._fx_post:
+            if a_cup > 0.0 and _r.texture is not None:
+                _c.rgba = (1.0, 1.0, 1.0, a_cup)
+                _r.pos = (bx, by)
+                _r.size = (bw, bh)
+            else:
+                _r.size = (0.0, 0.0)
+
+    def _tbl_apply_balls(self, a_cup):
+        """每帧把球层的属性写一遍。逻辑与 `_draw_bead` 逐字一致, 只是**写进既有指令**。"""
+        for _c, _ro, _r, _b in self._bd:
+            _al = a_cup
+            if not _b["settled"]:
+                if _b["tt"] < _b["f_enter"]:        # 还在可见顶边之上: 不画
+                    _r.size = (0.0, 0.0)
+                    continue
+                _al *= max(0.0, min(1.0, (_b["tt"] - _b["f_enter"]) / ENTER_FADE))
+                if _al <= 0.0:
+                    _r.size = (0.0, 0.0)
+                    continue
+                _sh = min(1.0, _b["shade"] + 0.10)  # 飞行球提亮一档, 与堆里的区分开
+            else:
+                _sh = _b["shade"]
+            _scr = self._ball_screen(_b)
+            if _scr is None:
+                _r.size = (0.0, 0.0)
+                continue
+            _x, _y, _rx, _ry, _ang = _scr
+            _c.rgba = (_sh, _sh, _sh, _al)
+            _ro.angle = _ang
+            _ro.origin = (_x, _y)
+            _r.pos = (_x - _rx, _y - _ry)
+            _r.size = (_rx * 2, _ry * 2)
+
+    def _tbl_drop(self):
+        """作废持久表(并把画布清干净)。
+
+        ⚠️⚠️ **红线 3**: 每次 mode 迁移都必须显式作废 —— 少了它, 退出装杯后
+           杯子/压暗会**永久留在画布上**, 而 `canvas.clear()` 是现在唯一能把它们
+           擦掉的机制(原来每帧都 clear, 所以这个问题从来没暴露过)。
+        """
+        if self._tbl_ok:
+            self.canvas.clear()
+        self._tbl_ok = False
+        self._tbl_balls = None
+        self._fx_pre = []
+        self._fx_post = []
+        self._bd = []
+
     def _redraw(self, *_):
+        """装杯演出的每帧绘制。**持久指令表版**(2026-09-14)。
+
+        ⚠️⚠️ 为什么改: 原来是 `canvas.clear()` + **整块重建** —— 固定 56 条(接地阴影 2 +
+           后层玻璃 2 + 压暗 2 + 杯口环补画 48 + 前层玻璃 2)每帧都重来一遍, 球层还有
+           `5 x N` 条(x100 时整块 684 条)。真机 `板面` 306 帧累计 639 毫秒, 而低90 里
+           有三帧(帧5005 / 帧4926 / 帧4934, 板面 2.3~3.4 毫秒)**只超线 0.03~0.23 毫秒**
+           —— 把固定层变成"建一次、之后只改 rgba/pos/size"就够清掉它们。
+        桌面基线(v0.7.35 拆分实测): 杯层 max 0.71 / 中位 0.32; 球层 max 1.64 / 中位 0.36。
+        ⚠️ 三条红线写在 `_tbl_build` 与 `_tbl_drop` 的说明里, 一条都不能碰。
+        """
         self._dirty = False
         # 本帧真正画上去的压暗曲线值, 给 HUD 五行读(见 dim_alpha)。**必须在所有早退之前
         # 归零** —— 早退的每一种情形(idle / 尺寸未定 / 两边都透明)都等于"本帧板面没压暗"。
         self._a_dim_now = 0.0
         if self.width <= 1.0 or self.height <= 1.0:
             return
-        self.canvas.clear()
         if self.mode == "idle":
+            self._tbl_drop()
             return
         a_dim, a_cup, k, dy = self._layers(time.time())
         self._a_dim_now = a_dim
         if a_dim <= 0.0 and a_cup <= 0.0:
+            # 两边都透明 = 本帧不画(进场最前面那几帧 / 退场最后那几帧)。**必须作废**:
+            # 留着旧表的话, 下一帧 alpha 回来时画的是上一段曲线的残留。
+            self._tbl_drop()
             return
         self._apply_anim_rect(k, dy)
         bx, by, bw, bh = self._abx, self._aby, self._abw, self._abh
         back_tex, front_tex, fb_tex = _glass_textures()
-        with self.canvas:
-            # ⚠️⚠️ **2026-09-15: 把 `_redraw` 拆成「杯层 / 球层」两段计时。**
-            #    为什么要拆: 这个函数是 `canvas.clear()` + 整块重建 —— 固定 56 条
-            #    (接地阴影 2 + 后层玻璃 2 + 压暗 2 + 杯口环补画 48 + 前层玻璃 2)
-            #    **每帧都重来一遍**, 而球层是 `5 x N` 条(`_draw_bead`: Color/PushMatrix/
-            #    Rotate/Rectangle/PopMatrix), x100 时整块 684 条。
-            #    要把固定层改成"建一次、之后只改 rgba/pos/size"(持久指令表)—— 那能清掉
-            #    低90 里两帧只超线 0.15 毫秒的帧(帧4926/4934, 板面 2.6/3.4 毫秒)——
-            #    但得先知道**固定层到底占多少**。现在那句"真机约 2.8ms"是**推算, 不是实测**。
-            #    ⚠️ `装杯`(`WinPileFX._redraw`, 12674 埋点)本来就**嵌套在** `板面`
-            #       (`GameArea.tick_draw`, 12671)里面 ⇒ 这几个数**不能相加**, 只能按
-            #       "谁最大"读(12669 有注释)。
-            _t_cup = time.perf_counter()
-            if a_cup > 0.0:
-                # 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
-                fx, fy, _ = self._map(CX, FLOOR_Y)
-                Color(0.02, 0.02, 0.03, a_cup * 0.35)
-                Ellipse(pos=(fx - bw * 0.34, fy - bh * 0.045),
-                        size=(bw * 0.68, bh * 0.09))
-
-                # ⚠️ 分层图缺失时(`_glass_textures` 的最后一档回退)把**整图当后层**用。
-                # 原来它是在最后("前层"的位置)画的 —— 那样整张玻璃落在压暗矩形**之上**,
-                # 回退局里杯子比正常局亮一大截、前后遮挡关系也没了(专家 2026-09-11 指出)。
-                # 放到这里它就跟后层一样被压暗, 弹珠照样画在它上面。正常路径一行不受影响。
-                under_tex = back_tex if back_tex is not None else fb_tex
-                if under_tex is not None:
-                    Color(1.0, 1.0, 1.0, a_cup)
-                    Rectangle(texture=under_tex, pos=(bx, by), size=(bw, bh))
-
-            # 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点。
-            # ⚠️ 位置: 在**后层玻璃之后、球之前**。放到后层玻璃之前(原写法)时, 后层玻璃
-            # 会把刚压暗的板面又提亮回去 —— 实测杯内只被压掉 12%, 而杯外板面压掉 46%,
-            # 玩家盯着的杯子周围反而是全画面压暗最失败的地方。前层玻璃也不能盖在压暗之后
-            # 之外的位置: 放到最后会把弹珠本身也压暗(球就"沉"进背景里了)。
-            if a_dim > 0.0:
-                Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], DIM_ALPHA * a_dim)
-                Rectangle(pos=self.pos, size=self.size)
-
-            if a_cup > 0.0:
-                # 后层那两半环(杯口远侧 + 杯底远半)补画到压暗之上 —— 见 _rim_back_strips。
-                # 放在球之前: 它们本来就在珠子后面, 球要能挡住。
-                for t, f0, fh, a in (_rim_back_strips(back_tex) or ()):
-                    Color(1.0, 1.0, 1.0, a_cup * a)
-                    Rectangle(texture=t, pos=(bx, by + bh * f0), size=(bw, bh * fh))
-
-            # 固定层到此为止(接地阴影 + 后层玻璃 + 压暗 + 杯口环补画 48 条)。
-            _brk_add("杯层", _t_cup)
-            _t_ball = time.perf_counter()
-
-            if a_cup > 0.0:
-                # 球按画家序一趟画完(远先近后) —— **含飞行中的球**。
-                # ⚠️ 原来是两趟: 先画已落定球、再把飞行球**一律置顶**。那个写法之所以
-                #    不出事, 唯一原因是发牌序 = z 降序 ⇒ 任意时刻已落定的恰好是最远的那批
-                #    ⇒ 飞行球永远比它们近, 画在上面**是对的**。发牌改成随机拓扑序之后
-                #    这个巧合就没了: 更远的飞行球会被画在更近的已落定球之上 —— 实测
-                #    x100 一局 4750 帧的层次错乱(占重叠帧 25.5%), 落定那一帧还有约 46 颗
-                #    球会"单帧掉掉一半像素"(从置顶切成画家序)。
-                # 现在按深度插进同一趟: 近的球盖远的球, 飞行球也不例外。代价是飞行球
-                #    可能被前面的球短暂遮住(物理上正确 —— 像球陷进堆里), 这是为顺序随机
-                #    付的必要代价, 别改回去。
-                for b in self._balls:
-                    self._draw_bead(b, a_cup)
-
-                if front_tex is not None:      # 回退时没有前层, 弹珠就在玻璃之上(可接受的降级)
-                    Color(1.0, 1.0, 1.0, a_cup)
-                    Rectangle(texture=front_tex, pos=(bx, by), size=(bw, bh))
-
-            # 球层到此为止(每球 5 条 `_draw_bead` + 前层玻璃 2 条)。见 `杯层` 处说明。
-            _brk_add("球层", _t_ball)
+        _t = time.perf_counter()
+        if not self._tbl_key_ok(back_tex, front_tex, fb_tex):
+            self._tbl_build(back_tex, front_tex, fb_tex)
+        self._tbl_apply_fixed(a_cup, a_dim, bx, by, bw, bh)
+        _brk_add("杯层", _t)
+        _t = time.perf_counter()
+        self._tbl_apply_balls(a_cup)
+        _brk_add("球层", _t)
 
     # ------------------------------ 启动期预热 ------------------------------
 
@@ -9528,6 +9634,10 @@ class RootWidget(BoxLayout):
         _med = float(out.get("p50") or 0.0)
         _jank = [x for x in fr if _med > 0.0 and x[0] > _med / 0.55]
         out["jank_n"] = len(_jank)
+        # **慢帧** = 帧率低于「中位帧率 75%」—— 比卡顿帧宽一档, **包含**卡顿帧。
+        # ⚠️ 玩家 2026-09-14 定稿: 成绩面板上**两档都要印**(原来只印了卡顿帧) ——
+        #    只看最窄那档会漏掉"虽然没到卡顿、但已经明显掉帧"的那一批, 而那批才是趋势。
+        out["slow_n"] = sum(1 for x in fr if _med > 0.0 and x[0] > _med / 0.75)
         _jg = {}
         for _x in _jank:
             _jg[_x[1]] = _jg.get(_x[1], 0) + 1
@@ -9865,7 +9975,10 @@ class RootWidget(BoxLayout):
             _ver = str(_app_version() or "")
         except Exception:
             _ver = ""
-        _dev_ver = (dev + "  " + _ver) if _ver and _ver not in dev else dev
+        # ⚠️ 玩家 2026-09-14: 「安卓版本和这个游戏版本也可以加一个符号 /」——
+        #    原来是两个空格, 印出来是 `NCO-AL00 / Android 15  v0.7.37`, 版本号看着像
+        #    系统版本的一部分。改成 `/` 分隔, 三段并列: `机器 / 安卓 / 游戏版本`。
+        _dev_ver = (dev + " / " + _ver) if _ver and _ver not in dev else dev
         score = ('%s\n'
                  '运算速度：%d 轮中位每秒 %d 步模拟\n'
                  '稳定性：%d～%d 步/秒 · 波动 %.1f%%\n'
@@ -10876,8 +10989,17 @@ class RootWidget(BoxLayout):
             #    意义(165Hz 的机器上"低于 60fps"是地板级要求, 而且它的分子分母都是全窗口,
             #    跟上面"卡顿帧"那批根本不是同一批帧)。玩家 2026-09-14 定稿改成:
             #    **卡顿帧(帧率 < 中位帧率的 50%), 一共有 X 帧** —— 门槛跟着本机中位走。
-            parts.append('卡顿帧（帧率 < 中位帧率的 55%%）：共 %d 帧'
-                         % int(d.get("jank_n", 0)))
+            # ⚠️ **两档都要印**(玩家 2026-09-14 定稿, 名字也是他定的: 「改名字即可」):
+            #    `卡顿帧（<55%）` 与 `慢帧（<75%）`, 阈值都是**相对本机中位帧率**。
+            #    ⚠️ 慢帧**包含**卡顿帧(同一个分子集的两档), 所以它的数一定 ≥ 卡顿帧 ——
+            #       别拿两者相减去算中间带。
+            # ⚠️ **不变量: 慢帧(75%) 一定 ⊇ 卡顿帧(55%)** —— 两个阈值同一个分母, 宽的必然
+            #    包含窄的。老 diag 字典/异常兜底里可能没有 `slow_n`, 直接印 0 就会出现
+            #    "卡顿帧 6 / 慢帧 0" 这种**自相矛盾**的两行(探针夹具上当场撞到过)。
+            _jn = int(d.get("jank_n", 0))
+            _sn = max(int(d.get("slow_n", 0)), _jn)
+            parts.append('卡顿帧（<55%%）：共 %d 帧' % _jn)
+            parts.append('慢帧（<75%%）：共 %d 帧' % _sn)
             return '\n'.join(parts)
         except Exception:
             return ''
