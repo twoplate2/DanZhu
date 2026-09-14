@@ -2045,15 +2045,27 @@ _texupd_wrap()
 
 
 
-# ---- 帧率上限(2026-09-14 玩家定案, 当天改过两回) ----
-# 第一版是 "cap = min(120, 屏幕刷新率)"(跟着屏幕走)。**玩家当天实测后否掉了** ——
-#   他的设备上那套规则出了状况, 定案改成**固定 120, 不再和刷新率匹配**。
-# ⚠️ 所以这里**不要**再引入任何"按屏幕刷新率动态调"的逻辑: 屏幕刷新率只用来**显示**
-#    (`_FPS_INFO[0]`, 面板上能看到当前实测值), **不参与**上限的计算。
-# ⚠️ 固定 120 的含义: 上限是 120, 但**真正能出多少仍由机器与屏幕决定** ——
-#    屏幕只有 60Hz、或 GPU 顶不住时, 实际帧率自然低于 120。这不是"强行插帧"。
-FPS_CAP_MAX = 120            # 帧率上限(**固定值**, 不跟屏幕刷新率匹配 —— 玩家 2026-09-14 定案)
-FPS_CAP_FALLBACK = 60        # 保留: 只在"连 120 都设不进去"的异常路径上当兜底
+# ---- 帧率上限(2026-09-14, 当天改过三回; 这一版是**量出来的**) ----
+# 三版的历史, 每一步都有实测依据, 别再退回去:
+#   ① `cap = min(120, 屏幕刷新率)` —— 玩家实测后否掉: `getRefreshRate()` 给的是**当前模式**的
+#      刷新率, 智能刷新率屏会在 144/120/60 之间切档, 上限跟着跳(同一台机器两次跑分面板上
+#      分别读到 144Hz 和 165Hz —— 这是实测到的)。而且 `_apply_fps_cap` 在 on_resume 还会再算一次。
+#   ② 固定 120 —— 玩家报"模拟器和真机都不到 60 帧"。**桌面复现并定位到了**:
+#        上限 0(不设)  中位 16.59ms = 60.3fps   ← 干净的 vsync 锁
+#        上限 60       中位 16.65ms = 60.1fps   ← 干净(60Hz 屏的整数分之一)
+#        上限 120      中位 19.33ms = **51.7fps**  ← 比"不设上限"还慢
+#        上限 240      中位 18.14ms = 55.1fps
+#      机制: Kivy 的 `_max_fps` 会让主循环**睡到 1/cap 秒**。cap=120 ⇒ 睡 8.33ms, 而屏幕 vsync
+#      一格是 16.67ms(桌面)/6.06ms(165Hz) —— **睡过了一格**, 每帧都错过、滑到下一格 ⇒ 帧间隔
+#      变成一格多的拍频。**上限只要不是 vsync 的整数分之一, 就一定会拍频。**
+#   ③ **本版: `0 = 不设上限`** —— Kivy 不睡, 循环由 vsync 自己钉住。这既满足玩家"不跟刷新率
+#      匹配"的要求, 也是唯一能真正跑到**屏幕上限**的做法(60Hz 屏 → 60fps; 165Hz 屏 → 尽力而为)。
+# ⚠️ 屏幕刷新率**只用来显示**(`_FPS_INFO[0]`), **不参与**任何计算。
+# ⚠️ 以后再想"加个上限"之前, 先回答一句: 这个数能不能整除屏幕的 vsync 周期?
+#    不能整除就**别加** —— 加了只会更慢(上面那张表就是证据)。
+# ⚠️ **0 = 不设上限**(实测出来的结论, 见下面那段)。
+FPS_CAP_MAX = 0              # 帧率上限(**0 = 不设**, 交给 vsync 钉)
+FPS_CAP_FALLBACK = 0         # 兜底同样是"不设"
 _FPS_INFO = [0.0, 0.0]       # [屏幕刷新率(0=没读到), 实际生效的上限]
 
 
@@ -2088,7 +2100,7 @@ def _apply_fps_cap():
     """
     hz = _screen_hz()               # 只用于面板显示
     try:
-        cap = float(FPS_CAP_MAX)
+        cap = float(FPS_CAP_MAX)        # 0 = 不设上限(见本段顶部那张实测表)
     except Exception:
         cap = float(FPS_CAP_FALLBACK)
     _FPS_INFO[0] = float(hz or 0.0)
@@ -6201,6 +6213,8 @@ class GameArea(FloatLayout):
         self._ox = 0.0
         self._oyt = 0.0
         self._slot_cols = []
+        self._slot_txt_cols = []      # 9 个槽的"倍率文字颜色"指令(供 _update_slots 原地改)
+        self._slot_txt_rects = []     # 9 个槽的"倍率文字"矩形(空的 size=(0,0))
         self._lamp_cols = []
         self._peg_cols = {}            # (px,py)→Color 钉子受击高亮
         self._peg_ellipses = {}        # (px,py)→Ellipse 钉子半径形变
@@ -6264,6 +6278,46 @@ class GameArea(FloatLayout):
     def _py(self, y):
         return self._oyt - y * self._s
 
+    def _update_slots(self):
+        """**只更新倍率槽**的颜色与文字, 不清画布、不重建那 ~345 条指令。
+
+        什么时候能这么干: 盘面**几何没变**、只有倍率变了 —— 也就是"球落定后重掷盘面"。
+        真机实测(0.6.90 面板): 整块 `_redraw()` 里的 `重掷` 一段是 **9.2 / 7.6 毫秒**,
+        而它落在球落定那一帧上, 是最慢三帧里的头号子步骤。
+        ⚠️ 结构对不上(首帧 / 刚改过尺寸 / 槽数变了)就**退回完整 `_redraw()`** —— 绝不半更新。
+        """
+        g = self.game
+        try:
+            ok = (len(self._slot_cols) == NUM_SLOTS
+                  and len(self._slot_txt_cols) == NUM_SLOTS
+                  and len(self._slot_txt_rects) == NUM_SLOTS)
+        except Exception:
+            ok = False
+        if not ok:
+            self._redraw()
+            return
+        fs = max(12, int(20 * self._s))
+        cy = (SLOT_TOP + FLOOR) / 2.0
+        for i in range(NUM_SLOTS):
+            m = g.multipliers[i]
+            try:
+                self._slot_cols[i].rgb = hex_rgb(slot_color(m))
+                self._slot_txt_cols[i].rgb = hex_rgb(slot_txt(m))
+                _r = self._slot_txt_rects[i]
+                if m > 0:
+                    _tex = slot_text_tex(m, fs)
+                    if _tex is not None:
+                        _r.texture = _tex
+                        _r.size = _tex.size
+                        _r.pos = (self._px(FIELD_L + (i + 0.5) * SLOT_W) - _tex.width / 2.0,
+                                  self._py(cy) - _tex.height / 2.0)
+                else:
+                    _r.size = (0, 0)          # 空槽藏起来(与 `_redraw` 的 size 0 一致)
+            except Exception:
+                pass
+        # 与 `_redraw` 同义: 重掷后槽位白闪作废(它在 `tick_draw` 里读 `_pulse`)
+        self._pulse = None
+
     def _redraw(self, *_):
         if self.width < 20 or self.height < 20:
             return
@@ -6320,19 +6374,26 @@ class GameArea(FloatLayout):
                                  **self._rect(FIELD_L + i * SLOT_W + 2, SLOT_TOP + 3,
                                               FIELD_L + (i + 1) * SLOT_W - 2, FLOOR - 3))
             # 槽倍率文字(走 `slot_text_tex` 的缓存; 逻辑 20px 跟盘面缩放, 手机上≈11sp)
+            # ⚠️ **9 个槽全都建**(空的用 size=(0,0) 藏起来, 视觉完全等价) —— 因为倍率的
+            #    "哪几个槽有奖"每次重掷都会变(`roll_multipliers` 会重新 `random.sample` 位置),
+            #    只给非空槽建的话, 条数会变, 就没法在原地更新了(见 `_update_slots`)。
+            self._slot_txt_cols = []
+            self._slot_txt_rects = []
             fs = max(12, int(20 * s))
+            cx = FIELD_L + 0.5 * SLOT_W
+            cy = (SLOT_TOP + FLOOR) / 2.0
             for i in range(NUM_SLOTS):
                 m = g.multipliers[i]
-                if m <= 0:
-                    continue
-                tex = slot_text_tex(m, fs)
-                cx = FIELD_L + (i + 0.5) * SLOT_W
-                cy = (SLOT_TOP + FLOOR) / 2.0
-                Color(*hex_rgb(slot_txt(m)))
-                Rectangle(texture=tex,
-                          pos=(self._px(cx) - tex.width / 2.0,
-                               self._py(cy) - tex.height / 2.0),
-                          size=tex.size)
+                self._slot_txt_cols.append(Color(*hex_rgb(slot_txt(m))))
+                if m > 0:
+                    tex = slot_text_tex(m, fs)
+                    _r = Rectangle(texture=tex,
+                                   pos=(self._px(FIELD_L + (i + 0.5) * SLOT_W) - tex.width / 2.0,
+                                        self._py(cy) - tex.height / 2.0),
+                                   size=tex.size)
+                else:
+                    _r = Rectangle(texture=None, pos=(0, 0), size=(0, 0))
+                self._slot_txt_rects.append(_r)
             # 投中指示灯(中奖绿/未中红, 结算时变色, 换盘面熄灭)
             self._lamp_cols = []
             ly = SLOT_TOP - 9
@@ -8443,10 +8504,10 @@ class RootWidget(BoxLayout):
             # (有一批帧在白白占用呈现机会)。也顺手把 Kivy 的限速旋钮值打出来。
             _fc = int(d.get("frame_calls", 0))
             _hz, _cap = _FPS_INFO[0], _FPS_INFO[1]
-            parts.append('节拍： 屏幕 %s · 帧率上限 %s（固定，不跟屏幕匹配）· vsync=%s'
+            parts.append('节拍： 屏幕 %s · 帧率上限 %s · vsync=%s'
                          ' · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
-                         % (('%.0fHz' % _hz) if _hz else '没读到(按60)',
-                            ('%.0f' % _cap) if _cap else '?', d.get("vsync", "?"), _fc,
+                         % (('%.0fHz' % _hz) if _hz else '没读到',
+                            ('%.0f' % _cap) if _cap else '不设(0)', d.get("vsync", "?"), _fc,
                             d.get("n", 0), _fc / float(max(1, d.get("n", 1)))))
             # 内核态占比 —— 把这一个数当**分流器**: 高则查 JNI/Binder/文件写, 低则查 GIL。
             # C6: 最差 20 帧是不是**紧跟在一次发射之后**? 是 ⇒ "每发才做一次的活"有罪;
@@ -9084,7 +9145,12 @@ class RootWidget(BoxLayout):
         if reroll:
             self._boards = {r: roll_multipliers(r) for r in self._all_rtp()}   # 各档盘面一起刷新
             self.multipliers = self._boards[self.rtp_target]
-            self.game_area._redraw()
+            # ⚠️ **只更新倍率槽**, 不整块重画(2026-09-14): 重掷时几何一点没变 ——
+            #    钉子/隔板/墙/槽底/力条全在原位, 变的只有 9 个槽的颜色与文字。
+            #    真机实测: 整块 `_redraw()` 的 `重掷` 一段是 **9.2 / 7.6 毫秒**, 而它落在
+            #    "球落定 -> ready"那一帧上, 是最慢三帧里的头号子步骤。
+            #    `_update_slots()` 结构对不上时会自己退回完整 `_redraw()`, 不半更新。
+            self.game_area._update_slots()
         else:
             self.game_area.lamps_off()
         self.ball = Ball(x=PLUNGER_X, y=PLUNGER_Y, vx=0.0, vy=0.0,
