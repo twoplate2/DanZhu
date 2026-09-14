@@ -6744,17 +6744,32 @@ class GameArea(FloatLayout):
             badge.center = (self._px(CW / 2.0), self._py(CH / 2.0) - self.y)
 
     def show_bench_badge(self, text):
-        """跑分状态放到底部操作区，绝不遮住盘面。"""
-        try:
-            self.game._show_bench_status(text)
-        except Exception:
-            pass
+        """跑分状态固定在盘面中心：大号红字，不置灰、不加遮挡底板。"""
+        badge = self._bench_badge
+        display = text.replace("\n", "　·　")
+        if badge is None:
+            badge = Label(text=display, font_size=sp(20), bold=True, halign="center",
+                          valign="middle", color=hex_rgb(COL_FIRE) + (1,),
+                          size_hint=(None, None))
+            badge.texture_update()
+            badge.size = badge.texture_size
+            self._bench_badge = badge
+            self.add_widget(badge)
+        elif badge.text != display:
+            badge.text = display
+            badge.texture_update()
+            badge.size = badge.texture_size
+        self._place_bench_badge()
+        self._restack_overlays()
 
     def hide_bench_badge(self):
-        try:
-            self.game._hide_bench_status()
-        except Exception:
-            pass
+        badge = self._bench_badge
+        self._bench_badge = None
+        if badge is not None:
+            try:
+                self.remove_widget(badge)
+            except Exception:
+                pass
 
     def set_lamp(self, i, hex_color):
         if 0 <= i < len(self._lamp_cols):
