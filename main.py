@@ -8859,6 +8859,25 @@ class RootWidget(BoxLayout):
                              _vs[len(_vs) // 2],
                              _vs[min(len(_vs) - 1, int(len(_vs) * 0.99))],
                              _slow, 100.0 * _slow / len(_v)))
+        # 最慢三帧的 `_frame` **子步骤** —— 用来回答"这 20 毫秒里我们自己的代码占多少"。
+        # ⚠️ 只统计 `_frame` **内部**被 `_brk_wrap` 包过的那几处(板面/重掷/字号/装杯/发射)。
+        #    这一格很小而整帧很大 ⇒ 钱花在 `_frame` 外面(Kivy 延后的文字重排 / 渲染 / 其它
+        #    Clock 回调), 不是我们的代码 —— 这是分流的那一刀。
+        _fr = list(getattr(self, "_bench_frames", []) or [])
+        if len(_fr) == len(gaps):
+            _bits = []
+            for _i in _order[:3]:
+                # ⚠️ 必须兜底: `[9]` 是 `_on_flip` 存的 `((毫秒, 标签), ...)`, 但**形状意外时
+                #    绝不能让整份日志消失**(外层 `_copy_bench_log` 会把异常吞成空串, 玩家只看到
+                #    "没有可复制的数据")。实测: 只要 `[9]` 是一个扁平的 `(1.3, "发射")`,
+                #    `for v, k in ...` 就 TypeError。
+                _b = _fr[_i][9] if len(_fr[_i]) > 9 else ()
+                try:
+                    _s = " / ".join("%s%.1f" % (k, v) for v, k in (_b or ())) or "无"
+                except Exception:
+                    _s = "无"
+                _bits.append("帧%d %.1fms[%s]" % (_i, gaps[_i], _s))
+            _lines.append("# 最慢三帧的子步骤(仅 _frame 内部): " + " · ".join(_bits))
         _lines.append("# 每行: 帧间隔毫秒,阶段,当帧文字重建次数")
         _lines.extend("%.2f,%s,%d" % (g, t, x) for g, t, x in zip(gaps, tags, tex))
         return "\n".join(_lines) + "\n"
@@ -11043,6 +11062,11 @@ _brk_wrap(GameArea, "tick_draw", "板面")
 _brk_wrap(RootWidget, "park_ball", "重掷")
 _brk_wrap(RootWidget, "_fit1", "字号")
 _brk_wrap(WinPileFX, "_redraw", "装杯")
+# ⚠️ 2026-09-15 补: **发射那一刻原来是完全没有计时的**。真机两份日志(开/关声音各一次)都显示
+#    "蓄力→飞行"那一帧稳定 ~20 毫秒(4/4 次), 而它是全轮最大的尖峰, 却没有任何子步骤能归因。
+#    包上之后日志头会直接印"最慢三帧的子步骤": 若这一格很小而整帧很大 ⇒ 钱花在 `launch`
+#    外面(Kivy 延后的文字重排 / 渲染), 不是我们的代码。
+_brk_wrap(RootWidget, "launch", "发射")
 
 
 class PlinkoApp(App):
