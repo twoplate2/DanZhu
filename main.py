@@ -8877,9 +8877,9 @@ class RootWidget(BoxLayout):
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(empty)
         else:
-            time_w, fps_w = dp(112), dp(68)
+            time_w, fps_w = dp(118), dp(82)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
-            for text, width in (("时间", time_w), ("平均/1%Low", fps_w), ("每秒步数 / 波动", None)):
+            for text, width in (("时间", time_w), ("均/1%Low", fps_w), ("步数 / 波动", None)):
                 head = Label(text=text, font_size='12sp', halign='left', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
@@ -8914,7 +8914,7 @@ class RootWidget(BoxLayout):
                 row = BoxLayout(size_hint_y=None, height=dp(26))
                 labels = []
                 for text, width in ((stamp, time_w), (fps_text, fps_w), (soc_text, None)):
-                    lbl = Label(text=text, font_size='13sp', halign='left', valign='middle',
+                    lbl = Label(text=text, font_size='14sp', halign='left', valign='middle',
                                 color=hex_rgb(COL_TEXT) + (1,),
                                 size_hint_x=None if width else 1)
                     if width:
@@ -8929,9 +8929,9 @@ class RootWidget(BoxLayout):
             # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
             #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
             #    同一批行 17.0 而别的 17sp 行是 34.0)。
-            self._fit_uniform(time_rows, sp(13))
-            self._fit_uniform(fps_rows, sp(13))
-            self._fit_uniform(soc_rows, sp(13))
+            self._fit_uniform(time_rows, sp(14))
+            self._fit_uniform(fps_rows, sp(14))
+            self._fit_uniform(soc_rows, sp(14))
             scroll.add_widget(inner)
             content.add_widget(scroll)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
