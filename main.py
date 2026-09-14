@@ -5776,6 +5776,18 @@ class WinPileFX(Widget):
         bx, by, bw, bh = self._abx, self._aby, self._abw, self._abh
         back_tex, front_tex, fb_tex = _glass_textures()
         with self.canvas:
+            # ⚠️⚠️ **2026-09-15: 把 `_redraw` 拆成「杯层 / 球层」两段计时。**
+            #    为什么要拆: 这个函数是 `canvas.clear()` + 整块重建 —— 固定 56 条
+            #    (接地阴影 2 + 后层玻璃 2 + 压暗 2 + 杯口环补画 48 + 前层玻璃 2)
+            #    **每帧都重来一遍**, 而球层是 `5 x N` 条(`_draw_bead`: Color/PushMatrix/
+            #    Rotate/Rectangle/PopMatrix), x100 时整块 684 条。
+            #    要把固定层改成"建一次、之后只改 rgba/pos/size"(持久指令表)—— 那能清掉
+            #    低90 里两帧只超线 0.15 毫秒的帧(帧4926/4934, 板面 2.6/3.4 毫秒)——
+            #    但得先知道**固定层到底占多少**。现在那句"真机约 2.8ms"是**推算, 不是实测**。
+            #    ⚠️ `装杯`(`WinPileFX._redraw`, 12674 埋点)本来就**嵌套在** `板面`
+            #       (`GameArea.tick_draw`, 12671)里面 ⇒ 这几个数**不能相加**, 只能按
+            #       "谁最大"读(12669 有注释)。
+            _t_cup = time.perf_counter()
             if a_cup > 0.0:
                 # 堆体接地的软阴影(替代逐球贴球心阴影, 不再放大悬空感)
                 fx, fy, _ = self._map(CX, FLOOR_Y)
@@ -5808,6 +5820,11 @@ class WinPileFX(Widget):
                     Color(1.0, 1.0, 1.0, a_cup * a)
                     Rectangle(texture=t, pos=(bx, by + bh * f0), size=(bw, bh * fh))
 
+            # 固定层到此为止(接地阴影 + 后层玻璃 + 压暗 + 杯口环补画 48 条)。
+            _brk_add("杯层", _t_cup)
+            _t_ball = time.perf_counter()
+
+            if a_cup > 0.0:
                 # 球按画家序一趟画完(远先近后) —— **含飞行中的球**。
                 # ⚠️ 原来是两趟: 先画已落定球、再把飞行球**一律置顶**。那个写法之所以
                 #    不出事, 唯一原因是发牌序 = z 降序 ⇒ 任意时刻已落定的恰好是最远的那批
@@ -5824,6 +5841,9 @@ class WinPileFX(Widget):
                 if front_tex is not None:      # 回退时没有前层, 弹珠就在玻璃之上(可接受的降级)
                     Color(1.0, 1.0, 1.0, a_cup)
                     Rectangle(texture=front_tex, pos=(bx, by), size=(bw, bh))
+
+            # 球层到此为止(每球 5 条 `_draw_bead` + 前层玻璃 2 条)。见 `杯层` 处说明。
+            _brk_add("球层", _t_ball)
 
     # ------------------------------ 启动期预热 ------------------------------
 
@@ -9309,7 +9329,7 @@ class RootWidget(BoxLayout):
                                        _FRAME_THR[0], _SINCE_LAUNCH[0],
                                        tuple(sorted(
                                            ((v * 1000.0, k) for k, v in _FRAME_BRK.items()
-                                            if v > 0.0002), reverse=True)[:2]),
+                                            if v > 0.0002), reverse=True)[:4]),
                                        # [10] = **上一次** `Window.flip()` 阻塞了多少毫秒。
                                        # ⚠️ 是"上一次"不是"这一次": 绑定回调 `on_flip` 跑在默认
                                        #    处理器(真正 swap)之**前**(桌面实测序列恒为 CB SWAP),
