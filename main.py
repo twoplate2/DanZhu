@@ -2044,6 +2044,60 @@ def _texupd_wrap():
 _texupd_wrap()
 
 
+
+# ---- 帧率上限(2026-09-14 玩家定案) ----
+# "跟着屏幕刷新率走, 最高 60, 最高 120, 不超过当前屏幕刷新率" => cap = min(120, 屏幕刷新率)。
+FPS_CAP_MAX = 120            # 硬顶(玩家给的上限)
+FPS_CAP_FALLBACK = 60        # 拿不到屏幕刷新率时按 60(桌面就是这条)
+_FPS_INFO = [0.0, 0.0]       # [屏幕刷新率(0=没读到), 实际生效的上限]
+
+
+def _screen_hz():
+    """当前屏幕刷新率(Hz)。拿不到返回 None。
+
+    ⚠️ `getRefreshRate()` 给的是**当前模式**的刷新率, 会随智能刷新率/外接屏变 ——
+       所以切回前台时会再算一次(见 `_apply_fps_cap` 的调用点)。
+    """
+    if platform != "android":
+        return None
+    try:
+        from jnius import autoclass
+        act = autoclass("org.kivy.android.PythonActivity").mActivity
+        disp = act.getWindowManager().getDefaultDisplay()
+        try:
+            return float(disp.getMode().getRefreshRate())     # API 23+
+        except Exception:
+            return float(disp.getRefreshRate())
+    except Exception:
+        return None
+
+
+def _apply_fps_cap():
+    """把帧率上限设成 min(FPS_CAP_MAX, 屏幕刷新率); 拿不到屏幕就按 60。
+
+    ⚠️ 全程 try/except: 这个函数**绝不能**把启动带崩 —— 拿不到就退回 60。
+    ⚠️ `Config` 与 `Clock._max_fps` **两处都写**(理由见本段顶部)。
+    """
+    hz = _screen_hz()
+    try:
+        cap = float(min(FPS_CAP_MAX, int(round(hz)))) if hz else float(FPS_CAP_FALLBACK)
+    except Exception:
+        cap = float(FPS_CAP_FALLBACK)
+    _FPS_INFO[0] = float(hz or 0.0)
+    _FPS_INFO[1] = cap
+    try:
+        from kivy.config import Config
+        Config.set("graphics", "maxfps", str(int(cap)))
+    except Exception:
+        pass
+    try:
+        from kivy.clock import Clock
+        Clock._max_fps = cap          # 真正生效的那个(见本段顶部说明)
+    except Exception:
+        pass
+    return cap
+
+
 def _cpu_split():
     """读 `/proc/self/stat` 的 utime(14)/stime(15), 返回 (用户态秒, 内核态秒) 或 None。
 
@@ -8312,8 +8366,11 @@ class RootWidget(BoxLayout):
             # 节拍那一行 —— 直接回答"帧循环是不是自由跑": 比值 < 1 说明**呈现比逻辑更新更频繁**
             # (有一批帧在白白占用呈现机会)。也顺手把 Kivy 的限速旋钮值打出来。
             _fc = int(d.get("frame_calls", 0))
-            parts.append('节拍： maxfps=%s vsync=%s · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
-                         % (d.get("maxfps", "?"), d.get("vsync", "?"), _fc,
+            _hz, _cap = _FPS_INFO[0], _FPS_INFO[1]
+            parts.append('节拍： 屏幕 %s · 帧率上限 %s（= min(120, 屏幕)）· vsync=%s'
+                         ' · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
+                         % (('%.0fHz' % _hz) if _hz else '没读到(按60)',
+                            ('%.0f' % _cap) if _cap else '?', d.get("vsync", "?"), _fc,
                             d.get("n", 0), _fc / float(max(1, d.get("n", 1)))))
             # 内核态占比 —— 把这一个数当**分流器**: 高则查 JNI/Binder/文件写, 低则查 GIL。
             # C6: 最差 20 帧是不是**紧跟在一次发射之后**? 是 ⇒ "每发才做一次的活"有罪;
@@ -10198,6 +10255,11 @@ class PlinkoApp(App):
             anchor.add_widget(self.veil)
             self.rootw._load_veil = self.veil      # 交给 _frame 收尾
             self.rootw._load_veil_host = anchor    # 重放冷启动时要往这里再挂一页
+        # 帧率上限: 跟着屏幕刷新率走(玩家 2026-09-14 定案)。必须在起循环前设好。
+        try:
+            _apply_fps_cap()
+        except Exception:
+            pass
         self.layer.apply_orientation()
         self.rootw._fit_width()
         self.rootw._apply_sizes()
@@ -10372,6 +10434,10 @@ class PlinkoApp(App):
 
     def on_resume(self):
         if platform == "android":
+            try:
+                _apply_fps_cap()        # 屏幕刷新率会随智能刷新率/外接屏变, 回来重算一次
+            except Exception:
+                pass
             self._apply_orientation()   # 回前台 SDL 会重报方向, 抢回话语权
             self._enter_immersive()     # 回前台系统栏复活, 重新隐藏
         try:
