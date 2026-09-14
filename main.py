@@ -8885,7 +8885,7 @@ class RootWidget(BoxLayout):
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(empty)
         else:
-            columns = Label(text='平均/1%Low　　SoC步/秒 / 波动', font_size='12sp',
+            columns = Label(text='平均/1%Low　　每秒步数 / 波动', font_size='12sp',
                             halign='left', valign='middle', color=hex_rgb(COL_SUB) + (1,),
                             size_hint_y=None, height=dp(22))
             columns.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
