@@ -6383,8 +6383,9 @@ class FpsCurve(Widget):
                     y = y0 + value / hi * ph
                     raw_points.extend([x, y])
                     elapsed += gap
-                Color(0.47, 0.49, 0.52, 1)
-                Line(points=raw_points, width=1.15, joint="round")
+                # 浅底上使用深灰蓝：逐帧尖峰足够清楚，又不抢走坐标与统计信息。
+                Color(0.24, 0.29, 0.35, 1)
+                Line(points=raw_points, width=1.2, joint="round")
 
         self._label(self.canvas, "%.0f" % hi, x0 - dp(5), y0 + ph - dp(5), "right")
         for value in range(0, int(hi), 30):
@@ -8896,7 +8897,7 @@ class RootWidget(BoxLayout):
         else:
             time_w, fps_w = dp(118), dp(82)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
-            for text, width in (("时间", time_w), ("均/1%Low", fps_w), ("步数 / 波动", None)):
+            for text, width in (("时间", time_w), ("平均/1%Low", fps_w), ("步数 / 波动", None)):
                 head = Label(text=text, font_size='12sp', halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
