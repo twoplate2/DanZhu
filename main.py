@@ -10514,7 +10514,40 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(self._wait_idle_then_bench, 0.5)
 
     def _run_benchmark(self):
+        # ⚠️⚠️ **跑分期间单独采一遍 CPU 频率**(2026-09-15 加)。为什么必须单独采:
+        #    日志里那行「CPU 频率(采样期)」采的是**渲染采样窗口**(跑分之前那二十几秒),
+        #    与物理跑分**不是同一段时间** —— 拿它解释跑分的差异是**张冠李戴**。
+        #    起因: 玩家实测**同一台设备**, 把显示上限设成 60 与 120, 跑分差**接近 2 倍**。
+        #    而 `benchmark_trajectories` 本身是干净的 —— 工作线程 + `time.thread_time`
+        #    (该线程自己的 CPU 时间)当分母 + 先等主线程空闲 ⇒ 按构造它与刷新率无关。
+        #    ⇒ 那么 2 倍只能来自"同样的代码、不同的核心频率": 刷新率变了 ⇒ 应用"看起来"
+        #      忙不忙变了 ⇒ 调频器给的频率变了(DVFS)。**必须用同一段时间的频率去对**,
+        #      所以在这里补一个只为跑分服务的采样。
+        #    ⚠️ 采样线程每 0.5 秒只读两次小文件, 对跑分的 GIL 干扰可忽略(原来是零采样)。
+        _frq = []
+        _stop = [False]
+
+        def _samp():
+            while not _stop[0]:
+                try:
+                    _v = _cpufreq_mhz()
+                    if _v > 0:
+                        _frq.append(_v)
+                except Exception:
+                    pass
+                time.sleep(0.5)
+
+        try:
+            threading.Thread(target=_samp, daemon=True).start()
+        except Exception:
+            pass
         flights, frames, fps_list, cpu_secs = benchmark_trajectories()
+        _stop[0] = True
+        _frq.sort()
+        self._phys_freq_p50 = _frq[len(_frq) // 2] if _frq else 0
+        self._phys_freq_n = len(_frq)
+        self._phys_freq_min = _frq[0] if _frq else 0
+        self._phys_freq_max = _frq[-1] if _frq else 0
         Clock.schedule_once(lambda dt: self._bench_done(flights, frames, fps_list, cpu_secs), 0)
 
     def _device_info(self):
@@ -10622,6 +10655,15 @@ class RootWidget(BoxLayout):
         render_median = getattr(self, "_render_median_fps", 0.0)
         render_1low = getattr(self, "_render_1low", 0.0)
         dev = self._device_info()
+        # 跑分**那一段**的 CPU 频率(见 `_run_benchmark` 的说明: 与日志里那行"渲染采样期"
+        # 的频率不是同一段时间, 不可混用)。
+        self._bench_phys_freq = {
+            "p50": int(getattr(self, "_phys_freq_p50", 0) or 0),
+            "min": int(getattr(self, "_phys_freq_min", 0) or 0),
+            "max": int(getattr(self, "_phys_freq_max", 0) or 0),
+            "n": int(getattr(self, "_phys_freq_n", 0) or 0),
+        }
+        self._bench_phys_now = int(phys_fps)   # 给 `_bench_frame_log` 印那一行用
         # 存历史(最近100次)
         self.bench_history.append({
             "time": time.strftime("%Y-%m-%d %H:%M"),
@@ -10636,6 +10678,9 @@ class RootWidget(BoxLayout):
             "phys_max": int(phys_max),
             "phys_spread": round(phys_spread, 1),
             "phys_cpu_seconds": round(sum(cpu_secs or []), 3),
+            # ⚠️ 跑分**那一段**自己的 CPU 频率(见 `_run_benchmark`)。留着它才能事后回答
+            #    "两次跑分差这么多, 是不是频率不同" —— 历史面板不印, 但 JSON 里有。
+            "phys_freq_p50": int(getattr(self, "_phys_freq_p50", 0) or 0),
             "version": _app_version(),
             "device": dev,
         })
@@ -10798,6 +10843,22 @@ class RootWidget(BoxLayout):
                              float(getattr(self, "_render_1low", 0.0))))
             _lines.append("# 长停顿门槛 %.2f 毫秒(中位帧 %.2f 毫秒 × 2 = 中位帧率的 50%%; 命中 %d 帧)"
                           % (_thr, _p50, len(_slow_idx)))
+            # ⚠️ **物理跑分 + 它那一段自己的 CPU 频率**(2026-09-15 加)。
+            #    起因: 玩家实测同一台设备在 60Hz 与 120Hz 下跑分差**接近 2 倍**, 而跑分本该
+            #    只反映 CPU。跑分以前**只在面板和 JSON 里**, 日志里没有 ⇒ 没法把它和频率放在
+            #    一起对。现在两行相邻印, 一眼就能看出"是不是频率不同造成的"。
+            #    ⚠️ 这行里的频率是**跑分那 8.5 秒 CPU 时间**内的, 与下面「CPU 频率(采样期)」
+            #       (渲染窗口那二十几秒)**不是同一段时间**, 别混用。
+            _pf = getattr(self, "_bench_phys_freq", None)
+            _pm = int(getattr(self, "_bench_phys_now", 0) or 0)
+            if _pm > 0:
+                if _pf and _pf.get("p50"):
+                    _lines.append("# 物理跑分(中位 %d 步/秒) · **跑分那段的 CPU 频率**: 中位 %dMHz "
+                                  "(最低 %d / 最高 %d, %d 个采样)"
+                                  % (_pm, _pf["p50"], _pf["min"], _pf["max"], _pf["n"]))
+                else:
+                    _lines.append("# 物理跑分(中位 %d 步/秒) · 跑分那段的 CPU 频率: **没采到**"
+                                  "(非安卓 / 读不到 sysfs)" % _pm)
         except Exception:
             pass
         # ---- ★ 这一轮到底能不能和上一轮比(2026-09-14 加) ----
