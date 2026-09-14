@@ -2042,6 +2042,25 @@ _BRK_KEYS = ("板面", "重掷", "字号", "装杯")
 #        ⇒ 该错峰/合并, 收敛字号没用。
 #    这两个数必须和毫秒**一起**印出来, 否则下一轮还是只能猜。
 _FRAME_FIT = [0, 0]
+# `_frame` **算完那一刻**的 `perf_counter`(0 = 本帧还没算完 / 已经用掉了)。
+# 用途: 在 `flip()` 里算出"自算之后到交画面之间"有多长, 记成子步骤 `尾`。
+# 见 `_swap_wrap` 里 `_brk_add("尾", ...)` 处那段说明。
+# 本次跑分里**最慢的几次「冷字号测量」**: [(毫秒, 字号, bold, 标签), ...]。
+# ⚠️ 为什么要单独留这一份(2026-09-15): 真机日志只肯说「字号 21.7 毫秒」, **不说是哪个字号、
+#    哪个标签** —— 而修法完全取决于这个:
+#      · 是漏烘了某一档   ⇒ 补预热表;
+#      · 是某个标签的基准压根没进表(或它的 bold 在运行期变了) ⇒ 得从标签那边修。
+#    我在这件事上已经猜错过两次(先说"冷开只要 1.4ms"、又把桌面探针测到的那个当成了真机的),
+#    所以这次不猜了 —— 把 (字号, bold, 标签) 原样印进日志头部。
+_COLD_FS = []
+_COLD_FS_TAG = ["?"]
+# 多慢才算「冷」—— 下限设 3 毫秒: 热字号一次量出来是 0.02~1.5 毫秒(桌面实测),
+# 3 毫秒已经远超它, 不会把热测量混进来。
+COLD_FS_MIN_MS = 3.0
+# `_frame` **算完那一刻**的 `perf_counter`(0 = 本帧还没算完 / 已经用掉了)。
+# 用途: 在 `flip()` 里算出"自算之后到交画面之间"有多长, 记成子步骤 `尾`。
+# 见 `_swap_wrap` 里 `_brk_add("尾", ...)` 处那段说明。
+_FRAME_END = [0.0]
 
 _FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
 # 上一帧 `Window.flip()`(**真正把画面交给系统**那一步)阻塞了多少毫秒。
@@ -2523,6 +2542,18 @@ def _swap_wrap():
     def flip(self, *a, **k):
         if not _TEXUPD_ACTIVE[0]:
             return _orig(self, *a, **k)
+        # ⚠️ **本帧的「尾巴」**: 从 `_frame` 算完到真正交画面之间那一段(渲染 + 其余 Clock 回调)。
+        #    2026-09-15 加。起因是三份真机日志里都有一个同形状的怪帧(待机 -> 蓄力那一拍,
+        #    25~49 毫秒, 主线程 15~47 毫秒, 而 `_frame` 自算只有 0.03~0.25 毫秒、子步骤栏是空的):
+        #      v0.7.28 帧16 28.73 · v0.7.29 帧1184 48.74 · v0.7.30 帧1237 25.26
+        #    「主线程 − 自算」能算出"不在 `_frame` 里", 但分不出是渲染还是别的回调。
+        #    这一格就是那把刀: 它记的是**墙钟**(含等 GPU/驱动), 而 `主线程` 是 CPU 时间 ——
+        #    两者一起读就能分流: 尾大而 CPU 小 = 卡在渲染/驱动; 两个都大 = 有回调在烧 CPU。
+        #    ⚠️ 必须在 `_orig` **之前**记 —— `_on_flip` 是在 `_orig` 里面被派发的,
+        #       它读完 `_FRAME_BRK` 就清空; 记晚了这一帧就白记。
+        if _FRAME_END[0] > 0.0:
+            _brk_add("尾", _FRAME_END[0])
+            _FRAME_END[0] = 0.0
         _t0 = time.perf_counter()
         try:
             return _orig(self, *a, **k)
@@ -6104,12 +6135,20 @@ def text_px(text, fs, bold=False):
         #    一帧能叠到十几回, 见 `_FRAME_FIT` 处的说明)。它和「重建了几次」是两笔账 ——
         #    `text_px` 从不产生纹理, 只量宽度。
         _FRAME_FIT[1] += 1
+        _t_cold = time.perf_counter()
         try:
             _cl = CoreLabel(text=text, font_size=fs, bold=bold, text_size=(None, None))
             _cl.refresh()
             got = _cl.texture.size[0]
         except Exception:
             got = len(text) * fs * 0.55          # 量不出来按汉字宽粗估, 绝不抛
+        # ⚠️ 冷测量的**单价**要单独记下来(见 `_COLD_FS` 处说明): 只留最慢的 5 次,
+        #    连**是哪个标签、哪个字号、粗不粗**一起 —— 光有一个毫秒数没法决定怎么修。
+        _cold_ms = (time.perf_counter() - _t_cold) * 1000.0
+        if _cold_ms >= COLD_FS_MIN_MS:
+            _COLD_FS.append((_cold_ms, round(fs, 4), bool(bold), _COLD_FS_TAG[0]))
+            _COLD_FS.sort(key=lambda _x: -_x[0])
+            del _COLD_FS[5:]
         if len(_FIT_PX) > 512:                   # 余额那类数字会一直变, 别让缓存无限长
             _FIT_PX.clear()
         _FIT_PX[key] = got
@@ -7961,6 +8000,8 @@ class RootWidget(BoxLayout):
             return float(w.font_size)
         # 记一笔"真的叫了一次"(闸门之上早退的不算 —— 那不是活, 是防重入)。
         _FRAME_FIT[0] += 1
+        # 给"冷字号"归因用(见 `_COLD_FS`): 谁在挑字号。
+        _COLD_FS_TAG[0] = getattr(w, "_texupd_tag", None) or type(w).__name__
         if base is not None:
             w._fit_base = float(base)
         # inset 记在控件上: 挂在 width 上的自动重挑(`_install_fit`)也要用同一个内缩量,
@@ -8004,10 +8045,22 @@ class RootWidget(BoxLayout):
             # ⚠️ 这里原来手抄了一遍阶梯, 也就是老的"给个地板听天由命" —— 大字体下
             #    (实测 360dp + 1.5 倍)12 行历史列表全都 CLIP。改走 `fit_font_size`
             #    (它带二分, 保证挑到真的塞得下的那一档)。
-            _longest = max(rows, key=lambda w: text_px(w.text or "", base,
-                                                       bool(getattr(w, "bold", False))))
-            fs = fit_font_size(_longest.text or "", base, avail,
-                               bool(getattr(_longest, "bold", False)))
+            # ⚠️⚠️ **度量用的 bold 取"组里只要有一个粗体就按粗体量"**(2026-09-15 改)。
+            #    原来用的是 `_longest` **自己**的 bold —— 而 `_longest` 是按"谁最宽"选出来的,
+            #    同一组里换一段文字就可能换人 ⇒ 同一组会**今天用粗体量、明天用细体量**。
+            #    后果不是画面, 是**预热烘不到**: 预热表按"每个标签自己的 bold"烘字号, 而这里
+            #    用的是一个"临时决定"的 bold ⇒ 真机上每次撞上没烘过的那个组合, 就是一次
+            #    **21.7 / 16.7 毫秒的冷字体表打开**(v0.7.30 真机: 帧34 与 帧724, 两帧都因此
+            #    越过 11.11 毫秒那条线)。桌面探针实测: 运行期冷量到的字号里"不在预热表"的
+            #    从 11 个降到 1 个之后, **剩的那一个就是这条路径造出来的**。
+            #    改成"任意一个粗体就按粗体量"之后, 这一组只会用到 bold=True 那套字号 ——
+            #    而它一定在预热表里(粗体标签自己烘过)。**零预热成本**。
+            #    ⚠️ 顺带修掉一个既有的小隐患: 原来若最宽的那行是细体、组里另有粗体行,
+            #       就会**按细体定字号** ⇒ 粗体那行可能溢出。粗体更宽, 按它量是保守且正确的。
+            _bd = any(bool(getattr(w, "bold", False)) for w in rows)
+            _COLD_FS_TAG[0] = "同类行 x%d" % len(rows)
+            _longest = max(rows, key=lambda w: text_px(w.text or "", base, _bd))
+            fs = fit_font_size(_longest.text or "", base, avail, _bd)
             for w in rows:
                 if abs(float(w.font_size) - fs) > 0.01:
                     w.font_size = fs
@@ -8029,10 +8082,13 @@ class RootWidget(BoxLayout):
         if not btns:
             return
         avail = min(max(1.0, float(b.width) - inset) for b in btns)
-        longest = max(btns, key=lambda b: text_px(b.text or "", base,
-                                                  bool(getattr(b, "bold", False))))
-        fs = fit_font_size(longest.text or "", base, avail,
-                           bool(getattr(longest, "bold", False)))
+        # ⚠️ 度量 bold 与 `_fit_uniform` **同一条规矩**: 组里只要有一个粗体就按粗体量。
+        #    理由见 `_fit_uniform` 里那段(按"最宽那个自己的 bold"量会让预热表烘不到,
+        #    真机实测一次冷字号 21.7 毫秒)。
+        _bd = any(bool(getattr(b, "bold", False)) for b in btns)
+        _COLD_FS_TAG[0] = "同类钮 x%d" % len(btns)
+        longest = max(btns, key=lambda b: text_px(b.text or "", base, _bd))
+        fs = fit_font_size(longest.text or "", base, avail, _bd)
         for b in btns:
             b._fit_base = float(base)
             b._fit_inset = float(inset)
@@ -9021,6 +9077,8 @@ class RootWidget(BoxLayout):
         # "上次采样结束以来"的全部累计, 印出一个没人解释得了的"叫了 300 次"。
         _FRAME_FIT[0] = 0
         _FRAME_FIT[1] = 0
+        # 冷字号榜也要清 —— 不清的话第一份日志里会混着上一轮的残值(那是"没发生的事")。
+        del _COLD_FS[:]
         # ⚠️ **同理, 而且这三个以前一直没清**(2026-09-14 修, 对抗性评审的专家指出):
         #    发声/震动计数(`Sfx.play` 里 `_FRAME_PROBE[0] += 1`、`_vibrate_tick` 里 `[1] += 1`)
         #    和预热位 `[2]` 都是**裸模块级计数, 采样期之外照常累加**, 而 `_on_flip` 只在
@@ -9745,6 +9803,19 @@ class RootWidget(BoxLayout):
         _lines.append("# ★ 内容配比(判断这轮和上一轮能不能比): "
                       + " · ".join("%s %.1f%%" % (_k, 100.0 * _v / max(1, len(_tags_all)))
                                    for _k, _v in sorted(_cnt.items(), key=lambda kv: -kv[1])))
+        # ---- 最慢的几次「冷字号测量」----
+        # ⚠️ 这一段的理由(2026-09-15): 逐帧那行只印得出「字号21.7(1次/1测)」——
+        #    知道"一次冷测量烧了 21.7 毫秒", 但**不知道是哪个字号、哪个标签**。
+        #    修法完全取决于这个(补预热表? 还是从标签那边修?), 我在这件事上已经猜错两次,
+        #    所以把 (毫秒, 字号, bold, 标签) 原样印出来, 让下一份日志直接给答案。
+        # ⚠️ 同样**不包在 try 里**: 包了出错就被静默吞掉, 玩家只看到"少了一行"。
+        if _COLD_FS:
+            _lines.append("# 最慢的冷字号测量(>%.0f 毫秒才算): %s"
+                          % (COLD_FS_MIN_MS,
+                             " · ".join("%.1fms fs=%.4f bold=%d [%s]"
+                                        % (_c[0], _c[1], int(_c[2]), _c[3]) for _c in _COLD_FS)))
+        else:
+            _lines.append("# 冷字号测量: **一次都没有**(全部命中了预热表)")
 
         # ⚠️ **节拍真值必须印在最前面**(2026-09-14 加)。理由见 `_bench_collect_diag` 里
         #    "节拍真值"那段: 屏幕档位一变, 同一份代码的 1%Low 能从 83.3 掉到 42.2。
@@ -10545,15 +10616,30 @@ class RootWidget(BoxLayout):
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(empty)
         else:
-            time_w, fps_w = dp(118), dp(82)
+            # ⚠️ `fps_w` 82 -> 94(2026-09-15, 玩家截图: 「平均/1%Low帧」折成了两行)。
+            #    实测: 那一串在 12sp 下**正好要 82.0 px**, 而这一格就是 `dp(82)` = 82.0 px
+            #    —— **零余量**。原来是「平均/1%Low」(70px) 有 12px 余量, v0.7.28 按要求加上
+            #    「帧」之后把余量吃光了, 任何一点取整/字体缩放都会把它顶成两行。
+            #    94 恢复成原来那 12px 余量。第三列拿的是剩余宽度, 实测它的表头只要 83px, 够。
+            time_w, fps_w = dp(118), dp(94)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
             for text, width in (("时间", time_w), ("平均/1%Low帧", fps_w), ("中位跑分 / 波动", None)):
-                head = Label(text=text, font_size='12sp', halign='center', valign='middle',
+                head = Label(text=text, halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
                 if width:
                     head.width = width
-                head.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+                # ⚠️ **必须走 `_fit_line`(自动缩字号), 不能只绑 `text_size = size`**(2026-09-15)。
+                #    原来那一行绑的是 `text_size = w.size` —— **两维都给** ⇒ 宽度不够就**折行**,
+                #    而这一排只有 dp(22) 高, 折出来的第二行直接被顶出格子(玩家截图就是这个)。
+                #    而真机上还有第二个放大器: `12sp` 跟着**系统字体缩放**(config.fontScale)走,
+                #    `dp(94)` 不跟 ⇒ fontScale > 1 的机器上光靠加宽永远救不回来, 必须能缩。
+                #    全 app 的单行文字早就统一走 `_fit_line`/`_fit1` 了(见 `_install_fit` 的说明:
+                #    "挂在 text 上而不是在 20 个赋值点各调一次 —— 那样迟早漏掉一个, 而漏掉的
+                #    表现就是某个状态又折行了, 只有截图才看得见")—— **这一排表头就是漏掉的那个。**
+                #    代价: 第一次开这个弹窗会多付一次冷字号(真机约 40 毫秒), 之后走缓存。
+                self._fit_line(head, 12)
+                self._fit1(head)
                 columns.add_widget(head)
             content.add_widget(columns)
             scroll = ScrollView(size_hint=(1, 1))
@@ -10605,16 +10691,24 @@ class RootWidget(BoxLayout):
             # 底部口径说明(2026-09-14, 玩家要的)。⚠️ **两个「中位」不是同一个东西**:
             #   左列那个中位是**渲染帧率**(每秒画了多少帧),
             #   右列那个中位是**物理吞吐**(每秒模拟多少步) —— 两列各自取自己的中位数。
+            # ⚠️⚠️ 这一段 2026-09-15 重写了(玩家: 「大家都知道什么是平均帧和1%low帧就不用你教学了」
+            #    +「难点是中位跑分和波动是什么」)。三件事:
+            #  ① **平均/1%Low帧 不解释** —— 常识, 占了小半屏还折行。只留这个面板**特有**的两条。
+            #  ② **手工折行 + 全角空格做悬挂缩进**。不让它自动折 —— 自动折出来的续行没有缩进,
+            #     三条会糊成一片(玩家截图就是这个)。手折每条约 2 行、宽度与设备无关。
+            #  ③ 高度原来写死 `height=dp(88)`, 而折行后真实要 ~6 行 ⇒ **最后一行被「关闭」按钮
+            #     压掉一半**(玩家截图实证)。改成 `_auto_h`: 高度跟真实排版走(本工程所有多行正文
+            #     的标准做法, 这里是漏掉的一个)。`**中位数**` 那种星号是 markdown 残留, Kivy 不认,
+            #     会在屏幕上原样显示 —— 强调一律用「」。
             foot = Label(
                 text=('口径：\n'
-                      '  平均/1%Low帧 —— 每秒渲染帧数。平均 = 总帧数 / 总时长；'
-                      '1%Low帧 = 最慢那 1% 的帧，取它们的帧率平均。\n'
-                      '  中位跑分 —— 物理引擎每秒模拟步数，取多次跑分的**中位数**（不是均值）。\n'
-                      '  波动 —— 100 ×（最慢一次 − 最快一次）÷ 中位跑分。'
-                      '分子用的是极值，跑分次数少时容易被一次异常带偏。'),
+                      '  中位跑分 —— 物理引擎每秒能模拟多少步（不是渲染帧数），\n'
+                      '　　　　　　取多次跑分的中位数\n'
+                      '  波动 —— 跑分在多次之间浮动多大：\n'
+                      '　　　　　　100 ×（最慢一次 − 最快一次）÷ 中位跑分'),
                 font_size='12sp', halign='left', valign='top',
-                color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(88))
-            foot.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
+            self._auto_h(foot, dp(72))
             content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
@@ -12051,6 +12145,12 @@ class RootWidget(BoxLayout):
         # ⚠️ 它后面**不能再有早退**。下面 charging 分支的 `return` 在它之前是安全的:
         #    蓄力期不可能有装杯演出(演出期输入是锁的), `_a_dim_now` 此时本来就是 0。
         self._sync_hud_dim()
+        # ⚠️ **本帧 `_frame` 算完的时刻**(见 `_FRAME_END` 与 `_swap_wrap` 里的 `_brk_add("尾", ...)`)。
+        #    这是 `_frame` 的**最后一行** —— 放在中间的话"尾"会含住后面还没跑的部分, 读出来是假账;
+        #    它后面**不许再加任何语句**(加了也不会被算进去, 会静默少记)。
+        #    只在采样期记(与其它埋点同一条规矩: 别让埋点改变被测量的东西)。
+        if _TEXUPD_ACTIVE[0]:
+            _FRAME_END[0] = time.perf_counter()
 
 # =============================================================================
 # App 入口 / 冒烟
@@ -12428,6 +12528,15 @@ _brk_wrap(WinPileFX, "_redraw", "装杯")
 #    包上之后日志头会直接印"最慢三帧的子步骤": 若这一格很小而整帧很大 ⇒ 钱花在 `launch`
 #    外面(Kivy 延后的文字重排 / 渲染), 不是我们的代码。
 _brk_wrap(RootWidget, "launch", "发射")
+# ⚠️ 2026-09-15 补三个: 三份真机日志里都有一个**同形状的怪帧** —— 出现在"待机 -> 蓄力"那一拍,
+#    帧间隔 25~49 毫秒、主线程 15~47 毫秒, 而 `_frame` 自算只有 0.03~0.25 毫秒、子步骤栏是空的。
+#      v0.7.28 帧16 28.73 · v0.7.29 帧1184 48.74 · v0.7.30 帧1237 25.26
+#    那一拍会跑的、**在 `_frame` 之外**(Clock 回调)的东西就是下面这三个, 外加"自算之后到交画面"
+#    那一段(记成 `尾`, 见 `_swap_wrap`)。四个一起上, 下一份日志里那 25 毫秒会自己报名字。
+#    ⚠️ 名字刻意与阶段标签(蓄力/装杯)错开, 免得看日志的人把"阶段"和"子步骤"读混。
+_brk_wrap(RootWidget, "_auto_launch_tick", "自动发")
+_brk_wrap(RootWidget, "start_charge", "起蓄")
+_brk_wrap(GameArea, "_update_slots", "槽面")
 
 
 class PlinkoApp(App):
