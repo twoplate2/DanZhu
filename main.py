@@ -8882,6 +8882,8 @@ class RootWidget(BoxLayout):
     def _show_bench_history(self):
         """性能测试历史：每次完整测试严格一行，保留时间、帧率与 SoC 波动。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
+        # 这是“数据表”而不是一段左对齐正文：三列标题与数值均居中，扫视同一
+        # 行时能更快对应；时间列仍固定足够宽，完整年份不会被压缩。
         title_lbl = self._fit_line(Label(text='测试历史（渲染 / SoC）', bold=True,
                                          halign='center', color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
@@ -8895,7 +8897,7 @@ class RootWidget(BoxLayout):
             time_w, fps_w = dp(118), dp(82)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
             for text, width in (("时间", time_w), ("均/1%Low", fps_w), ("步数 / 波动", None)):
-                head = Label(text=text, font_size='12sp', halign='left', valign='middle',
+                head = Label(text=text, font_size='12sp', halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
                 if width:
@@ -8929,7 +8931,7 @@ class RootWidget(BoxLayout):
                 row = BoxLayout(size_hint_y=None, height=dp(26))
                 labels = []
                 for text, width in ((stamp, time_w), (fps_text, fps_w), (soc_text, None)):
-                    lbl = Label(text=text, font_size='14sp', halign='left', valign='middle',
+                    lbl = Label(text=text, font_size='14sp', halign='center', valign='middle',
                                 color=hex_rgb(COL_TEXT) + (1,),
                                 size_hint_x=None if width else 1)
                     if width:
