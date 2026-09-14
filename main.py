@@ -1991,7 +1991,7 @@ def open_output():
 # ⚠️ 为什么必须能看出这一格: 桌面逐帧归因实测 —— 最慢的 11 帧**全部**落在启动后 0.6 秒内
 #    (= 预热链), 而那些帧的"本线程自算"只有 0.03~0.10 毫秒(我们自己的代码什么都没干)。
 #    真机上一个预热单步是 **100~200 毫秒**(球纹理烘焙; 桌面只要 16.6), 而跑分的采样窗口
-#    只有 7~12 秒(`_target_launches = 3`), 玩家又是**启动后 3 秒就长按标题**开跑的 ——
+#    只有约 25 秒(`_target_launches = 5`), 玩家又是**启动后 3 秒就长按标题**开跑的 ——
 #    预热很可能还在跑, 正落在采样窗口里, 把 1%Low 压下去。
 #    分不分得出来, 决定了两件完全不同的事:
 #      慢帧里有预热 ⇒ 那是**启动期**的账, 玩家实际游玩(预热早跑完)没那么差;
@@ -4135,7 +4135,7 @@ _FONT_WARM_SIZES = None
 # 把两个数打进跑分面板。判据一眼可见: "全量回收 26.8 -> 0.0 毫秒"。
 _GC_FROZEN = [0, 0.0, 0.0]
 # 启动预热链是否**全部**跑完(球纹理/字形/球堆/GC 冻结)。
-# ⚠️ 为什么跑分要等它: 采样窗口只有 7~12 秒(`_target_launches = 3`), 而玩家是启动后 3 秒
+# ⚠️ 为什么跑分要等它: 采样窗口约 25 秒(`_target_launches = 5`), 而玩家是启动后 3 秒
 #    就长按标题开跑的 —— 真机上一个预热单步要 100~200 毫秒(桌面只要 16.6), 常常还没跑完。
 #    混进采样里会把 1%Low 压下去, 而且量到的是**启动期**的数, 不是玩家平时玩的数。
 #    等它跑完再采样, 才是"稳态"的成绩。(桌面实测预热链 11 步、约 2.2 秒; 真机更久。)
@@ -7692,7 +7692,7 @@ class RootWidget(BoxLayout):
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='全程约 25 秒（含中奖装杯演出）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。',
+        desc_lbl = Label(text='全程约 40 秒（含5次落珠动画）。\n测试两项设备性能：\n1. 自动发 5 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。',
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         # 说明是**多行正文** —— 只能用"高度跟着排版走"(缩字号会把整段一起缩小)。
@@ -7973,7 +7973,7 @@ class RootWidget(BoxLayout):
         self._show_bench_dim()   # 第1阶段就开始: 全屏置灰
         # 不再额外创建/移动「测试设备性能中」飘字；它会污染跑分本身，顶部状态栏已给出反馈。
         # ⚠️ **等启动预热跑完再采样**(2026-09-14)。采样窗口只有 7~12 秒
-        #    (`_target_launches = 3`), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
+        #    (`_target_launches = 5`), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
         #    预热单步要 100~200 毫秒(球纹理烘焙; 桌面只要 16.6), 常常还没跑完。
         #    混进采样里会把 1%Low 压下去, 而且量到的是**启动期**的数, 不是玩家平时玩的数。
         #    桌面逐帧归因实测: 最慢的 11 帧**全部**落在启动 0.6 秒内(= 预热链), 而那些帧
@@ -7992,7 +7992,7 @@ class RootWidget(BoxLayout):
         Clock.schedule_once(self._await_prebake, 0.25)
 
     def _start_benchmark(self):
-        """阶段1: 真实屏幕采样(on_flip, 自动发球3发), 发满后切阶段2物理吞吐。"""
+        """阶段1: 真实屏幕采样(on_flip, 自动发球5发), 发满后停止采样，再测阶段2物理吞吐。"""
         self._flip_times = []
         # ---- 诊断(2026-09-13 加): 光有"平均帧率/1%Low"没法定位卡在哪 —— 见 _bench_tag ----
         self._bench_frames = []          # [(帧间隔ms, 场景标签)]
@@ -8033,8 +8033,10 @@ class RootWidget(BoxLayout):
             pass
         Window.bind(on_flip=self._on_flip)
         self._launch_count = 0
-        self._target_launches = 3
-        self._auto_evt = Clock.schedule_interval(self._auto_launch_tick, 0.5)
+        self._target_launches = 5
+        # 只在跑分期间轮询；0.1 秒把每局结束到下一发的空档从最多 0.5 秒缩到最多 0.1 秒。
+        # 回调只读状态，发射后立即离开 ready，不会重复触发或改变游戏物理。
+        self._auto_evt = Clock.schedule_interval(self._auto_launch_tick, 0.1)
 
     def _bench_gc_cb(self, phase, info):
         """量每一次 GC 的耗时。安卓上 GC 停顿直接表现为掉帧, 而本工程从来没调过 gc。"""
@@ -9163,7 +9165,7 @@ class RootWidget(BoxLayout):
             #    原来这里对 `_bench_running` 是"直接揭晓、不播演出"(下面那段废弃注释的
             #    第 1、2 条理由), 玩家报"性能测试有bug, 你丢掉了落袋动画", 并要求保留。
             #    代价是**真实的**, 记在这里免得以后有人又把它"优化"掉:
-            #      · 跑分那 3 发之间, `_auto_launch_tick` 要等 state 回 ready 才发下一发,
+            #      · 跑分那 5 发之间, `_auto_launch_tick` 要等 state 回 ready 才发下一发,
             #        而装杯期间 state 是 landed ⇒ 采样窗口从 ~1.5s 拉长到 ~15~20s,
             #        里面混进大量装杯渲染 ⇒ **平均帧率偏低**(用户明确接受: "保留动画,
             #        接受跑分数字偏低");
