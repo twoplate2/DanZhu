@@ -8912,8 +8912,48 @@ class RootWidget(BoxLayout):
                     _s = "无"
                 _bits.append("帧%d %.1fms[%s]" % (_i, gaps[_i], _s))
             _lines.append("# 最慢三帧的子步骤(仅 _frame 内部): " + " · ".join(_bits))
-        _lines.append("# 每行: 帧间隔毫秒,阶段,当帧文字重建次数")
-        _lines.extend("%.2f,%s,%d" % (g, t, x) for g, t, x in zip(gaps, tags, tex))
+        # ---- 逐帧 CPU 账: 把"慢"分流成 我们的代码 / Kivy / 在等 ----
+        # 这三样**每一帧本来就在采**(`_on_flip` 往 `_bench_frames` 里存的第 6/8/10 个字段),
+        # 只是以前没印。真机 v0.7.18 的日志里有一批 11~12ms 的慢帧**文字重建为 0**
+        # (中位帧 8.29 的 1.35 倍 = 多干了约 3ms 的活), 靠"有没有重建"解释不了它们,
+        # 必须靠这三个数分流: 自算大=我们的代码; 主线程大而自算小=Kivy 渲染/延后重排;
+        # 两个都小=在等(GC/显卡/驱动)。⚠️ 桌面 `thread_time` 精度只有 15.6ms, 这台机器上
+        # 主线程那一列基本是台阶 —— 分流**只能在真机上看**。
+        _self_ms, _thr_ms, _top1 = [], [], []
+        for _i in range(len(gaps)):
+            _rec = _fr[_i] if _i < len(_fr) else ()
+            _self_ms.append(float(_rec[5]) if len(_rec) > 5 else 0.0)
+            _thr_ms.append(float(_rec[7]) if len(_rec) > 7 else 0.0)
+            _t1 = ""
+            try:
+                _b = _rec[9] if len(_rec) > 9 else ()
+                if _b:
+                    _v, _k = max((v, k) for v, k in _b)
+                    _t1 = "%s%.1f" % (_k, _v)
+            except Exception:
+                _t1 = ""
+            _top1.append(_t1)
+        if any(_self_ms) or any(_thr_ms):
+            _sg = sorted(gaps[_i] for _i in _slow_idx)
+            _ss = sorted(_self_ms[_i] for _i in _slow_idx)
+            _st = sorted(_thr_ms[_i] for _i in _slow_idx)
+            _gm = _sg[len(_sg) // 2]
+            _sm = _ss[len(_ss) // 2]
+            _tm = _st[len(_st) // 2]
+            _lines.append("# 慢帧 CPU 账(中位): 帧间隔 %.2f / `_frame` 自算 %.2f / 主线程 %.2f 毫秒"
+                          % (_gm, _sm, _tm))
+            # ⚠️ 判据写死在这里, 免得看日志的人各读各的: 自算>=1ms 就是"我们自己的代码在吃"
+            #    (1ms 在 8~12ms 的帧上是 8~12%, 已远超"顺带做一点"的量级)。
+            _n_own = sum(1 for _i in _slow_idx if _self_ms[_i] >= 1.0)
+            _n_out = sum(1 for _i in _slow_idx
+                         if _self_ms[_i] < 1.0 and (_thr_ms[_i] - _self_ms[_i]) >= 1.0)
+            _n_wait = len(_slow_idx) - _n_own - _n_out
+            _lines.append("#   我们的代码(自算>=1ms) %d 帧 · _frame 外面(主线程明显大于自算) %d 帧"
+                          " · 在等(两个都小) %d 帧" % (_n_own, _n_out, _n_wait))
+        _lines.append("# 每行: 帧间隔毫秒,阶段,当帧文字重建次数,_frame自算ms,主线程ms,最大子步骤")
+        _lines.extend("%.2f,%s,%d,%.2f,%.2f,%s" % (g, t, x, s, m, b)
+                      for g, t, x, s, m, b
+                      in zip(gaps, tags, tex, _self_ms, _thr_ms, _top1))
         return "\n".join(_lines) + "\n"
 
     def _copy_bench_log(self, btn=None):
