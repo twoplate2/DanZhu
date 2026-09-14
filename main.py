@@ -12,6 +12,14 @@ os.environ.setdefault("KIVY_NO_ARGS", "1")   # 自定义参数(--selftest/--smok
 # 系统只能给 letterbox 兼容盒(ZUI 半屏盒的帮凶), buildozer.spec 放开四方向就会被这里覆盖废掉。
 os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown Landscape LandscapeUpsideDown"
 
+# 必须在导入 Window 之前配置。桌面端关掉 SDL 的 swap interval，才能让 Kivy 的 120Hz
+# 调度真正呈现；否则渲染循环会被显示器/桌面合成器的 60Hz vsync 卡住。Android 则保留
+# vsync，由下面的 Window/显示模式请求把 Surface 提升到 120Hz，避免无意义撕裂和空转。
+from kivy.config import Config
+_BOOT_ON_ANDROID = bool(os.environ.get("ANDROID_ARGUMENT"))
+Config.set("graphics", "maxfps", "120")
+Config.set("graphics", "vsync", "1" if _BOOT_ON_ANDROID else "0")
+
 import math
 import random
 import array
@@ -2045,28 +2053,13 @@ _texupd_wrap()
 
 
 
-# ---- 帧率上限(2026-09-14, 当天改过三回; 这一版是**量出来的**) ----
-# 三版的历史, 每一步都有实测依据, 别再退回去:
-#   ① `cap = min(120, 屏幕刷新率)` —— 玩家实测后否掉: `getRefreshRate()` 给的是**当前模式**的
-#      刷新率, 智能刷新率屏会在 144/120/60 之间切档, 上限跟着跳(同一台机器两次跑分面板上
-#      分别读到 144Hz 和 165Hz —— 这是实测到的)。而且 `_apply_fps_cap` 在 on_resume 还会再算一次。
-#   ② 固定 120 —— 玩家报"模拟器和真机都不到 60 帧"。**桌面复现并定位到了**:
-#        上限 0(不设)  中位 16.59ms = 60.3fps   ← 干净的 vsync 锁
-#        上限 60       中位 16.65ms = 60.1fps   ← 干净(60Hz 屏的整数分之一)
-#        上限 120      中位 19.33ms = **51.7fps**  ← 比"不设上限"还慢
-#        上限 240      中位 18.14ms = 55.1fps
-#      机制: Kivy 的 `_max_fps` 会让主循环**睡到 1/cap 秒**。cap=120 ⇒ 睡 8.33ms, 而屏幕 vsync
-#      一格是 16.67ms(桌面)/6.06ms(165Hz) —— **睡过了一格**, 每帧都错过、滑到下一格 ⇒ 帧间隔
-#      变成一格多的拍频。**上限只要不是 vsync 的整数分之一, 就一定会拍频。**
-#   ③ **本版: `0 = 不设上限`** —— Kivy 不睡, 循环由 vsync 自己钉住。这既满足玩家"不跟刷新率
-#      匹配"的要求, 也是唯一能真正跑到**屏幕上限**的做法(60Hz 屏 → 60fps; 165Hz 屏 → 尽力而为)。
-# ⚠️ 屏幕刷新率**只用来显示**(`_FPS_INFO[0]`), **不参与**任何计算。
-# ⚠️ 以后再想"加个上限"之前, 先回答一句: 这个数能不能整除屏幕的 vsync 周期?
-#    不能整除就**别加** —— 加了只会更慢(上面那张表就是证据)。
-# ⚠️ **0 = 不设上限**(实测出来的结论, 见下面那段)。
-FPS_CAP_MAX = 0              # 帧率上限(**0 = 不设**, 交给 vsync 钉)
-FPS_CAP_FALLBACK = 0         # 兜底同样是"不设"
-_FPS_INFO = [0.0, 0.0]       # [屏幕刷新率(0=没读到), 实际生效的上限]
+# ---- 120fps 呈现策略 ------------------------------------------------------
+# `maxfps` 只是 Kivy Clock 的调度上限，不能要求 Android 切换显示模式；反过来，仅请求
+# Android 的高刷模式也无法解除 Kivy 自己的 60fps 睡眠。因此两层必须同时设置。
+# 物理仍用 FIXED_DT=1/60：这是模拟精度，不是呈现上限；120fps 时会有最多一帧不推进物理。
+FPS_CAP_MAX = 120
+FPS_CAP_FALLBACK = 120
+_FPS_INFO = [0.0, 0.0, 0.0]  # [当前屏幕Hz, Kivy上限, Android请求的模式Hz]
 
 
 def _screen_hz():
@@ -2089,25 +2082,87 @@ def _screen_hz():
         return None
 
 
-def _apply_fps_cap():
-    """把帧率上限设成**固定的 `FPS_CAP_MAX`(120)**。
+def _request_android_120hz():
+    """请求 Android 以最接近 120Hz 的同分辨率显示模式运行。
 
-    ⚠️ **不再读屏幕刷新率参与计算**(2026-09-14 玩家改的): 第一版是
-       `cap = min(120, 屏幕刷新率)`, 在他的设备上出了状况, 定案改成固定 120。
-       屏幕刷新率**只记下来给面板显示**(`_FPS_INFO[0]`), 不影响上限。
-    ⚠️ 全程 try/except: 这个函数**绝不能**把启动带崩。
-    ⚠️ `Config` 与 `Clock._max_fps` **两处都写**(理由见本段顶部)。
+    `Window.setFrameRate(120)`（API 30+）告诉系统此窗口的期望节拍；
+    `preferredDisplayModeId`（API 23+）则兼容旧系统，并在自适应刷新率机器上给出明确的
+    高刷模式偏好。两者都是系统可拒绝的请求：省电模式、温控或用户强制 60Hz 时不能绕过系统。
     """
-    hz = _screen_hz()               # 只用于面板显示
+    if platform != "android":
+        return 0.0
+    target = float(FPS_CAP_MAX)
     try:
-        cap = float(FPS_CAP_MAX)        # 0 = 不设上限(见本段顶部那张实测表)
+        from jnius import autoclass
+        activity = autoclass("org.kivy.android.PythonActivity").mActivity
+        window = activity.getWindow()
+        display = window.getWindowManager().getDefaultDisplay()
+        current = display.getMode()
+        cw, ch = int(current.getPhysicalWidth()), int(current.getPhysicalHeight())
+        modes = list(display.getSupportedModes())
+        same_size = [m for m in modes
+                     if int(m.getPhysicalWidth()) == cw and int(m.getPhysicalHeight()) == ch]
+        candidates = same_size or modes
+
+        def hz(mode):
+            return float(mode.getRefreshRate())
+
+        exact = [m for m in candidates if abs(hz(m) - target) < 0.5]
+        above = [m for m in candidates if hz(m) >= target - 0.5]
+        # 优先精确 120；没有则选最低的更高档（例如 144/165），再退到设备能给的最高档。
+        chosen = (exact[0] if exact else
+                  min(above, key=hz) if above else
+                  max(candidates, key=hz) if candidates else None)
+        mode_id = int(chosen.getModeId()) if chosen is not None else 0
+        mode_hz = hz(chosen) if chosen is not None else 0.0
+        sdk = int(autoclass("android.os.Build$VERSION").SDK_INT)
+
+        from android.runnable import run_on_ui_thread
+
+        @run_on_ui_thread
+        def apply_request(win, requested_mode_id, requested_hz, api_level):
+            # Window API 从 Android 11 起可用；即使没有列出 mode，也保留 120fps 的窗口请求。
+            if api_level >= 30:
+                try:
+                    win.setFrameRate(float(FPS_CAP_MAX))
+                except Exception:
+                    pass
+            if requested_mode_id:
+                try:
+                    attrs = win.getAttributes()
+                    attrs.preferredDisplayModeId = requested_mode_id
+                    win.setAttributes(attrs)
+                except Exception:
+                    pass
+
+        apply_request(window, mode_id, mode_hz, sdk)
+        return mode_hz
+    except Exception:
+        return 0.0
+
+
+def _refresh_screen_hz(*_):
+    """显示模式请求异步生效后，刷新诊断面板中的实际 Hz。"""
+    hz = _screen_hz()
+    if hz:
+        _FPS_INFO[0] = float(hz)
+
+
+def _apply_fps_cap():
+    """在启动/回前台重申 120fps 的 Kivy 与平台配置。"""
+    hz = _screen_hz()               # 只用于面板显示
+    requested_hz = _request_android_120hz()
+    try:
+        cap = float(FPS_CAP_MAX)
     except Exception:
         cap = float(FPS_CAP_FALLBACK)
     _FPS_INFO[0] = float(hz or 0.0)
     _FPS_INFO[1] = cap
+    _FPS_INFO[2] = requested_hz
     try:
-        from kivy.config import Config
         Config.set("graphics", "maxfps", str(int(cap)))
+        # 窗口创建前已设过；这里保留运行期状态供诊断，并防止配置被其他代码改回去。
+        Config.set("graphics", "vsync", "1" if platform == "android" else "0")
     except Exception:
         pass
     try:
@@ -2115,6 +2170,11 @@ def _apply_fps_cap():
         Clock._max_fps = cap          # 真正生效的那个(见本段顶部说明)
     except Exception:
         pass
+    if platform == "android":
+        try:
+            Clock.schedule_once(_refresh_screen_hz, 0.6)
+        except Exception:
+            pass
     return cap
 
 
@@ -8503,11 +8563,14 @@ class RootWidget(BoxLayout):
             # 节拍那一行 —— 直接回答"帧循环是不是自由跑": 比值 < 1 说明**呈现比逻辑更新更频繁**
             # (有一批帧在白白占用呈现机会)。也顺手把 Kivy 的限速旋钮值打出来。
             _fc = int(d.get("frame_calls", 0))
-            _hz, _cap = _FPS_INFO[0], _FPS_INFO[1]
-            parts.append('节拍： 屏幕 %s · 帧率上限 %s · vsync=%s'
+            _hz, _cap, _mode_hz = _FPS_INFO[0], _FPS_INFO[1], _FPS_INFO[2]
+            _platform_rate = (' · Android模式请求 %s' %
+                              (('%.0fHz' % _mode_hz) if _mode_hz else '120Hz（模式未知）')
+                              if platform == "android" else ' · 桌面vsync已关闭')
+            parts.append('节拍： 屏幕 %s · 帧率上限 %s · vsync=%s%s'
                          ' · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
                          % (('%.0fHz' % _hz) if _hz else '没读到',
-                            ('%.0f' % _cap) if _cap else '不设(0)', d.get("vsync", "?"), _fc,
+                            ('%.0f' % _cap) if _cap else '不设(0)', d.get("vsync", "?"), _platform_rate, _fc,
                             d.get("n", 0), _fc / float(max(1, d.get("n", 1)))))
             # 内核态占比 —— 把这一个数当**分流器**: 高则查 JNI/Binder/文件写, 低则查 GIL。
             # C6: 最差 20 帧是不是**紧跟在一次发射之后**? 是 ⇒ "每发才做一次的活"有罪;
@@ -10397,7 +10460,7 @@ class PlinkoApp(App):
             anchor.add_widget(self.veil)
             self.rootw._load_veil = self.veil      # 交给 _frame 收尾
             self.rootw._load_veil_host = anchor    # 重放冷启动时要往这里再挂一页
-        # 帧率上限: 跟着屏幕刷新率走(玩家 2026-09-14 定案)。必须在起循环前设好。
+        # 帧率上限/Android 高刷模式: 必须在起循环前设好。
         try:
             _apply_fps_cap()
         except Exception:
