@@ -797,17 +797,33 @@ def advance_flight(b, geo):
 
 SOC_WARMUP_CPU_SEC = 1.5
 SOC_SAMPLE_CPU_SEC = 1.0
-SOC_SAMPLE_RUNS = 7
+SOC_SAMPLE_RUNS = 5
+# ⚠️ **样本之间的间隔**(2026-09-15 加)。照 Geekbench 6 的标定: 它的 workload 之间**有间隔**,
+#    6.0 是 2 秒、**6.1 起加到 5 秒**, 官方给的理由是"**减少温控、降低逐次波动**"。
+#    没有间隔的话 7 轮背靠背连着满载, 后几轮会被自己烤热 —— 测到的就不是"这台机器能跑多快"。
+SOC_SAMPLE_GAP_SEC = 2.0
+# ⚠️ **波 2(高压)**: 与波 1 相反 —— **窗口之间一秒都不停**, 整整压 60 秒, 专门看衰减。
+SOC_SUSTAIN_SEC = 60.0
+SOC_SUSTAIN_WINDOW_SEC = 1.0
 
 
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
-                           runs=SOC_SAMPLE_RUNS):
-    """单核物理吞吐：1.5 秒 CPU 时间预热 + 7×1 秒 CPU 时间样本，取中位数。
+                           runs=SOC_SAMPLE_RUNS,
+                           gap_sec=SOC_SAMPLE_GAP_SEC):
+    """**波 1 —— 测性能(峰值)**: 1.5 秒 CPU 时间预热 + `runs` x 1 秒样本, 取中位数。
 
     用工作线程自身的 ``thread_time`` 作时间基准，排除等待 GIL、渲染和系统调度的墙钟空档；
     每轮用实际消耗的 CPU 时间作分母，避免旧版「实际跑过 0.7 秒但固定除以 0.7」的偏差。
     返回 ``(总发数, 总步数, 各轮步/秒, 各轮实际CPU秒)``。
+
+    ⚠️ **样本之间留 `gap_sec` 秒**(2026-09-15 加): 照 Geekbench 6 的标定 —— 它的 workload
+       之间有间隔, 6.0 是 2 秒、**6.1 起加到 5 秒**, 官方理由是"**减少温控、降低逐次波动**"。
+       没有间隔就是"背靠背烤机", 后几轮被自己烤热 —— 那测到的是**持续性能**, 不是峰值。
+       想测持续性能走 `benchmark_sustained`(波 2), **两件事分开测**。
+    ⚠️ **顺序必须是先本函数、再 `benchmark_sustained`** —— 反过来的话波 2 先把机器烤热,
+       这里就不再是峰值了。
+    ⚠️ 间隔期间**主线程照常渲染**, 采样线程也照常采频率 —— 那正是观察降频的窗口。
     """
     geo = build_geo()
     cpu_clock = getattr(time, "thread_time", None) or time.process_time
@@ -836,13 +852,90 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     cpu_seconds_list = []
     total_flights = 0
     total_frames = 0
-    for _ in range(runs):
+    for _i in range(runs):
+        if _i > 0 and gap_sec > 0:
+            time.sleep(gap_sec)        # ⚠️ 只在样本之间停, 第一轮前不停(预热刚做完)
         flights, frames, used = _run_once(sample_cpu_sec, 12345)
         fps_list.append(frames / used)
         cpu_seconds_list.append(used)
         total_flights += flights
         total_frames += frames
     return total_flights, total_frames, fps_list, cpu_seconds_list
+
+
+def benchmark_sustained(total_cpu_sec=SOC_SUSTAIN_SEC,
+                        window_cpu_sec=SOC_SUSTAIN_WINDOW_SEC):
+    """**波 2 —— 测高压(衰减)**: 窗口之间**一秒都不停**, 整整压 `total_cpu_sec` 秒 CPU 时间。
+
+    与波 1 的区别就一个 —— **没有间隔**。问的问题也不同:
+      波 1 问"这台机器**最好**能跑多快"(峰值, 跨次/跨设置可比);
+      波 2 问"**一直压着跑会掉多少**"(温控衰减, 以及抖成什么样)。
+
+    返回 ``(总发数, 总步数, 各窗口步/秒, 各窗口实际CPU秒)``。
+    ⚠️ 口径与波 1 **逐字相同**(同一条确定性输入序列、`thread_time` 当分母、用实际消耗的
+       CPU 秒做除法) —— 否则两波的数没法放在一起比。
+    ⚠️ 最后那个窗口常常是**残缺的**(时间到了被截断), 但分母用的是**它自己实际消耗的**
+       CPU 秒, 所以那个数仍然成立, 不是坏的。
+    """
+    geo = build_geo()
+    cpu_clock = getattr(time, "thread_time", None) or time.process_time
+
+    def _run_once(cpu_seconds, seed):
+        rng = random.Random(seed)
+        flights = 0
+        frames = 0
+        t0 = cpu_clock()
+        while cpu_clock() - t0 < cpu_seconds:
+            power = rng.uniform(MISFIRE_POWER, 1.0)
+            b = launch_ball(power, rng=rng)
+            for _ in range(4000):
+                landed = advance_flight(b, geo)
+                frames += 1
+                if landed is not None:
+                    flights += 1
+                    break
+        used = max(0.000001, cpu_clock() - t0)
+        return flights, frames, used
+
+    fps_list = []
+    cpu_seconds_list = []
+    total_flights = 0
+    total_frames = 0
+    t_all = cpu_clock()
+    while cpu_clock() - t_all < total_cpu_sec:
+        flights, frames, used = _run_once(window_cpu_sec, 12345)
+        fps_list.append(frames / used)
+        cpu_seconds_list.append(used)
+        total_flights += flights
+        total_frames += frames
+    return total_flights, total_frames, fps_list, cpu_seconds_list
+
+
+def _freq_sampler_start():
+    """起一个 0.5 秒一次的主频采样线程, 返回 `(频率列表, 停止标志)`。
+
+    用 `_cpufreq_mhz()`(读 sysfs), 非安卓/读不到时**采不到任何值**, 列表保持为空 ——
+    调用方据此印「没采到」, **不印假数**。
+    """
+    _frq = []
+    _stop = [False]
+
+    def _samp():
+        while not _stop[0]:
+            try:
+                _v = _cpufreq_mhz()
+                if _v > 0:
+                    _frq.append(_v)
+            except Exception:
+                pass
+            time.sleep(0.5)
+
+    try:
+        threading.Thread(target=_samp, daemon=True).start()
+    except Exception:
+        pass
+    return _frq, _stop
+
 
 def _pick(dist):
     """按 {取值: 概率} 的累计阈值掷一个取值(概率和须=1)。"""
@@ -2430,6 +2523,11 @@ def _build_texwarm(rw, bet=None):
         out.extend(_bigtext_warm_items(rw))
     except Exception:
         pass
+    # ---- 飘字(`center_toast`): 同样是**每次现建 Label**, 同一个病, 同样只有全局缓存能救 ----
+    try:
+        out.extend(_toast_warm_items(rw))
+    except Exception:
+        pass
     return out
 
 
@@ -2483,16 +2581,81 @@ def _warm_one(item):
 _BIGTEXT_TMPL = {}
 
 
-def _bigtext_tmpl():
-    lb = _BIGTEXT_TMPL.get("t")
+def _warm_tmpl(key, factory):
+    """按 `key` 缓存一个**预热模板标签**(已打 `_texupd_tag`, 见那段说明)。
+
+    ⚠️ **每类标签要各自的模板**: `_texex_key` 含 `halign`/`valign`/`bold`/`font_name` 等,
+       飘字的 Label 是 `halign="center"`, 拿大字的模板去烘 ⇒ 指纹对不上 ⇒ **一条都命中不了**,
+       而且是**静默**的(画面对, 只是没赚到)。所以工厂由调用方给。
+    """
+    lb = _BIGTEXT_TMPL.get(key)
     if lb is None:
         try:
-            lb = Label(text="", bold=True, size_hint=(None, None))
-            _tag_texupd(lb, "结算大字")
-            _BIGTEXT_TMPL["t"] = lb
+            lb = factory()
+            _tag_texupd(lb, key)
+            _BIGTEXT_TMPL[key] = lb
         except Exception:
             lb = None
     return lb
+
+
+def _bigtext_tmpl():
+    return _warm_tmpl("结算大字",
+                      lambda: Label(text="", bold=True, size_hint=(None, None)))
+
+
+def _toast_tmpl():
+    # ⚠️ 与 `center_toast` 里的建法**逐字一致**: `bold=True, halign="center", size_hint=(None,None)`
+    return _warm_tmpl("飘字",
+                      lambda: Label(text="", bold=True, halign="center",
+                                    size_hint=(None, None)))
+
+
+def _toast_warm_items(rw):
+    """列出**飘字**(`center_toast`)**能枚举**的那几条, 让它的第一次也是缓存命中。
+
+    ⚠️ 与中奖大字**同一个病**: `center_toast` 里是 `lbl = Label(...)` —— **每次现建新标签**
+       ⇒ `_texex`(按标签存)永远是空的, 只有 `_TEXEX_G`(全局)能救; 而"每种文案第一次出现"
+       仍要付一次真光栅化(真机 8~11 毫秒), 那一帧必卡。
+    ⚠️ **只列固定文案**: `重放失败：%s` 那条带异常文本, **枚举不了**, 不列(它第一次照旧走老路)。
+    ⚠️ 文案/颜色/字号**全部从 `center_toast` 的调用点抄下来**(`main.py` 里那 5 处) ——
+       这几条不是从代码派生的常量, 是**散在调用点上的字面量**; 改了调用点这里不会自动跟,
+       所以**每一条都在下面标了出处行号**, 将来对不上时一眼能查。
+    ⚠️ 字号必须和 `center_toast` 里那句 `fit_font_size(text, sp(size), seen, True)` **同口径**
+       (`seen = max(80, GameArea.width * 0.94)`), 否则指纹里的 `font_size` 对不上。
+    """
+    out = []
+    _lb = _toast_tmpl()
+    if _lb is None or rw is None:
+        return out
+    try:
+        _ga = getattr(rw, "game_area", None)
+        _seen = max(80.0, float(getattr(_ga, "width", 0.0) or 540.0) * 0.94)
+        _nl = chr(10)          # 有一条文案自带换行, 见下面第三条
+        _tasks = [
+            ("先等这一发落定", COL_FIRE, 26),
+            ("重放失败：找不到挂载点", COL_FIRE, 26),
+            ("弹珠数量不足" + _nl + "请重置或降低投入", COL_FIRE, 26),
+            ("弹珠数量已调整到1000个", COL_GREEN, 28),
+        ]
+        for _v in (20, 50, 100):                    # 轮次档位, 与 `_set_max_plays` 的选项一致
+            _tasks.append(("每轮已设定为%d次" % _v, COL_GREEN, 20))
+        # ⚠⚠ 去重键**必须含文案**: 缓存指纹里有 `text`,
+        #    文案不同就是**不同条目**。只按 (字号, 颜色) 去重会把
+        #   「先等这一发落定」「重放失败：找不到挂载点」「弹珠数量不足…」
+        #   （全是 COL_FIRE + 同一个字号）合并成一条 ⇒ 只烘第一条,
+        #   其余**照旧冷开且不报错**。实测 7 条只烘进 3 条。
+        _seen_fs = set()
+        for _t, _c, _sz in _tasks:
+            _fs = fit_font_size(_t, sp(_sz), _seen, True)
+            if (_t, _fs, _c) in _seen_fs:
+                continue
+            _seen_fs.add((_t, _fs, _c))
+            # ⚠️ `halign="center"` 是 `center_toast` 里的建法, 模板已经带上; 这里只给字/色/号。
+            out.append((_lb, _t, hex_rgb(_c) + (1,), _fs))
+    except Exception:
+        pass
+    return out
 
 
 def _bigtext_warm_items(rw):
@@ -10514,41 +10677,80 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(self._wait_idle_then_bench, 0.5)
 
     def _run_benchmark(self):
-        # ⚠️⚠️ **跑分期间单独采一遍 CPU 频率**(2026-09-15 加)。为什么必须单独采:
-        #    日志里那行「CPU 频率(采样期)」采的是**渲染采样窗口**(跑分之前那二十几秒),
-        #    与物理跑分**不是同一段时间** —— 拿它解释跑分的差异是**张冠李戴**。
-        #    起因: 玩家实测**同一台设备**, 把显示上限设成 60 与 120, 跑分差**接近 2 倍**。
-        #    而 `benchmark_trajectories` 本身是干净的 —— 工作线程 + `time.thread_time`
-        #    (该线程自己的 CPU 时间)当分母 + 先等主线程空闲 ⇒ 按构造它与刷新率无关。
-        #    ⇒ 那么 2 倍只能来自"同样的代码、不同的核心频率": 刷新率变了 ⇒ 应用"看起来"
-        #      忙不忙变了 ⇒ 调频器给的频率变了(DVFS)。**必须用同一段时间的频率去对**,
-        #      所以在这里补一个只为跑分服务的采样。
-        #    ⚠️ 采样线程每 0.5 秒只读两次小文件, 对跑分的 GIL 干扰可忽略(原来是零采样)。
-        _frq = []
-        _stop = [False]
+        """**两波**: 波 1 测性能(峰值, 带间隔) -> 波 2 测高压(衰减, 一秒不停)。
 
-        def _samp():
-            while not _stop[0]:
-                try:
-                    _v = _cpufreq_mhz()
-                    if _v > 0:
-                        _frq.append(_v)
-                except Exception:
-                    pass
-                time.sleep(0.5)
+        ⚠️⚠️ **顺序不能反**: 波 2 会把这台机器烤热, 反过来的话波 1 就不再是"峰值"了 ——
+           那是白测。玩家 2026-09-15 定案: 「我也想顺便看看高压下的性能, 所以应该是两波」。
+        ⚠️ **两波各自采一遍 CPU 频率**(`_freq_sampler_start`), 分开存。
+           为什么必须单独采: 日志里那行「CPU 频率(采样期)」采的是**渲染窗口**那二十几秒,
+           与物理跑分**不是同一段时间** —— 拿它解释跑分的差异是**张冠李戴**。
+           起因: 玩家实测**同一台设备**, 显示上限设成 60 与 120, 跑分差**接近 2 倍**。
+           而这两个 benchmark 按构造与刷新率无关(工作线程 + `time.thread_time` 当分母 +
+           先等主线程空闲) ⇒ 那 2 倍只能来自"同样的代码、不同的核心频率"(DVFS)。
+           分成两波之后, "波 2 掉了 40%"能直接对上"频率掉了多少", 一眼分清是不是温控。
+        ⚠️ 采样线程每 0.5 秒只读两次小文件, 对跑分的 GIL 干扰可忽略(原来是零采样)。
+        """
+        # ---- 波 1: 测性能(峰值) ----
+        _f1, _s1 = _freq_sampler_start()
+        flights, frames, fps_list, cpu_secs = benchmark_trajectories()
+        _s1[0] = True
+        _f1.sort()
+        self._phys_freq_p50 = _f1[len(_f1) // 2] if _f1 else 0
+        self._phys_freq_n = len(_f1)
+        self._phys_freq_min = _f1[0] if _f1 else 0
+        self._phys_freq_max = _f1[-1] if _f1 else 0
+        # ---- 波 2: 测高压(衰减)。**紧接在波 1 之后**, 中间不额外等 ----
+        _f2, _s2 = _freq_sampler_start()
+        s_fl, s_fr, s_fps, s_cpu = benchmark_sustained()
+        _s2[0] = True
+        _f2.sort()
+        self._sust_fps = list(s_fps)
+        self._sust_freq_p50 = _f2[len(_f2) // 2] if _f2 else 0
+        self._sust_freq_n = len(_f2)
+        self._sust_freq_min = _f2[0] if _f2 else 0
+        self._sust_freq_max = _f2[-1] if _f2 else 0
+        # 与波 1 的 `_bench_phys_freq` 对称, 给日志那行用。
+        self._sust_freq = {"p50": self._sust_freq_p50, "min": self._sust_freq_min,
+                           "max": self._sust_freq_max, "n": self._sust_freq_n}
+        Clock.schedule_once(lambda dt: self._bench_done(flights, frames, fps_list, cpu_secs), 0)
 
+    def _bench_save_board(self):
+        """跑分开始前把盘面存一份(与"还"配对的另一半, 见 `_bench_restore_board`)。
+
+        ⚠️ 存的是**每个列表的副本**(`list(v)`) —— `self.multipliers` 与 `self._boards[rtp]`
+           是**同一个 list 对象**(见 `set_rtp`), 只存引用的话原地改动会连带污染存下来的那份。
+        ⚠️ 抽成独立方法是为了**能被探针直接调** —— 跑分那整条链太长, 端到端测不起来
+           (第一版探针就是因为存盘藏在 `_start_bench_test` 里, 只能验到"没存就没得还")。
+        """
         try:
-            threading.Thread(target=_samp, daemon=True).start()
+            self._bench_saved_boards = {r: list(v) for r, v in self._boards.items()}
+        except Exception:
+            self._bench_saved_boards = None
+
+    def _bench_restore_board(self):
+        """把跑分钉死的盘面还回去(存盘在 `_start_bench_test`)。
+
+        ⚠️ 为什么必须还(2026-09-15 玩家报的 bug): `_auto_launch_tick` 每一发都把 9 个槽
+           **全钉成 `BENCH_BOARD[i]` 那一个值**, 第 5 发是 `100`, 而且它**写回了缓存**
+           (`self._boards[self.rtp_target] = ...`)。跑分结束时只还了随机数、没还盘面
+           ⇒ **跑分一完, 下面 9 个倍率槽全是 `x100`**(玩家原话:「都是*100 这个明显不合理」),
+           一直挂到下一次发射(`park_ball` 会重掷)才自愈 —— 中间那段时间看着就是坏的。
+        ⚠️ 抽成独立方法是为了**能被探针直接调**(跑分那整条链太长, 端到端测不起来)。
+        返回是否真的还了(没存盘 = 跑分没起来过 = 不用还)。
+        """
+        _sb = getattr(self, "_bench_saved_boards", None)
+        if not _sb:
+            return False
+        self._bench_saved_boards = None
+        self._boards = _sb
+        _m = self._boards.get(self.rtp_target)
+        if _m:
+            self.multipliers = _m
+        try:
+            self.game_area._update_slots()      # 只刷 9 个槽, 不整块重画(与 `park_ball` 同一个写法)
         except Exception:
             pass
-        flights, frames, fps_list, cpu_secs = benchmark_trajectories()
-        _stop[0] = True
-        _frq.sort()
-        self._phys_freq_p50 = _frq[len(_frq) // 2] if _frq else 0
-        self._phys_freq_n = len(_frq)
-        self._phys_freq_min = _frq[0] if _frq else 0
-        self._phys_freq_max = _frq[-1] if _frq else 0
-        Clock.schedule_once(lambda dt: self._bench_done(flights, frames, fps_list, cpu_secs), 0)
+        return True
 
     def _device_info(self):
         if platform == 'android':
@@ -10602,44 +10804,6 @@ class RootWidget(BoxLayout):
             pass
         return ' · '.join(parts)
 
-    def _bench_save_board(self):
-        """跑分开始前把盘面存一份(与"还"配对的另一半, 见 `_bench_restore_board`)。
-
-        ⚠️ 存的是**每个列表的副本**(`list(v)`) —— `self.multipliers` 与 `self._boards[rtp]`
-           是**同一个 list 对象**(见 `set_rtp`), 只存引用的话原地改动会连带污染存下来的那份。
-        ⚠️ 抽成独立方法是为了**能被探针直接调** —— 跑分那整条链太长, 端到端测不起来
-           (第一版探针就是因为存盘藏在 `_start_bench_test` 里, 只能验到"没存就没得还")。
-        """
-        try:
-            self._bench_saved_boards = {r: list(v) for r, v in self._boards.items()}
-        except Exception:
-            self._bench_saved_boards = None
-
-    def _bench_restore_board(self):
-        """把跑分钉死的盘面还回去(存盘在 `_start_bench_test`)。
-
-        ⚠️ 为什么必须还(2026-09-15 玩家报的 bug): `_auto_launch_tick` 每一发都把 9 个槽
-           **全钉成 `BENCH_BOARD[i]` 那一个值**, 第 5 发是 `100`, 而且它**写回了缓存**
-           (`self._boards[self.rtp_target] = ...`)。跑分结束时只还了随机数、没还盘面
-           ⇒ **跑分一完, 下面 9 个倍率槽全是 `x100`**(玩家原话:「都是*100 这个明显不合理」),
-           一直挂到下一次发射(`park_ball` 会重掷)才自愈 —— 中间那段时间看着就是坏的。
-        ⚠️ 抽成独立方法是为了**能被探针直接调**(跑分那整条链太长, 端到端测不起来)。
-        返回是否真的还了(没存盘 = 跑分没起来过 = 不用还)。
-        """
-        _sb = getattr(self, "_bench_saved_boards", None)
-        if not _sb:
-            return False
-        self._bench_saved_boards = None
-        self._boards = _sb
-        _m = self._boards.get(self.rtp_target)
-        if _m:
-            self.multipliers = _m
-        try:
-            self.game_area._update_slots()      # 只刷 9 个槽, 不整块重画(与 `park_ball` 同一个写法)
-        except Exception:
-            pass
-        return True
-
     def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
         self.game_area.hide_bench_badge()
         self._hide_bench_dim()   # 兼容旧路径：当前跑分不再置灰
@@ -10649,6 +10813,15 @@ class RootWidget(BoxLayout):
         phys_max = _phys_sorted[-1] if _phys_sorted else 0.0
         phys_spread = 100.0 * (phys_max - phys_min) / phys_fps if phys_fps > 0 else 0.0
         phys_runs = len(fps_list)
+        # ---- 波 2(高压)的统计(见 `benchmark_sustained`) ----
+        # ⚠️ 口径: 首窗 vs **末窗**(不是 vs 最低)—— 问的是"一直压着跑**最后**掉到哪",
+        #    最低值单独印一格。两波各自的频率也分开存(见 `_run_benchmark`)。
+        _sv = [x for x in (getattr(self, "_sust_fps", None) or []) if x > 0]
+        if _sv:
+            _s_first, _s_last, _s_min = _sv[0], _sv[-1], min(_sv)
+            _s_decay = 100.0 * (_s_first - _s_last) / _s_first if _s_first > 0 else 0.0
+        else:
+            _s_first = _s_last = _s_min = _s_decay = 0.0
         avg_frames = frames / max(1, flights)
         cost_ms = avg_frames / phys_fps * 1000.0 if phys_fps > 0 else 0.0  # 每发纯物理耗时
         render_fps = getattr(self, "_render_fps", 0.0)
@@ -10681,6 +10854,12 @@ class RootWidget(BoxLayout):
             # ⚠️ 跑分**那一段**自己的 CPU 频率(见 `_run_benchmark`)。留着它才能事后回答
             #    "两次跑分差这么多, 是不是频率不同" —— 历史面板不印, 但 JSON 里有。
             "phys_freq_p50": int(getattr(self, "_phys_freq_p50", 0) or 0),
+            # 波 2(高压) —— 面板只印一行, JSON 里把逐窗值和它那段的频率全留着。
+            "sust_sec": int(SOC_SUSTAIN_SEC),
+            "sust_first": int(_s_first), "sust_last": int(_s_last),
+            "sust_min": int(_s_min), "sust_decay_pct": round(_s_decay, 1),
+            "sust_freq_p50": int(getattr(self, "_sust_freq_p50", 0) or 0),
+            "sust_fps_windows": [int(x) for x in _sv],
             "version": _app_version(),
             "device": dev,
         })
@@ -10726,12 +10905,18 @@ class RootWidget(BoxLayout):
         #    原来是两个空格, 印出来是 `NCO-AL00 / Android 15  v0.7.37`, 版本号看着像
         #    系统版本的一部分。改成 `/` 分隔, 三段并列: `机器 / 安卓 / 游戏版本`。
         _dev_ver = (dev + " / " + _ver) if _ver and _ver not in dev else dev
+        # ⚠️ 高压那行**没有数据就整行不印**(不印假数) —— 与窗口/门槛那两处的规矩一致。
+        _s_txt = (('高压 %d 秒：首 %d → 末 %d 步/秒（降 %.0f%%）· 最低 %d\n'
+                   % (int(SOC_SUSTAIN_SEC), int(_s_first), int(_s_last),
+                      int(_s_decay), int(_s_min)))
+                  if _sv else '')
         score = ('%s\n'
                  '运算速度：%d 轮中位每秒 %d 步模拟\n'
                  '稳定性：%d～%d 步/秒 · 波动 %.1f%%\n'
+                 '%s'
                  '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
                  '%s') % (_dev_ver, phys_runs, int(phys_fps), int(phys_min), int(phys_max),
-                            phys_spread, avg_frames, cost_ms, _low_txt)
+                            phys_spread, _s_txt, avg_frames, cost_ms, _low_txt)
         score_lbl = Label(text=score, font_size='17sp', halign='left', valign='top',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
         self._auto_h(score_lbl, dp(130), dp(6))
@@ -10859,6 +11044,24 @@ class RootWidget(BoxLayout):
                 else:
                     _lines.append("# 物理跑分(中位 %d 步/秒) · 跑分那段的 CPU 频率: **没采到**"
                                   "(非安卓 / 读不到 sysfs)" % _pm)
+            # ⚠️ **波 2(高压)那两行** —— 与波 1 相邻印,
+            #    两波的频率**必须分开看**(它们是不同的两段时间)。
+            _sv2 = [x for x in (getattr(self, "_sust_fps", None) or []) if x > 0]
+            if _sv2:
+                _d2 = 100.0 * (_sv2[0] - _sv2[-1]) / _sv2[0] if _sv2[0] > 0 else 0.0
+                _sf2 = getattr(self, "_sust_freq", None) or {}
+                if _sf2.get("p50"):
+                    _f2t = ("高压那段的 CPU 频率: 中位 %dMHz "
+                            "(最低 %d / 最高 %d, %d 个采样)"
+                            % (_sf2["p50"], _sf2["min"], _sf2["max"], _sf2["n"]))
+                else:
+                    _f2t = "高压那段的 CPU 频率: **没采到**"
+                _lines.append("# 高压 %d 秒(背靠背不停): 首 %d → 末 %d 步/秒"
+                              "(降 %.0f%%) · 最低 %d"
+                              % (int(SOC_SUSTAIN_SEC), int(_sv2[0]), int(_sv2[-1]),
+                                 _d2, int(min(_sv2))))
+                _lines.append("#   逐窗: " + ", ".join("%d" % x for x in _sv2))
+                _lines.append("#   " + _f2t)
         except Exception:
             pass
         # ---- ★ 这一轮到底能不能和上一轮比(2026-09-14 加) ----
