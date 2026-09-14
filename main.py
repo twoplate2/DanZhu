@@ -9816,6 +9816,12 @@ class RootWidget(BoxLayout):
             self._bench_rng_state = None
             self._bench_pile_rng = None
         self._bench_saved_status = self.status_lbl.text
+        # ⚠️⚠️ **盘面也要存**(2026-09-15 玩家报的 bug, 与 `_bench_saved_status` 同一个理由)。
+        #    跑分期间 `_auto_launch_tick` 每一发都把 9 个槽**全钉成 `BENCH_BOARD[i]` 那一个值**
+        #    (第 5 发是 `100`), 而且**写回了缓存** `self._boards[self.rtp_target]`。
+        #    跑分结束时只还了随机数、没还盘面 ⇒ **跑分一完, 下面 9 个倍率槽全是 `x100`**
+        #    (玩家原话:「都是*100 这个明显不合理」), 一直挂到下一次发射才自愈。
+        self._bench_save_board()
         ver = _app_version()
         _set_label_text(self.status_lbl, ("性能测试中 " + ver) if ver else "性能测试中…")
         self._set_controls_enabled(False)
@@ -10464,6 +10470,44 @@ class RootWidget(BoxLayout):
             pass
         return ' · '.join(parts)
 
+    def _bench_save_board(self):
+        """跑分开始前把盘面存一份(与"还"配对的另一半, 见 `_bench_restore_board`)。
+
+        ⚠️ 存的是**每个列表的副本**(`list(v)`) —— `self.multipliers` 与 `self._boards[rtp]`
+           是**同一个 list 对象**(见 `set_rtp`), 只存引用的话原地改动会连带污染存下来的那份。
+        ⚠️ 抽成独立方法是为了**能被探针直接调** —— 跑分那整条链太长, 端到端测不起来
+           (第一版探针就是因为存盘藏在 `_start_bench_test` 里, 只能验到"没存就没得还")。
+        """
+        try:
+            self._bench_saved_boards = {r: list(v) for r, v in self._boards.items()}
+        except Exception:
+            self._bench_saved_boards = None
+
+    def _bench_restore_board(self):
+        """把跑分钉死的盘面还回去(存盘在 `_start_bench_test`)。
+
+        ⚠️ 为什么必须还(2026-09-15 玩家报的 bug): `_auto_launch_tick` 每一发都把 9 个槽
+           **全钉成 `BENCH_BOARD[i]` 那一个值**, 第 5 发是 `100`, 而且它**写回了缓存**
+           (`self._boards[self.rtp_target] = ...`)。跑分结束时只还了随机数、没还盘面
+           ⇒ **跑分一完, 下面 9 个倍率槽全是 `x100`**(玩家原话:「都是*100 这个明显不合理」),
+           一直挂到下一次发射(`park_ball` 会重掷)才自愈 —— 中间那段时间看着就是坏的。
+        ⚠️ 抽成独立方法是为了**能被探针直接调**(跑分那整条链太长, 端到端测不起来)。
+        返回是否真的还了(没存盘 = 跑分没起来过 = 不用还)。
+        """
+        _sb = getattr(self, "_bench_saved_boards", None)
+        if not _sb:
+            return False
+        self._bench_saved_boards = None
+        self._boards = _sb
+        _m = self._boards.get(self.rtp_target)
+        if _m:
+            self.multipliers = _m
+        try:
+            self.game_area._update_slots()      # 只刷 9 个槽, 不整块重画(与 `park_ball` 同一个写法)
+        except Exception:
+            pass
+        return True
+
     def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
         self.game_area.hide_bench_badge()
         self._hide_bench_dim()   # 兼容旧路径：当前跑分不再置灰
@@ -10590,6 +10634,10 @@ class RootWidget(BoxLayout):
         self._popup_fit_content(popup, content)
         _set_label_text(self.status_lbl, getattr(self, '_bench_saved_status', '按住蓄力发射'))
         self._set_controls_enabled(True)
+        # ⚠️ **盘面必须和随机数一起还**(2026-09-15 玩家报的 bug, 见 `_bench_restore_board`)。
+        #    放在 `_bench_running = False` **之前** —— 之后 `park_ball` 就会重掷盘面,
+        #    这里要还的是"跑分之前那份", 不是"新掷的一份"。
+        self._bench_restore_board()
         self._bench_running = False
         self._bench_start = 0.0
         # 把随机**原样还回去**(见 `_start_bench_test`): 不还的话正常游戏的球路会被钉死,
