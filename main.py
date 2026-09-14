@@ -6256,7 +6256,29 @@ class RotPopup(Popup):
     RootWidget._on_key_down 原路径, 竖屏横屏行为一致)。竖屏(angle=0)回落原生行为。
     pos_hint 居中交给 FloatLayout 布局, 转屏时尺寸变化自动跟随。"""
 
+    def _reassert_high_refresh(self, *_):
+        """弹窗切换后重申 120Hz：自适应刷新率设备会把静态 Modal 降回 60Hz。"""
+        if platform != "android":
+            return
+        try:
+            _apply_fps_cap()
+        except Exception:
+            return
+        # Popup 的淡入/淡出会在下一小段时间才真正提交到 Surface；稳定后再请求一次，
+        # 防止系统在布局切换时覆盖 Window 的 frame-rate / display-mode 偏好。
+        try:
+            Clock.schedule_once(lambda *_: _apply_fps_cap(), 0.35)
+        except Exception:
+            pass
+
+    def _arm_high_refresh(self):
+        self._reassert_high_refresh()
+        if not getattr(self, "_high_refresh_bound", False):
+            self._high_refresh_bound = True
+            self.bind(on_dismiss=self._reassert_high_refresh)
+
     def open(self, *_args, **kwargs):
+        self._arm_high_refresh()
         layer = _land_layer()
         if layer is None or layer.angle == 0:
             return super().open(*_args, **kwargs)
