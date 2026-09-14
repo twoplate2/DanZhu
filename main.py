@@ -2061,6 +2061,15 @@ _FRAME_FIT = [0, 0]
 #    现在这份日志只印**采集那一刻**的 Hz(一个点), 答不了"窗口中间变没变"。
 #    这一栏按阶段采样, 直接回答"发射/蓄力期到底降没降"。
 _BENCH_HZ = {}
+# 「卡顿帧 / 慢帧」两档门槛, 都是**相对本机中位帧率**的**帧率**比例(2026-09-14 定稿)。
+# ⚠️ **只许在这里写数字**。原先 0.55/0.75 散在四处(收尾统计判 jank/slow 两处 +
+#    日志头两颗 ★ 两处), 那就是本工程反复栽的「两处各算一遍必然脱钩」的形状 ——
+#    改了判据忘了改打印, 或者反过来, 画面/日志就会给出互相矛盾的数。
+# ⚠️ 语义: 帧率 < 中位 x JANK_RATE  => 卡顿帧;   < 中位 x SLOW_RATE => 慢帧。
+#    等价于**帧间隔** > 中位间隔 / 该比例(所以下面写的是 `_med / JANK_RATE`)。
+#    慢帧那一档**包含**卡顿帧(同一个分母, 宽的必然包含窄的)。
+JANK_RATE = 0.55
+SLOW_RATE = 0.75
 _COLD_FS = []
 _COLD_FS_TAG = ["?"]
 # 本帧冷字号测量用的**基准字号**(`_fit1` 传进 `fit_font_size` 的那个 `b`)。
@@ -4801,6 +4810,32 @@ RIM_BACK_BANDS = ((0.0, 166.0 / 920.0), (694.0 / 920.0, 808.0 / 920.0))
 # N=12 时相邻两段的 alpha 只差 4%, 看不出台阶。多出来的只是十几个 Rectangle, 可忽略。
 RIM_BAND_STRIPS = 12
 RIM_BAND_ALPHA_TOP = 0.55   # 环最上沿那段补画到多少(1.0 = 完全不压暗)
+# ★ **最靠接缝的那几段要再叠一遍**(2026-09-14, 玩家报的「接缝」)。
+# 病根: 杯口环的**远侧**半圈长在 back 贴图里, 而 back 整层被压暗盖过; 补画把它画回来,
+#   但**单遍叠加的 alpha 上限就是那段纹理自身的 alpha**(实测环上 ~0.31),
+#   而近侧半圈在前层里是 ~0.37 ⇒ 切开线两侧**永远差 ~16%**, 就是那条接缝。
+#   工程里原先写着「落差消不掉」—— **那句话只对「单遍」成立**。
+# 绕过去的唯一办法是**画两遍**: Kivy 的 `src_over` 是乘法复合
+#   `1-(1-a)(1-a*k)`, 两遍能超过单遍的上限(a=0.31, k=0.25 ⇒ 0.42)。
+# ⚠️ **只叠最靠接缝的 3 段**, 不许整条两遍: 远侧上半段**必须保持暗** —— 那是杯口的
+#   远近层次感(实测「环顶」亮度 63.9)。整条两遍 / 镜像前层那几种做法都把环顶冲到 100+,
+#   全环一样亮, 玻璃的远近感整个没了。
+# 实测(完整合成链, 按 x 逐列): 接缝台阶 **10~21% -> 2~11%**, 而**环顶一个数不变**。
+# ⚠️ 不许改成「把相邻两段的位置重叠、alpha 不变」—— 实测那样会从「不够亮」直接翻成
+#    「过亮」(台阶变 -16%), 重叠必须与 alpha 回算**成对**做。
+# ⚠️ 设成 0 即关闭本改动(它同时是那条数值剖面的**阴性对照开关**)。
+# ⚠️ **0.25 -> 0.40 是扫出来的**(2026-09-14, `temp/rim_step_probe.py` 扫了
+#    段数 3/4/5/6 x alpha 0.15~0.50)。两个结论:
+#      · **台阶只跟 alpha 走, 跟叠几段无关** —— 因为接缝那条测量窗口(贴图行 144..159)
+#        只落在**最后两段**里, 而无论取 3 还是 6 段, 最后两段都必然包含在内。所以
+#        "多叠几段"是白花指令, 别拿它当旋钮。
+#      · 台阶随 alpha 线性下降, 每 +0.05 约 -1.1 个百分点:
+#        0.25 -> +4.4% / 0.30 -> +3.3% / **0.40 -> +1.0%** / 0.50 -> **-1.2%(反向过冲)**
+#    **取 0.40 而不是更接近 0 的 0.45**: 0.40 让远侧**仍然略暗于**近侧(+1.0%),
+#    那是真实玻璃该有的远近感; 再往上就翻成"远侧比近侧亮", 是反自然的过冲。
+#    ⇒ **宁可欠一点, 不要过。**
+RIM_BAND_TAIL_STRIPS = 3      # 最靠接缝的几段要叠第二遍(0 = 关闭)
+RIM_BAND_TAIL_ALPHA = 0.40    # 叠那一遍用多少 alpha(扫出来的, 见上)
 _GLASS_RIM_TEX = {}     # id(back_tex) -> (back_tex, [各段子贴图])
 
 def _rim_band_alpha(i):
@@ -5149,6 +5184,7 @@ def _rim_back_strips(back_tex):
             band_frac = y1f - y0f
             sh = max(1, int(round(h * band_frac / n)))    # 每条的高度(贴图像素)
             top_row = y0f * h                             # 该段的顶行(从贴图顶边算)
+            _band = []
             for i in range(n):                            # i=0 是该段最上面那条
                 y = int(round(h - (top_row + (i + 1) * sh)))   # Kivy 纹理 y 向上
                 t = back_tex.get_region(0, y, w, sh)
@@ -5156,7 +5192,15 @@ def _rim_back_strips(back_tex):
                 t.min_filter = "linear"
                 seg = band_frac / n
                 # 画在杯子矩形里的位置: 该段底边在 1-y1f 处, 第 i 条再往上让 (n-1-i) 格
-                out.append((t, 1.0 - y1f + seg * (n - 1 - i), seg, _rim_band_alpha(i)))
+                _band.append((t, 1.0 - y1f + seg * (n - 1 - i), seg, _rim_band_alpha(i)))
+            out.extend(_band)
+            # ★ 最靠接缝的那几段**再叠一遍** —— 见 `RIM_BAND_TAIL_STRIPS` 处那段说明。
+            # ⚠️ 复用**同一批子贴图对象**(不重新 get_region): 位置/尺寸逐字相同,
+            #    唯一差别是 alpha 更低, 纯粹是「把这一小段的覆盖再补一点」。
+            # ⚠️ 必须排在 `out` **末尾**(画在这 12 段之后) —— 顺序反过来会被后画的盖住,
+            #    等于没叠。整体画序仍是「上 -> 下」, 两条红线都不碰。
+            for _it in (_band[-RIM_BAND_TAIL_STRIPS:] if RIM_BAND_TAIL_STRIPS > 0 else ()):
+                out.append((_it[0], _it[1], _it[2], RIM_BAND_TAIL_ALPHA))
         _GLASS_RIM_TEX[id(back_tex)] = (back_tex, out)
     except Exception:
         return None
@@ -9623,6 +9667,12 @@ class RootWidget(BoxLayout):
         nn = len(gaps)
         pk = lambda q: gaps[min(nn - 1, int(nn * q))]
         out["n"] = nn
+        # 采样窗口的**时长**(毫秒) = 帧间隔之和。给成绩面板印「采样窗口：X 秒 · N 帧」用。
+        # ⚠️ 口径必须与 `_bench_frame_log()` 的日志头一致(那边也是 `sum(gaps)`), 否则
+        #    面板与日志会各印一个窗口, 读者对不上账 —— 本工程栽过好几次"两处各算一遍"。
+        # ⚠️ **不要**用 `self._flip_times[-1] - self._flip_times[0]`: 那个含首帧之前的一段,
+        #    会比这里多一帧, 两边差一个帧间隔。
+        out["win_ms"] = sum(float(x[0]) for x in fr)
         out["p50"] = pk(0.50)
         out["p99"] = pk(0.99)
         out["max"] = gaps[-1]
@@ -9645,12 +9695,19 @@ class RootWidget(BoxLayout):
         # ⚠️ 玩家 2026-09-14 定稿的两档: **<50% 要尽量消除; 50%~70% 只作参考**。
         #    所以这里只收 <50% 的那一档进 `jank_*`, 50%~70% 留在日志里当趋势看, **不上面板**。
         _med = float(out.get("p50") or 0.0)
-        _jank = [x for x in fr if _med > 0.0 and x[0] > _med / 0.55]
+        _jank = [x for x in fr if _med > 0.0 and x[0] > _med / JANK_RATE]
         out["jank_n"] = len(_jank)
         # **慢帧** = 帧率低于「中位帧率 75%」—— 比卡顿帧宽一档, **包含**卡顿帧。
         # ⚠️ 玩家 2026-09-14 定稿: 成绩面板上**两档都要印**(原来只印了卡顿帧) ——
         #    只看最窄那档会漏掉"虽然没到卡顿、但已经明显掉帧"的那一批, 而那批才是趋势。
-        out["slow_n"] = sum(1 for x in fr if _med > 0.0 and x[0] > _med / 0.75)
+        # ⚠️ **先取出这一个 list, 再拿它同时算"有几帧"和"分布"** —— 见文件末尾那段
+        #    说明: 写成两趟就是"两处各算一遍", 迟早印出「慢帧 168 帧」而分布只有 9。
+        _slow75 = [x for x in fr if _med > 0.0 and x[0] > _med / SLOW_RATE]
+        out["slow_n"] = len(_slow75)
+        _sg = {}
+        for _x in _slow75:
+            _sg[_x[1]] = _sg.get(_x[1], 0) + 1
+        out["slow_groups"] = sorted(_sg.items(), key=lambda x: -x[1])
         _jg = {}
         for _x in _jank:
             _jg[_x[1]] = _jg.get(_x[1], 0) + 1
@@ -10128,9 +10185,9 @@ class RootWidget(BoxLayout):
         #    所以下面印**两行** —— 一行硬判据、一行参考带, 别把参考带的帧混进硬指标里。
         # ⚠️ 写法沿用既有约定:「中位帧×70%」= **中位帧率的 70%**, 阈值 = `p50 / 0.7`。
         _p50b = sorted(gaps)[len(gaps) // 2]
-        _th90 = _p50b / 0.55
+        _th90 = _p50b / JANK_RATE
         _below90 = [_i for _i in range(len(gaps)) if gaps[_i] > _th90]
-        _th_ref = _p50b / 0.75
+        _th_ref = _p50b / SLOW_RATE
         _refband = [_i for _i in range(len(gaps)) if _th_ref < gaps[_i] <= _th90]
         # ⚠️ **就地取, 不引用上面的 `tex`/`tags`** —— 那两个列表在本函数里定义得**很晚**
         #    (在"各阶段统计表"那一段之后), 而这一段的插入点在头部 ⇒ 直接引用会 NameError。
@@ -10173,9 +10230,21 @@ class RootWidget(BoxLayout):
         #    算一遍、又有可能被后面的段落覆盖一次(v0.7.39 就踩了, 印出来恒等于卡顿帧)。
         #    印成 `N = 低于55% + 参考带` 之后, **下次读日志当场就能验** —— 对不上就是又脱钩了。
         _lines.append("# ★ 慢帧「中位帧率 <75%%」(%.1f fps): %d 帧 = 低于55%% %d + 参考带 %d"
-                      "   ← 成绩面板「慢帧（<75%%）」读的就是这个数"
+                      "   ← 成绩面板那一档读的就是这个数(面板把门槛印成帧/秒)"
                       % (1000.0 / _th_ref, len(_below90) + len(_refband),
                          len(_below90), len(_refband)))
+        # ★ **面板窗口 vs 日志窗口** 的自证行(2026-09-14 加)。
+        # ⚠️ 为什么必须有: 面板读 `_bench_diag` 的 `n` / `win_ms`, 而日志头这两个数是
+        #    从 `gaps` 现算的 —— **两边各算一遍**, 正是本工程反复栽的脱钩形状
+        #    (v0.7.40 那个 `slow_n` 被覆盖的 bug 就是同一类)。印在同一行上,
+        #    下次读日志当场就能验; 对不上就说明又脱钩了。
+        _dn = int(d.get("n", -1) or -1)
+        _dw = float(d.get("win_ms", -1.0) or -1.0)
+        _lw = sum(gaps)
+        _lines.append("# ★ 面板窗口 vs 日志窗口: %d 帧 / %.2fs  vs  %d 帧 / %.2fs  ==> %s"
+                      % (_dn, _dw / 1000.0, len(gaps), _lw / 1000.0,
+                         "一致" if (_dn == len(gaps) and abs(_dw - _lw) < 0.5)
+                         else "**不一致, 面板与日志脱钩了**"))
         _cnt = {}
         for _t in _tags_all:
             _cnt[_t] = _cnt.get(_t, 0) + 1
@@ -10980,9 +11049,10 @@ class RootWidget(BoxLayout):
             return ''
         try:
             parts = []
-            _n = int(d.get("low1_n", 0))
-            _ms = float(d.get("low1_ms", 0.0))
-            _stages = d.get("low1_groups") or []
+            # ⚠️ 这里原先还有三行 `_n / _ms / _stages = d.get("low1_*")` —— 是上一版
+            #    「1% Low 定位」那一段留下来的**死代码**: 取值后再没人用, 而 `_n` 还在
+            #    下面被重新定义了一次(影子变量)。2026-09-14 由 `fx_probe` 新增的那条
+            #    「不许退回 low1_groups」断言抓出来 —— 门禁逮到了我自己留的垃圾。
             # ⚠️⚠️ **2026-09-15 玩家点检这一段**(「这个信息是不是没有用了? 如果真没有用就删掉,
             #    如果有用就保留有用的」)。这是**成绩面板**, 而玩家 2026-09-11 已经定过一条
             #    原则: **成绩面板只放成绩**(版本/日期都因此挪去了菜单弹窗)。逐行判下来:
@@ -11001,24 +11071,40 @@ class RootWidget(BoxLayout):
             #    另一批帧, 两行对不上, 读数的人会以为哪里算错了。
             # ⚠️ 卡顿帧为 0 时**不要退回 `low1_groups`** —— 那会印出"分布"却写着"共 0 帧",
             #    两行自相矛盾(而且那批帧根本不是卡顿帧)。0 就明说 0。
-            _stages = (d.get("jank_groups") or []) if d.get("jank_n") else []
-            _rows = []
-            for _name, _cnt in _stages[:3]:
-                _info = _grp.get(_name)
-                _tot = int(_info[0]) if isinstance(_info, (tuple, list)) and _info else 0
-                _rows.append(((100.0 * _cnt / _tot) if _tot > 0 else -1.0,
-                              _name, int(_cnt), _tot))
-            _rows.sort(key=lambda r: -r[0])
-            _rate = [('%s %.1f%%（%d/%d）' % (r[1], r[0], r[2], r[3])) if r[3] > 0
-                     else ('%s %d帧' % (r[1], r[2])) for r in _rows]
-            if _rate:
-                parts.append('卡顿帧分布：' + ' · '.join(_rate))
+            def _dist_line_of(groups, n_key, label):
+                """把 {阶段: 帧数} 排成一行分布文案; 没有该档时返回空串。
+
+                ⚠️ 卡顿帧与慢帧**共用这一个函数** —— 两处各写一份格式化迟早会漂成
+                   两种排版(本工程在"口径"上栽过太多次)。
+                ⚠️ 百分比的分母是**该阶段的帧数**("占这一阶段多少"),
+                   与两档那行的分母(**窗口总帧数**)不是一回事, 两处不可互比。
+                ⚠️ 该档为 0 帧时**整行不印**(见调用处的说明), 别印一个空分布。
+                """
+                _st = (groups or []) if d.get(n_key) else []
+                _rw = []
+                for _name, _cnt in _st[:3]:
+                    _info = _grp.get(_name)
+                    _tot = int(_info[0]) if isinstance(_info, (tuple, list)) and _info else 0
+                    _rw.append(((100.0 * _cnt / _tot) if _tot > 0 else -1.0,
+                                _name, int(_cnt), _tot))
+                _rw.sort(key=lambda r: -r[0])
+                _rt = [('%s %.1f%%（%d/%d）' % (r[1], r[0], r[2], r[3])) if r[3] > 0
+                       else ('%s %d帧' % (r[1], r[2])) for r in _rw]
+                return (label + '：' + ' · '.join(_rt)) if _rt else ''
+
+            _dist_line = _dist_line_of(d.get("jank_groups"), "jank_n", '卡顿帧分布')
+            # 慢帧分布(玩家 2026-09-14:「额外新增一个慢帧分布」)。
+            # ⚠️ 判据是**中位帧率的 75%**(`SLOW_RATE`), 与 `slow_n` **同一个集合** ——
+            #    这一档**包含**卡顿帧, 所以它的分布天然比上一行"大一圈"(每一格都 ≥)。
+            _slow_dist_line = _dist_line_of(d.get("slow_groups"), "slow_n", '慢帧分布')
             _worst = (d.get("worst") or [None])[0]
             if _worst:
                 _gap, _stage = float(_worst[0]), _worst[1]
                 # ⚠️ 分隔符统一用**全角冒号** —— 上一版这里写的是半角 ": ", 三行里两行全角
                 #    一行半角, 截图上一眼看出来不齐(玩家说过"排版废话很多", 别再送把柄)。
-                parts.append('最慢一帧：%.0f 毫秒（%s）' % (_gap, _stage))
+                _worst_line = '最慢一帧：%.0f 毫秒（%s）' % (_gap, _stage)
+            else:
+                _worst_line = ''
             # ⚠️ 原来这一行是「低于 60 FPS 的帧: N / M」—— **绝对帧率**的门槛在高刷机上没有
             #    意义(165Hz 的机器上"低于 60fps"是地板级要求, 而且它的分子分母都是全窗口,
             #    跟上面"卡顿帧"那批根本不是同一批帧)。玩家 2026-09-14 定稿改成:
@@ -11037,8 +11123,39 @@ class RootWidget(BoxLayout):
             #    `# ★ 慢帧「中位帧率 <75%」`。**改这里之前先去看那一行对不对得上。**
             _jn = int(d.get("jank_n", 0))
             _sn = max(int(d.get("slow_n", 0)), _jn)
-            parts.append('卡顿帧（<55%%）：共 %d 帧' % _jn)
-            parts.append('慢帧（<75%%）：共 %d 帧' % _sn)
+            # ---- 采样窗口 + 两档(玩家 2026-09-14 定稿的排版) --------------------------
+            # 玩家原话:「**让我知道帧率计算的表演是多少秒, 多少帧**」, 随后两次点检措辞:
+            #   · 「<55% 让人看得不明不白的」—— 而且那一行里**两个 `%` 含义还不一样**
+            #     (门槛 vs 比例), 读者分不出哪个是哪个 ⇒ 门槛改成**算出来的帧/秒**。
+            #   · 「**应该是 <xx帧, 这个xx是计算来的**」 ⇒ xx 不许写死, 必须由中位派生。
+            #   · 「**你应该先写要求, 再写数量, 目前顺序不对**」 ⇒ 门槛进名字后的括号,
+            #     数量跟在冒号后。别写成「卡顿帧：1 帧（…）· 低于 91 帧/秒」那种顺序。
+            # ⚠️ **三个数必须同源**: 中位帧率、两个门槛**全从 `d["p50"]` 派生**, 而
+            #    `_bench_collect_diag` 判 `jank_n`/`slow_n` 用的也是同一个 p50 ⇒
+            #    "印出来的门槛"与"数出来的帧数"严格一致。**不要**改用日志头那个
+            #    `_render_median_fps`(它是从 `_flip_times` 另算的) —— 两处各算必然脱钩。
+            # ⚠️ 窗口时长取 `win_ms`(帧间隔之和), 与日志头 `sum(gaps)` **同一口径**。
+            # ⚠️ 拿不到窗口就**整行不印、门槛与比例也不印**: 「0.0 秒 · 0 帧」「0.00%」
+            #    是**假数**, 比没有更糟(本工程栽过好几次「面板印假数」)。帧数照常印。
+            _n = int(d.get("n", 0) or 0)
+            _win_ms = float(d.get("win_ms", 0.0) or 0.0)
+            _p50 = float(d.get("p50", 0.0) or 0.0)
+            if _n > 0 and _win_ms > 0.0 and _p50 > 0.0:
+                parts.append('采样窗口：%.1f 秒 · %d 帧 · 中位 %.0f 帧/秒'
+                             % (_win_ms / 1000.0, _n, 1000.0 / _p50))
+                parts.append('卡顿帧（低于 %.0f 帧/秒）：%d 帧（%.2f%%）'
+                             % (1000.0 * JANK_RATE / _p50, _jn, 100.0 * _jn / _n))
+                parts.append('慢帧（低于 %.0f 帧/秒）：%d 帧（%.2f%%）'
+                             % (1000.0 * SLOW_RATE / _p50, _sn, 100.0 * _sn / _n))
+            else:
+                parts.append('卡顿帧（<55%%）：共 %d 帧' % _jn)
+                parts.append('慢帧（<75%%）：共 %d 帧' % _sn)
+            if _dist_line:
+                parts.append(_dist_line)
+            if _slow_dist_line:
+                parts.append(_slow_dist_line)
+            if _worst_line:
+                parts.append(_worst_line)
             return '\n'.join(parts)
         except Exception:
             return ''
