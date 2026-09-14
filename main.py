@@ -8873,7 +8873,7 @@ class RootWidget(BoxLayout):
             return ''
 
     def _show_bench_history(self):
-        """性能测试历史：每次完整测试一张两行卡，同时保留渲染与 SoC 指标。"""
+        """性能测试历史：每次完整测试严格一行，保留时间、帧率与 SoC 波动。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='测试历史（渲染 / SoC）', bold=True,
                                          halign='center', color=hex_rgb(COL_TEXT) + (1,),
@@ -8885,52 +8885,44 @@ class RootWidget(BoxLayout):
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(empty)
         else:
+            columns = Label(text='平均/1%Low　　SoC步/秒 / 波动', font_size='12sp',
+                            halign='left', valign='middle', color=hex_rgb(COL_SUB) + (1,),
+                            size_hint_y=None, height=dp(22))
+            columns.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+            content.add_widget(columns)
             scroll = ScrollView(size_hint=(1, 1))
-            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
+            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
-            _render_rows, _soc_rows = [], []
-            for idx, r in enumerate(reversed(self.bench_history[-100:])):
+            rows = []
+            for r in reversed(self.bench_history[-100:]):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
                 # ⚠️ 字号/行高与另外两个列表弹窗**对齐**(见 _fit_uniform 上方那段说明):
                 #    这里原来是 17sp/30dp —— 全 app 最大的正文, 比主界面正文(14~15)还大一档,
                 #    而它是个要塞很多行的滚动列表。统一到 15sp(Body 档) + 26dp 行高:
                 #    同一个滚动框里能多放约两行(玩家: 「这个设计的目的是放更多内容的」)。
-                card = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(52),
-                                 padding=[dp(6), dp(2), dp(6), dp(2)])
-                self._row_bg(card, "#141b2c" if idx % 2 == 0 else "#101727")
                 render, low = r.get('render_fps'), r.get('render_1low')
+                stamp = str(r.get('time', '--'))
                 if render is None or low is None:
-                    render_text = '%s　渲染 —' % r.get('time', '--')
+                    fps_text = '—'
                 else:
-                    render_text = '%s　渲染 %.0f / 1%% %.0f fps' % (
-                        r.get('time', '--'), float(render), float(low))
+                    fps_text = '%.1f/%.1f' % (float(render), float(low))
                 spread = r.get('phys_spread')
-                ver = str(r.get('version') or '')
-                ver_tail = ('　' + ver) if ver else ''
                 if spread is None:
-                    soc_text = 'SoC %d 步/秒%s' % (r.get('phys_fps', 0), ver_tail)
+                    soc_text = '%d/—' % r.get('phys_fps', 0)
                 else:
-                    soc_text = 'SoC %d 步/秒　波动 %.1f%%%s' % (
-                        r.get('phys_fps', 0), float(spread), ver_tail)
-                render_lbl = Label(text=render_text, font_size='13sp', halign='left',
-                                   valign='middle', color=hex_rgb(COL_TEXT) + (1,),
-                                   size_hint_y=None, height=dp(24))
-                soc_lbl = Label(text=soc_text, font_size='13sp', halign='left',
-                                valign='middle', color=hex_rgb(COL_SUB) + (1,),
-                                size_hint_y=None, height=dp(24))
-                render_lbl.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
-                soc_lbl.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
-                card.add_widget(render_lbl)
-                card.add_widget(soc_lbl)
-                _render_rows.append(render_lbl)
-                _soc_rows.append(soc_lbl)
-                inner.add_widget(card)
+                    soc_text = '%d/%.1f%%' % (
+                        r.get('phys_fps', 0), float(spread))
+                row = Label(text='%s　%s　%s' % (stamp, fps_text, soc_text),
+                            font_size='13sp', halign='left', valign='middle',
+                            color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(26))
+                row.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                rows.append(row)
+                inner.add_widget(row)
             # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
             #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
             #    同一批行 17.0 而别的 17sp 行是 34.0)。
-            self._fit_uniform(_render_rows, sp(13))
-            self._fit_uniform(_soc_rows, sp(13))
+            self._fit_uniform(rows, sp(13))
             scroll.add_widget(inner)
             content.add_widget(scroll)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
