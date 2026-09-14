@@ -2023,6 +2023,17 @@ _FRAME_PROBE = [0, 0, 0]         # [本帧发声次数, 本帧震动次数, 本�
 _FRAME_BRK = {}                  # 本帧累计(会被 _on_flip 读走并清空)
 _BRK_KEYS = ("板面", "重掷", "字号", "装杯")
 _FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
+# 上一帧 `Window.flip()`(**真正把画面交给系统**那一步)阻塞了多少毫秒。
+# ⚠️ 为什么必须单独有这一格(2026-09-14, 120Hz 与 60Hz 两份真机日志对比之后):
+#    实测 Kivy 的**绑定回调 `on_flip` 跑在默认处理器之前**, 而真正做 swap 的是默认处理器
+#    (`WindowBase.on_flip` -> `self.flip()` -> `WindowSDL.flip`)。也就是说 `_on_flip` 里的
+#    那个时间戳打在**画面还没交出去**的那一刻 ⇒ 记下来的"帧间隔"里虽然**含**着等屏幕的时间,
+#    却**分不出来**它占多少。实测证据(桌面 `temp/fliporder.py`): 事件序列恒为 `CB SWAP CB SWAP`。
+#    后果: 真机 v0.7.23 那批「主线程只烧 0.8~3.1 毫秒、帧却走 11 毫秒」的慢帧, 到底是
+#    **我们交晚了**还是**屏幕/缓冲队列不让我们交**, 整个日志头一个字都答不上。
+#    `time.thread_time()` 也救不了: 阻塞在驱动 fence 上**不算 CPU 时间**, 那批帧两个数都小。
+# 配对: 本格在 `flip()` 里写、在下一次 `_on_flip` 里读走 —— 正好对应"这段时间里那一次 swap"。
+_FRAME_SWAP = [0.0]
 _FRAME_CALLS = [0]               # `_frame` 被调了几次(与"采样了多少帧"比, 见面板"节拍"行)
 _SINCE_LAUNCH = [0]              # 距上一次 `launch()` 过了多少帧(判 C6: 最差帧是不是紧跟在发射后)
 _TEXUPD = [0]                    # 本轮跑分内的文字重排累计次数
@@ -2104,6 +2115,173 @@ def _texupd_wrap():
 
 
 _texupd_wrap()
+
+
+def _texfill_wrap():
+    """把**第二趟**文字渲染(`CoreLabel._texture_fill`)也接进子步骤计时。
+
+    ⚠️ 为什么必须有这一格(2026-09-14, 查了 kivy/core/text/__init__.py 源码才明白):
+       Kivy 的文字是**两趟**画的 ——
+         `refresh()` 里 `render()`                     <- 第一趟: **只量宽高**(不是真画)
+         `Texture.create(callback=...)` 或 `texture.ask_update(...)`
+         `_texture_fill()` -> `render(real=True)`      <- 第二趟: **真光栅化**
+       第二趟是**纹理下一次被用到时**由 Texture 回调触发的, 也就是**跑在
+       `Label.texture_update` 外面**(Kivy 的渲染/上传路径上)。而 `_texupd_wrap` 只包了
+       `texture_update` ⇒ **我们一直在量第一趟, 真正贵的那一趟没人认领。**
+       真机证据(165Hz TB323FU): 全窗口**只有 13 帧**低于 90fps, 它们 **13/13 主线程都在真算**
+       (没有一帧是"在等")、13/13 都伴随文字重建; 而那些帧 `主线程 17.1 毫秒` 而 `_frame` 自算
+       只有 `4.3 毫秒` —— **中间 11 毫秒不在 `_frame` 里, 也不在 texture_update 里**。
+       (⚠️ 只有在 `_frame` 与 flip **同频**时才敢相减: 165Hz 下 Clock 间隔 1/165 ≈ flip 周期,
+       一次 flip 里 `_frame` 只跑一次; 120Hz 下它跑两次, 那边相减不成立。)
+    ⚠️ 包装函数**必须保住 `__name__`**: Kivy 有按方法名找的地方, 改名会静默失联。
+    ⚠️ 和其它埋点一样只在采样期计时 —— 这一趟跑的频率比 `texture_update` 还高。
+    """
+    try:
+        from kivy.core.text import LabelBase as _LB
+    except Exception:
+        return
+    _orig = getattr(_LB, "_texture_fill", None)
+    if _orig is None or getattr(_orig, "_probe_wrapped", False):
+        return
+
+    def _texture_fill(self, texture, *a, **k):
+        if not _TEXUPD_ACTIVE[0]:
+            return _orig(self, texture, *a, **k)
+        _t0 = time.perf_counter()
+        try:
+            return _orig(self, texture, *a, **k)
+        finally:
+            _brk_add("填纹", _t0)
+
+    _texture_fill._probe_wrapped = True
+    try:
+        _texture_fill.__name__ = "_texture_fill"
+        _LB._texture_fill = _texture_fill
+    except Exception:
+        pass
+
+
+_texfill_wrap()
+
+
+def _swap_wrap():
+    """把 `Window.flip()`(真正 swap 那一步)包起来计时, 写进 `_FRAME_SWAP`。
+
+    ⚠️ **包的是 `type(Window).flip`, 不是 `Window.flip`** —— 后者是绑定方法, 改不动类。
+       真机上 `type(Window)` 是 `WindowSDL`, 它自己的 `flip` 先调 `self._win.flip()`(SDL 的
+       `SDL_GL_SwapWindow`, 就是会阻塞等缓冲 / 等 vsync 的那一句), 再 `super().flip()`。
+       所以这一包正好罩住"等屏幕"那一段, **不含渲染**(渲染在 `on_draw` 里, 更早)。
+    ⚠️ **只在跑分采样期真的计时**(`_TEXUPD_ACTIVE` 是现成的"正在采样"闸门)—— 平时每帧两次
+       `perf_counter` 虽只有百纳秒级, 但这个工程的规矩是"别让埋点改变被测量的东西"。
+    ⚠️ 必须 try/except 兜住: `self._win` 在无窗口 / 自测路径上可能是 `None`。埋点绝不能让主循环抛。
+    ⚠️ **别改成包 `Window.flip` 这个名字**: Kivy 的 `Window` 是单例, `Window.flip` 拿到的是
+       绑定方法, 赋值上去只会给实例加一个属性, 而真正被调的是 `WindowBase.on_flip` 里的
+       `self.flip()` —— 那个走的是类, 撞不到实例属性上。桌面上实测确认过包装生效(见 temp/fliporder.py)。
+    """
+    _cls = type(Window)
+    _orig = getattr(_cls, "flip", None)
+    if _orig is None or getattr(_orig, "_probe_wrapped", False):
+        return
+
+    def flip(self, *a, **k):
+        if not _TEXUPD_ACTIVE[0]:
+            return _orig(self, *a, **k)
+        _t0 = time.perf_counter()
+        try:
+            return _orig(self, *a, **k)
+        finally:
+            _FRAME_SWAP[0] = (time.perf_counter() - _t0) * 1000.0
+
+    flip._probe_wrapped = True
+    try:
+        _cls.flip = flip
+    except Exception:
+        pass
+
+
+_swap_wrap()
+
+
+# ---- CPU 频率(跑分期的调频状态) ----------------------------------------------
+# ⚠️ 为什么必须有这一格(2026-09-14, 玩家在跑分时用第三方工具看到的):
+#    **跑分前期整个采样窗口里 CPU 只跑 1.1GHz, 到后期纯 CPU 的物理跑分才升到 4.5GHz。**
+#    这不是小数字 —— 同一个 SoC 上 1.1G 对 4.5G 是**4 倍**, 而 `主线程ms` 量的是
+#    `time.thread_time()` = **真实的 CPU 秒数**(不是指令数), 主频越低、同一个函数量出来
+#    就越"贵"。它能一口气解释掉三件本来互不相干的事:
+#      · 慢帧的**绝对**时长在 60/120/165 三档下几乎不变(11.5~12ms)—— 固定工作量在低主频下
+#        就是个固定的墙钟数, 与刷新周期无关;
+#      · TB323FU 那台 165Hz 有两段 0.8 秒掉到 136~152fps, 而同 SoC 的 120Hz 机全程纹丝不动;
+#      · 两台同 SoC 的机器每帧 CPU 能差 20%。
+#    ⚠️ **采样必须放工作线程**, 不能塞进 `_on_flip`: 读 sysfs 每次几十微秒, 而这一格恰恰是
+#       用来解释 `主线程ms` 的 —— 埋点自己抬高被解释的那个数就自相矛盾了。
+#    ⚠️ 频率拿不到(桌面 / 被 SELinux 挡住)时一律吞掉当"读不到", 日志里那一段**不印**,
+#       而不是印一行 0 假装量到了。
+_CPUFRQ = {"freqs": [], "cap": 0.0, "stop": True, "thr": None}
+
+
+def _cpufreq_mhz():
+    """当前 CPU 频率(MHz): 取各核**最大值**(调度会把跑得最多的核拉到最高)。
+
+    ⚠️ 逐核试到连续两核读不到就停 —— 真机核数不一(4/8), 没必要每次开 8 个文件。
+    """
+    best = 0
+    miss = 0
+    for i in range(8):
+        try:
+            with open("/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq" % i) as fh:
+                v = int(fh.read().strip() or 0)
+            if v > best:
+                best = v
+            miss = 0
+        except Exception:
+            miss += 1
+            if miss >= 2:
+                break
+    return best / 1000.0
+
+
+def _cpufreq_cap_mhz():
+    """这台机器的 CPU 最高频(MHz)。读不到返回 0。"""
+    for _p in ("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq",
+               "/sys/devices/system/cpu/cpu7/cpufreq/cpuinfo_max_freq"):
+        try:
+            with open(_p) as fh:
+                v = int(fh.read().strip() or 0)
+            if v > 0:
+                return v / 1000.0
+        except Exception:
+            pass
+    return 0.0
+
+
+def _cpufreq_worker():
+    """后台每 0.5 秒采一次主频, 直到 `stop`。开销 ≈ 每 0.5 秒两次小文件读。"""
+    while not _CPUFRQ["stop"]:
+        _v = _cpufreq_mhz()
+        if _v > 0:
+            _CPUFRQ["freqs"].append(_v)
+        time.sleep(0.5)
+
+
+def _cpufreq_start():
+    _CPUFRQ["freqs"] = []
+    _CPUFRQ["cap"] = _cpufreq_cap_mhz()
+    _CPUFRQ["stop"] = False
+    try:
+        _CPUFRQ["thr"] = threading.Thread(target=_cpufreq_worker, daemon=True)
+        _CPUFRQ["thr"].start()
+    except Exception:
+        _CPUFRQ["thr"] = None
+        _CPUFRQ["stop"] = True
+    # 起步立刻采一次: 窗口只有 25 秒、0.5 秒一次, 早采一点才看得出"前期就低"。
+    _v = _cpufreq_mhz()
+    if _v > 0:
+        _CPUFRQ["freqs"].append(_v)
+
+
+def _cpufreq_stop():
+    _CPUFRQ["stop"] = True
+    _CPUFRQ["thr"] = None
 
 
 
@@ -8298,6 +8476,27 @@ class RootWidget(BoxLayout):
         _TEXUPD[0] = 0
         _TEXUPD_BY.clear()
         _TEXUPD_ACTIVE[0] = True
+        # ⚠️ 必须在这里归零: 上一轮跑分残留的 swap 值会被当成"第一帧等屏幕的时间"记进新日志的
+        #    第一行(那种"凭空冒出来的 40 毫秒"没人解释得了)。
+        _FRAME_SWAP[0] = 0.0
+        _FRAME_BRK.clear()
+        # ⚠️ **同理, 而且这三个以前一直没清**(2026-09-14 修, 对抗性评审的专家指出):
+        #    发声/震动计数(`Sfx.play` 里 `_FRAME_PROBE[0] += 1`、`_vibrate_tick` 里 `[1] += 1`)
+        #    和预热位 `[2]` 都是**裸模块级计数, 采样期之外照常累加**, 而 `_on_flip` 只在
+        #    `if prev is not None:` 里复位它们 ⇒ **日志第一行背的是"上次采样结束以来"的全部累计**。
+        #    真机铁证: v0.7.23 的 120Hz 日志第一行是 `0.74,待机,4,0.03,0.60,6,0,...`,
+        #    一帧只有 0.74 毫秒却背着 `发声6`(全窗口次大才 3)、`字号1010.0`(全 3069 行里唯一
+        #    ≥100ms 的, 次大 4.9ms)—— 那两个数物理上装不进 0.74 毫秒。`_FRAME_BRK` 已在
+        #    v0.7.23 之后单独修掉, 这三个是同一次漏下的。
+        #    ⚠️ **别图省事把 `_on_flip` 里那三行挪出 `if prev is not None`** —— 那里必须
+        #    **每帧清**(它清的是"这一帧记了多少"), 而这里要的是**开跑前清一次**。两处都要。
+        _FRAME_PROBE[0] = 0
+        _FRAME_PROBE[1] = 0
+        _FRAME_PROBE[2] = 0
+        # CPU 调频状态(工作线程里采, 不占主线程) —— 见 `_CPUFRQ` 处的说明: 玩家的第三方工具
+        # 在跑分期看到"前期只有 1.1GHz、后期才 4.5GHz", 而 `主线程ms` 是**真实 CPU 秒**,
+        # 主频差 4 倍会让同一个函数量出来差 4 倍。不采这一格, 上面所有 CPU 数字都缺前提。
+        _cpufreq_start()
         # 逐帧文字纹理重建计数(与 `_bench_frames` 同序等长的平行表, 见 `_on_flip` 末尾)
         self._bench_tex = []
         self._bench_tex_prev = _TEXUPD[0]
@@ -8405,11 +8604,21 @@ class RootWidget(BoxLayout):
                                        _FRAME_THR[0], _SINCE_LAUNCH[0],
                                        tuple(sorted(
                                            ((v * 1000.0, k) for k, v in _FRAME_BRK.items()
-                                            if v > 0.0002), reverse=True)[:2])))
+                                            if v > 0.0002), reverse=True)[:2]),
+                                       # [10] = **上一次** `Window.flip()` 阻塞了多少毫秒。
+                                       # ⚠️ 是"上一次"不是"这一次": 绑定回调 `on_flip` 跑在默认
+                                       #    处理器(真正 swap)之**前**(桌面实测序列恒为 CB SWAP),
+                                       #    所以读到的必然是上一帧那一笔。而这正好与这一行记的
+                                       #    帧间隔配对 —— 那段间隔里含的就是那一次 swap。
+                                       # ⚠️ **只能追加在末尾**: 前面 [0]~[9] 的下标被
+                                       #    `_bench_collect_diag` 按号取, 插在中间会重演 v0.6.82
+                                       #    "把 [7]/[8] 写反、整块诊断静默返回空串"那一次。
+                                       _FRAME_SWAP[0]))
             _FRAME_BRK.clear()
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
             _FRAME_PROBE[2] = 0
+            _FRAME_SWAP[0] = 0.0
             # 这一帧发生了几次**文字纹理重建** —— 与 `_bench_frames` **同序等长的平行表**。
             # ⚠️ 用平行表, 不往 `_bench_frames` 的元组里加字段: 那个元组的**下标被
             #    `_bench_collect_diag` 到处按号取**(v0.6.82 就因为把 [7]/[8] 写反, 让整块诊断
@@ -8466,6 +8675,7 @@ class RootWidget(BoxLayout):
             self._render_median_fps = 0.0
             self._render_gaps_ms = []
             self._render_1low = 0.0
+        _cpufreq_stop()
         self._bench_diag = self._bench_collect_diag()
         _TEXUPD_ACTIVE[0] = False
         self._wait_idle_then_bench()
@@ -8534,7 +8744,52 @@ class RootWidget(BoxLayout):
         out["thr_p50"] = _thr_sorted[len(_thr_sorted) // 2] if _thr_sorted else 0.0
         out["thr_max"] = _thr_sorted[-1] if _thr_sorted else 0.0
         out["texupd"] = _TEXUPD[0]
-        out["texupd_by"] = sorted(_TEXUPD_BY.items(), key=lambda it: -it[1])[:4]
+        # ⚠️ 只留前 4 名 —— 但**必须把"其余还有多少"一并记下来**(2026-09-14 修)。
+        #    原来只有 `[:4]`, 于是真机 v0.7.23 的日志里"全程文字重建 76 次"与"重建来源
+        #    四项相加 68"差了 8 次(约 10%), 而**日志里没有任何地方提示这里截断了** ——
+        #    看日志的人只会以为那 8 次凭空消失。加一个"其余合计"就能自洽。
+        _by_all = sorted(_TEXUPD_BY.items(), key=lambda it: -it[1])
+        out["texupd_by"] = _by_all[:4]
+        out["texupd_rest"] = sum(int(c) for _, c in _by_all[4:])
+        out["texupd_tags"] = len(_by_all)
+        # ---- 等屏幕(swap 阻塞)的分布 ----
+        # ⚠️ 2026-09-14 加。为什么要它: 真机同一天两份日志(屏幕 120Hz / 60Hz)显示"慢帧"在两种
+        #    刷新率下**都**落在 1.35~1.45 个刷新周期上, 比例几乎一样 ⇒ 只降帧率救不了。
+        #    而那批慢帧里有一大半**主线程根本没烧 CPU**(<30% 帧长) —— 光看 CPU 分不出它们是
+        #    "我们交晚了"还是"屏幕不让交"。swap 阻塞就是那把刀。
+        _sw = sorted(float(x[10]) if len(x) > 10 else 0.0 for x in fr)
+        out["swap_p50"] = _sw[len(_sw) // 2] if _sw else 0.0
+        out["swap_max"] = _sw[-1] if _sw else 0.0
+        out["swap_sum"] = sum(_sw)
+        # ---- 节拍真值: 屏幕多少 Hz / 请求的模式 / Kivy 实际生效的上限 / vsync ----
+        # ⚠️ 这三样 `_FPS_INFO` 里一直有, 但**从没进过日志文件** —— 而它们是"这份日志能不能
+        #    和上一份比"的唯一前提。实测教训: 120Hz 那轮平均 120.3fps、60Hz 那轮 60.1fps,
+        #    同一份代码同一个版本, 1%Low 一个是 83.3 一个是 42.2, 差别全部来自屏幕档位。
+        #    **没有这一行, 跨版本比较(75.1 -> 78.2 -> 83.3 那种)根本不知道是不是同一把尺子。**
+        try:
+            out["screen_hz"] = float(_FPS_INFO[0] or 0.0)
+            out["req_hz"] = float(_FPS_INFO[2] or 0.0)
+        except Exception:
+            out["screen_hz"], out["req_hz"] = 0.0, 0.0
+        try:
+            out["clock_maxfps"] = float(getattr(Clock, "_max_fps", 0.0) or 0.0)
+        except Exception:
+            out["clock_maxfps"] = 0.0
+        # ---- CPU 调频状态(见 `_CPUFRQ` 处说明) ----
+        # ⚠️ 单位是 MHz; 采不到就留空列表, 打印端据此**整段不印**(不印 0 冒充量到)。
+        try:
+            _fr_ = list(_CPUFRQ.get("freqs") or [])
+            out["cpufreq_n"] = len(_fr_)
+            out["cpufreq_cap"] = float(_CPUFRQ.get("cap", 0.0) or 0.0)
+            out["cpufreq_p50"] = _fr_[len(_fr_) // 2] if _fr_ else 0.0
+            out["cpufreq_min"] = min(_fr_) if _fr_ else 0.0
+            out["cpufreq_max"] = max(_fr_) if _fr_ else 0.0
+            # 低于"上限 50%"的采样占比 —— 直接回答"是不是全程在低频跑"。
+            _cap = out["cpufreq_cap"]
+            out["cpufreq_low_pct"] = (100.0 * sum(1 for _v in _fr_ if _cap and _v < 0.5 * _cap)
+                                      / len(_fr_)) if (_fr_ and _cap) else -1.0
+        except Exception:
+            out["cpufreq_n"] = 0
         # 节拍事实: Kivy 的限速旋钮实际是什么值, 以及"逻辑更新几次 vs 呈现了几帧"。
         try:
             from kivy.config import Config as _Cfg
@@ -8862,6 +9117,21 @@ class RootWidget(BoxLayout):
             _lines.append("# 慢帧门槛 %.2f 毫秒(最慢 %d 帧的临界值)" % (_thr, _n1))
         except Exception:
             pass
+        # ⚠️ **节拍真值必须印在最前面**(2026-09-14 加)。理由见 `_bench_collect_diag` 里
+        #    "节拍真值"那段: 屏幕档位一变, 同一份代码的 1%Low 能从 83.3 掉到 42.2。
+        #    这一行是"这份日志能不能和上一份比"的唯一前提 —— 放在头部第一眼就能看到。
+        try:
+            _lines.append("# 节拍: 屏幕 %.1fHz · 请求高刷模式 %.1fHz · Kivy上限 maxfps=%s"
+                          " (Clock._max_fps=%.1f) · vsync=%s · multisamples=%s"
+                          % (float(d.get("screen_hz", 0.0)), float(d.get("req_hz", 0.0)),
+                             str(d.get("maxfps", "?")), float(d.get("clock_maxfps", 0.0)),
+                             str(d.get("vsync", "?")), str(d.get("multisamples", "?"))))
+        except Exception:
+            pass
+        # ---- 等屏幕(swap 阻塞) ----
+        # ⚠️ 这一块**必须排在 `_fr` 定义之后**(它在下面"最慢三帧的子步骤"那段才被取出来)。
+        #    第一版写在头部"节拍"那行后面, 直接 NameError —— 而 `_bench_frame_log` 的调用方
+        #    `_copy_bench_log` 把异常吞成空串, 玩家看到的是"没有可复制的数据"。已挪到下面。
         # ⚠️ **慢帧 × 文字纹理重建的交叉表** —— 这一行是"文字重排到底是不是元凶"的直接读数。
         #    `Label.texture_update` 由 Kivy 用 Clock **延后**执行(重测字形+重光栅化+重建纹理+
         #    上传), 跑在 `_frame` 外面; 所以这笔账落在"被还上"的那一帧, 而不是"改 text"的那一帧。
@@ -8881,7 +9151,16 @@ class RootWidget(BoxLayout):
         try:
             _by = d.get("texupd_by") or []
             if _by:
-                _lines.append("# 重建来源: " + " · ".join("%s %d" % (n, c) for n, c in _by[:5]))
+                # ⚠️ 采集端只留前 4 名, 所以这里**必须把"其余"和"合计"一起印出来** ——
+                #    否则读者拿这行去对上面的"全程文字重建 N 次"会永远差一截, 而不知道该信谁。
+                #    真机 v0.7.23 就是这么差了 8 次(76 vs 68)且**没有任何提示**。
+                _rest = int(d.get("texupd_rest", 0) or 0)
+                _bits = ["%s %d" % (n, c) for n, c in _by]
+                if _rest > 0:
+                    _bits.append("其余%d类合计 %d" % (max(1, int(d.get("texupd_tags", 0) or 0)
+                                                          - len(_by)), _rest))
+                _lines.append("# 重建来源: " + " · ".join(_bits)
+                              + "  [合计 %d]" % (sum(int(c) for _, c in _by) + _rest))
             # 发声 / 震动单次最慢 —— 覆盖另一条假设("关掉音效 1%low 就回升", 而关音效会
             # 连震动一起关掉, 两条分不开)。这两组埋点一直在跑, 只是很多年没显示了。
             _lines.append("# 发声 %d 次 · 单次最慢 %.1f 毫秒 · 累计 %.0f 毫秒"
@@ -8909,6 +9188,33 @@ class RootWidget(BoxLayout):
         #    这一格很小而整帧很大 ⇒ 钱花在 `_frame` 外面(Kivy 延后的文字重排 / 渲染 / 其它
         #    Clock 回调), 不是我们的代码 —— 这是分流的那一刀。
         _fr = list(getattr(self, "_bench_frames", []) or [])
+        # ---- 等屏幕(swap 阻塞) ----
+        # ⚠️ 这一格回答的是"主线程没烧 CPU 的那些慢帧, 到底在等谁"。见 `_FRAME_SWAP` 处的说明:
+        #    Kivy 的绑定回调 `on_flip` 跑在真正 swap **之前**(桌面实测序列恒为 `CB SWAP`),
+        #    所以帧间隔里那一段"等屏幕"以前只混在总数里, 从没被单独量过。
+        #    `time.thread_time()` 也看不见它 —— 阻塞在驱动 fence 上**不算 CPU 时间**。
+        # ⚠️ 必须排在 `_fr` 之后: 第一版写在头部"节拍"那行旁边, 直接 NameError, 而调用方
+        #    `_copy_bench_log` 会把异常吞成空串 ⇒ 玩家看到的是"没有可复制的数据"。
+        _sw = [float(_r[10]) if len(_r) > 10 else 0.0 for _r in _fr] if _fr else []
+        if len(_sw) == len(gaps) and any(_sw):
+            _sw_s = sorted(_sw)
+            _s_sw = sorted(_sw[_i] for _i in _slow_idx)
+            _o_sw = sorted(_sw[_i] for _i in range(len(gaps)) if _i not in _slow_idx)
+            _lines.append("# 等屏幕(swap 阻塞): 中位 %.2f 毫秒 · 最慢 %.2f 毫秒 · 累计 %.0f 毫秒"
+                          " (占窗口 %.1f%%)"
+                          % (_sw_s[len(_sw_s) // 2], _sw_s[-1], sum(_sw),
+                             100.0 * sum(_sw) / max(1.0, sum(gaps))))
+            # ⚠️ 判据**两个方向都要写**, 不能只往"在等屏幕"引 —— 桌面实测就撞到过反例:
+            #    桌面 vsync 下大部分帧 swap 只要 0.3 毫秒, 但**排到队的那一帧要等 15.9 毫秒**;
+            #    那一帧"等屏幕高"是因为它**本来就来晚了、撞上了队列**, 不是被屏幕拖慢的。
+            #    所以这一格必须和上面那句「慢帧 CPU 账」**一起读**:
+            #      慢帧 swap 高 **且** 主线程 CPU 也高  ⇒ ② 我们自己交晚了, 该去砍 CPU;
+            #      慢帧 swap 高 **但** 主线程 CPU 很低  ⇒ ① 在等屏幕, 优化代码没用。
+            _lines.append("#   慢帧当帧 等屏幕 中位 %.2f 毫秒  ·  其余帧 中位 %.2f 毫秒"
+                          "  ← 必须配合上面的「慢帧 CPU 账」读: CPU 也高=我们交晚了;"
+                          " CPU 低=真在等屏幕"
+                          % (_s_sw[len(_s_sw) // 2] if _s_sw else 0.0,
+                             _o_sw[len(_o_sw) // 2] if _o_sw else 0.0))
         if len(_fr) == len(gaps):
             _bits = []
             for _i in _order[:3]:
@@ -9000,10 +9306,88 @@ class RootWidget(BoxLayout):
             _br_ = _all_ratio[len(_all_ratio) // 2] if _all_ratio else 0.0
             _lines.append("#   常态帧主线程只占帧长 %.0f%%(拿它当尺子): 慢帧明显低于这个 = 在等;"
                           " 明显高于 = 真在算" % (100.0 * _br_))
-        _lines.append("# 每行: 帧间隔毫秒,阶段,文字重建,_frame自算ms,主线程ms,发声,震动,最大子步骤")
-        _lines.extend("%.2f,%s,%d,%.2f,%.2f,%d,%d,%s" % (g, t, x, s, m, sn, vb, b)
-                      for g, t, x, s, m, sn, vb, b
-                      in zip(gaps, tags, tex, _self_ms, _thr_ms, _snd_n, _vib_n, _top1))
+        # ---- CPU 调频状态 ----
+        # ⚠️ 这一行是上面**所有** CPU 数字的前提。玩家在跑分时用第三方工具看到: 采样窗口前期
+        #    CPU 只跑 1.1GHz, 到后期纯 CPU 的物理跑分才升到 4.5GHz。而"主线程ms"量的是
+        #    `time.thread_time()` = **真实 CPU 秒数**, 主频差 4 倍 ⇒ 同一个函数量出来差 4 倍。
+        #    所以读数之前必须先看这一行: 它决定了这一轮的数字是"1.1G 下的"还是"4.5G 下的"。
+        try:
+            _fn = int(d.get("cpufreq_n", 0) or 0)
+            if _fn > 0:
+                _fm = float(d.get("cpufreq_min", 0.0) or 0.0)
+                _fp = float(d.get("cpufreq_p50", 0.0) or 0.0)
+                _fx = float(d.get("cpufreq_max", 0.0) or 0.0)
+                _fc = float(d.get("cpufreq_cap", 0.0) or 0.0)
+                _lp = float(d.get("cpufreq_low_pct", -1.0))
+                _lines.append("# CPU 频率(采样期): 中位 %.0fMHz · 最低 %.0f · 最高 %.0f · 上限 %.0fMHz%s"
+                              % (_fp, _fm, _fx, _fc,
+                                 ("  ·  **低于上限一半的采样占 %.0f%%**" % _lp) if _lp >= 0 else ""))
+                # ⚠️ 判据: 中位远低于上限 ⇒ 采样期全程低频, 那 `主线程ms` 是**被主频放大过的**,
+                #    不能拿去和其他跑分比, 也不能当作"应用真的这么重"; 反过来, 砍掉同样的工作量
+                #    在低频下**省下的墙钟更多** —— 所以低频并不是"优化没用", 是"优化更值"。
+                _lines.append("#   读法: 中位远低于上限 = 采样期一直低频跑(调频器按负载升频, 而本应用"
+                              "大部分时间在等 vsync ⇒ 它看着很闲)。此时 `主线程ms` 被主频放大,"
+                              " 同一份代码在不同跑分里会差好几倍。")
+        except Exception:
+            pass
+        # ---- 已采未印的那几格(2026-09-14 补) ----
+        # ⚠️ 为什么补: 真机 TB323FU(165Hz, 与 120Hz 那台**同 SoC**)的日志里有两段 0.8 秒的低谷
+        #    (滚动 fps 掉到 136~152); 而低谷里飞行帧的**主线程 CPU 占比与全局一模一样(34%)**,
+        #    只是**绝对 CPU 涨了 20%**(2.05→2.49ms)、帧长同步涨 20%。也就是说那段**不是被外面
+        #    挡住, 是我们自己每帧多干了 20% 的活**。可"多干的是什么"这份日志一个字都没有 ——
+        #    而 GC 次数/耗时、进程态 utime/stime、后端是谁、这几个数 `_bench_collect_diag`
+        #    **早就采好了, 只是 `_bench_frame_log` 从来没引用过它们**。
+        #    纯打印, 零新埋点、零行为改变。
+        try:
+            _gc_n = int(d.get("gc_n", 0) or 0)
+            _u = float(d.get("utime_ms", -1.0))
+            _s = float(d.get("stime_ms", -1.0))
+            _cpf = float(d.get("cpu_per_frame", 0.0) or 0.0)
+            if _u >= 0.0 and _s >= 0.0:
+                _lines.append("# 进程态: 用户态 %.0f 毫秒 · 内核态 %.0f 毫秒(内核占 %.0f%%)"
+                              "  ·  每帧全进程 CPU 平均 %.2f 毫秒"
+                              % (_u, _s, 100.0 * _s / max(1.0, _u + _s), _cpf))
+                # ⚠️ 读法: 内核占比高 ⇒ JNI/Binder/socket 写/文件写回这一族;
+                #    用户态占绝对多数 ⇒ 纯 Python 的 CPU 竞争(GIL)。见 `_cpu_split` 处的说明。
+            _lines.append("# GC: %d 次 · 累计 %.1f 毫秒 · 单次最慢 %.1f 毫秒(gen%s)  ·  后端 %s"
+                          % (_gc_n, float(d.get("gc_total", 0.0) or 0.0) * 1000.0,
+                             float(d.get("gc_worst", 0.0) or 0.0) * 1000.0,
+                             str(d.get("gc_worst_gen", -1)), str(d.get("backend", "?"))))
+            # JNI: 主线程那一笔才是"卡我们"的; 后台那一笔只说明工作线程在忙。
+            _jn = int(d.get("jni_n", 0) or 0)
+            if _jn or float(d.get("ui_n", 0) or 0):
+                _lines.append("# JNI: 发声 %d 次 · 主线程累计 %.1f / 最慢 %.1f 毫秒"
+                              "  ·  后台累计 %.1f / 最慢 %.1f 毫秒"
+                              "  ·  界面调用 %d 次 / 最慢 %.1f 毫秒  ·  失败 %d 次"
+                              % (_jn, float(d.get("jni_main_sum", 0.0) or 0.0),
+                                 float(d.get("jni_main_worst", 0.0) or 0.0),
+                                 float(d.get("jni_bg_sum", 0.0) or 0.0),
+                                 float(d.get("jni_bg_worst", 0.0) or 0.0),
+                                 int(d.get("ui_n", 0) or 0),
+                                 float(d.get("ui_worst", 0.0) or 0.0),
+                                 int(d.get("jni_err", 0) or 0)))
+            _w20 = d.get("w20_pos") or []
+            if _w20:
+                _lines.append("# 最差20帧距上次发射的帧数(<=20 帧 = 发射后 0.33 秒内): %d 个"
+                              "  ·  全部位次 %s"
+                              % (int(d.get("w20_near", -1)), str([int(x) for x in _w20])[:110]))
+            _cfg_n = int(d.get("cfg_n", 0) or 0)
+            if _cfg_n:
+                _lines.append("# 配置写盘: %d 次 · 累计 %.1f / 最慢 %.1f 毫秒"
+                              % (_cfg_n, float(d.get("cfg_sum", 0.0) or 0.0),
+                                 float(d.get("cfg_worst", 0.0) or 0.0)))
+        except Exception:
+            pass
+        # ⚠️ 新列**只能加在末尾**: 前面几列的位置被 `_bench_frames` 的下标和外部脚本按号取,
+        #    插在中间会让旧解析器静默错位(比报错更难发现)。
+        _adv = [float(_r[10]) if len(_r) > 10 else 0.0 for _r in _fr] if _fr else []
+        if len(_adv) != len(gaps):
+            _adv = [0.0] * len(gaps)
+        _lines.append("# 每行: 帧间隔毫秒,阶段,文字重建,_frame自算ms,主线程ms,发声,震动,最大子步骤,"
+                      "等屏幕ms")
+        _lines.extend("%.2f,%s,%d,%.2f,%.2f,%d,%d,%s,%.2f" % (g, t, x, s, m, sn, vb, b, w)
+                      for g, t, x, s, m, sn, vb, b, w
+                      in zip(gaps, tags, tex, _self_ms, _thr_ms, _snd_n, _vib_n, _top1, _adv))
         return "\n".join(_lines) + "\n"
 
     def _copy_bench_log(self, btn=None):
