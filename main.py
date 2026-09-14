@@ -18,10 +18,6 @@ os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown Landscape Landscap
 from kivy.config import Config
 Config.set("graphics", "maxfps", "120")
 Config.set("graphics", "vsync", "1")
-# 本作是纹理/几何为主的 2D 画面，Kivy 默认 2x MSAA 的边缘收益很小，却要在每帧额外
-# 做全屏多重采样与 resolve。120Hz 下它会挤压 GPU/驱动侧的长帧余量；关闭后不影响球贴图、
-# 字体与动画，物理和跑分口径也完全不变。
-Config.set("graphics", "multisamples", "0")
 
 import math
 import random
