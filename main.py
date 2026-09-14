@@ -2424,25 +2424,43 @@ def _build_texwarm(rw, bet=None):
             out.append((_lb, str(_lb.text), tuple(_lb.color)))
         except Exception:
             pass
+    # ---- 中奖大字/阴影: 每次中奖现建新标签, 只有全局缓存能救它, 而"第一次"仍要付全价 ----
+    #      (2026-09-15 加; 收益实测见 `_bigtext_warm_items` 的说明)
+    try:
+        out.extend(_bigtext_warm_items(rw))
+    except Exception:
+        pass
     return out
 
 
 def _warm_one(item):
-    """把 (标签, 文案, 颜色) 走一遍 —— 走的是 `Label.texture_update`, 于是自动进缓存。
+    """把 (标签, 文案, 颜色[, 字号]) 走一遍 —— 走的是 `Label.texture_update`, 于是自动进缓存。
 
     ⚠️ 走完**必须还原**。还原那一下也会触发一次重建, 但还原回去的正是标签原本那句,
        而它也在预热表里 ⇒ 那一次是**命中**, 不会再付一次全价。
     ⚠️ 这里**只调 `texture_update()`**, 不碰 `_orig`: 命中/未命中由包装器自己决定。
+    ⚠️ 第 4 项 `font_size` 只给**中奖大字**那批用(见 `_bigtext_warm_items`)——
+       那个标签是每次中奖现建的, 字号由 `fit_font_size` 现算, **必须一起设**,
+       否则烘出来的是"模板那个字号"的纹理, 而缓存指纹里含 `font_size` ⇒ **一条都命中不了**。
     """
-    lbl, text, color = item
+    lbl, text, color = item[0], item[1], item[2]
+    _fs = item[3] if len(item) > 3 else None
     _save_t = lbl.text
     try:
         _save_c = tuple(lbl.color)
     except Exception:
         _save_c = None
+    _save_f = None
+    if _fs is not None:
+        try:
+            _save_f = float(lbl.font_size)
+        except Exception:
+            _save_f = None
     try:
         if color is not None:
             lbl.color = color
+        if _fs is not None:
+            lbl.font_size = float(_fs)
         lbl.text = text
         lbl.texture_update()
     finally:
@@ -2450,8 +2468,77 @@ def _warm_one(item):
             lbl.text = _save_t
             if _save_c is not None:
                 lbl.color = _save_c
+            if _save_f is not None:
+                lbl.font_size = _save_f
         except Exception:
             pass
+
+
+# ---- 中奖大字/阴影的**预热模板**(见 `_bigtext_warm_items`) ----------------------
+# ⚠️⚠️ **必须打 `_texupd_tag`**, 否则整条预热是空转: `_texupd_wrap` 的入口判据是
+#    `self._texupd_tag is not None and self.text`(`main.py` 里那句), 没打标的标签
+#    **直接走 Kivy 老路、压根不进缓存** ⇒ 烘了等于没烘, 而且**不报错**。
+# ⚠️ tag 本身**不进** `_texex_key` 的字段表, 所以一个模板就够(大字/阴影共用),
+#    烘出来的指纹由 `text/font_size/color/...` 决定, 与真标签一致即可。
+_BIGTEXT_TMPL = {}
+
+
+def _bigtext_tmpl():
+    lb = _BIGTEXT_TMPL.get("t")
+    if lb is None:
+        try:
+            lb = Label(text="", bold=True, size_hint=(None, None))
+            _tag_texupd(lb, "结算大字")
+            _BIGTEXT_TMPL["t"] = lb
+        except Exception:
+            lb = None
+    return lb
+
+
+def _bigtext_warm_items(rw):
+    """列出**中奖大字/阴影**该预烘的那些整串, 让"第一次中奖"也是缓存命中。
+
+    ⚠️ 为什么值得单列(2026-09-15, 真机 6 份日志 + 玩家自己在两个版本上复现):
+       中奖大字/阴影是**每次中奖现新建的 Label**, 而 `_texex` 存在标签自己身上 ⇒
+       每个新标签的缓存都是空的。`_TEXEX_G`(全局缓存)能救它, 但**每种 (文案, 颜色)
+       第一次出现时仍要付一次真光栅化** —— 真机实测那一帧的 `填纹` 是 **8~11 毫秒**,
+       而 165Hz 一帧的预算只有 6.06 毫秒 ⇒ 那一帧必卡。
+       冷/热两批日志的对比(**同版本 v0.7.44/45、同设备、同配比、中奖演出都是 4 次**):
+         冷(第1轮) 1%Low 91.8 / 98.6 · 卡顿帧 8 / 7 · 装杯>8.1ms 105 / 117
+         热(后两轮) 1%Low 114.8 / 112.6 / 116.5 / 107.6 · 卡顿帧 2/5/0/4 · 装杯>8.1ms 26/38/98/266
+       —— 差 **+18%**。而 `重建来源` 从「余额8·统计4·**大字4·阴影4**」变成「只剩 余额8·统计4」,
+       说明热的那几轮**全部命中**。把"第一次"挪到启动期, 就是白拿这一跳。
+    ⚠️ 枚举范围**从代码派生**(`VALUE_SHAPE` / `PRESETS` / `slot_color`), 不许手抄一份 ——
+       抄的那份迟早和真值脱钩, 而脱钩的表现是"预热白做、还不报错"。
+    ⚠️ 枚举不全**不会出错**: 没预到的组合第一次照旧走 Kivy 老路, 之后命中。
+       失败模式是"没赚到", 不是"画面坏了"。
+    ⚠️ 摊子: 当前投注档 7 个赔付 + 未中 = **8 条文案 x 2 个标签 = 16 次**, 每次约 5 毫秒
+       ⇒ **约 80 毫秒**, 分摊在预热链里(玩家那时还在看加载页)。
+    ⚠️ **字号必须和 `big_result_text` 用同一句算**(同一个 `avail`、同一个 `base`)——
+       指纹里含 `font_size`, 差一点就是一条都命中不了。
+    """
+    out = []
+    _lb = _bigtext_tmpl()
+    if _lb is None or rw is None:
+        return out
+    try:
+        _ga = getattr(rw, "game_area", None)
+        _avail = max(80.0, float(getattr(_ga, "width", 0.0) or 540.0) * 0.94)
+        _bet = getattr(rw, "bet", DEFAULT_BET)
+        if _bet not in PRESETS:
+            _bet = PRESETS[0] if PRESETS else 1
+        _mults = sorted({2} | {int(_k) for _d in VALUE_SHAPE.values() for _k in _d})
+        _tasks = [(0, "未中", COL_FIRE, sp(36))]          # m=0 那条, 与 `big_result_text` 一致
+        for _m in _mults:
+            _tasks.append((_m, "+%d" % (_bet * _m), slot_color(_m), sp(48)))
+        for _m, _txt, _col, _base in _tasks:
+            _sz = fit_font_size(_txt, _base, _avail, True)
+            _c = hex_rgb(_col) + (1,)
+            out.append((_lb, _txt, _c, _sz))               # 大字
+            out.append((_lb, _txt, (0, 0, 0, 0.6), _sz))   # 黑影(同字同号, 只差颜色)
+    except Exception:
+        pass
+    return out
 
 
 def _texupd_wrap():
@@ -8344,6 +8431,15 @@ class GameArea(FloatLayout):
             return
         g = self.game
         now = time.time()
+        # ⚠️ `板面` 这块的**内部**再细分(2026-09-15 加)。起因: 真机 7 份日志里
+        #    `板面` 单帧最大 **7.4 毫秒**, 而它平时只有 1~3 毫秒 —— 那一次尖峰把那一帧
+        #    推到 14 毫秒, 成了卡顿帧。桌面复现不出来(桌面整块最大只 0.987 毫秒, 设备慢约
+        #    37 倍, 而且这个差主要在 GL 上: 同样条数的画布指令手机驱动贵得多)。
+        #    **关键线索**: `_redraw` 早就有独立标签「装杯」(`_brk_wrap`), 而 7 份日志里
+        #    「装杯」**一次都没当过最大子步骤** ⇒ 尖峰**不在 `_redraw` 里**, 在 `tick_draw`
+        #    的其余部分。这两格就是为了把它指名道姓, 下一轮真机日志就能看到
+        #    `板面7.4 / 板·钉闪6.9` 这种形式。
+        _t_ball = time.perf_counter()
         b = g.ball
         if b is not None:
             br = BALL_R * BALL_VIEW
@@ -8366,6 +8462,8 @@ class GameArea(FloatLayout):
             if pf is not None and pf in self._peg_cols:
                 self._peg_flash[pf] = now
                 b.peg_flash = None
+        _brk_add("板·球", _t_ball)
+        _t_peg = time.perf_counter()
         # 钉子高亮动画: 60ms 电光金 + 240ms 渐回原色 + 半径微扩 1.2x(经典版 30+120 太短, 加长一倍)
         for (px, py), t0 in list(self._peg_flash.items()):
             col = self._peg_cols.get((px, py))
@@ -8394,6 +8492,7 @@ class GameArea(FloatLayout):
                 if e is not None:
                     r = PEG_R * self._s * scale
                     e.size = (2 * r, 2 * r)
+        _brk_add("板·钉闪", _t_peg)
         if g.power > 0.01:
             top = (SLOT_TOP - 8) - g.power * 200
             kw = self._rect(RIGHT_INNER - 9, top, RIGHT_INNER - 4, SLOT_TOP - 8)
