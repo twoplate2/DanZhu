@@ -6353,6 +6353,7 @@ class GameArea(FloatLayout):
         self._spring_bar_col = None
         self._pulse = None            # (槽号, 结束时刻)
         self._effects = []            # 浮字/中奖大字
+        self._bench_badge = None      # 跑分中的固定提示牌（不参与飘字动画）
         self._last_size = None        # 上次尺寸: 变了才清特效
         # 中奖玻璃杯覆盖层(见 tools/android_part_pile.py)。**必须最先 add_widget**:
         # Kivy 按 children 逆序绘制, 后加的画在上面 —— 中奖大字是 settle 时才 add
@@ -6378,6 +6379,8 @@ class GameArea(FloatLayout):
         chain = [self.win_fx]
         for e in self._effects:
             chain.extend(e["ws"])
+        if self._bench_badge is not None:
+            chain.append(self._bench_badge)
         for w in chain:
             try:
                 self.canvas.remove(w.canvas)
@@ -6556,6 +6559,7 @@ class GameArea(FloatLayout):
                                            2 * BALL_R * BALL_VIEW * s))
             self._ball_pop = PopMatrix()
         self._restack_overlays()
+        self._place_bench_badge()
         self.tick_draw()
 
     # ------------------------------ 特效 ------------------------------
@@ -6665,6 +6669,44 @@ class GameArea(FloatLayout):
                               "cols": [_lbl_canvas_color(lbl)], "born": time.time(),
                               "life": life, "rgb": hex_rgb(hexcolor),
                               "cx": cx, "cy": cy})
+
+    def _place_bench_badge(self):
+        badge = self._bench_badge
+        if badge is not None:
+            badge.center = (self._px(CW / 2.0), self._py(CH / 2.0) - self.y)
+
+    def show_bench_badge(self, text):
+        """显示跑分状态牌：固定在盘面中央，不置灰、不循环飘动。"""
+        badge = self._bench_badge
+        if badge is None:
+            badge = Label(text=text, font_size=sp(18), bold=True, halign="center",
+                          valign="middle", color=hex_rgb(COL_TEXT) + (1,),
+                          size_hint=(None, None))
+            badge.texture_update()
+            badge.size = (badge.texture_size[0] + dp(28), badge.texture_size[1] + dp(20))
+            with badge.canvas.before:
+                Color(0.035, 0.055, 0.10, 0.94)
+                badge._bench_bg = RoundedRectangle(pos=badge.pos, size=badge.size,
+                                                    radius=[dp(10)])
+            badge.bind(pos=lambda w, *_: setattr(w._bench_bg, "pos", w.pos),
+                       size=lambda w, *_: setattr(w._bench_bg, "size", w.size))
+            self._bench_badge = badge
+            self.add_widget(badge)
+        elif badge.text != text:
+            badge.text = text
+            badge.texture_update()
+            badge.size = (badge.texture_size[0] + dp(28), badge.texture_size[1] + dp(20))
+        self._place_bench_badge()
+        self._restack_overlays()
+
+    def hide_bench_badge(self):
+        badge = self._bench_badge
+        self._bench_badge = None
+        if badge is not None:
+            try:
+                self.remove_widget(badge)
+            except Exception:
+                pass
 
     def set_lamp(self, i, hex_color):
         if 0 <= i < len(self._lamp_cols):
@@ -7985,7 +8027,7 @@ class RootWidget(BoxLayout):
         ver = _app_version()
         _set_label_text(self.status_lbl, ("性能测试中 " + ver) if ver else "性能测试中…")
         self._set_controls_enabled(False)
-        self._show_bench_dim()   # 第1阶段就开始: 全屏置灰
+        self.game_area.show_bench_badge("性能测试中\n正在准备…")
         # 不再额外创建/移动「测试设备性能中」飘字；它会污染跑分本身，顶部状态栏已给出反馈。
         # ⚠️ **等启动预热跑完再采样**(2026-09-14)。采样窗口只有 7~12 秒
         #    (`_target_launches = 5`), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
@@ -8008,6 +8050,7 @@ class RootWidget(BoxLayout):
 
     def _start_benchmark(self):
         """阶段1: 真实屏幕采样(on_flip, 自动发球5发), 发满后停止采样，再测阶段2物理吞吐。"""
+        self.game_area.show_bench_badge("正在测渲染\n第 1 / 5 发")
         self._flip_times = []
         # ---- 诊断(2026-09-13 加): 光有"平均帧率/1%Low"没法定位卡在哪 —— 见 _bench_tag ----
         self._bench_frames = []          # [(帧间隔ms, 场景标签)]
@@ -8132,9 +8175,12 @@ class RootWidget(BoxLayout):
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
+            self.game_area.show_bench_badge("正在测 SoC\n7 轮稳定性测试")
             self._finish_render_sample(0)
             return
         if self.state == "ready":
+            self.game_area.show_bench_badge("正在测渲染\n第 %d / %d 发" %
+                                            (self._launch_count + 1, self._target_launches))
             self.start_charge()
             self._launch_count += 1
             Clock.schedule_once(lambda _: (setattr(self, "power", 0.8), self.launch()), 0.1)
@@ -8404,7 +8450,8 @@ class RootWidget(BoxLayout):
         return ' · '.join(parts)
 
     def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
-        self._hide_bench_dim()   # 第2轮结束: 恢复界面
+        self.game_area.hide_bench_badge()
+        self._hide_bench_dim()   # 兼容旧路径：当前跑分不再置灰
         _phys_sorted = sorted(fps_list)
         phys_fps = _phys_sorted[len(_phys_sorted) // 2]   # 物理吞吐中位数
         phys_min = _phys_sorted[0] if _phys_sorted else 0.0
@@ -8718,14 +8765,16 @@ class RootWidget(BoxLayout):
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(4))
             inner.bind(minimum_height=inner.setter('height'))
             _render_rows, _soc_rows = [], []
-            for r in reversed(self.bench_history[-100:]):
+            for idx, r in enumerate(reversed(self.bench_history[-100:])):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
                 # ⚠️ 字号/行高与另外两个列表弹窗**对齐**(见 _fit_uniform 上方那段说明):
                 #    这里原来是 17sp/30dp —— 全 app 最大的正文, 比主界面正文(14~15)还大一档,
                 #    而它是个要塞很多行的滚动列表。统一到 15sp(Body 档) + 26dp 行高:
                 #    同一个滚动框里能多放约两行(玩家: 「这个设计的目的是放更多内容的」)。
-                card = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(48))
+                card = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(52),
+                                 padding=[dp(6), dp(2), dp(6), dp(2)])
+                self._row_bg(card, "#141b2c" if idx % 2 == 0 else "#101727")
                 render, low = r.get('render_fps'), r.get('render_1low')
                 if render is None or low is None:
                     render_text = '%s　渲染 —' % r.get('time', '--')
