@@ -6427,7 +6427,10 @@ class GameArea(FloatLayout):
         # 竖屏 `GameArea.x` 恒为 0, 减了个 0 所以一直没人发现; **横屏反旋转时 x=370**
         # (1740x1000), 大字就偏左 370px —— 玩家报的"弹珠+xxx 在特殊情况下偏左很多"。
         # 纵向的 `- self.y` 是历史遗留(竖屏 y=122, 是被眼睛调过的既成观感), 本轮不动。
-        self._effects.append({"kind": "big", "ws": [main, shadow], "born": time.time(),
+        # 把两个 Label 的"画布 Color 指令"一起缓存进 effect(见 `_lbl_canvas_color`)。
+        _cc = [_lbl_canvas_color(main), _lbl_canvas_color(shadow)]
+        self._effects.append({"kind": "big", "ws": [main, shadow], "cols": _cc,
+                              "born": time.time(),
                               "life": BIG_TEXT_LIFE, "size": size, "rgb": hex_rgb(hexcolor),
                               "cx": self._px(CW / 2.0),
                               "cy": self._py(cy_logical) - self.y})
@@ -6461,7 +6464,8 @@ class GameArea(FloatLayout):
         cy = self._py(CH / 2.0 - 40) - self.y
         lbl.center = (cx, cy)
         self.add_widget(lbl)
-        self._effects.append({"kind": "toast", "ws": [lbl], "born": time.time(),
+        self._effects.append({"kind": "toast", "ws": [lbl],
+                              "cols": [_lbl_canvas_color(lbl)], "born": time.time(),
                               "life": life, "rgb": hex_rgb(hexcolor),
                               "cx": cx, "cy": cy})
 
@@ -6599,7 +6603,28 @@ class GameArea(FloatLayout):
             if e["kind"] == "toast":
                 alpha = max(0.0, 1.0 - max(0.0, p - 0.65) / 0.35)   # 前 65% 实色, 后 35% 淡出
                 w = e["ws"][0]
-                w.color = e["rgb"] + (alpha,)
+                # ⚠️ **必须和"中奖大字"用同一套 alpha 量化**(2026-09-14 修, 玩家一眼看出来的)。
+                #    `color` 是 Kivy `Label._font_properties` 之一:**赋一次值就重测字形 +
+                #    重光栅化整段文字 + 重建纹理 + 上传**。原来这里**每帧无条件写**, 于是飘字
+                #    活着的那几秒里, 每帧都要把整段字重新栅格化一遍。
+                #    实测(真机 0.6.87 面板): **"文字重排 33.4 次/秒"** —— 飘字 `life=3.0s`,
+                #    跑分期间 `_bench_toast_tick` 每 3 秒重造一个(内容就是"测试设备性能中"),
+                #    而 alpha 只在生命**后 35%** 才变 ⇒ 0.35 x 80fps ≈ 28 次/秒, 与实测吻合。
+                #    ⚠️ **那个飘字只在跑分期间存在** ⇒ 跑分一直在给**自己**的成绩上刑: 玩家平时
+                #       玩根本见不到它, 而它把 1%Low 与"主线程 CPU"两栏都抬高了。
+                #    (另一处 `center_toast` 是"余额不足""弹珠数量已调整到1000个", 那两条会出现在
+                #     正常游玩里, 所以这个修复对实战也有好处。)
+                #    量化到 BIG_TEXT_ALPHA_STEPS 档: 0.35 x 3s = 1.05 秒的淡出分成 20 档,
+                #    每档 5% alpha —— 配着上浮 20px/s 肉眼分辨不出台阶。
+                # ⚠️ **走画布那条 Color**(零重建) —— 拿不到才退回写 `label.color` + 量化。
+                #    能拿到时**每帧都写**: 反正是 uniform 写入, 淡出更顺, 不必再量化。
+                if _fade_set((e.get("cols") or [None])[0], alpha):
+                    pass
+                else:
+                    _q = int(alpha * BIG_TEXT_ALPHA_STEPS + 0.5) / float(BIG_TEXT_ALPHA_STEPS)
+                    if _q != e.get("_qa"):
+                        e["_qa"] = _q
+                        w.color = e["rgb"] + (_q,)
                 w.center = (e["cx"], e["cy"] + 20 * (now - e["born"]))
             else:
                 if p < 0.5:
@@ -6613,11 +6638,20 @@ class GameArea(FloatLayout):
                 #    处的说明。原来是无条件每帧写, 而 alpha 在淡出段每帧都变 ⇒ 每帧把整段
                 #    大字重新光栅化一遍(桌面实测 `未中` 12 秒内重建 530 次, 占全部文字重建
                 #    的 65%)。alpha 恒定那 55% 的生命里现在一次都不写。
-                _q = int(alpha * BIG_TEXT_ALPHA_STEPS + 0.5) / float(BIG_TEXT_ALPHA_STEPS)
-                if _q != e.get("_qa"):
-                    e["_qa"] = _q
-                    main.color = e["rgb"] + (_q,)
-                    shadow.color = (0, 0, 0, _q * 0.6)
+                # ⚠️ **走画布那条 Color**(零重建, 见 `_lbl_canvas_color`)。
+                #    原来这里每次改 alpha 都写 `main.color`/`shadow.color` —— 那是**两次**
+                #    完整的文字重光栅化, 而 20 档量化 x 2 = 每次中奖 40 次。
+                #    两个 Label 的贴图颜色在**创建时**就已经烘好了(main 是倍率色、shadow 是
+                #    半透明黑), 所以这里只需要给它们乘一个 alpha。
+                _cols = e.get("cols") or [None, None]
+                _ok = (_fade_set(_cols[0], alpha) and _fade_set(_cols[1], alpha))
+                if not _ok:
+                    # 兜底: 拿不到画布 Color 就退回老路(写 label.color + 量化), 绝不静默不淡出
+                    _q = int(alpha * BIG_TEXT_ALPHA_STEPS + 0.5) / float(BIG_TEXT_ALPHA_STEPS)
+                    if _q != e.get("_qa"):
+                        e["_qa"] = _q
+                        main.color = e["rgb"] + (_q,)
+                        shadow.color = (0, 0, 0, _q * 0.6)
                 main.center = (e["cx"], e["cy"] + rise)
                 shadow.center = (e["cx"] + 2, e["cy"] + rise - 2)
                 # 缩放 = 纯 GPU 变换(见 `_big_text` 里 `_pop_sc` 处的说明)。
@@ -6627,6 +6661,40 @@ class GameArea(FloatLayout):
                     _ps = _lb._pop_sc
                     _ps.origin = _lb.center
                     _ps.x = _ps.y = sc
+
+def _lbl_canvas_color(lbl):
+    """取 `Label` 画布里那条 `Color` 指令 —— 用来做**不重建纹理**的淡出。
+
+    ⚠️ 为什么需要它(2026-09-14, 玩家问"获奖后的 +xxx 也很消耗性能吧"): Kivy 把颜色**烘进
+       字形纹理**(画布里那条 `Color` 实测恒为 (1,1,1,1)), 所以写 `label.color` 就等于
+       **重测字形 + 重光栅化整段文字 + 重建纹理 + 上传** —— 桌面实测写一次就触发一次
+       `texture_update`。而淡出期 alpha 一直在变 ⇒ 中奖大字的 20 档量化 x 2 个 Label
+       = **每次中奖 40 次重建**; 飘字更糟, 原来是无条件每帧写。
+    改写成那条 `Color` 的 rgba ⇒ 给**已烘好的纹理乘一个 alpha**, 只是一次 uniform 写入,
+       **零重建**(实测 texture_update 计数为 0, 且截图确认像素真的变淡了)。
+    ⚠️ 拿不到就返回 None, 调用方**退回老路**(写 `label.color` + 量化), 绝不静默不淡出。
+    """
+    try:
+        from kivy.graphics import Color as _KC
+        for ch in lbl.canvas.children:
+            if isinstance(ch, _KC):
+                return ch
+    except Exception:
+        pass
+    return None
+
+
+def _fade_set(col, alpha):
+    """把那条画布 Color 的 alpha 设掉(颜色分量保持原样)。成功返回 True。"""
+    if col is None:
+        return False
+    try:
+        r, g, b, _a = col.rgba
+        col.rgba = (r, g, b, alpha)
+        return True
+    except Exception:
+        return False
+
 
 def _app_version():
     """本包版本号(如 "v0.6.30"); 拿不到返回 ""。
