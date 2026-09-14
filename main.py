@@ -304,6 +304,16 @@ MISFIRE_BOUNCE_VY = 200.0    # 落地速度低于此值直接停住
 MISFIRE_MAX_FRAMES = 180     # 兜底(实测最长 121 帧)
 
 START_BEADS = 1000
+# 跑分用的固定种子(2026-09-14, 玩家提的"跑分改成放录像")。
+# ⚠️ **改这个数 = 换一盘录像**: 所有历史跑分都会和新的不可比。**别随手改。**
+BENCH_SEED = 20260914
+# 跑分用的**固定盘面**(2026-09-14, 玩家提的"放录像"): 第 N 发把**所有格子都填成同一个倍率**,
+# 于是"球落在哪一格"不再影响结果 ⇒ 装杯长度确定 ⇒ **每轮跑分的内容一模一样, 可以直接比**。
+# 这五个值是玩家定的: 5 / 10 / 20 / 50 / 100 —— **相邻两档大约都是 2 倍, 分布更均匀**
+# (原先的 0/2/5/20/100 里 5->20 是 4 倍, 偏了), 而 100 保证**最重的那一档每轮都被量到**。
+# ⚠️ 只影响**跑分**; 正常游戏照常掷盘面(掷盘面的规矩见 `roll_multipliers`)。
+# ⚠️ 换这五个值 = 换一盘录像, 历史跑分会不可比 —— **别随手改**。
+BENCH_BOARD = (5, 10, 20, 50, 100)
 PRESETS = [1, 10, 50, 100]
 DEFAULT_BET = 10
 MAX_FALL_SEC = 4.0           # 卡死兜底: 连续静止(无碰撞且 |v|<=40px/s)超过此值才强制结算。
@@ -2158,7 +2168,6 @@ def _texex_put(lbl, key, tex):
         _d.pop(lbl._texex_order.pop(0), None)
 
 
-
 def _texex_bake(lbl):
     """按 `lbl` **当前**的属性烘一个**专用的 `CoreLabel`**, 返回它。
 
@@ -2579,7 +2588,6 @@ def _cpufreq_start():
 def _cpufreq_stop():
     _CPUFRQ["stop"] = True
     _CPUFRQ["thr"] = None
-
 
 
 # ---- 高刷新率呈现策略 -----------------------------------------------------
@@ -4628,6 +4636,7 @@ _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
 #    写 `sp(36)` 会拿到错误的密度(真机上就是"预热了一堆没人用的字号")。
 # ⚠️ **一次只碰一个**(见 prebake_step 的字体预热那段): 4 个挤一帧 = 一帧 100ms+。
 _FONT_WARM_SIZES = None
+_FONT_WARM_HUD = ()      # [(字号, bold)] —— HUD 基准 x 阶梯, 见 prebake_step
 # GC 冻结计数(gc.freeze() 之后为永久代里的对象数; 0 = 还没冻结)。只给跑分面板显示用 ——
 # 让玩家/后来的人一眼看出"这版的 GC 冻结到底跑没跑", 而不是靠猜(本仓库栽过静默失效)。
 # [冻结的对象数, 冻结**前**强制全量回收一次要多久(毫秒), 冻结**后**同一个动作要多久]
@@ -5194,6 +5203,18 @@ class WinPileFX(Widget):
         try:
             self._value = bet if bet in BET_COLORS else DEFAULT_BET
             self._seq += 1
+            # ⚠️ 跑分: **装杯内部的下落时序也要确定**(2026-09-14, 玩家提的)。
+            #    实测: 球路钉死之后 `飞行 959/958 · 落袋 58/58` 已经逐帧吻合, 但
+            #    `装杯 571/545` 还差 26 帧 —— 那正是下面 `_make_balls` 里
+            #    "每颗球一套独立随机的下落/回弹参数"(用户原话: "一致=假")。
+            #    种子按**倍率**派生: 跑分那 5 发的倍率是钉死的 ⇒ 每次跑分每一发的杯子完全一样。
+            #    ⚠️ `auto_close` 就是"这是跑分"的标志(界面在跑分时传 True);
+            #       **正常游戏照旧随机** —— 那是观感, 不能钉。
+            if auto_close:
+                try:
+                    self._rng = random.Random(BENCH_SEED + 2000 + int(multiplier))
+                except Exception:
+                    pass
             self._make_balls(multiplier, self._value, self._seq)
         except Exception as exc:               # build_pile 的断言/任何意外
             print("CUP-PILE FAIL: %s" % exc)
@@ -5789,21 +5810,76 @@ class WinPileFX(Widget):
             # "60毫秒(装杯·自算40.7)"。代价: 预热从 4 步变 22 步(多约 1 秒启动期)。
             # ⚠️ 这里**不落 0.5px 网格** —— 落网格会和布局烘出来的字号对不上, 反而全变冷开
             #    (0.6.80 那个回退的教训)。
+            # ⚠️⚠️ **2026-09-14: HUD 的那几个基准字号也要烘**(真机证据见 `_build_texwarm` 上方)。
+            #     原来只烘 `sp(36)/sp(48)/sp(26)/sp(30)` —— 那是**大字和飘字**的基准。
+            #     而 HUD 的基准是 `_apply_sizes` 写进 `_fit_base` 的那批 `sp(13/14/15/16/18/19) x fs`,
+            #     **一个都没烘**。`_fit1` 给 HUD 标签挑字号时走的是同一条阶梯 ⇒ 挑中没烘过的档
+            #     就是一次**冷开 TTF 字形表**。
+            #     **真机实测: `字号`(`_fit1`)一次 16.5 毫秒** —— 把帧634 从 6.05ms 推到 22.55ms,
+            #     单笔就造出一个低于 90fps 的帧。而桌面同一件事只要 0.46 毫秒, **桌面测不出来**。
+            #     (`fit_font_size` 一次最多调 12 次 `text_px`: 6 档阶梯 + 二分 6 次 ⇒ 12 次冷开
+            #      x 约 1.4ms = 16.5ms, 对得上。)
+            # ⚠️ **基准值必须从标签自己的 `_fit_base` 读, 不许手抄 `sp(N)`**:
+            #     `_apply_sizes` 写的是 `sp(N) * _font_scale * _ui_scale`, 而 `sp()` 在真机上是
+            #     **非整数** —— 手抄的 `sp(N)` 只要差 0.01 就是另一个 fontid, 预热全白做且不报错。
+            #     (`_qfs` 那次翻车就是这个形状: 量化后的值和预热的值对不上。)
+            # ⚠️ `bold` 也要从标签读 —— fontid 里含 bold, 猜错等于没烘。
+            _bases = []
+            try:
+                _rw = getattr(self.area, "game", None)
+                for _n in ("title_lbl", "status_lbl", "mute_btn", "round_btn",
+                           "_rtp_title_lbl", "_bet_title_lbl", "_bead_lbl",
+                           "balance_lbl", "stats_lbl", "power_lbl",
+                           "reset_btn", "fire_btn"):
+                    _lb = getattr(_rw, _n, None)
+                    _b = getattr(_lb, "_fit_base", None)
+                    if _b and float(_b) > 0:
+                        _bases.append((float(_b), bool(getattr(_lb, "bold", False))))
+            except Exception:
+                pass
+            _seen = set()
+            _hud = []
+            for _b, _bd in _bases:
+                for _k in FIT_SCALES:
+                    _v = round(_b * _k, 4)
+                    if (_v, _bd) in _seen:
+                        continue
+                    _seen.add((_v, _bd))
+                    _hud.append((_v, _bd))
+            globals()["_FONT_WARM_HUD"] = tuple(_hud)
             globals()["_FONT_WARM_SIZES"] = tuple(
                 _b * _k for _b in (sp(36), sp(48), sp(26), sp(30))
                 for _k in FIT_SCALES)
-        if self._font_prebaked < len(_FONT_WARM_SIZES):
+        if self._font_prebaked < len(_FONT_WARM_HUD) + len(_FONT_WARM_SIZES):
             # ⚠️ **一帧只碰一个字号**(2026-09-14 改)。原来是 4 个字号挤在**同一帧**里跑,
             #    而"碰一个新字号"= 重新打开一次 TTF 字形表 = 桌面 26ms ⇒ 那一帧至少 **100ms**,
             #    真机上更贵。这是本方法自己引入的长帧(它要消灭的是"落袋那帧现开字形表",
             #    结果先在启动期造了一记更长的) —— 分帧摊开, 每帧只付一次。
-            _fs = _FONT_WARM_SIZES[self._font_prebaked]
+            # ⚠️ HUD 那批先走(它们是这次真机抓到的 16.5 毫秒的来源), 各自带**自己的 bold**;
+            #    走完再接大字/飘字那批(那批恒 bold=True, 与 `big_result_text` 一致)。
+            _hud_tbl = _FONT_WARM_HUD
+            if self._font_prebaked < len(_hud_tbl):
+                _fs, _bd = _hud_tbl[self._font_prebaked]
+            else:
+                _fs = _FONT_WARM_SIZES[self._font_prebaked - len(_hud_tbl)]
+                _bd = True
             self._font_prebaked += 1
             try:
-                text_px("未中", _fs, True)
+                text_px("未中", _fs, _bd)
             except Exception:
                 pass
-            Clock.schedule_once(self.prebake_step, 0.05)
+            # ⚠️ **这一步用 0.02 秒, 不是其它步骤的 0.05**(2026-09-14)。
+            #    0.05 的依据是"碰一个新字号 = 重开一次 TTF 字形表 = 26 毫秒" ——
+            #    而**真机实测一次只要约 1.4 毫秒**(`字号` 16.5ms / 最多 12 次 `text_px`)。
+            #    26 那个数在今天的代码与环境上不成立, 于是 0.05 让 72 步白白占掉 3.6 秒。
+            #    0.02 秒在 60fps 启动期约 1.2 帧, 仍守住"一帧只碰一个字号"的初衷。
+            #    ⚠️ **只改这一支**, 别动其它步骤的 0.05 —— 球纹理在真机上单步 100~200ms,
+            #    那几步挤一帧就是自己造一记长帧。
+            # ⚠️⚠️ **`schedule_once` 那一句绝不能被注释挤掉**(2026-09-14 我实踩过):
+            #    替换这一段时把 `Clock.schedule_once(self.prebake_step, 0.02)` 整个吃掉了,
+            #    于是自链式预热**走不下去**、`_PREBAKE_DONE` 永不置真 ——
+            #    表现是"启动预热 5.8 秒变 90 秒"(探针测出来的), 而**画面上什么都看不出来**。
+            Clock.schedule_once(self.prebake_step, 0.02)
             return
         cur = getattr(getattr(self.area, "game", None), "bet", DEFAULT_BET)
         order = [cur] + [b for b in (1, 10, 50, 100) if b != cur]
@@ -8816,6 +8892,25 @@ class RootWidget(BoxLayout):
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
         self._bench_running = True
+        # ⚠️⚠️ **把随机钉死 —— 跑分必须是"放录像", 不是"再抽一次"(2026-09-14, 玩家提的)。**
+        #   病根: 每轮球的落格是随机的 ⇒ 中奖次数不同 ⇒ **装杯时长不同** ⇒ 内容配比每轮都不一样。
+        #   实测连续三轮的装杯占比是 **25.2% / 30.6% / 38.2%**, 而 1%Low 是 92.4 / 92.2 / 88.4 ——
+        #   差的 3.9 **全来自内容配比**, 不是代码变差。**追了三轮噪声。**
+        #   随机源(查实的): 发球时 `arc_dy = random.uniform(...)` 用全局 `random`;
+        #   撞钉扰动走 `rng = getattr(b, "_rng", None) or random` —— 正常发射 `_rng` 是 None
+        #   ⇒ 也走全局。另外 `WinPileFX._rng` 是**无种子的独立实例**, 它决定装杯那几颗球的
+        #   下落时长 ⇒ 直接影响装杯多久。**两处都要钉。**
+        #   ⚠️ `getstate/setstate` 而不是"跑完再 seed()" —— 后者会把正常游戏的球路也弄得每局一样。
+        try:
+            self._bench_rng_state = random.getstate()
+            random.seed(BENCH_SEED)
+            _wf = getattr(self.game_area, "win_fx", None)
+            self._bench_pile_rng = getattr(_wf, "_rng", None)
+            if _wf is not None:
+                _wf._rng = random.Random(BENCH_SEED + 1)
+        except Exception:
+            self._bench_rng_state = None
+            self._bench_pile_rng = None
         self._bench_saved_status = self.status_lbl.text
         ver = _app_version()
         _set_label_text(self.status_lbl, ("性能测试中 " + ver) if ver else "性能测试中…")
@@ -9019,6 +9114,20 @@ class RootWidget(BoxLayout):
             self._finish_render_sample(0)
             return
         if self.state == "ready":
+            # ⚠️ **跑分: 把这一发的盘面钉死**(见 `BENCH_BOARD` 处说明)。
+            #    必须放在 `start_charge()`(也就是发射)**之前** —— 结算读的是 `self.multipliers[i]`,
+            #    盘面得在球飞出去之前就定下来。
+            #    ⚠️ 只改**值**、不改结构 ⇒ 用 `_update_slots()` 增量更新就够
+            #    (它结构对不上时会自己退回完整 `_redraw()`, 不会半更新)。
+            try:
+                _bi = self._launch_count
+                self._bench_ball_i = _bi      # 给 `launch()` 派生碰撞随机流用
+                if 0 <= _bi < len(BENCH_BOARD):
+                    self.multipliers = [BENCH_BOARD[_bi]] * NUM_SLOTS
+                    self._boards[self.rtp_target] = self.multipliers
+                    self.game_area._update_slots()
+            except Exception:
+                pass
             self.start_charge()
             self._launch_count += 1
             Clock.schedule_once(lambda _: (setattr(self, "power", 0.8), self.launch()), 0.1)
@@ -9465,6 +9574,18 @@ class RootWidget(BoxLayout):
         self._set_controls_enabled(True)
         self._bench_running = False
         self._bench_start = 0.0
+        # 把随机**原样还回去**(见 `_start_bench_test`): 不还的话正常游戏的球路会被钉死,
+        # 每局一模一样 —— 那是比"跑分不可比"严重得多的事故。
+        try:
+            if getattr(self, "_bench_rng_state", None) is not None:
+                random.setstate(self._bench_rng_state)
+                self._bench_rng_state = None
+            _wf = getattr(self.game_area, "win_fx", None)
+            if _wf is not None and getattr(self, "_bench_pile_rng", None) is not None:
+                _wf._rng = self._bench_pile_rng
+            self._bench_pile_rng = None
+        except Exception:
+            pass
 
     def _bench_frame_log(self):
         """把这一轮的**逐帧原始采样**拼成可复制的文本(帧率曲线弹窗的"复制"按钮用)。
@@ -9482,6 +9603,7 @@ class RootWidget(BoxLayout):
         if len(tags) != len(gaps):
             tags = ["?"] * len(gaps)          # 对不上就照发原始帧间隔, 不猜阶段
         tex = list(getattr(self, "_bench_tex", []) or [])
+    
         if len(tex) != len(gaps):
             tex = [0] * len(gaps)
         _n1 = max(1, int(len(gaps) * 0.01))
@@ -9507,6 +9629,45 @@ class RootWidget(BoxLayout):
             _lines.append("# 慢帧门槛 %.2f 毫秒(最慢 %d 帧的临界值)" % (_thr, _n1))
         except Exception:
             pass
+        # ---- ★ 这一轮到底能不能和上一轮比(2026-09-14 加) ----
+        # ⚠️ 加这一段的理由: 连续三轮的「低于 90fps 的帧数」是 10 / 10 / 9, 而
+        #    **1%Low 是 92.4 / 92.2 / 88.4** —— 差的那 3.9 全来自"这轮抽到了大杯局"
+        #    (装杯占比 25.2% → 30.6% → 38.2%), 不是代码变差。
+        #    **装杯占比不印出来, 每一轮都不可比** —— 追噪声追三轮了。
+        # ⚠️ 判据用「低于 90fps 的帧数」而不是 1%Low: 后者被配比带得晃。
+        # ⚠️ **这一段不包在 `try` 里**(它自己在下面逐项兜底) —— 包了的话一旦出错就被
+        #    静默吞掉, 而玩家看到的是"日志里少了这两行", 不报错也不提示。
+        _th90 = 1000.0 / 90.0
+        _below90 = [_i for _i in range(len(gaps)) if gaps[_i] > _th90]
+        # ⚠️ **就地取, 不引用上面的 `tex`/`tags`** —— 那两个列表在本函数里定义得**很晚**
+        #    (在"各阶段统计表"那一段之后), 而这一段的插入点在头部 ⇒ 直接引用会 NameError。
+        _tex_all = list(getattr(self, "_bench_tex", []) or [])
+        _fr_all = list(getattr(self, "_bench_frames", []) or [])
+        _tags_all = [x[1] for x in _fr_all if len(x) > 1]
+        if len(_tags_all) != len(gaps):
+            _tags_all = ["?"] * len(gaps)
+        _b90_tex = sum(1 for _i in _below90 if _i < len(_tex_all) and _tex_all[_i] > 0)
+        _b90_face = 0
+        for _i in _below90:
+            try:
+                _b = _fr_all[_i][9] if (0 <= _i < len(_fr_all) and len(_fr_all[_i]) > 9) else ()
+                if any(_k == "板面" for _v, _k in (_b or ())):
+                    _b90_face += 1
+            except Exception:
+                pass
+        # ⚠️ `1%%Low` 的双百分号**不能省**: 这一行是 `%` 格式化的, 写成 `1%Low` 会被当成
+        #    格式符(`%L`), 报的是 "not enough arguments for format string" —— 报错信息
+        #    指向 `%d` 的个数, 而**真正的原因在后面那个 `%`**。
+        _lines.append("# ★ 低于 90fps 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d"
+                      "   ← **跨版本比较用这一条, 别用 1%%Low**"
+                      % (len(_below90), _b90_tex, _b90_face))
+        _cnt = {}
+        for _t in _tags_all:
+            _cnt[_t] = _cnt.get(_t, 0) + 1
+        _lines.append("# ★ 内容配比(判断这轮和上一轮能不能比): "
+                      + " · ".join("%s %.1f%%" % (_k, 100.0 * _v / max(1, len(_tags_all)))
+                                   for _k, _v in sorted(_cnt.items(), key=lambda kv: -kv[1])))
+
         # ⚠️ **节拍真值必须印在最前面**(2026-09-14 加)。理由见 `_bench_collect_diag` 里
         #    "节拍真值"那段: 屏幕档位一变, 同一份代码的 1%Low 能从 83.3 掉到 42.2。
         #    这一行是"这份日志能不能和上一份比"的唯一前提 —— 放在头部第一眼就能看到。
@@ -10275,7 +10436,14 @@ class RootWidget(BoxLayout):
             return ''
 
     def _show_bench_history(self):
-        """性能测试历史：每次完整测试严格一行，保留时间、帧率与 SoC 波动。"""
+        """性能测试历史：每次完整测试严格一行，保留时间、帧率与 SoC 波动。
+
+        ⚠️ 第三列表头是「**中位跑分** / 波动」(2026-09-14 从「步数」改的): 那一格是
+           `phys_fps`, 来源是 `_bench_done` 里的 `_phys_sorted[len // 2]` —— **中位数, 不是均值**。
+           表头写「步数」会让人以为是总步数或均值(玩家就这么问过)。
+           ⚠️ 「波动」= `100 x (max - min) / 中位跑分`, 分子是**极值**、分母是**中位数** ——
+              两次口径混用, 而且只看两个样本点 ⇒ **跑分次数少时一个异常值就能把它带飞**。
+        """
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         # 这是“数据表”而不是一段左对齐正文：三列标题与数值均居中，扫视同一
         # 行时能更快对应；时间列仍固定足够宽，完整年份不会被压缩。
@@ -10291,7 +10459,7 @@ class RootWidget(BoxLayout):
         else:
             time_w, fps_w = dp(118), dp(82)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
-            for text, width in (("时间", time_w), ("平均/1%Low", fps_w), ("步数 / 波动", None)):
+            for text, width in (("时间", time_w), ("平均/1%Low帧", fps_w), ("中位跑分 / 波动", None)):
                 head = Label(text=text, font_size='12sp', halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
@@ -10346,6 +10514,20 @@ class RootWidget(BoxLayout):
             self._fit_uniform(soc_rows, sp(14))
             scroll.add_widget(inner)
             content.add_widget(scroll)
+            # 底部口径说明(2026-09-14, 玩家要的)。⚠️ **两个「中位」不是同一个东西**:
+            #   左列那个中位是**渲染帧率**(每秒画了多少帧),
+            #   右列那个中位是**物理吞吐**(每秒模拟多少步) —— 两列各自取自己的中位数。
+            foot = Label(
+                text=('口径：\n'
+                      '  平均/1%Low帧 —— 每秒渲染帧数。平均 = 总帧数 / 总时长；'
+                      '1%Low帧 = 最慢那 1% 的帧，取它们的帧率平均。\n'
+                      '  中位跑分 —— 物理引擎每秒模拟步数，取多次跑分的**中位数**（不是均值）。\n'
+                      '  波动 —— 100 ×（最慢一次 − 最快一次）÷ 中位跑分。'
+                      '分子用的是极值，跑分次数少时容易被一次异常带偏。'),
+                font_size='12sp', halign='left', valign='top',
+                color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(88))
+            foot.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+            content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
@@ -10688,10 +10870,24 @@ class RootWidget(BoxLayout):
         frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
         self.balance -= self.bet
         # 发射: 弧面垂直抖动 ±6px(每发随机), 纯物理飞行(无预演/无渲染修正)。
-        arc_dy = random.uniform(-6.0, 6.0)
+        # ⚠️⚠️ **跑分: 连碰撞随机流也换成按球号派生的确定流**(2026-09-14, 玩家提的)。
+        #    `physics_step` 里撞钉/撞墙/隔板的扰动都写成 `rng = getattr(b, "_rng", None) or random`
+        #    —— 正常发射 `_rng` 是 None ⇒ **走全局 `random`**。而全局流的**抽取顺序**受
+        #    "球什么时候落袋"(真实时间)影响 ⇒ 光在场次开始时 seed 一次**不够**, 后面的数会错位
+        #    (实测: 连跑两轮, 帧数与装杯帧数都不一样)。
+        #    给它一条**自己的流**, 抽取顺序就与时间无关 ⇒ **球路逐帧可复现**。
+        #    ⚠️ 种子按**球号**派生, 不是每发同一个 —— 否则 5 发会走出一模一样的轨迹、
+        #    落在同一个格子里, 那就只测了一种球路, 反而不如"随机的 5 发"。
+        #    ⚠️ 只影响跑分: 正常发射照旧 `_rng=None`(走全局流, 每球天然不同)。
+        _brng = None
+        if getattr(self, "_bench_running", False):
+            _brng = random.Random(BENCH_SEED + 1000 + int(getattr(self, "_bench_ball_i", 0)))
+            arc_dy = _brng.uniform(-6.0, 6.0)
+        else:
+            arc_dy = random.uniform(-6.0, 6.0)
         self.geo["deflectors"] = [(x1, y1 + arc_dy, x2, y2 + arc_dy)
                                   for (x1, y1, x2, y2) in self._base_deflectors]
-        self.ball = launch_ball(frozen_power)
+        self.ball = launch_ball(frozen_power, rng=_brng)
         self._settled = False                 # 新发射重置结算标记(结算延迟到回弹后)
         self._easter_egg = False              # 新发射重置彩蛋标记(球落回竖井才置 True)
         # 防御性重置: 正常路径下 launch() 只在 state=ready 时可达, 而 _easter_hold 期间
@@ -10914,7 +11110,9 @@ class RootWidget(BoxLayout):
 
     def park_ball(self, reroll=True, silent=False):
         """重掷盘面(reroll=True), 新球停到柱塞, 回 ready。哑火 reroll=False 防免费刷盘。"""
-        if reroll:
+        # ⚠️ 跑分期间**不重掷**(2026-09-14): 盘面由 `_auto_launch_tick` 按 `BENCH_BOARD` 钉死,
+        #    这里再掷一次会把刚钉好的覆盖掉(而且每发白掷一遍、画面还会闪一下)。
+        if reroll and not getattr(self, "_bench_running", False):
             self._boards = {r: roll_multipliers(r) for r in self._all_rtp()}   # 各档盘面一起刷新
             self.multipliers = self._boards[self.rtp_target]
             # ⚠️ **只更新倍率槽**, 不整块重画(2026-09-14): 重掷时几何一点没变 ——
