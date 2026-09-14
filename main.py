@@ -8961,6 +8961,20 @@ class RootWidget(BoxLayout):
             _lines.append("# 慢帧当帧在%s: %d/%d (%.0f%%)  ·  其余帧: %d/%d (%.0f%%)"
                           % (_nm, _s_hit, _s_n, 100.0 * _s_hit / max(1, _s_n),
                              _o_hit, _o_n2, 100.0 * _o_hit / max(1, _o_n2)))
+            # ⚠️ **滞后窗口**那一版也必须印(玩家 2026-09-15 提的假设需要它):
+            #    发声/震动的计数记在**投递那一刻**, 真正的 JNI 调用发生在那之后 —— 而 JNI 会在
+            #    JVM 里分配对象, JVM 的 GC 是**停全世界**的(把主线程一起按住)。
+            #    若卡是这么来的, 它会出现在发声的**下一两帧**, 而不是当帧 —— 只看当帧必然漏掉。
+            _lag = 3
+            _s_lag = sum(1 for _i in _slow_idx
+                         if any(_arr[_j] > 0 for _j in range(max(0, _i - _lag), _i)))
+            _o_lag = sum(1 for _i in range(len(gaps))
+                         if _i not in _slow_idx and _arr[_i] == 0
+                         and any(_arr[_j] > 0 for _j in range(max(0, _i - _lag), _i)))
+            _o_lag_n = sum(1 for _i in range(len(gaps)) if _i not in _slow_idx and _arr[_i] == 0)
+            _lines.append("# 慢帧**前%d帧内**有过%s: %d/%d (%.0f%%)  ·  其余帧: %d/%d (%.0f%%)"
+                          % (_lag, _nm, _s_lag, _s_n, 100.0 * _s_lag / max(1, _s_n),
+                             _o_lag, _o_lag_n, 100.0 * _o_lag / max(1, _o_lag_n)))
         if any(_self_ms) or any(_thr_ms):
             _sg = sorted(gaps[_i] for _i in _slow_idx)
             _ss = sorted(_self_ms[_i] for _i in _slow_idx)
