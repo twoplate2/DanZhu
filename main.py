@@ -6328,7 +6328,7 @@ class RotPopup(Popup):
 
 
 class FpsCurve(Widget):
-    """跑分结束后绘制的静态提交帧率曲线；每个像素桶保留最低 FPS，短卡顿不会被平均掉。"""
+    """跑分结束后的逐帧提交曲线；横轴每一点都是一个原始 on_flip 帧。"""
 
     def __init__(self, gaps_ms, cap_fps=120.0, **kw):
         super().__init__(**kw)
@@ -6373,30 +6373,30 @@ class FpsCurve(Widget):
 
             if self._gaps:
                 total_ms = sum(self._gaps)
-                # 每约 0.25 秒一格，格内用「帧数/实际耗时」算 FPS；既像监控趋势图，
-                # 又不会把一帧尖峰平均进整轮成绩。
-                bins = min(max(2, int(total_ms / 250.0)), max(2, int(pw // 3)), len(self._gaps))
-                sums = [0.0] * bins
-                counts = [0] * bins
                 elapsed = 0.0
+                raw_points = []
+                # 曲线本身不降采样：每一个原始帧间隔都有一个点，x 按真实累计时间定位。
+                # 例如 25 秒、120fps 的一轮大约就是 3000 个原始点。
+                col_low = [None] * max(1, int(math.ceil(pw)))
                 for gap in self._gaps:
-                    idx = min(bins - 1, int((elapsed / max(0.01, total_ms)) * bins))
-                    sums[idx] += gap
-                    counts[idx] += 1
+                    value = max(lo, min(hi, 1000.0 / gap))
+                    x = x0 + elapsed / max(0.01, total_ms) * pw
+                    y = y0 + value / hi * ph
+                    raw_points.extend([x, y])
+                    col = min(len(col_low) - 1, max(0, int(x - x0)))
+                    old = col_low[col]
+                    col_low[col] = value if old is None else min(old, value)
                     elapsed += gap
-                last = self._cap
-                points = []
-                for i, (total, count) in enumerate(zip(sums, counts)):
-                    if count <= 0 or total <= 0:
-                        value = last
-                    else:
-                        value = 1000.0 * count / total
-                    last = value
-                    value = max(lo, min(hi, value))
-                    points.extend([x0 + pw * i / max(1, bins - 1),
-                                   y0 + (value - lo) / (hi - lo) * ph])
                 Color(0.47, 0.49, 0.52, 1)
-                Line(points=points, width=1.5, joint="round")
+                Line(points=raw_points, width=1.15, joint="round")
+                # 屏幕横向像素不足以区分同一列的多帧时，额外画出该列最低 FPS 的红色短标记；
+                # 这不是二次采样，只是把已绘制的原始帧最小值显式保留下来。
+                Color(0.88, 0.30, 0.25, 0.92)
+                for i, value in enumerate(col_low):
+                    if value is not None and value < self._cap * 0.985:
+                        x = x0 + i + 0.5
+                        y = y0 + value / hi * ph
+                        Line(points=[x, y, x, min(y + dp(3), y0 + ph)], width=1)
 
         self._label(self.canvas, "%.0f" % hi, x0 - dp(5), y0 + ph - dp(5), "right")
         for value in range(0, int(hi), 30):
@@ -8659,7 +8659,7 @@ class RootWidget(BoxLayout):
         avg = float(getattr(self, "_render_fps", 0.0))
         med = float(getattr(self, "_render_median_fps", 0.0))
         low = float(getattr(self, "_render_1low", 0.0))
-        note = Label(text='灰线为每约 0.25 秒的实际 FPS · 平均 %.1f · 中位 %.1f · 1%%Low %.1f'
+        note = Label(text='灰线为逐帧 FPS · 红线标出同像素列最低 FPS · 平均 %.1f · 中位 %.1f · 1%%Low %.1f'
                           % (avg, med, low),
                      font_size='13sp', halign='center', valign='middle',
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
