@@ -2032,6 +2032,17 @@ _FRAME_PROBE = [0, 0, 0]         # [本帧发声次数, 本帧震动次数, 本�
 #    包装本身有开销, 包多了反而把被测量的东西改变掉。
 _FRAME_BRK = {}                  # 本帧累计(会被 _on_flip 读走并清空)
 _BRK_KEYS = ("板面", "重掷", "字号", "装杯")
+# 本帧「字号」这一格的**分解计数**: [ `_fit1` 被真正调了几次, `text_px` 冷测量了几回 ]。
+# ⚠️ 为什么光有毫秒不够(2026-09-15 加, 起因是 v0.7.28 真机日志):
+#    「字号」一帧烧了 **50.7 毫秒**(帧723), 而上一版同一格只有 16.5。同一个名字下
+#    藏着两种**完全不同**的病, 光看总数分不出来:
+#      · 「叫了 1 次、量了 12 回」= **一次** `_fit1` 走完阶梯 + 二分, 每回都是冷字号
+#        ⇒ 该收敛字号集合(那 12 个字号这辈子只用这一次);
+#      · 「叫了 20 次、量了 20 回」= 一帧里好几个标签同时换字
+#        ⇒ 该错峰/合并, 收敛字号没用。
+#    这两个数必须和毫秒**一起**印出来, 否则下一轮还是只能猜。
+_FRAME_FIT = [0, 0]
+
 _FRAME_THR = [0.0]               # 本帧**主线程**烧了多少毫秒 CPU(线程级时钟)
 # 上一帧 `Window.flip()`(**真正把画面交给系统**那一步)阻塞了多少毫秒。
 # ⚠️ 为什么必须单独有这一格(2026-09-14, 120Hz 与 60Hz 两份真机日志对比之后):
@@ -2216,6 +2227,26 @@ def _texex_bake(lbl):
     #    症状特别阴: **画面完全正常**(退回去渲染了), 但命中率恒为 0、白拿一个 CoreLabel 的开销。
     #    第一版就是这么写的, 靠探针打印"缓存里有几项: 0"才抓到 —— 光看画面永远看不出来。
     _cl.refresh()
+    # ⚠️⚠️ **2026-09-15: 必须在这里就把第二趟(真光栅化 + 纹理上传)做掉, 否则预热等于没烘。**
+    #    桌面实测(`temp/texfill_force_probe.py`, 直接数 `LabelBase._texture_fill` 被调几次):
+    #      · `CoreLabel.refresh()` 之后 —— 填纹 **+0**。它只量了宽高、挂了个回调;
+    #      · 真正的光栅化要等**这张纹理第一次被绑上去画**才发生(Kivy 两趟渲染, 见 `_texfill_wrap`)。
+    #    也就是说: **预热只是把那一笔 4~10.7 毫秒的账推迟到"这句话第一次真的出现在屏幕上"
+    #    的那一帧**, 一个字都没省。
+    #    真机铁证(v0.7.28, TB323FU, `plinko_fps_20260914_193357.txt`): 帧2032 / 帧3741 /
+    #    帧5145 三帧 **`文字重建 = 0` 却各付了 3.6 / 3.1 / 4.4 毫秒填纹** —— 那不是新文字,
+    #    就是某张预热好的纹理第一次被画出来。
+    #    这同时解释了 v0.7.26 那次"延迟渲染"为什么实测是 0:
+    #    **填纹跟着纹理走, 不跟着 `texture_update` 走** —— 把它从这一帧挪开, 它还是会在
+    #    同一张纹理第一次上屏时冒出来, 只是换了个人付钱。
+    #    ⚠️ 触发方式选 `bind()` 不选读 `.pixels`: 两者都能触发(探针实测各 +1), 但读
+    #    `.pixels` 要把整张纹理拷进 Python 侧(45KB/项, 预热上百项就是几 MB), `bind()` 只是
+    #    把它设为当前 GL 纹理 —— 而 Kivy 每次画 canvas 都会重设自己的 GL 状态, 不留副作用。
+    #    ⚠️ 触发**只做一次**: 探针实测再 `bind()` 一次是 +0(回调已被摘掉)。
+    try:
+        _cl.texture.bind()
+    except Exception:
+        pass
     return _cl
 
 
@@ -6041,6 +6072,11 @@ def text_px(text, fs, bold=False):
     key = (text, round(fs, 2), bool(bold))
     got = _FIT_PX.get(key)
     if got is None:
+        # ⚠️ **这一格就是"冷测量"的定义**(2026-09-15): 缓存没命中 ⇒ 现建一个 CoreLabel
+        #    在**这个精确字号**上量一次。真机上一次这样的测量要 1~4 毫秒(超宽文字走二分时
+        #    一帧能叠到十几回, 见 `_FRAME_FIT` 处的说明)。它和「重建了几次」是两笔账 ——
+        #    `text_px` 从不产生纹理, 只量宽度。
+        _FRAME_FIT[1] += 1
         try:
             _cl = CoreLabel(text=text, font_size=fs, bold=bold, text_size=(None, None))
             _cl.refresh()
@@ -7904,6 +7940,8 @@ class RootWidget(BoxLayout):
         """
         if getattr(w, "_fit_busy", False):
             return float(w.font_size)
+        # 记一笔"真的叫了一次"(闸门之上早退的不算 —— 那不是活, 是防重入)。
+        _FRAME_FIT[0] += 1
         if base is not None:
             w._fit_base = float(base)
         # inset 记在控件上: 挂在 width 上的自动重挑(`_install_fit`)也要用同一个内缩量,
@@ -8960,6 +8998,10 @@ class RootWidget(BoxLayout):
         #    第一行(那种"凭空冒出来的 40 毫秒"没人解释得了)。
         _FRAME_SWAP[0] = 0.0
         _FRAME_BRK.clear()
+        # 同上, 「字号」的分解计数必须跟着归零 —— 不归零的话采样窗口第一帧会背着
+        # "上次采样结束以来"的全部累计, 印出一个没人解释得了的"叫了 300 次"。
+        _FRAME_FIT[0] = 0
+        _FRAME_FIT[1] = 0
         # ⚠️ **同理, 而且这三个以前一直没清**(2026-09-14 修, 对抗性评审的专家指出):
         #    发声/震动计数(`Sfx.play` 里 `_FRAME_PROBE[0] += 1`、`_vibrate_tick` 里 `[1] += 1`)
         #    和预热位 `[2]` 都是**裸模块级计数, 采样期之外照常累加**, 而 `_on_flip` 只在
@@ -9093,8 +9135,15 @@ class RootWidget(BoxLayout):
                                        # ⚠️ **只能追加在末尾**: 前面 [0]~[9] 的下标被
                                        #    `_bench_collect_diag` 按号取, 插在中间会重演 v0.6.82
                                        #    "把 [7]/[8] 写反、整块诊断静默返回空串"那一次。
-                                       _FRAME_SWAP[0]))
+                                       _FRAME_SWAP[0],
+                                       # [11] = 本帧「字号」的分解: (`_fit1` 调用次数,
+                                       # `text_px` 冷测量次数)。见 `_FRAME_FIT` 处说明 ——
+                                       # 光有 `字号50.7` 这一个数, 分不出"一次走完阶梯+二分"
+                                       # 还是"一帧里十个标签同时换字", 而那两件事的修法完全相反。
+                                       (_FRAME_FIT[0], _FRAME_FIT[1])))
             _FRAME_BRK.clear()
+            _FRAME_FIT[0] = 0
+            _FRAME_FIT[1] = 0
             _FRAME_PROBE[0] = 0
             _FRAME_PROBE[1] = 0
             _FRAME_PROBE[2] = 0
@@ -9648,6 +9697,7 @@ class RootWidget(BoxLayout):
             _tags_all = ["?"] * len(gaps)
         _b90_tex = sum(1 for _i in _below90 if _i < len(_tex_all) and _tex_all[_i] > 0)
         _b90_face = 0
+        _b90_fit = 0
         for _i in _below90:
             try:
                 _b = _fr_all[_i][9] if (0 <= _i < len(_fr_all) and len(_fr_all[_i]) > 9) else ()
@@ -9655,12 +9705,21 @@ class RootWidget(BoxLayout):
                     _b90_face += 1
             except Exception:
                 pass
+            # 「带字号」的判据是**分解计数**不是子步骤名: v0.7.28 真机那两帧(15.5 / 50.7 毫秒)
+            # 的 `_fit1` 都跑在**别的回调**里, 最大子步骤那一栏未必写着"字号" —— 但
+            # `_FRAME_FIT[0] > 0` 一定为真。用计数判, 不会漏。
+            try:
+                _r = _fr_all[_i]
+                if 0 <= _i < len(_fr_all) and len(_r) > 11 and _r[11][0] > 0:
+                    _b90_fit += 1
+            except Exception:
+                pass
         # ⚠️ `1%%Low` 的双百分号**不能省**: 这一行是 `%` 格式化的, 写成 `1%Low` 会被当成
         #    格式符(`%L`), 报的是 "not enough arguments for format string" —— 报错信息
         #    指向 `%d` 的个数, 而**真正的原因在后面那个 `%`**。
-        _lines.append("# ★ 低于 90fps 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d"
+        _lines.append("# ★ 低于 90fps 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d / 带字号 %d"
                       "   ← **跨版本比较用这一条, 别用 1%%Low**"
-                      % (len(_below90), _b90_tex, _b90_face))
+                      % (len(_below90), _b90_tex, _b90_face, _b90_fit))
         _cnt = {}
         for _t in _tags_all:
             _cnt[_t] = _cnt.get(_t, 0) + 1
@@ -9793,8 +9852,18 @@ class RootWidget(BoxLayout):
                 #    "没有可复制的数据")。实测: 只要 `[9]` 是一个扁平的 `(1.3, "发射")`,
                 #    `for v, k in ...` 就 TypeError。
                 _b = _fr[_i][9] if len(_fr[_i]) > 9 else ()
+                # 「字号」那一格**必须带上分解**, 否则只看到一个 50.7 毫秒的数字,
+                # 分不出"一次走完阶梯+二分(每回冷字号)"还是"一帧里十个标签同时换字" ——
+                # 那两件事的修法完全相反(见 `_FRAME_FIT`)。见 [11] 的注释。
+                _fn = _fr[_i][11] if len(_fr[_i]) > 11 else (0, 0)
                 try:
-                    _s = " / ".join("%s%.1f" % (k, v) for v, k in (_b or ())) or "无"
+                    _parts = []
+                    for _v, _k in (_b or ()):
+                        if _k == "字号":
+                            _parts.append("字号%.1f(%d次/%d测)" % (_v, _fn[0], _fn[1]))
+                        else:
+                            _parts.append("%s%.1f" % (_k, _v))
+                    _s = " / ".join(_parts) or "无"
                 except Exception:
                     _s = "无"
                 _bits.append("帧%d %.1fms[%s]" % (_i, gaps[_i], _s))
