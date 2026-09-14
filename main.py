@@ -4950,6 +4950,34 @@ def _ball_texture(bet):
     _CUP_BALL_TEX[bet] = tex
     return tex
 
+_GLASS_OVER = [None, False]     # [over 纹理, 是否试过]
+
+
+def _glass_over():
+    """远侧环独立层 `glass_tumbler_over.png` —— **它是这条接缝的正式修法**。
+
+    生成器 `generate_glass_tumbler.py` 179..190 的注释: 后半环画在 `over`(压暗之后),
+    颜色统一成 HIGHLIGHT, al**只在 alpha 上从顶部 62 渐变到分界处 80 —— 与前半环的 80
+    严丝合缝** ⇒ 前后半环在切缝处**接得上**。
+    ⚠️ 2026-09-14「适配当前基线」把这一层摘掉了(连 fx_probe 那两条断言一起), 于是
+       设计稿里的硬切又露出来 —— 玩家报的「还是有接缝」就是它。
+    ⚠️ 必须**原样画**(带贴图自带的 alpha), 不许再乘一个整体 alpha: 它是一道**更白的
+       镜面高光**而不是「更亮的 back」, 按 α=1 整幅画会 −9% 反向过冲。
+    """
+    if _GLASS_OVER[1]:
+        return _GLASS_OVER[0]
+    _GLASS_OVER[1] = True
+    try:
+        _a = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets")
+        _t = _CoreImage(os.path.join(_a, "glass_tumbler_over.png")).texture
+        _t.mag_filter = "linear"
+        _t.min_filter = "linear"
+        _GLASS_OVER[0] = _t
+    except Exception:
+        _GLASS_OVER[0] = None
+    return _GLASS_OVER[0]
+
+
 def _glass_textures():
     """玻璃后层/前层 + 兼容整图; 分层失败回退整图, 再失败返回空三元组。
 
@@ -5836,8 +5864,30 @@ class WinPileFX(Widget):
             # ③ 压暗整块游戏区(含底部倍率槽) —— 杯子成为唯一焦点。
             self._fx_pre.append(("dim", Color(DIM_RGB[0], DIM_RGB[1], DIM_RGB[2], 0.0),
                                  Rectangle(pos=(0, 0), size=(0, 0)), None, None, None))
+            # ③b **远侧环独立层 `over`**(2026-09-14 接回): 它是生成器设计里**专门修
+            #      "前后半环在切缝处接不上"** 的那一层 —— 见 `_glass_over` 处那段证据。
+            #     ⚠️ 位置: **压暗之后、补画之前**(它就画在压暗之上, 与生成器的意图一致)。
+            #     ⚠️ **原样画**, 不带任何额外 alpha。
+            _ov = _glass_over()
+            if _ov is not None:
+                self._fx_pre.append(("oseam", Color(1.0, 1.0, 1.0, 0.0),
+                                     Rectangle(texture=_ov, pos=(0, 0), size=(0, 0)),
+                                     None, None, None))
             # ④ 杯口环补画(后半个杯口环 + 杯底环后半, 各 12 段) —— 见 `_rim_back_strips`。
-            for _t, _f0, _fh, _a in (_rim_back_strips(back_tex) or ()):
+            # ★ **有 `over` 时, 杯口那一段交给它**(2026-09-14 实测定案):
+            #   同一次演出只切一个开关, 接缝列逐行 ——
+            #     只补画:  88 → **49** → 101        (暗口)
+            #     over叠加: 138 → 112 → 101          (亮过头, 峰值 139)
+            #     **over 取代杯口补画: 99 → 110 → 111 → 100 → 102 → 100**  ← 既无暗口也不过亮
+            #   ⇒ `over` 是生成器设计里专修这条接缝的那一层(见 `_glass_over` 的证据),
+            #     补画是后来不知道有它时做的替代品; 两个一起画 = 同一圈环画两遍。
+            # ⚠️ **只让 over 接管杯口, 杯底那段仍走补画**: `over` 的杯底环段 alpha 只有 46
+            #    (back 同段 71), 整条换过去杯底远半圈会暗掉约 11%。
+            # `_rim_back_strips` 返回两段(杯口在前、杯底在后), 各 `RIM_BAND_STRIPS` 条。
+            _rst = _rim_back_strips(back_tex) or ()
+            if _ov is not None and len(_rst) >= 2 * RIM_BAND_STRIPS:
+                _rst = _rst[RIM_BAND_STRIPS:]          # 丢掉杯口那段, 只留杯底
+            for _t, _f0, _fh, _a in _rst:
                 self._fx_pre.append(("rim", Color(1.0, 1.0, 1.0, 0.0),
                                      Rectangle(texture=_t, pos=(0, 0), size=(0, 0)),
                                      _f0, _fh, _a))
@@ -5881,6 +5931,14 @@ class WinPileFX(Widget):
                 else:
                     _r.size = (0.0, 0.0)
             elif _k == "under":
+                if a_cup > 0.0 and _r.texture is not None:
+                    _c.rgba = (1.0, 1.0, 1.0, a_cup)
+                    _r.pos = (bx, by)
+                    _r.size = (bw, bh)
+                else:
+                    _r.size = (0.0, 0.0)
+            elif _k == "oseam":
+                # 远侧环独立层: 与 under/front 同款 —— 整幅铺开, alpha 跟着 a_cup 淡入。
                 if a_cup > 0.0 and _r.texture is not None:
                     _c.rgba = (1.0, 1.0, 1.0, a_cup)
                     _r.pos = (bx, by)
@@ -6010,6 +6068,11 @@ class WinPileFX(Widget):
             self._glass_prebaked = True
             try:
                 _glass_textures()
+            except Exception:
+                pass
+            try:
+                # 远侧环独立层一起烘(1600x920 的 PNG, 现场解码是一记长帧)。
+                _glass_over()
             except Exception:
                 pass
             Clock.schedule_once(self.prebake_step, 0.05)
