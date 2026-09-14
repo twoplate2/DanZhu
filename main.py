@@ -2045,10 +2045,15 @@ _texupd_wrap()
 
 
 
-# ---- 帧率上限(2026-09-14 玩家定案) ----
-# "跟着屏幕刷新率走, 最高 60, 最高 120, 不超过当前屏幕刷新率" => cap = min(120, 屏幕刷新率)。
-FPS_CAP_MAX = 120            # 硬顶(玩家给的上限)
-FPS_CAP_FALLBACK = 60        # 拿不到屏幕刷新率时按 60(桌面就是这条)
+# ---- 帧率上限(2026-09-14 玩家定案, 当天改过两回) ----
+# 第一版是 "cap = min(120, 屏幕刷新率)"(跟着屏幕走)。**玩家当天实测后否掉了** ——
+#   他的设备上那套规则出了状况, 定案改成**固定 120, 不再和刷新率匹配**。
+# ⚠️ 所以这里**不要**再引入任何"按屏幕刷新率动态调"的逻辑: 屏幕刷新率只用来**显示**
+#    (`_FPS_INFO[0]`, 面板上能看到当前实测值), **不参与**上限的计算。
+# ⚠️ 固定 120 的含义: 上限是 120, 但**真正能出多少仍由机器与屏幕决定** ——
+#    屏幕只有 60Hz、或 GPU 顶不住时, 实际帧率自然低于 120。这不是"强行插帧"。
+FPS_CAP_MAX = 120            # 帧率上限(**固定值**, 不跟屏幕刷新率匹配 —— 玩家 2026-09-14 定案)
+FPS_CAP_FALLBACK = 60        # 保留: 只在"连 120 都设不进去"的异常路径上当兜底
 _FPS_INFO = [0.0, 0.0]       # [屏幕刷新率(0=没读到), 实际生效的上限]
 
 
@@ -2073,14 +2078,17 @@ def _screen_hz():
 
 
 def _apply_fps_cap():
-    """把帧率上限设成 min(FPS_CAP_MAX, 屏幕刷新率); 拿不到屏幕就按 60。
+    """把帧率上限设成**固定的 `FPS_CAP_MAX`(120)**。
 
-    ⚠️ 全程 try/except: 这个函数**绝不能**把启动带崩 —— 拿不到就退回 60。
+    ⚠️ **不再读屏幕刷新率参与计算**(2026-09-14 玩家改的): 第一版是
+       `cap = min(120, 屏幕刷新率)`, 在他的设备上出了状况, 定案改成固定 120。
+       屏幕刷新率**只记下来给面板显示**(`_FPS_INFO[0]`), 不影响上限。
+    ⚠️ 全程 try/except: 这个函数**绝不能**把启动带崩。
     ⚠️ `Config` 与 `Clock._max_fps` **两处都写**(理由见本段顶部)。
     """
-    hz = _screen_hz()
+    hz = _screen_hz()               # 只用于面板显示
     try:
-        cap = float(min(FPS_CAP_MAX, int(round(hz)))) if hz else float(FPS_CAP_FALLBACK)
+        cap = float(FPS_CAP_MAX)
     except Exception:
         cap = float(FPS_CAP_FALLBACK)
     _FPS_INFO[0] = float(hz or 0.0)
@@ -8435,7 +8443,7 @@ class RootWidget(BoxLayout):
             # (有一批帧在白白占用呈现机会)。也顺手把 Kivy 的限速旋钮值打出来。
             _fc = int(d.get("frame_calls", 0))
             _hz, _cap = _FPS_INFO[0], _FPS_INFO[1]
-            parts.append('节拍： 屏幕 %s · 帧率上限 %s（= min(120, 屏幕)）· vsync=%s'
+            parts.append('节拍： 屏幕 %s · 帧率上限 %s（固定，不跟屏幕匹配）· vsync=%s'
                          ' · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
                          % (('%.0fHz' % _hz) if _hz else '没读到(按60)',
                             ('%.0f' % _cap) if _cap else '?', d.get("vsync", "?"), _fc,
