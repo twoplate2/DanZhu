@@ -8930,11 +8930,16 @@ class RootWidget(BoxLayout):
         # 必须靠这三个数分流: 自算大=我们的代码; 主线程大而自算小=Kivy 渲染/延后重排;
         # 两个都小=在等(GC/显卡/驱动)。⚠️ 桌面 `thread_time` 精度只有 15.6ms, 这台机器上
         # 主线程那一列基本是台阶 —— 分流**只能在真机上看**。
-        _self_ms, _thr_ms, _top1 = [], [], []
+        _self_ms, _thr_ms, _top1, _snd_n, _vib_n = [], [], [], [], []
         for _i in range(len(gaps)):
             _rec = _fr[_i] if _i < len(_fr) else ()
             _self_ms.append(float(_rec[5]) if len(_rec) > 5 else 0.0)
             _thr_ms.append(float(_rec[7]) if len(_rec) > 7 else 0.0)
+            # 发声/震动是**逐帧**计的(`_on_flip` 的第 4/5 个字段), 而且发声那个计数在
+            # **节流闸门之后** —— 数的是"真的播了", 不是"想播"。所以它能直接回答
+            # 玩家问的那句「卡的那一下是不是正在响/正在震」。
+            _snd_n.append(int(_rec[3]) if len(_rec) > 3 else 0)
+            _vib_n.append(int(_rec[4]) if len(_rec) > 4 else 0)
             _t1 = ""
             try:
                 _b = _rec[9] if len(_rec) > 9 else ()
@@ -8944,6 +8949,18 @@ class RootWidget(BoxLayout):
             except Exception:
                 _t1 = ""
             _top1.append(_t1)
+        # 发声/震动与慢帧的相关性 —— 与上面"文字重建"那一条同一个形状, 便于横向比。
+        # ⚠️ 判据要**两边都印**(慢帧 vs 其余帧): 只印"慢帧里 40% 在发声"读不出结论,
+        #    因为发声本来就密(4 次/秒), 得看它是不是**超配**。
+        _s_n = len(_slow_idx)
+        _o_n2 = len(gaps) - _s_n
+        for _nm, _arr in (("发声", _snd_n), ("震动", _vib_n)):
+            _s_hit = sum(1 for _i in _slow_idx if _arr[_i] > 0)
+            _o_hit = sum(1 for _i in range(len(gaps))
+                         if _i not in _slow_idx and _arr[_i] > 0)
+            _lines.append("# 慢帧当帧在%s: %d/%d (%.0f%%)  ·  其余帧: %d/%d (%.0f%%)"
+                          % (_nm, _s_hit, _s_n, 100.0 * _s_hit / max(1, _s_n),
+                             _o_hit, _o_n2, 100.0 * _o_hit / max(1, _o_n2)))
         if any(_self_ms) or any(_thr_ms):
             _sg = sorted(gaps[_i] for _i in _slow_idx)
             _ss = sorted(_self_ms[_i] for _i in _slow_idx)
@@ -8969,10 +8986,10 @@ class RootWidget(BoxLayout):
             _br_ = _all_ratio[len(_all_ratio) // 2] if _all_ratio else 0.0
             _lines.append("#   常态帧主线程只占帧长 %.0f%%(拿它当尺子): 慢帧明显低于这个 = 在等;"
                           " 明显高于 = 真在算" % (100.0 * _br_))
-        _lines.append("# 每行: 帧间隔毫秒,阶段,当帧文字重建次数,_frame自算ms,主线程ms,最大子步骤")
-        _lines.extend("%.2f,%s,%d,%.2f,%.2f,%s" % (g, t, x, s, m, b)
-                      for g, t, x, s, m, b
-                      in zip(gaps, tags, tex, _self_ms, _thr_ms, _top1))
+        _lines.append("# 每行: 帧间隔毫秒,阶段,文字重建,_frame自算ms,主线程ms,发声,震动,最大子步骤")
+        _lines.extend("%.2f,%s,%d,%.2f,%.2f,%d,%d,%s" % (g, t, x, s, m, sn, vb, b)
+                      for g, t, x, s, m, sn, vb, b
+                      in zip(gaps, tags, tex, _self_ms, _thr_ms, _snd_n, _vib_n, _top1))
         return "\n".join(_lines) + "\n"
 
     def _copy_bench_log(self, btn=None):
