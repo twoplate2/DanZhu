@@ -5928,7 +5928,15 @@ class WinPileFX(Widget):
             _all_k = FIT_SCALES
             for _b, _bd in _bases:
                 for _k in _all_k:
-                    _v = round(_b * _k, 4)
+                    # ⚠️⚠️ **绝不能 `round`**(2026-09-15 真机实证)。运行期算的是
+                    #    `_fit_base * _k` 的**原值**, 而这里原来 round 到 4 位 ⇒ 两个值差
+                    #    1e-7~5e-5 —— 而 Kivy 的字体缓存按**全精度**索引 ⇒ **两个 fontid**,
+                    #    预热等于白烘。真机冷字号榜里那两条就是它:
+                    #      `fs=57.23749923706055 最近预热档 57.2375 差 0.000000763`
+                    #      `fs=53.80324928283691 最近预热档 53.8032 差 0.000049283`
+                    #    差这么一点点, 却各要 20.5 / 16.6 毫秒。
+                    #    **预热必须和运行期算同一个数** —— 这是这一整套东西唯一的前提。
+                    _v = _b * _k
                     if (_v, _bd) in _seen:
                         continue
                     _seen.add((_v, _bd))
@@ -5941,7 +5949,17 @@ class WinPileFX(Widget):
             #        ⇒ 首次冷一次(真机约 20~30 毫秒, 落在第一局装杯那一帧), 之后 LRU 会留住。
             #    ⚠️ 别再"顺手都烘上": v0.7.31 就是这么干的, 结果 155 项把前面全挤掉,
             #       低90 从 8 帧退回 10 帧 —— 预热**不是越多越好**, 上限是硬的。
-            globals()["_FONT_WARM_SIZES"] = ()
+            # ⚠️⚠️ **不能一个都不烘**(2026-09-15 真机打脸): 上一版删成空的, 结果大字那个
+            #    基准(`sp(48)`, 真机上 = **144.6**)第一次用要冷开 **49.2 毫秒**, 而它是在
+            #    `_frame -> tick_draw -> _pump_reveal` 里造的 ⇒ 记在「板面」头上, 表现为
+            #    "某一帧板面突然 50 毫秒"(v0.7.32 的 `帧1103 60.32ms[板面50.4]` 就是它)。
+            #    折中: **只烘第一档**(k=1.0) —— 大字一局只用几次、第一档多半就放得下;
+            #    4 个基准 x 1 档 = 4 项, 总数 48+4 = 52, 仍在 64 以内。
+            #    ⚠️ 这 4 个是**手抄的 sp(36/48/26/30)** —— 大字是每次中奖现建的, 没有常驻
+            #       标签可以读 `_fit_base`。真机实测 sp(48)=144.6, 抄对了; 哪天改了大字基准,
+            #       日志里的「最近预热档差」会立刻暴露出来。
+            globals()["_FONT_WARM_SIZES"] = tuple(
+                _b * FIT_SCALES[0] for _b in (sp(36), sp(48), sp(26), sp(30)))
             # 原值清单(见 `_FONT_WARM_ALL` 处说明): HUD 那批**预热时真的传的是 round 过的值**,
             # 所以这里必须存 round 后的 —— 要比较的是"预热真正开出去的那个字号",
             # 不是"我们以为它会开的值"。大字号那批传的是原值, 照存。
@@ -10692,10 +10710,20 @@ class RootWidget(BoxLayout):
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
         if not self.bench_history:
+            # ⚠️⚠️ **2026-09-15: 弹窗高度固定不变, 空态靠两根"弹簧"竖向居中。**
+            #    我第一版改错了方向 —— 把空态的弹窗**收小**了(还发了一版)。玩家当场指出:
+            #    「高度不变, 因为以后要 tmd 放数据啊」—— 对。这个面板以后是要装数据的,
+            #    高度必须**始终一样**, 否则"有没有记录"会让面板忽大忽小、读数时跳来跳去;
+            #    真要有问题也只是"空的时候字堆在底下", 而那该用**居中去解决, 不是改高度**。
+            #    做法: 上下各加一根 `size_hint_y=1` 的弹簧, 把这几行夹在标题和「关闭」中间居中。
+            #    ⚠️ 弹簧只加在**空态**: 有记录时那块是 `size_hint=(1, 1)` 的 ScrollView,
+            #       它自己就会把剩余空间吃掉, 再加弹簧反而挤掉列表。
+            content.add_widget(Widget(size_hint_y=1))          # 上弹簧
             empty = Label(text='暂无测试记录\n\n长按标题 3 秒即可测试', font_size='16sp', halign='center',
                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(90))
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
             content.add_widget(empty)
+            content.add_widget(Widget(size_hint_y=1))          # 下弹簧
         else:
             # ⚠️ `fps_w` 82 -> 94(2026-09-15, 玩家截图: 「平均/1%Low帧」折成了两行)。
             #    实测: 那一串在 12sp 下**正好要 82.0 px**, 而这一格就是 `dp(82)` = 82.0 px
@@ -10784,7 +10812,7 @@ class RootWidget(BoxLayout):
             foot = Label(
                 text=('口径：\n'
                       '  中位跑分：物理引擎每秒模拟步数的中位数\n'
-                      '  波动：（最大 − 最小）÷ 中位跑分，百分比'),
+                      '  波动：(最大跑分-最小跑分)/中位数跑分'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
             self._auto_h(foot, dp(56))
