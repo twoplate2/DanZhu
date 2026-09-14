@@ -2078,12 +2078,250 @@ def _set_label_text(label, text):
 _THREAD_TIME = getattr(time, "thread_time", None) or time.process_time
 
 
+# ---- 文字纹理缓存(按标签自己存, 不做跨标签共享) ------------------------------
+# ⚠️ **设计取舍的完整理由见 `_texupd_wrap` 的 docstring** —— 一句话: Kivy 的
+#    `CoreLabel.refresh()` 在**尺寸没变**时会 `texture.ask_update(...)` **原地重画进同一张纹理**,
+#    所以跨标签共享会让 A 改字时把 B 正在显示的字悄悄改掉。按标签存零风险。
+_TEXTEX_PER_LABEL = 12      # 每个标签最多记几张(状态栏一局循环十来句, 12 够)
+_TEXEX_HIT = [0]            # 跑分采样期命中次数(进日志, 用来验证这层到底有没有生效)
+_TEXEX_MISS = [0]
+
+# ⚠️⚠️ **2026-09-14: 这一层的实现方式换过一次, 别改回去。**
+#
+# **不能直接缓存 Kivy 给标签建的那张 `Texture`** —— 桌面用逐像素比对验过
+# (`temp/texcache_probe.py`): 计数器证明命中 12 次, 但把命中纹理的 `pixels` 和"该句现烘一张"比,
+# **4 句里有 3 句不一致**(尺寸全对 78/39/30/66, 所以只看尺寸永远发现不了)。
+# 病根: `CoreLabel._texture_fill(self, texture)` **忽略传进来的 texture 参数**, 方法体只有一句
+# `self.render(real=True)` —— 它画进的是**那一刻标签的 `self.texture`**, 不是当初
+# `Texture.create(callback=...)` 注册回调的那一张; 而填充推迟到 Texture 第一次 `bind()` 才发生。
+# 这段延迟里谁先被 bind, 内容就写进谁 ⇒ 缓存下来的对象张冠李戴。
+#
+# **现在的做法**: 每个指纹配一个**专用的 `CoreLabel`**, 它的 `text`/`options` 从此**永不改变**
+# ⇒ 延迟填充只会发生一次, 而且填的必然是它自己的内容, 不可能被覆盖。
+# 未命中时**不让标签自己渲染**, 直接把这个专用 CoreLabel 的纹理交给标签 ——
+# 于是标签显示的东西 100% 来自那张稳定的纹理。
+# 这条范式工程里本来就有(`slot_text_tex` 5603 的槽位倍率贴图), 只是这次把它推广到动态文字。
+_TEXEX_ON = True
+
+# ⚠️ 字段表**必须覆盖影响纹理的一切**, 按 Kivy `Label._font_properties` 抄。
+#    漏一项 = 那个属性改了但缓存命中 ⇒ 显示旧内容, 而且**只在命中时犯**, 极难复现。
+#    宁可多带几个无害的(`underline`/`strikethrough`), 也不要漏。
+_TEXEX_FIELDS = ("text", "font_size", "bold", "color", "text_size", "halign", "valign",
+                 "padding", "mipmap", "outline_width", "disabled", "font_name",
+                 "underline", "strikethrough", "font_kerning")
+
+
+def _texex_norm(v):
+    """把属性值变成可哈希的。⚠️ 浮点**原样保留精度** —— 字号差 0.01 就是另一张纹理。"""
+    if isinstance(v, (list, tuple)):
+        return tuple(_texex_norm(x) for x in v)
+    return v
+
+
+def _texex_key(lbl):
+    """一张文字纹理的完整指纹。
+
+    ⚠️ `color` 必须在内: Kivy 把颜色烘进纹理(`_trigger_texture_update` 里
+       `self._label.options['color'] = ...`), 换个色就是另一张图。
+       ⚠️ 这也是 `_set_controls_enabled` 那 3 处 `.color` 赋值(每发球 6 次重建)
+       **不用单独修就自动免费**的原因 —— 两种颜色各烘一次, 之后全命中。
+    ⚠️ `text_size` 必须在内: `_mk_label` 把 `size` 绑到了它(7454), 布局一变它就变。
+    """
+    _out = []
+    for _n in _TEXEX_FIELDS:
+        try:
+            _out.append(_texex_norm(getattr(lbl, _n)))
+        except Exception:
+            _out.append(None)
+    return tuple(_out)
+
+
+def _texex_get(lbl, key):
+    _d = getattr(lbl, "_texex", None)
+    return _d.get(key) if _d else None
+
+
+def _texex_put(lbl, key, tex):
+    _d = getattr(lbl, "_texex", None)
+    if _d is None:
+        _d = {}
+        lbl._texex = _d
+        lbl._texex_order = []
+    if key in _d:
+        return
+    _d[key] = tex
+    lbl._texex_order.append(key)
+    while len(lbl._texex_order) > _TEXTEX_PER_LABEL:
+        _d.pop(lbl._texex_order.pop(0), None)
+
+
+
+def _texex_bake(lbl):
+    """按 `lbl` **当前**的属性烘一个**专用的 `CoreLabel`**, 返回它。
+
+    ⚠️ **这是整套缓存能成立的关键**: 返回的这个 CoreLabel 从此**再也不会被改**
+       (`text`/`options` 一个字都不动) ⇒ Kivy 那次延迟光栅化只会发生一次,
+       而且填的必然是它自己的内容 —— 不会被"另一个标签改了文字"顺手覆盖掉。
+       直接缓存标签自己那张纹理就不行, 原因见 `_TEXEX_ON` 处那段证据。
+    ⚠️ `Label` 与 `CoreLabel` 的属性名不完全一样:
+       · **`disabled` 会把颜色换成 `disabled_color`**(Kivy 在 `_trigger_texture_update` 里就是这么干的)
+         —— 不照做的话, 灰化状态会烘出**亮色**的纹理, 而且是"看着正常但颜色不对"那种错。
+       · `outline_color` 同理。
+    ⚠️ 属性**逐个 `getattr` 且缺失就跳过**, 不写死一份"以为一定有"的清单 ——
+       Kivy 版本一变就会静默少传一个参数, 而少传的表现是"烘出来的字和显示的不一样", 极难查。
+    """
+    _o = {}
+    for _n in ("text", "font_size", "font_name", "bold", "italic", "underline",
+               "strikethrough", "font_family", "halign", "valign", "shorten",
+               "mipmap", "line_height", "strip", "unicode_errors", "font_hinting",
+               "font_kerning", "font_blended", "outline_width", "font_features",
+               "font_context", "base_direction", "text_language",
+               "limit_render_to_text_bbox", "padding"):
+        try:
+            _o[_n] = getattr(lbl, _n)
+        except Exception:
+            pass
+    # 尺寸: `Label` 上叫 `text_size`(列表), 对应 `CoreLabel` 的构造参数同名。
+    try:
+        _ts = list(lbl.text_size)
+        _o["text_size"] = _ts
+    except Exception:
+        pass
+    # 颜色: **必须按 disabled 走 Kivy 那套映射**, 否则灰化态烘成亮色。
+    try:
+        _o["color"] = tuple(lbl.disabled_color if lbl.disabled else lbl.color)
+    except Exception:
+        pass
+    try:
+        _oc = lbl.disabled_outline_color if lbl.disabled else lbl.outline_color
+        if _oc is not None:
+            _o["outline_color"] = tuple(_oc)
+    except Exception:
+        pass
+    _cl = CoreLabel(**_o)
+    # ⚠️ **`refresh()` 绝不能漏**(2026-09-14 实修)。漏了它 `_cl.texture` 恒为 `None`,
+    #    于是 `_texex_apply` 返回 False ⇒ 永远存不进缓存、每次都退回 Kivy 老路。
+    #    症状特别阴: **画面完全正常**(退回去渲染了), 但命中率恒为 0、白拿一个 CoreLabel 的开销。
+    #    第一版就是这么写的, 靠探针打印"缓存里有几项: 0"才抓到 —— 光看画面永远看不出来。
+    _cl.refresh()
+    return _cl
+
+
+def _texex_apply(lbl, cl):
+    """把专用 CoreLabel 的纹理交给标签显示。**这是标签唯一的出图路径**(见 `texture_update`)。"""
+    _t = cl.texture
+    if _t is None:
+        return False
+    lbl.texture = _t
+    lbl.texture_size = list(_t.size)
+    return True
+
+
+def _build_texwarm(rw):
+    """列出"启动期该提前烘好的 (标签, 文案, 颜色)"。
+
+    ⚠️ 为什么值得单列一张表(2026-09-14): `texture_update` 那条缓存把**重复**变免费了
+       (真机 4~10.7 毫秒/次), 但每句的**第一次**仍要付全价。而状态栏那十来句在一局里必然
+       全都要出现 —— 不预热的话, 第一次发射/第一次落袋那几帧还是要各卡 4~10 毫秒。
+       预热 = 把这些"必然出现"的首次挪到启动期(那时玩家还在看加载页)。
+    ⚠️ **只列固定文案**。带数字的(`累计%d投%d中`、余额、`中奖! +%d (x%d)`)列不进来,
+       它们的值域是无限的 —— 那部分只能靠缓存命中重复值, 见计划文件 1.3 的诚实估算。
+    ⚠️ **颜色必须一起列**: Kivy 把颜色烘进纹理, 同一个字符串换个色就是另一张图。
+       `_set_controls_enabled` 每发球都会改那三个标签的 `.color`, 那一块就靠这里预先烘好。
+    """
+    out = []
+    if rw is None:
+        return out
+    # ---- 状态栏: 10 句固定文案(颜色恒定 COL_SUB, 只有 `_fit1` 可能改字号)----
+    _st = getattr(rw, "status_lbl", None)
+    if _st is not None:
+        try:
+            _c = tuple(_st.color)
+        except Exception:
+            _c = None
+        for _t in ("按住蓄力发射", "已重置", "蓄力中", "力度不足,未扣弹珠", "发射!", "未中",
+                   "即将入袋…", "弹跳中…", "入场中…", "性能测试中…", str(_st.text)):
+            out.append((_st, _t, _c))
+    # ---- 音效按钮: 两句话 x 两种颜色(`_refresh_mute_btn` 里那两个)----
+    _mb = getattr(rw, "mute_btn", None)
+    if _mb is not None:
+        try:
+            _on = hex_rgb("#0e1524") + (1,)
+            _off = hex_rgb("#c0c8e4") + (1,)
+        except Exception:
+            _on = _off = None
+        for _t, _c in (("音效已开", _on), ("音效已关", _off)):
+            out.append((_mb, _t, _c))
+    # ---- 两个标题标签: **文字永不变**, 但 `.color` 每发球被改两次 ----
+    #      见 `_set_controls_enabled` 8013-8014 / 8020 的两个取值。
+    for _n in ("_rtp_title_lbl", "_bet_title_lbl"):
+        _lb = getattr(rw, _n, None)
+        if _lb is None:
+            continue
+        try:
+            _t = str(_lb.text)
+            for _c in (hex_rgb(COL_SUB) + (1,), hex_rgb(COL_GRAY) + (0.6,)):
+                out.append((_lb, _t, _c))
+        except Exception:
+            pass
+    return out
+
+
+def _warm_one(item):
+    """把 (标签, 文案, 颜色) 走一遍 —— 走的是 `Label.texture_update`, 于是自动进缓存。
+
+    ⚠️ 走完**必须还原**。还原那一下也会触发一次重建, 但还原回去的正是标签原本那句,
+       而它也在预热表里 ⇒ 那一次是**命中**, 不会再付一次全价。
+    ⚠️ 这里**只调 `texture_update()`**, 不碰 `_orig`: 命中/未命中由包装器自己决定。
+    """
+    lbl, text, color = item
+    _save_t = lbl.text
+    try:
+        _save_c = tuple(lbl.color)
+    except Exception:
+        _save_c = None
+    try:
+        if color is not None:
+            lbl.color = color
+        lbl.text = text
+        lbl.texture_update()
+    finally:
+        try:
+            lbl.text = _save_t
+            if _save_c is not None:
+                lbl.color = _save_c
+        except Exception:
+            pass
+
+
 def _texupd_wrap():
-    """给 `Label.texture_update` 挂计数器 —— "文字重排每秒几次"的直接读数。
+    """给 `Label.texture_update` 挂计数器 + **一层按标签自己的文字纹理缓存**。
 
     ⚠️ 一次文字重排 = 重测字形 + 重光栅化 + 重建纹理 + 上传, 真机字形表更贵。它由 Kivy 用
        Clock **延后**执行, 跑在 `_frame` 外面。去掉余额滚动(0.6.79)就是冲它去的,
        这一格是**验证那一步到底有没有生效**的判据。
+
+    ⚠️⚠️ **2026-09-14 加的缓存**(v0.7.25)。起因是真机日志把 1%Low 的账算清了:
+       44 个慢帧里有 16 帧的最大一笔是 `填纹`(`CoreLabel._texture_fill`, 第二趟真光栅化)
+       **4.1~10.7 毫秒**;把这笔全拿掉 1%Low 从 81.1 → 95.2。
+       机制见 `_texfill_wrap` 的说明 —— Kivy 的文字**两趟画**, 第二趟才是真光栅化,
+       而它由 Texture 回调在"纹理下次被用到时"触发。
+       **命中缓存时直接换纹理 ⇒ 第一趟、第二趟、纹理上传三样全跳过。**
+
+    ⚠️ **为什么缓存按标签自己存, 不做全局共享**(这是本设计最关键的一条):
+       Kivy 的 `CoreLabel.refresh()` 里有一支是
+       `if texture is None or 宽高变了: 新建 Texture else: texture.ask_update(self._texture_fill)`
+       —— **尺寸没变时它会"原地重画进同一张纹理"**。
+       所以如果把 A 标签烘出来的纹理交给 B 标签用, 那么 A 下次改成同尺寸的另一段文字时,
+       会**把 B 正在显示的那张纹理原地改掉** —— B 的字会悄悄变成 A 的, 而且只在同尺寸时发生。
+       按标签存就不存在这张跨标签共享, 一点风险都没有。
+
+    ⚠️ **另一条必须做的事:未命中时先把"马上要被重画的那张"从缓存里摘掉**。
+       同理, `_orig` 跑起来可能对 `self.texture` 原地重画 ⇒ 缓存里指向它的那项必须作废,
+       否则下一次"命中"会显示成上一段文字。见 `_texex_forget`。
+
+    ⚠️ **只对打了 `_texupd_tag` 的标签生效** —— 普通按钮/弹窗/档位按钮一律走原路,
+       把影响面压到最小(实测那些重建基本都在这几个标签上)。
     """
     try:
         from kivy.uix.label import Label as _L
@@ -2092,19 +2330,55 @@ def _texupd_wrap():
     _orig = getattr(_L, "texture_update", None)
     if _orig is None or getattr(_orig, "_probe_wrapped", False):
         return
+
+    # ⚠️ 这些**必须定义在模块级**(下面 `_texex_*` 用裸名引用), 见 `_TEXUPD` 处的教训。
     def texture_update(self, *a, **k):
         # ⚠️ 2026-09-15: 这里**同时给子步骤计时**。真机 v0.7.20 的数据显示: 每发球稳定产生
         #    4 个慢帧(周期 252/89/21/423 帧, 签名固定 = 板面/重掷/字号/发射), 每帧主线程烧
         #    13 毫秒而"板面/重掷/字号/装杯/发射"五个已计时的加起来只有 **2 毫秒** ——
         #    剩下 11 毫秒**不在我们任何一处已计时的代码里**, 而这几帧**每帧正好 3 次重建**。
         #    把重排接进 `_brk_add` 之后, 下一次跑那 11 毫秒会自己报名字, 不用再推。
+        _key = None
+        if _TEXEX_ON and getattr(self, "_texupd_tag", None) is not None and self.text:
+            # 空文字不进缓存: Kivy 那条路会把 `texture` 置 None、`texture_size` 置 (0,0),
+            # 而 `CoreLabel.refresh()` 空文字给的是一张 1x1 的占位图 —— 两者语义不同, 混了会出鬼。
+            try:
+                _key = _texex_key(self)
+                _cl = _texex_get(self, _key)
+            except Exception:
+                _key, _cl = None, None
+            if _cl is not None:
+                # 命中: 第一趟(`refresh`)、第二趟(`_texture_fill` 真光栅化)、纹理上传**三样全跳过**。
+                # 这就是 4~10.7 毫秒的来源(真机 v0.7.24 实测), 命中的意义全在这一句。
+                if _TEXUPD_ACTIVE[0]:
+                    _TEXEX_HIT[0] += 1
+                if _texex_apply(self, _cl):
+                    return
+                _key = None          # 纹理没了(被回收/上下文丢失) ⇒ 退回老路, 绝不让画面空着
+            else:
+                # ⚠️ 未命中时**不让标签自己渲染**, 而是烘一个专用的 CoreLabel 并把它的纹理交给标签。
+                #    这样标签显示的东西 100% 来自那张稳定的纹理 —— 不存在"标签自己那张纹理
+                #    被后来改文字顺手覆盖"的问题(那正是第一版翻车的地方, 见 `_TEXEX_ON` 处的证据)。
+                #    代价: 未命中时多一个 CoreLabel 对象; 烘的工时和原来一模一样, **没有回归**。
+                try:
+                    _cl = _texex_bake(self)
+                    if _TEXUPD_ACTIVE[0]:
+                        _TEXUPD[0] += 1
+                        _TEXUPD_BY[getattr(self, "_texupd_tag", "其他文字")] = \
+                            _TEXUPD_BY.get(getattr(self, "_texupd_tag", "其他文字"), 0) + 1
+                        _TEXEX_MISS[0] += 1
+                    if _texex_apply(self, _cl):
+                        _texex_put(self, _key, _cl)
+                        return
+                except Exception:
+                    _key = None      # 烘不出来就退回 Kivy 老路, 绝不抛
         _t0 = time.perf_counter()
         try:
             if _TEXUPD_ACTIVE[0]:
                 _TEXUPD[0] += 1
                 _tag = getattr(self, "_texupd_tag", "其他文字")
                 _TEXUPD_BY[_tag] = _TEXUPD_BY.get(_tag, 0) + 1
-            return _orig(self, *a, **k)
+            _orig(self, *a, **k)
         finally:
             # ⚠️ 只在跑分采样期记 —— 平时 `_FRAME_BRK` 没人读, 记了也是白记。
             if _TEXUPD_ACTIVE[0]:
@@ -5445,6 +5719,23 @@ class WinPileFX(Widget):
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         _FRAME_PROBE[2] += 1      # 本帧跑了预热(供跑分面板把"启动慢"与"玩起来卡"分开)
+        # ---- 文字纹理预热(2026-09-14 加, 见 `_build_texwarm` 处说明)----
+        # ⚠️ 排在字号预热**之前**: 这一条才是真正消掉 `填纹`(真机 4~10.7 毫秒/次)的那一步,
+        #    字号那一条只烘第一趟(量宽高), 两趟里贵的那一趟它从来没碰过。
+        # ⚠️ 一帧只走一个组合 —— 和字号预热同一个理由(挤在一帧就是自己造一记长帧)。
+        if not getattr(self, "_texwarm_done", False):
+            if getattr(self, "_texwarm_list", None) is None:
+                self._texwarm_list = _build_texwarm(getattr(self.area, "game", None))
+            _tw_i = getattr(self, "_texwarm_i", 0)
+            if _tw_i < len(self._texwarm_list):
+                self._texwarm_i = _tw_i + 1
+                try:
+                    _warm_one(self._texwarm_list[_tw_i])
+                except Exception:
+                    pass
+                Clock.schedule_once(self.prebake_step, 0.05)
+                return
+            self._texwarm_done = True
         if _FONT_WARM_SIZES is None:
             # 首次走到这里才按**当时的窗口密度**算(模块导入时窗口还没建, 那时 sp() 是错的)。
             # ⚠️ **必须用 `_qfs` 落同一个网格**(2026-09-14 修一个我自己引入的回归):
@@ -7844,6 +8135,9 @@ class RootWidget(BoxLayout):
         self.mute_btn.size_hint_x = None
         self.mute_btn.width = dp(58)
         self.mute_btn.font_size = "13sp"
+        # ⚠️ 打标才进文字纹理缓存(2026-09-14)。这个按钮的文字只有两句、颜色只有两种,
+        #    预热之后每次开关音效都是**命中**, 一次纹理都不用重建。
+        _tag_texupd(self.mute_btn, "音效按钮")
         self._refresh_mute_btn()
         left_box.add_widget(self.mute_btn)
         self.round_btn = self._mk_button("每轮%d次" % self.max_plays,
@@ -7851,6 +8145,7 @@ class RootWidget(BoxLayout):
         self.round_btn.size_hint_x = None
         self.round_btn.width = dp(62)
         self.round_btn.font_size = "13sp"
+        _tag_texupd(self.round_btn, "轮次按钮")
         self.round_btn.color = (0, 0, 0, 1)          # 黑字配绿底
         left_box.add_widget(self.round_btn)
         top.add_widget(left_box)
@@ -7878,6 +8173,10 @@ class RootWidget(BoxLayout):
         self._row_rtp = rtp
         self._rtp_title_lbl = self._mk_label("期望返还比例：", "14sp", COL_TEXT, "left", False,
                                       size_hint_x=None, width=dp(115))
+        # ⚠️ 打标才进缓存。这两个标签**文字永不变**, 变的是 `.color` ——
+        #    而 Kivy 把颜色烘进纹理, 于是每发球禁用/启用各改一次 = 每发球 6 次重建。
+        #    打标 + 预热两种颜色之后, 那一块**一次都不用重建**。
+        _tag_texupd(self._rtp_title_lbl, "返还率标题")
         rtp.add_widget(self._rtp_title_lbl)
         # ⚠️ **这个"右侧留空"的 Widget 必须先加**(在按钮之前加进 `rtp`) —— `_add_rtp_button`
         #    靠它定位: 把新按钮插到它**左边**(Kivy 的 `children[0]` 在最右, 所以"更大 index = 更左")。
@@ -7904,6 +8203,10 @@ class RootWidget(BoxLayout):
         self._row_bets = bets
         self._bet_title_lbl = self._mk_label("每次投入弹珠：", "14sp", COL_TEXT, "left", False,
                                        size_hint_x=None, width=dp(115))
+        # ⚠️ 打标才进缓存。这两个标签**文字永不变**, 变的是 `.color` ——
+        #    而 Kivy 把颜色烘进纹理, 于是每发球禁用/启用各改一次 = 每发球 6 次重建。
+        #    打标 + 预热两种颜色之后, 那一块**一次都不用重建**。
+        _tag_texupd(self._bet_title_lbl, "投注标题")
         bets.add_widget(self._bet_title_lbl)
         self.bet_btns = {}
         for v in PRESETS:
@@ -8476,6 +8779,10 @@ class RootWidget(BoxLayout):
         _TEXUPD[0] = 0
         _TEXUPD_BY.clear()
         _TEXUPD_ACTIVE[0] = True
+        # ⚠️ 缓存命中/未命中计数**必须跟着归零**: 它是"这一轮缓存有没有生效"的读数,
+        #    带着上一轮的残值就等于在骗自己。
+        _TEXEX_HIT[0] = 0
+        _TEXEX_MISS[0] = 0
         # ⚠️ 必须在这里归零: 上一轮跑分残留的 swap 值会被当成"第一帧等屏幕的时间"记进新日志的
         #    第一行(那种"凭空冒出来的 40 毫秒"没人解释得了)。
         _FRAME_SWAP[0] = 0.0
@@ -8744,6 +9051,11 @@ class RootWidget(BoxLayout):
         out["thr_p50"] = _thr_sorted[len(_thr_sorted) // 2] if _thr_sorted else 0.0
         out["thr_max"] = _thr_sorted[-1] if _thr_sorted else 0.0
         out["texupd"] = _TEXUPD[0]
+        # 文字纹理缓存: 命中 = 两趟全跳过(省掉 4~10.7ms 的 `填纹`)。见 `_texupd_wrap`。
+        # ⚠️ 这两个数**必须印进日志** —— 否则没法判断这层到底有没有生效(命中率 0 时
+        #    必须能一眼看出来, 而不是"看着像好了"却什么都没省)。
+        out["texex_hit"] = _TEXEX_HIT[0]
+        out["texex_miss"] = _TEXEX_MISS[0]
         # ⚠️ 只留前 4 名 —— 但**必须把"其余还有多少"一并记下来**(2026-09-14 修)。
         #    原来只有 `[:4]`, 于是真机 v0.7.23 的日志里"全程文字重建 76 次"与"重建来源
         #    四项相加 68"差了 8 次(约 10%), 而**日志里没有任何地方提示这里截断了** ——
@@ -9148,6 +9460,25 @@ class RootWidget(BoxLayout):
                          _o_t, _o_n, 100.0 * _o_t / max(1, _o_n)))
         _lines.append("# 全程文字重建 %d 次(其中 %d 次落在慢帧上)"
                       % (sum(tex), sum(tex[_i] for _i in _slow_idx)))
+        # ⚠️ **文字纹理缓存**的命中率。这一行是"缓存到底有没有生效"的唯一判据:
+        #    命中 = 第一趟(量宽高)、第二趟(`填纹` 真光栅化)和纹理上传**三样全跳过**。
+        #    ⚠️ 命中率若是 0, 说明指纹每次都不一样(最常见的原因是 `text_size` 在变,
+        #       而它被 `_mk_label` 绑在 `size` 上) —— 那就要回去看 `_texex_key` 的字段表,
+        #       别以为"加了缓存"就万事大吉。
+        try:
+            _th = int(d.get("texex_hit", 0) or 0)
+            _tm = int(d.get("texex_miss", 0) or 0)
+            if not _TEXEX_ON:
+                # ⚠️ 必须明说"本版关着" —— 否则那行会印成"命中率 0%", 看着像缓存失效,
+                #    而实际是根本没开。**一个会骗人的面板比没有面板更坏。**
+                _lines.append("# 文字纹理缓存: **本版关闭**(见 `_TEXEX_ON` 处的证据: 逐像素比对"
+                              "验出命中内容张冠李戴, 已停用)")
+            else:
+                _lines.append("# 文字纹理缓存: 命中 %d 次 · 未命中 %d 次(命中率 %.0f%%)"
+                              "  ← 命中 = 两趟渲染 + 纹理上传全部跳过"
+                              % (_th, _tm, 100.0 * _th / max(1, _th + _tm)))
+        except Exception:
+            pass
         try:
             _by = d.get("texupd_by") or []
             if _by:
