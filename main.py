@@ -6326,6 +6326,86 @@ class RotPopup(Popup):
         self._is_open = False
         self._window = None
 
+
+class FpsCurve(Widget):
+    """跑分结束后绘制的静态提交帧率曲线；每个像素桶保留最低 FPS，短卡顿不会被平均掉。"""
+
+    def __init__(self, gaps_ms, cap_fps=120.0, **kw):
+        super().__init__(**kw)
+        self._gaps = [max(0.01, float(x)) for x in (gaps_ms or [])]
+        self._cap = max(1.0, float(cap_fps or 120.0))
+        self.bind(pos=self._draw, size=self._draw)
+        Clock.schedule_once(self._draw, 0)
+
+    @staticmethod
+    def _label(canvas, text, x, y, anchor="left"):
+        lb = CoreLabel(text=text, font_size=sp(10), color=(0.37, 0.40, 0.45, 1))
+        lb.refresh()
+        tw, th = lb.texture.size
+        if anchor == "right":
+            x -= tw
+        elif anchor == "center":
+            x -= tw / 2.0
+        with canvas:
+            Color(1, 1, 1, 1)
+            Rectangle(texture=lb.texture, pos=(x, y), size=(tw, th))
+
+    def _draw(self, *_):
+        if self.width < 40 or self.height < 40:
+            return
+        pad_l, pad_r, pad_b, pad_t = dp(32), dp(8), dp(20), dp(18)
+        x0, y0 = self.x + pad_l, self.y + pad_b
+        pw, ph = max(1.0, self.width - pad_l - pad_r), max(1.0, self.height - pad_b - pad_t)
+        # 固定 0~120（或设备请求的更高档）坐标，跨轮次的曲线才可直接比较。
+        lo, hi = 0.0, max(120.0, self._cap)
+
+        self.canvas.clear()
+        with self.canvas:
+            Color(0.97, 0.975, 0.985, 1)
+            RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(7)])
+            for value in range(0, int(hi) + 1, 30):
+                y = y0 + value / hi * ph
+                Color(0.72, 0.74, 0.77, 0.85)
+                Line(points=[x0, y, x0 + pw, y], width=1)
+            Color(0.50, 0.52, 0.56, 0.85)
+            Line(points=[x0, y0, x0 + pw, y0], width=1)
+            Line(points=[x0, y0, x0, y0 + ph], width=1)
+
+            if self._gaps:
+                total_ms = sum(self._gaps)
+                # 每约 0.25 秒一格，格内用「帧数/实际耗时」算 FPS；既像监控趋势图，
+                # 又不会把一帧尖峰平均进整轮成绩。
+                bins = min(max(2, int(total_ms / 250.0)), max(2, int(pw // 3)), len(self._gaps))
+                sums = [0.0] * bins
+                counts = [0] * bins
+                elapsed = 0.0
+                for gap in self._gaps:
+                    idx = min(bins - 1, int((elapsed / max(0.01, total_ms)) * bins))
+                    sums[idx] += gap
+                    counts[idx] += 1
+                    elapsed += gap
+                last = self._cap
+                points = []
+                for i, (total, count) in enumerate(zip(sums, counts)):
+                    if count <= 0 or total <= 0:
+                        value = last
+                    else:
+                        value = 1000.0 * count / total
+                    last = value
+                    value = max(lo, min(hi, value))
+                    points.extend([x0 + pw * i / max(1, bins - 1),
+                                   y0 + (value - lo) / (hi - lo) * ph])
+                Color(0.47, 0.49, 0.52, 1)
+                Line(points=points, width=1.5, joint="round")
+
+        self._label(self.canvas, "%.0f" % hi, x0 - dp(5), y0 + ph - dp(5), "right")
+        for value in range(0, int(hi), 30):
+            self._label(self.canvas, "%.0f" % value, x0 - dp(5),
+                        y0 + value / hi * ph - dp(5), "right")
+        duration = sum(self._gaps) / 1000.0
+        self._label(self.canvas, "0s", x0, self.y + dp(2))
+        self._label(self.canvas, "%.1fs" % duration, x0 + pw, self.y + dp(2), "right")
+
 class GameArea(FloatLayout):
     """520x660 逻辑场景(坐标系沿用 tkinter 版: y 向下), 绘制时等比缩放居中。
     静态元素(墙/钉/槽/弧)重绘只在尺寸变化或换盘面时; 球/力度条/柱塞每帧只改 pos;
@@ -8196,8 +8276,11 @@ class RootWidget(BoxLayout):
         self._render_pct = {}
         if len(flips) >= 2:
             gaps = [flips[i + 1] - flips[i] for i in range(len(flips) - 1)]
+            self._render_gaps_ms = [gap * 1000.0 for gap in gaps]
             s = sorted(gaps)
-            self._render_fps = 1.0 / s[len(s) // 2] if s[len(s) // 2] > 0 else 0.0
+            # 真平均 = 总帧数 / 总耗时；旧版误把中位数标成“平均”，外部工具无法对照。
+            self._render_fps = len(gaps) / sum(gaps) if sum(gaps) > 0 else 0.0
+            self._render_median_fps = 1.0 / s[len(s) // 2] if s[len(s) // 2] > 0 else 0.0
             # 低帧率(玩家 2026-09-13 要的 1%/10%): "最慢 N% 的帧"**平均下来**是多少 FPS。
             # ⚠️ 它和下面的 p99/p90 **不是一回事**: 这里是"最慢那批的均值", 那里是"分位上那一帧"。
             #    偶发几个巨大尖峰时, 均值会被拉得比阈值狠得多 —— 两个一起看才分得清
@@ -8216,6 +8299,8 @@ class RootWidget(BoxLayout):
                 self._render_pct[_q] = (1.0 / _sec) if _sec > 0 else 0.0
         else:
             self._render_fps = 0.0
+            self._render_median_fps = 0.0
+            self._render_gaps_ms = []
             self._render_1low = 0.0
         self._bench_diag = self._bench_collect_diag()
         _TEXUPD_ACTIVE[0] = False
@@ -8461,6 +8546,7 @@ class RootWidget(BoxLayout):
         avg_frames = frames / max(1, flights)
         cost_ms = avg_frames / phys_fps * 1000.0 if phys_fps > 0 else 0.0  # 每发纯物理耗时
         render_fps = getattr(self, "_render_fps", 0.0)
+        render_median = getattr(self, "_render_median_fps", 0.0)
         render_1low = getattr(self, "_render_1low", 0.0)
         dev = self._device_info()
         # 存历史(最近100次)
@@ -8470,6 +8556,7 @@ class RootWidget(BoxLayout):
             "avg_frames": int(avg_frames),
             "cost_ms": round(cost_ms, 1),
             "render_fps": round(render_fps, 1),
+            "render_median": round(render_median, 1),
             "render_1low": round(render_1low, 1),
             "phys_runs": phys_runs,
             "phys_min": int(phys_min),
@@ -8491,13 +8578,14 @@ class RootWidget(BoxLayout):
         _pct = getattr(self, "_render_pct", {}) or {}
         if _lows:
             # 排版(玩家 2026-09-13 定稿): 平均帧率**独占一行**, 其余四个两两一行。
-            _low_txt = ('平均帧率： %.1f\n'
+            _low_txt = ('平均帧率： %.1f    中位帧率：%.1f\n'
                         '1%%Low：%.1f    10%%Low：%.1f\n'
                         'p99帧率：%.1f    p90帧率：%.1f') % (
-                            render_fps, _lows.get(1, 0.0), _lows.get(10, 0.0),
+                            render_fps, render_median, _lows.get(1, 0.0), _lows.get(10, 0.0),
                             _pct.get(99, 0.0), _pct.get(90, 0.0))
         else:
-            _low_txt = '平均帧率： %.1f\n1%%Low帧率：%.1f' % (render_fps, render_1low)
+            _low_txt = '平均帧率： %.1f　中位帧率：%.1f\n1%%Low帧率：%.1f' % (
+                render_fps, render_median, render_1low)
         # ⚠️ 这一屏**不放**版本/制作日期(用户 2026-09-11 定稿: "性能测试的成绩面板别加").
         # ⚠️ **2026-09-14 玩家改主意了**: 跑完分要能一眼看出"这是哪个版本的包跑出来的"
         #    (他手上有 PC 与两代 Y700 好几份成绩互相对照, 没版本号根本对不上号)。
@@ -8528,6 +8616,12 @@ class RootWidget(BoxLayout):
         self._auto_h(score_lbl, dp(130), dp(6))
         content.add_widget(score_lbl)
 
+        curve_btn = Button(text='帧率曲线', font_size='16sp', bold=True,
+                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                           size_hint_y=None, height=dp(46))
+        curve_btn.bind(on_release=lambda *_: self._show_fps_curve())
+        content.add_widget(curve_btn)
+
         _sep = Widget(size_hint_y=None, height=dp(1))
         with _sep.canvas.before:                      # 同 `_row_bg` 的写法
             Color(*hex_rgb(COL_DIV))
@@ -8550,6 +8644,36 @@ class RootWidget(BoxLayout):
         self._set_controls_enabled(True)
         self._bench_running = False
         self._bench_start = 0.0
+
+    def _show_fps_curve(self):
+        """展示本轮提交帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。"""
+        gaps = list(getattr(self, "_render_gaps_ms", []) or [])
+        content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
+        title = self._fit_line(Label(text='帧率曲线', bold=True, halign='center',
+                                     color=hex_rgb(COL_TEXT) + (1,),
+                                     size_hint_y=None, height=dp(26)), 19)
+        content.add_widget(title)
+        cap = float(_FPS_INFO[1] or FPS_CAP_MAX)
+        curve = FpsCurve(gaps, cap_fps=cap, size_hint_y=None, height=dp(240))
+        content.add_widget(curve)
+        avg = float(getattr(self, "_render_fps", 0.0))
+        med = float(getattr(self, "_render_median_fps", 0.0))
+        low = float(getattr(self, "_render_1low", 0.0))
+        note = Label(text='灰线为每约 0.25 秒的实际 FPS · 平均 %.1f · 中位 %.1f · 1%%Low %.1f'
+                          % (avg, med, low),
+                     font_size='13sp', halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(26))
+        note.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+        content.add_widget(note)
+        close = Button(text='关闭', font_size='16sp', bold=True,
+                       background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                       size_hint_y=None, height=dp(46))
+        content.add_widget(close)
+        popup = self._popup(0.92, 390, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
+        close.bind(on_release=popup.dismiss)
+        popup.open()
+        self._popup_fit_content(popup, content)
 
     def _bench_diag_text(self):
         """性能测试成绩面板的**诊断追加行**(2026-09-13 加)。
