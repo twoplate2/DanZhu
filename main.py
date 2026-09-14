@@ -9473,6 +9473,19 @@ class RootWidget(BoxLayout):
         out["low1_groups"] = sorted(_low1_groups.items(), key=lambda x: -x[1])
         # 16.7ms 是 60 FPS 的帧预算；120Hz 的平均值高并不代表没有越过这条线。
         out["over60_n"] = sum(1 for x in fr if x[0] > (1000.0 / 60.0))
+        # ---- **卡顿帧** = 帧率低于「本机中位帧率」一半的帧(帧间隔 > 中位 x 2) ----
+        # ⚠️ **必须用相对本机中位的判据, 不能写死绝对帧率**: 165Hz 与 60Hz 的机器上同一个
+        #    绝对门槛含义完全不同(交接文档 `jiaojie.md` 已把这条定死; 原来硬编码 1000/90,
+        #    结果 1%Low 贴到 89.7 时同一份数据反而报"变差")。
+        # ⚠️ 玩家 2026-09-14 定稿的两档: **<50% 要尽量消除; 50%~70% 只作参考**。
+        #    所以这里只收 <50% 的那一档进 `jank_*`, 50%~70% 留在日志里当趋势看, **不上面板**。
+        _med = float(out.get("p50") or 0.0)
+        _jank = [x for x in fr if _med > 0.0 and x[0] > _med / 0.5]
+        out["jank_n"] = len(_jank)
+        _jg = {}
+        for _x in _jank:
+            _jg[_x[1]] = _jg.get(_x[1], 0) + 1
+        out["jank_groups"] = sorted(_jg.items(), key=lambda x: -x[1])
         # 最慢的 3 帧 + 当时在演什么 + **那一帧真烧了多少 CPU**。
         # 后两个数一起看才分流: 实算 ≈ 帧间隔 ⇒ 算出来的(处理器瓶颈);
         # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
@@ -9592,12 +9605,15 @@ class RootWidget(BoxLayout):
         # 慢帧的"节拍"与"这一帧在发声/震动吗" —— 定位偶发长停顿的两把刀:
         #   · 节拍规则 ⇒ 时钟驱动(某个 0.5s 定时器); 不规则 ⇒ 事件驱动。
         #   · 慢帧里绝大多数在发声/震动 ⇒ 就是那条路(玩家"关音效就变好"的因果线索)。
-        # ⚠️ 门槛**自适应**(2026-09-14 修): 原来硬编码 `BENCH_SLOW_MS = 90`, 而本机最慢帧
-        #    只有 40ms ⇒ `_slow` **恒为空集** ⇒ 下面"慢帧的节拍 / 慢帧里在发声 / 在震动 /
-        #    在启动预热"四行**永远不打印**。一个专门用来定位卡顿的面板, 在这台设备上把
-        #    最该看的那几行静默掉了(压测段的专家挑出来的, 核对属实)。
-        #    改成"中位帧的两倍, 但至少 25 毫秒" —— 每台设备按自己的节拍算。
-        _slow_ms = max(25.0, 2.0 * out["p50"])
+        # ⚠️ 门槛按**中位帧的相对比例**定, 不用任何绝对值(2026-09-14 玩家定稿)。
+        #    来由: 原来两处各写一套绝对值(`BENCH_SLOW_MS=90` 与 `1000/90`), 而本机最慢帧
+        #    只有 40ms ⇒ `_slow` **恒为空集**, "慢帧的节拍/在发声/在震动"几行永远不打印;
+        #    换台低刷设备又会反过来把普通帧判成慢帧。
+        #    实证(真机日志 v0.7.32 → v0.7.34): 1%Low 从 77.9 改善到 89.7, 而绝对 90fps
+        #    口径反而报"恶化"(9→12 帧) —— 因为 1%Low 已贴着 90 门槛, 计数在门槛附近抖动。
+        #    同一份数据按"中位帧 50%"算是 7→6 帧, 与 1%Low **同向**。
+        #    定稿: 慢帧 = 中位帧率的 50% ⇒ 帧时间 >= 2 × 中位帧时间。
+        _slow_ms = 2.0 * out["p50"]
         out["slow_ms"] = _slow_ms
         _slow = [x for x in fr if x[0] >= _slow_ms]
         out["slow_n"] = len(_slow)
@@ -9890,9 +9906,14 @@ class RootWidget(BoxLayout):
     
         if len(tex) != len(gaps):
             tex = [0] * len(gaps)
-        _n1 = max(1, int(len(gaps) * 0.01))
+        _n1 = max(1, int(len(gaps) * 0.01))   # 最慢 1% 的帧数(只给 `_order[:3]` 取最慢三帧用)
         _order = sorted(range(len(gaps)), key=lambda _i: -gaps[_i])
-        _thr = gaps[_order[_n1 - 1]]          # "最慢 1%"的门槛(毫秒)
+        # 慢帧门槛 = 中位帧时间的 2 倍(= 中位帧率的 50%), 与 `_bench_diag` 的 `_slow_ms` **同口径**。
+        # ⚠️ 这里原来写的是"最慢 1% 的分位临界值", 与 `_bench_diag` 的 `_slow_ms` 是**两套算法**,
+        #    同一份日志里两处"慢帧"能差好几倍, 而面板与各阶段表读的又不是同一个 ⇒ 本次统一
+        #    (2026-09-14 玩家定稿: 慢帧=中位帧 50%, 重卡=中位帧 70%, 一律不写死绝对值)。
+        _p50 = sorted(gaps)[len(gaps) // 2]
+        _thr = 2.0 * _p50
         # ⚠️ "慢帧"的判据**必须与下面各阶段表用同一条**: 都是 `>= 门槛`。
         #    写成 `set(_order[:_n1])` 的话, 正好卡在门槛上的并列帧会让两边算出**不同的集合**
         #    (实测 100 帧里 20 帧同值: 一边 1 帧、一边 20 帧), 于是"慢帧当帧有没有文字重建"
@@ -9910,7 +9931,8 @@ class RootWidget(BoxLayout):
                              float(getattr(self, "_render_fps", 0.0)),
                              float(getattr(self, "_render_median_fps", 0.0)),
                              float(getattr(self, "_render_1low", 0.0))))
-            _lines.append("# 慢帧门槛 %.2f 毫秒(最慢 %d 帧的临界值)" % (_thr, _n1))
+            _lines.append("# 慢帧门槛 %.2f 毫秒(中位帧 %.2f 毫秒 × 2 = 中位帧率的 50%%; 命中 %d 帧)"
+                          % (_thr, _p50, len(_slow_idx)))
         except Exception:
             pass
         # ---- ★ 这一轮到底能不能和上一轮比(2026-09-14 加) ----
@@ -9921,8 +9943,15 @@ class RootWidget(BoxLayout):
         # ⚠️ 判据用「低于 90fps 的帧数」而不是 1%Low: 后者被配比带得晃。
         # ⚠️ **这一段不包在 `try` 里**(它自己在下面逐项兜底) —— 包了的话一旦出错就被
         #    静默吞掉, 而玩家看到的是"日志里少了这两行", 不报错也不提示。
-        _th90 = 1000.0 / 90.0
+        # 判据 = **中位帧率的 50%**(帧间隔 = 中位 / 0.5 = 中位的 2 倍)。与 70% 同源, 只是更严。
+        # ⚠️ 玩家 2026-09-14 定的两档口径: **<50% 要尽量消除; 50%~70% 只作参考**。
+        #    所以下面印**两行** —— 一行硬判据、一行参考带, 别把参考带的帧混进硬指标里。
+        # ⚠️ 写法沿用既有约定:「中位帧×70%」= **中位帧率的 70%**, 阈值 = `p50 / 0.7`。
+        _p50b = sorted(gaps)[len(gaps) // 2]
+        _th90 = _p50b / 0.5
         _below90 = [_i for _i in range(len(gaps)) if gaps[_i] > _th90]
+        _th_ref = _p50b / 0.7
+        _refband = [_i for _i in range(len(gaps)) if _th_ref < gaps[_i] <= _th90]
         # ⚠️ **就地取, 不引用上面的 `tex`/`tags`** —— 那两个列表在本函数里定义得**很晚**
         #    (在"各阶段统计表"那一段之后), 而这一段的插入点在头部 ⇒ 直接引用会 NameError。
         _tex_all = list(getattr(self, "_bench_tex", []) or [])
@@ -9952,9 +9981,13 @@ class RootWidget(BoxLayout):
         # ⚠️ `1%%Low` 的双百分号**不能省**: 这一行是 `%` 格式化的, 写成 `1%Low` 会被当成
         #    格式符(`%L`), 报的是 "not enough arguments for format string" —— 报错信息
         #    指向 `%d` 的个数, 而**真正的原因在后面那个 `%`**。
-        _lines.append("# ★ 低于 90fps 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d / 带字号 %d"
+        _lines.append("# ★ 低于「中位帧率 50%%」(%.1f fps) 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d / 带字号 %d"
                       "   ← **跨版本比较用这一条, 别用 1%%Low**"
-                      % (len(_below90), _b90_tex, _b90_face, _b90_fit))
+                      % (1000.0 / _th90, len(_below90), _b90_tex, _b90_face, _b90_fit))
+        # 参考带单独一行(玩家定稿: 50%~70% 只作参考, 不进硬指标)。
+        _lines.append("# ★ 参考带「中位帧率 50%%~70%%」(%.1f~%.1f fps): %d 帧  ·  中位帧 %.2f 毫秒"
+                      "   ← 这**不是**指标, 只用来看趋势(跟着上面的硬指标一起降才对)"
+                      % (1000.0 / _th90, 1000.0 / _th_ref, len(_refband), _p50b))
         _cnt = {}
         for _t in _tags_all:
             _cnt[_t] = _cnt.get(_t, 0) + 1
@@ -10185,7 +10218,11 @@ class RootWidget(BoxLayout):
             _lines.append("# 慢帧**前%d帧内**有过%s: %d/%d (%.0f%%)  ·  其余帧: %d/%d (%.0f%%)"
                           % (_lag, _nm, _s_lag, _s_n, 100.0 * _s_lag / max(1, _s_n),
                              _o_lag, _o_lag_n, 100.0 * _o_lag / max(1, _o_lag_n)))
-        if any(_self_ms) or any(_thr_ms):
+        # ⚠️ 必须带 `_slow_idx` 非空判断: 门槛改成"中位帧×2"之后, 帧时间分布集中时
+        #    **可能一帧都不命中** —— 旧门槛"最慢1%"天然保证至少命中 1 帧(_n1 >= 1),
+        #    这个隐含保障被改掉了 ⇒ `_sg` 为空 ⇒ 下面 `_sg[len(_sg)//2]` IndexError。
+        #    (2026-09-14 改门槛时, `fx_probe` 的 CPU 账夹具当场把它抓红。)
+        if _slow_idx and (any(_self_ms) or any(_thr_ms)):
             _sg = sorted(gaps[_i] for _i in _slow_idx)
             _ss = sorted(_self_ms[_i] for _i in _slow_idx)
             _st = sorted(_thr_ms[_i] for _i in _slow_idx)
@@ -10476,13 +10513,13 @@ class RootWidget(BoxLayout):
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
         note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
         content.add_widget(note)
-        # 两个按钮一行: 保存日志(txt) + 关闭。
+        # 两个按钮一行: 保存日志(txt) + 返回。
         # ⚠️ 保存是**唯一**能把"逐帧数据"**完整**带出这台设备的出口 —— 曲线只能看, 带不走;
         #    而剪贴板在真机上**会被截断**(实测 3778 帧的日志只贴出 425 行)。
         _btns = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
         save = Button(text='保存日志(txt)', font_size='16sp', bold=True,
                       background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
-        close = Button(text='关闭', font_size='16sp', bold=True,
+        close = Button(text='返回', font_size='16sp', bold=True,
                        background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,))
         _btns.add_widget(save)
         _btns.add_widget(close)
@@ -10734,6 +10771,12 @@ class RootWidget(BoxLayout):
             #      · `各阶段出慢帧比例：…` 与 `低于 60 FPS 的帧：N / M` —— **留**。前者回答
             #        "卡在哪一段", 后者就是判据本身。
             _grp = d.get("groups") or {}
+            # ⚠️ 2026-09-14 玩家定稿: 这一段的口径统一到**卡顿帧**(帧率 < 中位帧率 50%),
+            #    不再是"最慢 1%" —— 否则上面写"卡顿帧共 N 帧"、下面写"各阶段比例"用的却是
+            #    另一批帧, 两行对不上, 读数的人会以为哪里算错了。
+            # ⚠️ 卡顿帧为 0 时**不要退回 `low1_groups`** —— 那会印出"分布"却写着"共 0 帧",
+            #    两行自相矛盾(而且那批帧根本不是卡顿帧)。0 就明说 0。
+            _stages = (d.get("jank_groups") or []) if d.get("jank_n") else []
             _rows = []
             for _name, _cnt in _stages[:3]:
                 _info = _grp.get(_name)
@@ -10744,13 +10787,19 @@ class RootWidget(BoxLayout):
             _rate = [('%s %.1f%%（%d/%d）' % (r[1], r[0], r[2], r[3])) if r[3] > 0
                      else ('%s %d帧' % (r[1], r[2])) for r in _rows]
             if _rate:
-                parts.append('各阶段出慢帧比例：' + ' · '.join(_rate))
+                parts.append('卡顿帧分布：' + ' · '.join(_rate))
             _worst = (d.get("worst") or [None])[0]
             if _worst:
                 _gap, _stage = float(_worst[0]), _worst[1]
+                # ⚠️ 分隔符统一用**全角冒号** —— 上一版这里写的是半角 ": ", 三行里两行全角
+                #    一行半角, 截图上一眼看出来不齐(玩家说过"排版废话很多", 别再送把柄)。
                 parts.append('最慢一帧：%.0f 毫秒（%s）' % (_gap, _stage))
-            parts.append('低于 60 FPS 的帧：%d / %d' %
-                         (int(d.get("over60_n", 0)), int(d.get("n", 0))))
+            # ⚠️ 原来这一行是「低于 60 FPS 的帧: N / M」—— **绝对帧率**的门槛在高刷机上没有
+            #    意义(165Hz 的机器上"低于 60fps"是地板级要求, 而且它的分子分母都是全窗口,
+            #    跟上面"卡顿帧"那批根本不是同一批帧)。玩家 2026-09-14 定稿改成:
+            #    **卡顿帧(帧率 < 中位帧率的 50%), 一共有 X 帧** —— 门槛跟着本机中位走。
+            parts.append('卡顿帧（帧率 < 中位帧率的 50%%）：共 %d 帧'
+                         % int(d.get("jank_n", 0)))
             return '\n'.join(parts)
         except Exception:
             return ''
