@@ -6514,6 +6514,15 @@ class GameArea(FloatLayout):
                 pass
         # 与 `_redraw` 同义: 重掷后槽位白闪作废(它在 `tick_draw` 里读 `_pulse`)
         self._pulse = None
+        # ⚠️ **与 `_redraw` 同义的第二件事: 换盘面熄灭全部投中指示灯**。这里曾经漏掉 ——
+        #    玩家报「进入倍率槽的时候, 有一个红点和绿点代表有没有命中, 这个点应该在结算之后
+        #    就消失, 实际并没有消失」。病根: 灯本来就只在 `_redraw()` 重建 `_lamp_cols` 时
+        #    被顺手重置成 `COL_LAMP_OFF`, 而 `park_ball(reroll=True)` 从整块 `_redraw()` 换成
+        #    增量 `_update_slots()` 之后, 这层遮盖就没了 ⇒ 灯**每局点亮一格、从不熄灭**,
+        #    几局下来槽上攒出一片红绿点。`else`(哑火)那条路上的 `lamps_off()` 救不了它。
+        #    ⚠️ 与上面那三张表不同: `_lamp_cols` 的条数由 `_redraw` 建, 这里只按**现有条数**
+        #       熄灭(与 `lamps_off()` 同一套写法), 所以不参与上面那个结构守卫, 也不会半更新。
+        self.lamps_off()
 
     def _redraw(self, *_):
         if self.width < 20 or self.height < 20:
