@@ -14,9 +14,9 @@ os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown Landscape Landscap
 
 # 必须在导入 Window 之前配置。所有平台都保留 SDL 的 swap interval：Windows 上关闭它不会
 # 绕过桌面合成器，实测反而把 60Hz 显示器从稳定 60fps 拖成约 50fps。高刷显示器开启 vsync
-# 会自然按其刷新率呈现；Android 则由下面的 Window/显示模式请求把 Surface 提升到 120Hz。
+# 会自然按其刷新率呈现；Android 则由下面的 Window/显示模式请求优先提升到 165Hz。
 from kivy.config import Config
-Config.set("graphics", "maxfps", "120")
+Config.set("graphics", "maxfps", "165")
 Config.set("graphics", "vsync", "1")
 
 import math
@@ -139,9 +139,9 @@ E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
 VMAX = 2400.0                # 限速(需 >= 最大发射速度, 防穿透)
 FIXED_DT = 1.0 / 60.0
-# 呈现/界面逻辑按 120Hz 调度；物理仍固定在 60Hz，累加器使得每两个呈现 tick 推进一步物理。
-# 低刷屏由 vsync 合并 tick，高刷屏则能获得真正的 120 次画面更新。
-FRAME_TICK_HZ = 120
+# 呈现/界面逻辑按 165Hz 调度；物理仍固定在 60Hz，累加器决定何时推进物理。
+# 低刷屏由 vsync 合并 tick，高刷屏则能获得真正的 165 次画面更新。
+FRAME_TICK_HZ = 165
 FRAME_TICK_DT = 1.0 / FRAME_TICK_HZ
 # 一帧最多补几个物理步(超出的积压**丢掉**, 不往下攒)。见 `_clamp_accum` 的说明。
 MAX_STEPS_PER_FRAME = 4
@@ -2096,12 +2096,13 @@ _texupd_wrap()
 
 
 
-# ---- 120fps 呈现策略 ------------------------------------------------------
+# ---- 高刷新率呈现策略 -----------------------------------------------------
 # `maxfps` 只是 Kivy Clock 的调度上限，不能要求 Android 切换显示模式；反过来，仅请求
 # Android 的高刷模式也无法解除 Kivy 自己的 60fps 睡眠。因此两层必须同时设置。
-# 物理仍用 FIXED_DT=1/60：这是模拟精度，不是呈现上限；120fps 时会有最多一帧不推进物理。
-FPS_CAP_MAX = 120
-FPS_CAP_FALLBACK = 120
+# 物理仍用 FIXED_DT=1/60：这是模拟精度，不是呈现上限；165fps 时也由累加器决定推进。
+FPS_CAP_MAX = 165
+FPS_CAP_FALLBACK = 165
+FPS_CAP_PC = 120
 _FPS_INFO = [0.0, 0.0, 0.0]  # [当前屏幕Hz, Kivy上限, Android请求的模式Hz]
 
 
@@ -2125,10 +2126,10 @@ def _screen_hz():
         return None
 
 
-def _request_android_120hz():
-    """请求 Android 以最接近 120Hz 的同分辨率显示模式运行。
+def _request_android_high_hz():
+    """请求 Android 以设备支持的最高、且不高于 165Hz 的同分辨率模式运行。
 
-    `Window.setFrameRate(120)`（API 30+）告诉系统此窗口的期望节拍；
+    `Window.setFrameRate(165)`（API 30+）告诉系统此窗口的期望节拍；
     `preferredDisplayModeId`（API 23+）则兼容旧系统，并在自适应刷新率机器上给出明确的
     高刷模式偏好。两者都是系统可拒绝的请求：省电模式、温控或用户强制 60Hz 时不能绕过系统。
     """
@@ -2150,12 +2151,11 @@ def _request_android_120hz():
         def hz(mode):
             return float(mode.getRefreshRate())
 
-        exact = [m for m in candidates if abs(hz(m) - target) < 0.5]
-        above = [m for m in candidates if hz(m) >= target - 0.5]
-        # 优先精确 120；没有则选最低的更高档（例如 144/165），再退到设备能给的最高档。
-        chosen = (exact[0] if exact else
-                  min(above, key=hz) if above else
-                  max(candidates, key=hz) if candidates else None)
+        at_or_below = [m for m in candidates if hz(m) <= target + 0.5]
+        # 165Hz 设备取 165；144/120Hz 设备自然退到自己的最高档，不因请求 165 误跳到
+        # 设备的 240Hz 模式后又被应用 165fps 上限截断。
+        chosen = (max(at_or_below, key=hz) if at_or_below else
+                  min(candidates, key=hz) if candidates else None)
         mode_id = int(chosen.getModeId()) if chosen is not None else 0
         mode_hz = hz(chosen) if chosen is not None else 0.0
         sdk = int(autoclass("android.os.Build$VERSION").SDK_INT)
@@ -2164,7 +2164,7 @@ def _request_android_120hz():
 
         @run_on_ui_thread
         def apply_request(win, requested_mode_id, requested_hz, api_level):
-            # Window API 从 Android 11 起可用；即使没有列出 mode，也保留 120fps 的窗口请求。
+            # Window API 从 Android 11 起可用；即使没有列出 mode，也保留高刷窗口请求。
             if api_level >= 30:
                 try:
                     win.setFrameRate(float(FPS_CAP_MAX))
@@ -2192,11 +2192,11 @@ def _refresh_screen_hz(*_):
 
 
 def _apply_fps_cap():
-    """在启动/回前台重申 120fps 的 Kivy 与平台配置。"""
+    """在启动/回前台重申 Android 165Hz / PC 120fps 的 Kivy 与平台配置。"""
     hz = _screen_hz()               # 只用于面板显示
-    requested_hz = _request_android_120hz()
+    requested_hz = _request_android_high_hz()
     try:
-        cap = float(FPS_CAP_MAX)
+        cap = float(FPS_CAP_MAX if platform == "android" else FPS_CAP_PC)
     except Exception:
         cap = float(FPS_CAP_FALLBACK)
     _FPS_INFO[0] = float(hz or 0.0)
@@ -6272,7 +6272,7 @@ class RotPopup(Popup):
     pos_hint 居中交给 FloatLayout 布局, 转屏时尺寸变化自动跟随。"""
 
     def _reassert_high_refresh(self, *_):
-        """弹窗切换后重申 120Hz：自适应刷新率设备会把静态 Modal 降回 60Hz。"""
+        """弹窗切换后重申高刷新率：自适应刷新率设备会把静态 Modal 降回 60Hz。"""
         if platform != "android":
             return
         try:
@@ -8846,7 +8846,8 @@ class RootWidget(BoxLayout):
             _fc = int(d.get("frame_calls", 0))
             _hz, _cap, _mode_hz = _FPS_INFO[0], _FPS_INFO[1], _FPS_INFO[2]
             _platform_rate = (' · Android模式请求 %s' %
-                              (('%.0fHz' % _mode_hz) if _mode_hz else '120Hz（模式未知）')
+                              (('%.0fHz' % _mode_hz) if _mode_hz else
+                               ('%.0fHz（模式未知）' % FPS_CAP_MAX))
                               if platform == "android" else ' · 桌面vsync跟随屏幕刷新率')
             parts.append('节拍： 屏幕 %s · 帧率上限 %s · vsync=%s%s'
                          ' · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
