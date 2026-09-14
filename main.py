@@ -7141,6 +7141,7 @@ class RootWidget(BoxLayout):
         super().__init__(orientation="vertical", spacing=dp(10), **kw)
         self.sfx = sfx if sfx is not None else Sfx(SOUND_ENABLED)
         self.geo = build_geo()
+        self._controls_enabled = True     # 输入锁(见 _set_controls_enabled / on_touch_down)
         self._base_deflectors = list(self.geo["deflectors"])   # 原始弧面(每发射前按 arc_dy 重建)
         self.multipliers = roll_multipliers()
         self.balance = START_BEADS
@@ -7789,12 +7790,31 @@ class RootWidget(BoxLayout):
                                            else COL_BTN_OFF) + (1,)
 
     def _set_controls_enabled(self, enabled):
-        self.fire_btn.disabled = not enabled
-        self.reset_btn.disabled = not enabled
-        for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
-            btn.disabled = not enabled
-        self.round_btn.disabled = not enabled
-        self.mute_btn.disabled = not enabled
+        """锁/解锁 HUD 输入。
+
+        ⚠️ **绝不再逐个按钮改 `btn.disabled`**(2026-09-15 修, 这是 1% Low 的头号来源)。
+        病根在 Kivy `uix/label.py` 的 `_trigger_texture_update`:
+        ```
+            elif name == 'disabled':
+                self._label.options['color'] = self.disabled_color if value else self.color
+        ```
+        **Kivy 把文字颜色烘进纹理** ⇒ 改一次 `disabled` 就要重排一次文字纹理,
+        而 `Button` 本身就是 `Label` ⇒ **12 个按钮 = 12 次重排**。更致命的是 Kivy 用
+        Clock(`create_trigger(..., -1)`)把这些重排**攒到同一帧**一起做 —— 于是那一帧
+        12~21 毫秒(占该帧 95%+), 正是 1% Low 的主要来源。
+
+        桌面二分实测(12 个按钮):
+            `disabled=True`            → **12 次重建**
+            `disabled_color` 对齐成 `color` 后再 `disabled=True` → **12 次**(Kivy 无条件重排, 没用)
+            `background_color`         → **0 次**(变灰走它本来就免费)
+        真机对应: 每一发两次爆发 —— **发射时禁用 16 次 / 回 ready 时启用 15 次**,
+        间隔正好一个蓄力时长(0.1s), 每次卡 12~21 毫秒。
+
+        现在的做法: 变灰照旧走 `background_color`(免费), 输入锁改由
+        `RootWidget.on_touch_down` 在**触摸层**统一吞掉(见那里的注释)。
+        ⚠️ 变灰必须保留 —— 万一状态卡住, 玩家**看得见**按钮是暗的, 比"看起来正常却点不动"强得多。
+        """
+        self._controls_enabled = bool(enabled)
         if enabled:
             self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
             self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
@@ -7818,6 +7838,20 @@ class RootWidget(BoxLayout):
             self._rtp_title_lbl.color = dim
             self._bet_title_lbl.color = dim
             self.stats_lbl.color = dim
+
+    def on_touch_down(self, touch):
+        """锁输入期间把 HUD 的触摸统一吞掉(见 `_set_controls_enabled` 的说明)。
+
+        ⚠️ **只挡 `on_touch_down`, 不挡 `on_touch_up`** —— 松手那条路走 Kivy 的 touch grab
+        (发射键在**按下**时就 grab 了), `fire_btn.on_release -> launch()` 必须照常送达,
+        否则球永远发不出去。而锁只发生在 `launch()` **之后**(`start_charge` 不加锁),
+        那时手早就松开了, 所以两者不会打架。
+        ⚠️ 弹窗(Popup)是 Window 的直接子控件、**不挂在 RootWidget 下**, 所以锁输入期间
+        弹窗上的按钮照常可点(彩蛋弹窗、轮次结束、设置弹窗都靠这条)。
+        """
+        if not getattr(self, "_controls_enabled", True):
+            return True
+        return super().on_touch_down(touch)
 
     def _show_bench_status(self, text):
         """把跑分状态放在底部操作区正上方，复用统计栏而不遮住盘面。"""
@@ -8899,8 +8933,12 @@ class RootWidget(BoxLayout):
             _ok = True
         except Exception:
             _ok = False
-        if not _ok and btn is not None:
-            btn.text = '复制失败(剪贴板不可用)'
+        # ⚠️ `return False` 必须在 `btn is not None` **外面** —— 否则无参调用(保存那条路
+        #    就是这么调的)会一路落到 `return True`: 玩家被告知"已复制到剪贴板",
+        #    而剪贴板其实是空的。对抗性审查实测出来的(审查前这里是 `if not _ok and btn is not None`)。
+        if not _ok:
+            if btn is not None:
+                btn.text = '复制失败(剪贴板不可用)'
             return False
         if btn is not None:
             _n = txt.count("\n") + 1
@@ -8908,7 +8946,7 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(lambda _d: setattr(btn, 'text', '复制逐帧日志'), 2.0)
         return True
 
-    def _bench_save_log(self, btn=None, note=None):
+    def _bench_save_log(self):
         """把逐帧日志**存成 txt 文件**(玩家 2026-09-15: 「复制改为下载 txt, 这样就不缺少东西」)。
 
         ⚠️ 为什么不能只存 `user_data_dir`: 那是**应用内部目录**(`/data/data/<pkg>/files`),
@@ -8952,6 +8990,7 @@ class RootWidget(BoxLayout):
         except Exception:
             _sdk = 0
         if _sdk >= 29:
+            _uri1 = None
             try:
                 from jnius import autoclass
                 act = autoclass("org.kivy.android.PythonActivity").mActivity
@@ -8959,10 +8998,10 @@ class RootWidget(BoxLayout):
                 cv = autoclass("android.content.ContentValues")()
                 cv.put("_display_name", name)
                 cv.put("mime_type", "text/plain")
-                uri = resolver.insert(
+                _uri1 = resolver.insert(
                     autoclass("android.provider.MediaStore$Downloads").EXTERNAL_CONTENT_URI, cv)
-                if uri is not None:
-                    os_ = resolver.openOutputStream(uri)
+                if _uri1 is not None:
+                    os_ = resolver.openOutputStream(_uri1)
                     # ⚠️ 必须走 `java.lang.String.getBytes("UTF-8")` 拿到**真正的 byte[]** ——
                     #    直接把 Python `bytes` 交给 `OutputStream.write` 时, pyjnius 可能挑中
                     #    `write(int)` 重载, 于是只写进去一个字节(静默截断成一个字符)。
@@ -8970,10 +9009,21 @@ class RootWidget(BoxLayout):
                     os_.flush()
                     os_.close()
                     return True, "已保存到 Download/" + name
+                _err1 = "insert 返回空"
             except Exception as e:
                 _err1 = repr(e)
-            else:
-                _err1 = "insert 返回空"
+            # ⚠️ **insert 一返回, 那一行就已经落库、文件当场对玩家可见**(没设 is_pending)。
+            #    此后任何一步抛(openOutputStream 返回 None / 写到一半 / close 的 flush 失败)
+            #    都会走到这里 —— 不清掉的话, 公共 Download 里留下一个**0 字节或半截的同名 txt**,
+            #    而这个功能的全部承诺就是"去 Download 拿", 玩家会抓到那个坏文件发出去。
+            #    (对抗性审查 M1 提的; API 29+ 删自己插的行不需要权限。)
+            #    ⚠️ 别把 `os_.close()` 挪进 `finally` —— 那样"没写全"会被吞成"已保存",
+            #       正好制造这个功能要消灭的静默截断。
+            if _uri1 is not None:
+                try:
+                    resolver.delete(_uri1, None, None)
+                except Exception:
+                    pass
         else:
             _err1 = "API %d < 29" % _sdk
 
@@ -8991,7 +9041,12 @@ class RootWidget(BoxLayout):
             _tries.append(App.get_running_app().user_data_dir)
         except Exception:
             pass
-        _tries.append(tempfile.gettempdir())
+        # ⚠️ 这一行**必须在 try 里** —— `tempfile.gettempdir()` 在候选目录都不存在时会抛,
+        #    裸着写会让整个函数冲出异常, ①②③ 白跑、连 ④ 都到不了(审查 M4)。
+        try:
+            _tries.append(tempfile.gettempdir())
+        except Exception:
+            pass
         for _base in _tries:
             try:
                 if not os.path.isdir(_base):
@@ -8999,7 +9054,13 @@ class RootWidget(BoxLayout):
                 p = os.path.join(_base, name)
                 with open(p, "wb") as f:
                     f.write(txt.encode("utf-8"))
-                return True, "已保存: " + p + "（不是公共目录，需用文件管理器/adb 取）"
+                # ⚠️ 这一级**必须把 ① 为什么没成一起说出来**(审查 M2): 否则玩家看到
+                #    "需用文件管理器/adb 取"会先去文件管理器白找一轮 —— 而这个目录在
+                #    Android 11+ 上**系统文件管理器根本进不去**, 只有 adb 能取。
+                #    把原因写上, 他一眼就知道该换电脑插线, 而不是以为是自己没找对地方。
+                return True, ("已保存: %s（Android 11+ 的文件管理器看不到这个目录, "
+                              "要用电脑 adb pull 取）· 直接存 Download 失败原因: %s"
+                              % (p, _err1))
             except Exception:
                 continue
 
@@ -9009,7 +9070,7 @@ class RootWidget(BoxLayout):
                 return True, "没法落盘(%s); 已复制到剪贴板 —— 安卓剪贴板可能截断" % _err1
         except Exception:
             pass
-        return False, "保存失败(落盘与剪贴板都不可用)"
+        return False, "保存失败(落盘与剪贴板都不可用): %s" % _err1
 
     def _show_fps_curve(self):
         """展示本轮提交帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。"""

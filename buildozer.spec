@@ -1317,7 +1317,52 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe [24] 扩到 20 条(含"保存出来的 txt 逐字一致"/"走 MediaStore"/"getBytes"/
 #   "降级到底复用剪贴板")。验证: --selftest OK / --smoke SMOKE-OK / fx_probe 仍为已知 5 项。
-version = 0.7.17
+# 【v0.7.18 破案: 1% Low 的头号来源是"改 Button.disabled 逼 Kivy 重排文字"】
+#
+#   ---- 证据链 ----
+#   玩家真机 v0.7.17 的**完整**日志(存盘那条路通了, 2577 帧一帧不少)显示:
+#   每一发都产生**两次 15~16 个文字纹理重建的爆发**(间隔正好一个蓄力时长 0.1 秒),
+#   每次卡 **12~21 毫秒**; 而"最慢三帧的子步骤"显示我们自己的代码只占 0.4~2.8 毫秒。
+#   桌面点名: 那 15~16 个里 **12 个是按钮**(发射/重置/4 个投注/4 个返奖/每轮/音效),
+#   另两个是两个标题标签 —— 正好是 `_set_controls_enabled` 碰的那些控件。
+#   桌面二分(12 个按钮):
+#       `disabled=True`                                  -> **12 次重建**
+#       `disabled_color` 对齐成 `color` 后再 disabled=True -> **12 次**(Kivy 无条件重排, 没用)
+#       `background_color`                               -> **0 次**
+#
+#   ---- 机制(Kivy uix/label.py 的 `_trigger_texture_update`) ----
+#       elif name == 'disabled':
+#           self._label.options['color'] = self.disabled_color if value else self.color
+#   **Kivy 把文字颜色烘进纹理** ⇒ 改一次 `disabled` 就要重排一次文字纹理, 而 `Button` 就是
+#   `Label` ⇒ 12 个按钮 = 12 次; Kivy 又用 Clock(`create_trigger(..., -1)`)把这些重排
+#   **攒到同一帧**一起做 ⇒ 那一帧 12~21 毫秒(占该帧 95%+)。这就是玩家报的
+#   "球在飞的时候一卡一卡的", 也是 1% Low 上不去的主因。
+#
+#   ---- 改成什么 ----
+#   变灰照旧走 `background_color`(免费), 输入锁改由 `RootWidget.on_touch_down`
+#   在**触摸层**统一吞掉。实测同一次发射的重建 **19 次 -> 7 次**(剩下的是状态栏/余额/统计
+#   这些本来就该变的, 加两个标题标签的变灰)。
+#   ⚠️ 守卫**只挡 `on_touch_down`, 不挡 `on_touch_up`** —— 松手走 Kivy 的 touch grab
+#      (发射键按下时就 grab 了), `on_release -> launch()` 必须照常送达。而锁**只在
+#      `launch()` 里上**(`start_charge` 不加锁), 那时手早松开了, 两者不冲突。
+#   ⚠️ 变灰必须保留: 万一状态卡住, 玩家**看得见**按钮是暗的, 比"看起来正常却点不动"强。
+#   ⚠️ 弹窗是 Window 的直接子控件、不挂在 RootWidget 下, 所以锁输入期间弹窗按钮照常可点。
+#
+#   ---- 同一版收掉的 4 个存盘路径问题(来自一轮对抗性审查, 48 个子代理) ----
+#   M1 insert 成功后任一步抛会**在公共 Download 留下 0 字节/半截的同名 txt**, 玩家会抓到
+#      坏文件 → except 里 `resolver.delete(uri)` 清掉(API 29+ 删自己插的行不要权限)。
+#   M2 ④ 那一级才显示 `_err1` ⇒ 降级到 ② 时玩家**看不到 ① 为什么失败**, 而 ② 的目录在
+#      Android 11+ 系统文件管理器根本进不去, 他会白找一轮 → 现在把原因一起写进提示。
+#   M3 `_copy_bench_log()` 在**无参调用**时剪贴板失败也返回 True(假报成功) → `return False`
+#      挪到 `if btn is not None` 外面。
+#   M4 `tempfile.gettempdir()` 裸在 try 外, 一抛整个函数冲出、连 ④ 都到不了 → 包上。
+#
+#   门禁: fx_probe 新增 **[25] 输入锁: 触摸层吞掉, 不再动 Button.disabled**(5 条,
+#   含"整个文件零 `.disabled =` 赋值"); 阴性对照: 把一处 `.disabled` 加回去 → 红 2 条。
+#   ⚠️ 已知缺口: "真手指按下→松手→球发出去"这条端到端链路**没在桌面验成**(构造 Kivy touch
+#   有三个坑没趟平), 依据是结构性的(见上)。真机首次跑请重点确认球能正常发出去。
+#   验证: --selftest OK / --smoke SMOKE-OK / fx_probe 仍为已知 5 项。
+version = 0.7.18
 
 
 
