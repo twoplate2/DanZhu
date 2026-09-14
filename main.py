@@ -6752,6 +6752,7 @@ class GameArea(FloatLayout):
             badge = Label(text=display, font_size=sp(20), bold=True, halign="center",
                           valign="middle", color=hex_rgb(COL_FIRE) + (1,),
                           size_hint=(None, None))
+            _tag_texupd(badge, "跑分提示")
             badge.texture_update()
             badge.size = badge.texture_size
             self._bench_badge = badge
@@ -7732,6 +7733,10 @@ class RootWidget(BoxLayout):
         self.stats_lbl._fit_base = self.stats_lbl.font_size
         self._fit1(self.stats_lbl)
 
+    def _set_game_status(self, text):
+        """统一更新游戏状态文案，跑分也保持与正常游玩相同的 UI 负载。"""
+        return _set_label_text(self.status_lbl, text)
+
     def _hide_bench_status(self):
         self._bench_status_active = False
         fs = self._font_scale * self._ui_scale
@@ -8115,8 +8120,9 @@ class RootWidget(BoxLayout):
         ver = _app_version()
         _set_label_text(self.status_lbl, ("性能测试中 " + ver) if ver else "性能测试中…")
         self._set_controls_enabled(False)
-        self.game_area.show_bench_badge("性能测试中\n正在准备…")
-        # 不再额外创建/移动「测试设备性能中」飘字；它会污染跑分本身，顶部状态栏已给出反馈。
+        # 渲染跑分不额外叠加中央红字或飘字：被测画面只保留正常游戏 HUD，
+        # 这样 1% Low 与玩家实际发射时看到的负载完全一致。
+        self.game_area.hide_bench_badge()
         # ⚠️ **等启动预热跑完再采样**(2026-09-14)。采样窗口只有 7~12 秒
         #    (`_target_launches = 5`), 而玩家是启动后 3 秒就长按标题开跑的 —— 真机上一个
         #    预热单步要 100~200 毫秒(球纹理烘焙; 桌面只要 16.6), 常常还没跑完。
@@ -8138,7 +8144,7 @@ class RootWidget(BoxLayout):
 
     def _start_benchmark(self):
         """阶段1: 真实屏幕采样(on_flip, 自动发球5发), 发满后停止采样，再测阶段2物理吞吐。"""
-        self.game_area.show_bench_badge("正在测渲染\n第 1 / 5 发")
+        self.game_area.hide_bench_badge()
         self._flip_times = []
         # ---- 诊断(2026-09-13 加): 光有"平均帧率/1%Low"没法定位卡在哪 —— 见 _bench_tag ----
         self._bench_frames = []          # [(帧间隔ms, 场景标签)]
@@ -8263,12 +8269,9 @@ class RootWidget(BoxLayout):
 
     def _auto_launch_tick(self, dt):
         if self._launch_count >= self._target_launches:
-            self.game_area.show_bench_badge("正在测 SoC\n7 轮稳定性测试")
             self._finish_render_sample(0)
             return
         if self.state == "ready":
-            self.game_area.show_bench_badge("正在测渲染\n第 %d / %d 发" %
-                                            (self._launch_count + 1, self._target_launches))
             self.start_charge()
             self._launch_count += 1
             Clock.schedule_once(lambda _: (setattr(self, "power", 0.8), self.launch()), 0.1)
@@ -8332,6 +8335,18 @@ class RootWidget(BoxLayout):
         out["p50"] = pk(0.50)
         out["p99"] = pk(0.99)
         out["max"] = gaps[-1]
+        # 与成绩页 1% Low 使用同一批最慢帧，专门保存成可读的归因摘要。
+        # 这样结果页不必再堆满与优化无关的累计计数。
+        _low1_n = max(1, int(nn * 0.01))
+        _low1 = sorted(fr, key=lambda x: x[0], reverse=True)[:_low1_n]
+        out["low1_n"] = _low1_n
+        out["low1_ms"] = sum(x[0] for x in _low1) / _low1_n
+        _low1_groups = {}
+        for _x in _low1:
+            _low1_groups[_x[1]] = _low1_groups.get(_x[1], 0) + 1
+        out["low1_groups"] = sorted(_low1_groups.items(), key=lambda x: -x[1])
+        # 16.7ms 是 60 FPS 的帧预算；120Hz 的平均值高并不代表没有越过这条线。
+        out["over60_n"] = sum(1 for x in fr if x[0] > (1000.0 / 60.0))
         # 最慢的 3 帧 + 当时在演什么 + **那一帧真烧了多少 CPU**。
         # 后两个数一起看才分流: 实算 ≈ 帧间隔 ⇒ 算出来的(处理器瓶颈);
         # 实算很小 ⇒ 等出来的(GC/IO/显卡/驱动阻塞) —— 真机上这是唯一能分清的地方。
@@ -8638,7 +8653,7 @@ class RootWidget(BoxLayout):
                   size=lambda w, *_: setattr(w._line, "size", w.size))
         content.add_widget(_sep)
 
-        diag_lbl = Label(text=self._bench_diag_text(), font_size='15sp',
+        diag_lbl = Label(text=self._bench_low_summary_text(), font_size='15sp',
                          halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
         self._auto_h(diag_lbl, dp(0), dp(0))
@@ -8876,6 +8891,39 @@ class RootWidget(BoxLayout):
             if _win:
                 parts.append('⚠️ 每帧实算这一项在 Windows 上测不准(系统计时粒度 15.6 毫秒), '
                              '「瓶颈」不判 —— 要看它请用安卓机的成绩')
+            return '\n'.join(parts)
+        except Exception:
+            return ''
+
+    def _bench_low_summary_text(self):
+        """成绩页默认只显示能指导 1% Low 优化的简短证据。"""
+        d = getattr(self, "_bench_diag", None) or {}
+        if not d:
+            return ''
+        try:
+            parts = []
+            _n = int(d.get("low1_n", 0))
+            _ms = float(d.get("low1_ms", 0.0))
+            _stages = d.get("low1_groups") or []
+            _stage_text = ' · '.join('%s %d帧' % (name, count)
+                                     for name, count in _stages[:3])
+            if _n:
+                parts.append('1%% Low 定位：最慢 %d 帧平均 %.1f 毫秒%s' % (
+                    _n, _ms, ('（' + _stage_text + '）') if _stage_text else ''))
+            _worst = (d.get("worst") or [None])[0]
+            if _worst:
+                _gap, _stage = float(_worst[0]), _worst[1]
+                _main = float(_worst[3]) if len(_worst) > 3 else 0.0
+                _logic = float(_worst[4]) if len(_worst) > 4 else 0.0
+                parts.append('最慢帧：%.0f 毫秒（%s）· 主线程 %.1f / 游戏逻辑 %.1f 毫秒' %
+                             (_gap, _stage, _main, _logic))
+            parts.append('低于 60 FPS 的帧：%d / %d' %
+                         (int(d.get("over60_n", 0)), int(d.get("n", 0))))
+            _tex = d.get("texupd_by") or []
+            if _tex:
+                parts.append('文字纹理：%d 次（%s）' % (
+                    int(d.get("texupd", 0)),
+                    ' · '.join('%s %d' % (name, count) for name, count in _tex[:3])))
             return '\n'.join(parts)
         except Exception:
             return ''
@@ -9232,7 +9280,7 @@ class RootWidget(BoxLayout):
         self.plays = 0
         self.hits = 0
         self._refresh_stats()
-        self.status_lbl.text = "已重置"
+        self._set_game_status("已重置")
         self.round_plays = 0
         self._round_end_shown = False
         self.sfx.play("cash")
@@ -9271,7 +9319,7 @@ class RootWidget(BoxLayout):
         self._charge_start = time.time()     # 蓄力起始时刻(3秒兜底自动发射)
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
-        self.status_lbl.text = "蓄力中"
+        self._set_game_status("蓄力中")
 
     def launch(self):
         if self.state != "charging":
@@ -9289,7 +9337,7 @@ class RootWidget(BoxLayout):
                           SFX_MISFIRE_GAIN) * clamp(frozen_power / MISFIRE_POWER, 0.0, 1.0))
             _vibrate(8)
             self._set_controls_enabled(False)
-            self.status_lbl.text = "力度不足,未扣弹珠"
+            self._set_game_status("力度不足,未扣弹珠")
             return
         frozen_power = self.power  # 在清零前保存, 用于音量/震动分级
         self.balance -= self.bet
@@ -9318,7 +9366,7 @@ class RootWidget(BoxLayout):
                       SFX_LAUNCH_GAIN) * power_u(frozen_power))
         _vibrate(14)
         self._set_controls_enabled(False)
-        self.status_lbl.text = "发射!"
+        self._set_game_status("发射!")
 
     # ------------------------------ 结算 ------------------------------
     def settle(self, i):
@@ -9376,7 +9424,7 @@ class RootWidget(BoxLayout):
             # 账务(上面的 balance/hits/_save_config)一秒都不挪: 中途被杀不能吞奖励。
             # 精简(玩家: 「把那几个换行的文字精简下」): 去掉尾省略号 —— "结算中"本身已含进行义,
             # 128px 收到 112px, 于是 360dp 的右侧份额(110px)里也塞得下, 不必再靠缩字号。
-            self.status_lbl.text = "命中 x%d · 结算中" % m   # 中间态: 第一秒不发空, 余额"冻结"不像 bug
+            self._set_game_status("命中 x%d · 结算中" % m)   # 中间态: 第一秒不发空, 余额"冻结"不像 bug
             self._anim_pending = True
             # ---- 揭晓: 一次性事件, 用"本轮序号"当幂等键 ----
             # 三个洞一起补(2026-09-10 实修; 血泪见 android_part_pile.py 的 _pump_reveal):
@@ -9452,7 +9500,7 @@ class RootWidget(BoxLayout):
             _vibrate(300 if m >= 100 else (220 if m >= 50 else (150 if m >= 20 else (110 if m >= 10 else (75 if m >= 5 else 45)))))
         else:
             # 未中不播装杯, 保持原来的即时反馈(大字 + 余额滚动照旧)
-            self.status_lbl.text = "未中"
+            self._set_game_status("未中")
             self.game_area.big_result_text(m, payout)
             self._anim_pending = False
             self._reveal_done = True
@@ -9477,7 +9525,7 @@ class RootWidget(BoxLayout):
         try:
             self._anim_pending = False
             # 那个双空格是笔误, 收成单空格(119 -> 116px)
-            self.status_lbl.text = ("中奖! +%d (x%d)" % (payout, m)) if payout > 0 else "未中"
+            self._set_game_status(("中奖! +%d (x%d)" % (payout, m)) if payout > 0 else "未中")
             self.game_area.big_result_text(m, payout)
             now = time.time()
             self._anim_start_balance = self.display_balance
@@ -10207,11 +10255,11 @@ class RootWidget(BoxLayout):
                 self._topped = True           # 冲到顶点转向(恒在 0.95~1.00s): 顶部碰撞声
                 self.sfx.top(b.y)
             if b.y > SLOT_TOP - 40:
-                _set_label_text(self.status_lbl, "即将入袋…")
+                self._set_game_status("即将入袋…")
             elif b.y > PEG_TOP:
-                _set_label_text(self.status_lbl, "弹跳中…")
+                self._set_game_status("弹跳中…")
             else:
-                _set_label_text(self.status_lbl, "入场中…")
+                self._set_game_status("入场中…")
             if landed is None:
                 lx, ly = self._last_ball_xy
                 if (b.x - lx) ** 2 + (b.y - ly) ** 2 > 1.0:
