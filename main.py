@@ -8908,6 +8908,109 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(lambda _d: setattr(btn, 'text', '复制逐帧日志'), 2.0)
         return True
 
+    def _bench_save_log(self, btn=None, note=None):
+        """把逐帧日志**存成 txt 文件**(玩家 2026-09-15: 「复制改为下载 txt, 这样就不缺少东西」)。
+
+        ⚠️ 为什么不能只存 `user_data_dir`: 那是**应用内部目录**(`/data/data/<pkg>/files`),
+        文件管理器看不见 —— 存那儿等于没存。剪贴板那条路在真机实测**会被截断**
+        (3778 帧的日志只贴出 425 行, 安卓剪贴板走 Binder 有大小上限), 所以必须落盘。
+
+        逐级降级, **每一级都把结果说出来**(绝不静默失败):
+          ① 安卓 10+(API 29+) → MediaStore 写进**公共 Download 目录**, 不需要任何权限;
+          ② `getExternalFilesDir` → `/sdcard/Android/data/<pkg>/files/`, 老系统也能写、不用权限;
+          ③ `user_data_dir`(最后手段, 要 adb 才能取);
+          ④ 全失败 → 退回**复制到剪贴板**, 并在提示里写明"剪贴板可能被截断"。
+        返回 (成功?, 给玩家看的说明)。
+        """
+        try:
+            txt = self._bench_frame_log()
+        except Exception:
+            txt = ""
+        if not txt:
+            return False, "没有可保存的数据"
+        try:
+            name = "plinko_fps_%s.txt" % time.strftime("%Y%m%d_%H%M%S")
+        except Exception:
+            name = "plinko_fps.txt"
+
+        if platform != "android":
+            # 桌面: 写到一个明确的地方(这样桌面也能验证"文件真的写出来了、内容完整")
+            try:
+                d = os.path.join(tempfile.gettempdir(), "plinko_fps")
+                os.makedirs(d, exist_ok=True)
+                p = os.path.join(d, name)
+                with open(p, "wb") as f:
+                    f.write(txt.encode("utf-8"))
+                return True, "已保存: " + p
+            except Exception as e:
+                return False, "保存失败: %r" % (e,)
+
+        # ---- ① MediaStore → 公共 Download(API 29+) ----
+        try:
+            from jnius import autoclass
+            _sdk = int(autoclass("android.os.Build$VERSION").SDK_INT)
+        except Exception:
+            _sdk = 0
+        if _sdk >= 29:
+            try:
+                from jnius import autoclass
+                act = autoclass("org.kivy.android.PythonActivity").mActivity
+                resolver = act.getContentResolver()
+                cv = autoclass("android.content.ContentValues")()
+                cv.put("_display_name", name)
+                cv.put("mime_type", "text/plain")
+                uri = resolver.insert(
+                    autoclass("android.provider.MediaStore$Downloads").EXTERNAL_CONTENT_URI, cv)
+                if uri is not None:
+                    os_ = resolver.openOutputStream(uri)
+                    # ⚠️ 必须走 `java.lang.String.getBytes("UTF-8")` 拿到**真正的 byte[]** ——
+                    #    直接把 Python `bytes` 交给 `OutputStream.write` 时, pyjnius 可能挑中
+                    #    `write(int)` 重载, 于是只写进去一个字节(静默截断成一个字符)。
+                    os_.write(autoclass("java.lang.String")(txt).getBytes("UTF-8"))
+                    os_.flush()
+                    os_.close()
+                    return True, "已保存到 Download/" + name
+            except Exception as e:
+                _err1 = repr(e)
+            else:
+                _err1 = "insert 返回空"
+        else:
+            _err1 = "API %d < 29" % _sdk
+
+        # ---- ② 外部私有目录 / ③ 内部目录 ----
+        _tries = []
+        try:
+            from jnius import autoclass
+            act = autoclass("org.kivy.android.PythonActivity").mActivity
+            _d = act.getExternalFilesDir(None)
+            if _d is not None:
+                _tries.append(_d.getAbsolutePath())
+        except Exception:
+            pass
+        try:
+            _tries.append(App.get_running_app().user_data_dir)
+        except Exception:
+            pass
+        _tries.append(tempfile.gettempdir())
+        for _base in _tries:
+            try:
+                if not os.path.isdir(_base):
+                    os.makedirs(_base, exist_ok=True)
+                p = os.path.join(_base, name)
+                with open(p, "wb") as f:
+                    f.write(txt.encode("utf-8"))
+                return True, "已保存: " + p + "（不是公共目录，需用文件管理器/adb 取）"
+            except Exception:
+                continue
+
+        # ---- ④ 全失败: 退回剪贴板(复用已测过的那个方法), 并**明说可能被截断** ----
+        try:
+            if self._copy_bench_log():
+                return True, "没法落盘(%s); 已复制到剪贴板 —— 安卓剪贴板可能截断" % _err1
+        except Exception:
+            pass
+        return False, "保存失败(落盘与剪贴板都不可用)"
+
     def _show_fps_curve(self):
         """展示本轮提交帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。"""
         gaps = list(getattr(self, "_render_gaps_ms", []) or [])
@@ -8934,19 +9037,35 @@ class RootWidget(BoxLayout):
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
         note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
         content.add_widget(note)
-        # 两个按钮一行: 复制逐帧日志 + 关闭。
-        # ⚠️ 复制是**唯一**能把"逐帧数据"带出这台设备的出口 —— 曲线只能看, 带不走。
+        # 两个按钮一行: 保存日志(txt) + 关闭。
+        # ⚠️ 保存是**唯一**能把"逐帧数据"**完整**带出这台设备的出口 —— 曲线只能看, 带不走;
+        #    而剪贴板在真机上**会被截断**(实测 3778 帧的日志只贴出 425 行)。
         _btns = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
-        copy = Button(text='复制逐帧日志', font_size='16sp', bold=True,
+        save = Button(text='保存日志(txt)', font_size='16sp', bold=True,
                       background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
         close = Button(text='关闭', font_size='16sp', bold=True,
                        background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,))
-        _btns.add_widget(copy)
+        _btns.add_widget(save)
         _btns.add_widget(close)
         content.add_widget(_btns)
+        # 保存结果**单独一行常驻显示** —— 按钮上的字两秒就变回去了, 而"存到哪了"是要照着去找的。
+        _note = Label(text='', font_size='12sp', halign='center', valign='middle',
+                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(30))
+        _note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+        content.add_widget(_note)
         popup = self._popup(0.92, 390, title='', content=content,
                             auto_dismiss=True, separator_height=0)
-        copy.bind(on_release=lambda *_: self._copy_bench_log(copy))
+
+        def _do_save(*_):
+            try:
+                _ok, _msg = self._bench_save_log()
+            except Exception as _e:
+                _ok, _msg = False, "保存失败: %r" % (_e,)
+            _set_label_text(_note, _msg)
+            save.text = '已保存' if _ok else '保存失败'
+            Clock.schedule_once(lambda _d: setattr(save, 'text', '保存日志(txt)'), 2.5)
+
+        save.bind(on_release=_do_save)
         close.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)

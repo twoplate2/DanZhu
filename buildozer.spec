@@ -1296,7 +1296,28 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe [24] 扩到 15 条(含"形状意外时退化成『无』且整份日志不消失")。
 #   验证: --selftest OK / fx_probe 仍为已知 5 项(球贴图 mipmap, 本版无新增)。
-version = 0.7.16
+# 【v0.7.17 逐帧日志改成"保存成 txt"(剪贴板在安卓上会截断)】
+#   玩家 2026-09-15: 「你能把这个复制改为下载 txt 吗? 这样就不缺少东西了」。
+#   实测证据: v0.7.16 的日志文件头写着 **3778 帧**, 而剪贴板实际只贴出 **425 帧**
+#   (约 3.5 秒 / 31.4 秒) —— 安卓剪贴板走 Binder, 有大小上限。所以必须落盘。
+#
+#   ---- 落盘顺序(逐级降级, 每一级都把结果**说出来**) ----
+#   ① 安卓 10+(API 29+) → **MediaStore 写公共 Download 目录**, 不需要任何权限
+#      (buildozer 的 permissions 仍然只有 VIBRATE, 没加新的);
+#   ② `getExternalFilesDir` → `/sdcard/Android/data/<pkg>/files/`;
+#   ③ `user_data_dir`(最后手段);
+#   ④ 全失败 → 退回剪贴板, 并**在提示里明说剪贴板可能截断**(否则玩家会以为成功了)。
+#   ⚠️ **不能只写 `user_data_dir`**: 那是应用内部目录, 文件管理器看不见 = 存了等于没存。
+#   ⚠️ 写流必须用 `java.lang.String.getBytes("UTF-8")` 拿**真正的 byte[]** —— 直接把 Python
+#      bytes 交给 `OutputStream.write` 时 pyjnius 可能挑中 `write(int)` 重载, 于是只写进去
+#      一个字节(静默截断成一个字符)。
+#   ⚠️ 保存结果**单独一行常驻显示**(按钮上的字 2.5 秒就变回去, 而"存到哪了"是要照着去找的)。
+#   桌面可验的部分: 存出来的 txt 与内存里那份**逐字一致**(fx_probe [24] 新增断言)。
+#   安卓那条路桌面**测不了**, 已另开一轮对抗性审查专门打它; 其结论会进下一版。
+#
+#   门禁: fx_probe [24] 扩到 20 条(含"保存出来的 txt 逐字一致"/"走 MediaStore"/"getBytes"/
+#   "降级到底复用剪贴板")。验证: --selftest OK / --smoke SMOKE-OK / fx_probe 仍为已知 5 项。
+version = 0.7.17
 
 
 
