@@ -4810,32 +4810,6 @@ RIM_BACK_BANDS = ((0.0, 166.0 / 920.0), (694.0 / 920.0, 808.0 / 920.0))
 # N=12 时相邻两段的 alpha 只差 4%, 看不出台阶。多出来的只是十几个 Rectangle, 可忽略。
 RIM_BAND_STRIPS = 12
 RIM_BAND_ALPHA_TOP = 0.55   # 环最上沿那段补画到多少(1.0 = 完全不压暗)
-# ★ **最靠接缝的那几段要再叠一遍**(2026-09-14, 玩家报的「接缝」)。
-# 病根: 杯口环的**远侧**半圈长在 back 贴图里, 而 back 整层被压暗盖过; 补画把它画回来,
-#   但**单遍叠加的 alpha 上限就是那段纹理自身的 alpha**(实测环上 ~0.31),
-#   而近侧半圈在前层里是 ~0.37 ⇒ 切开线两侧**永远差 ~16%**, 就是那条接缝。
-#   工程里原先写着「落差消不掉」—— **那句话只对「单遍」成立**。
-# 绕过去的唯一办法是**画两遍**: Kivy 的 `src_over` 是乘法复合
-#   `1-(1-a)(1-a*k)`, 两遍能超过单遍的上限(a=0.31, k=0.25 ⇒ 0.42)。
-# ⚠️ **只叠最靠接缝的 3 段**, 不许整条两遍: 远侧上半段**必须保持暗** —— 那是杯口的
-#   远近层次感(实测「环顶」亮度 63.9)。整条两遍 / 镜像前层那几种做法都把环顶冲到 100+,
-#   全环一样亮, 玻璃的远近感整个没了。
-# 实测(完整合成链, 按 x 逐列): 接缝台阶 **10~21% -> 2~11%**, 而**环顶一个数不变**。
-# ⚠️ 不许改成「把相邻两段的位置重叠、alpha 不变」—— 实测那样会从「不够亮」直接翻成
-#    「过亮」(台阶变 -16%), 重叠必须与 alpha 回算**成对**做。
-# ⚠️ 设成 0 即关闭本改动(它同时是那条数值剖面的**阴性对照开关**)。
-# ⚠️ **0.25 -> 0.40 是扫出来的**(2026-09-14, `temp/rim_step_probe.py` 扫了
-#    段数 3/4/5/6 x alpha 0.15~0.50)。两个结论:
-#      · **台阶只跟 alpha 走, 跟叠几段无关** —— 因为接缝那条测量窗口(贴图行 144..159)
-#        只落在**最后两段**里, 而无论取 3 还是 6 段, 最后两段都必然包含在内。所以
-#        "多叠几段"是白花指令, 别拿它当旋钮。
-#      · 台阶随 alpha 线性下降, 每 +0.05 约 -1.1 个百分点:
-#        0.25 -> +4.4% / 0.30 -> +3.3% / **0.40 -> +1.0%** / 0.50 -> **-1.2%(反向过冲)**
-#    **取 0.40 而不是更接近 0 的 0.45**: 0.40 让远侧**仍然略暗于**近侧(+1.0%),
-#    那是真实玻璃该有的远近感; 再往上就翻成"远侧比近侧亮", 是反自然的过冲。
-#    ⇒ **宁可欠一点, 不要过。**
-RIM_BAND_TAIL_STRIPS = 3      # 最靠接缝的几段要叠第二遍(0 = 关闭)
-RIM_BAND_TAIL_ALPHA = 0.40    # 叠那一遍用多少 alpha(扫出来的, 见上)
 _GLASS_RIM_TEX = {}     # id(back_tex) -> (back_tex, [各段子贴图])
 
 def _rim_band_alpha(i):
@@ -5184,7 +5158,6 @@ def _rim_back_strips(back_tex):
             band_frac = y1f - y0f
             sh = max(1, int(round(h * band_frac / n)))    # 每条的高度(贴图像素)
             top_row = y0f * h                             # 该段的顶行(从贴图顶边算)
-            _band = []
             for i in range(n):                            # i=0 是该段最上面那条
                 y = int(round(h - (top_row + (i + 1) * sh)))   # Kivy 纹理 y 向上
                 t = back_tex.get_region(0, y, w, sh)
@@ -5192,15 +5165,7 @@ def _rim_back_strips(back_tex):
                 t.min_filter = "linear"
                 seg = band_frac / n
                 # 画在杯子矩形里的位置: 该段底边在 1-y1f 处, 第 i 条再往上让 (n-1-i) 格
-                _band.append((t, 1.0 - y1f + seg * (n - 1 - i), seg, _rim_band_alpha(i)))
-            out.extend(_band)
-            # ★ 最靠接缝的那几段**再叠一遍** —— 见 `RIM_BAND_TAIL_STRIPS` 处那段说明。
-            # ⚠️ 复用**同一批子贴图对象**(不重新 get_region): 位置/尺寸逐字相同,
-            #    唯一差别是 alpha 更低, 纯粹是「把这一小段的覆盖再补一点」。
-            # ⚠️ 必须排在 `out` **末尾**(画在这 12 段之后) —— 顺序反过来会被后画的盖住,
-            #    等于没叠。整体画序仍是「上 -> 下」, 两条红线都不碰。
-            for _it in (_band[-RIM_BAND_TAIL_STRIPS:] if RIM_BAND_TAIL_STRIPS > 0 else ()):
-                out.append((_it[0], _it[1], _it[2], RIM_BAND_TAIL_ALPHA))
+                out.append((t, 1.0 - y1f + seg * (n - 1 - i), seg, _rim_band_alpha(i)))
         _GLASS_RIM_TEX[id(back_tex)] = (back_tex, out)
     except Exception:
         return None
@@ -6181,6 +6146,32 @@ class WinPileFX(Widget):
                         continue
                     _seen.add((_v, _bd))
                     _hud.append((_v, _bd))
+            # ★ **大字基准 `sp(36)` 的 FIT_FINE 也要烘**(2026-09-14)。
+            # 病根(740 真机 + 桌面探针**双向确证**, 尺寸一字不差):
+            #   冷字号的真身是**大字号行上的长文案**(`_fit_line(lb, 36)` 那类 —— 它把
+            #   `font_size` 设成 `sp(36)`, 配的字是"累计…"这种长句), 窄可用宽下被
+            #   `fit_font_size` 一路逼到 0.42 档。740 的四条冷字号**基准全是 57.2375**,
+            #   而设备 `sp(36) = 36 x 1.5899 = 57.2375`; 桌面探针给
+            #   `fit_font_size("累计999投999中(100%)", 57.2375, 60.0, True)` 返回 **24.0397**、
+            #   冷开记录里同时出现 `24.0397` 与 `35.4872` —— 与 740 **一字不差**。
+            # ⚠️ 四条冷字号**全是 FIT_FINE 档**(0.66/0.62/0.50/0.42), **一条 FIT_SCALES 档
+            #    都没有** ⇒ SCALES 那几档已被别的基准去重覆盖, 只有 FINE 是真空。
+            #    所以**只补 FINE** 就够, 补 SCALES 是白花名额(缓存上限 64 很紧)。
+            # ⚠️ **只补 sp(36)**: 12 个 HUD 基准 x 13 档 = 156, 必然爆 64; "全都烘上"在这台
+            #    引擎上是**反效果**(v0.7.31 实测: 155 项把前面全挤掉)。
+            # ⚠️ `sp(48)` 暂不补 —— 大字 `+N` 最多 6 位(`+500000`), 实测停在前几档;
+            #    哪天真冷了, 冷字号榜会指名道姓(它现在记的是**真值**: 基准 + 文案)。
+            # ⚠️ **整条阶梯, 不只是 FINE**: 桌面实测(密度 1.0, 撞不上别的基准)先冷在
+            #    SCALES 档(0.94/0.88/0.76/0.70)。设备上那几档是靠"和别的基准撞号"被去重
+            #    覆盖的 —— 桌面复现不出来, 但**不能靠那个巧合**。k=1.0 那档已在
+            #    `_FONT_WARM_SIZES` 里, 跳过以免重复占名额。
+            _big36 = sp(36)
+            for _k in FIT_SCALES[1:] + FIT_FINE:
+                _v3 = _big36 * _k
+                if (_v3, True) in _seen:
+                    continue
+                _seen.add((_v3, True))
+                _hud.append((_v3, True))
             globals()["_FONT_WARM_HUD"] = tuple(_hud)
             # ⚠️⚠️ **大字/飘字那批(sp(36/48/26/30))故意不烘** —— 见上面那段: 加上它们就是
             #    48 + 24 = 72 项, 仍然超 64 的上限, 又会开始互相挤。取舍:
@@ -6227,8 +6218,16 @@ class WinPileFX(Widget):
                 _bd = True
             self._font_prebaked += 1
             try:
-                text_px("未中", _fs, _bd)
-                _WARM_DID.add((float(_fs), bool(_bd)))
+                # ⚠️ **`force=True` 不能省**: 走普通路径的话, 只要 `("未中", fs, bd)` 命中
+                #    `_FIT_PX`, 这一句就什么都不做 —— 而启动期 `_FIT_PX` 里很可能已经有它
+                #    (布局阶段量过)。实测: 不加 force 时, 冷字号榜上仍有一条 18.0 档 82.9ms。
+                _c0 = _FRAME_FIT[1]
+                text_px("未中", _fs, _bd, force=True)
+                # ⚠️ **只在真的量了才记 `_WARM_DID`**。原来是无条件 add ⇒ 日志那栏
+                #    「预热时量过=是」在"其实没烘"时也照样显示, **自证失效**(比没有更糟)。
+                #    判据用 `_FRAME_FIT[1]`(冷测量计数) —— 它 +1 就证明确实建了 CoreLabel。
+                if _FRAME_FIT[1] > _c0:
+                    _WARM_DID.add((float(_fs), bool(_bd)))
             except Exception:
                 pass
             # ⚠️ **这一步用 0.02 秒, 不是其它步骤的 0.05**(2026-09-14)。
@@ -6418,12 +6417,18 @@ FIT_HARD_FLOOR = FIT_FINE[-1]   # 硬下限; **只防"小到看不见", 不参�
                                 # (取 0.5 时实测 1.5 倍字体 + 5 个档位按钮下 "5000%" 还差 5px)
 _FIT_PX = {}
 
-def text_px(text, fs, bold=False):
+def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
     """一段文字在字号 fs 下的**单行宽度**(px)。结果缓存。"""
     if not text:
         return 0.0
     key = (text, round(fs, 2), bool(bold))
-    got = _FIT_PX.get(key)
+    # ⚠️ `force=True` **跳过缓存读** —— 只给启动预热用。
+    #    为什么必须有它(2026-09-14 实测): 预热那句 `text_px("未中", fs, bd)` 一旦命中
+    #    本函数的缓存, 就**不建 CoreLabel、不开字体**, 预热白做且**不报错**。
+    #    日志「读法」早就记着这条现象(「=否 ⇒ 预热那一句被 text_px 自己的缓存挡掉了」),
+    #    但因为没人能从画面上看出来, 一直没修。**预热要的就是"真的开一次字体"**,
+    #    所以它必须能绕过自己的缓存。
+    got = None if force else _FIT_PX.get(key)
     if got is None:
         # ⚠️ **这一格就是"冷测量"的定义**(2026-09-15): 缓存没命中 ⇒ 现建一个 CoreLabel
         #    在**这个精确字号**上量一次。真机上一次这样的测量要 1~4 毫秒(超宽文字走二分时
@@ -6450,8 +6455,12 @@ def text_px(text, fs, bold=False):
                 _d = abs(_wv - float(fs))
                 if _nd < 0.0 or _d < _nd:
                     _nd, _nb = _d, _wv
-            _COLD_FS.append((_cold_ms, float(fs), bool(bold), _COLD_FS_TAG[0], _nb, _nd,
-                             (float(fs), bool(bold)) in _WARM_DID, float(_COLD_FS_BASE[0])))
+            # ⚠️ `base` / `ctx` 由调用方传**真值**; 拿不到才退回那两个模块级残留值
+            #    (它们只在 `_fit1` 里写, 直接调 `fit_font_size` 的路径上是假数)。
+            _base = float(base) if base else float(_COLD_FS_BASE[0])
+            _ctx = ctx or _COLD_FS_TAG[0]
+            _COLD_FS.append((_cold_ms, float(fs), bool(bold), _ctx, _nb, _nd,
+                             (float(fs), bool(bold)) in _WARM_DID, _base))
             _COLD_FS.sort(key=lambda _x: -_x[0])
             del _COLD_FS[5:]
         if len(_FIT_PX) > 512:                   # 余额那类数字会一直变, 别让缓存无限长
@@ -6520,9 +6529,13 @@ def _fit_font_size_slow(text, base_fs, avail_w, bold=False):
     ⚠️ 两段都是**固定阶梯**: `FIT_SCALES`(1.0~0.70) 然后 `FIT_FINE`(0.66~0.42)。
     为什么第二段**绝不能改回二分** —— 见 `FIT_FINE` 上面那一段(真机 42 毫秒/次的证据)。
     """
+    # ⚠️ 把**基准**与**文本**一起传下去 —— 冷字号榜要靠它们指名道姓。
+    #    这里不许退回模块级残留值: 本函数是**直接调用入口**(big_result_text 等不走 `_fit1`),
+    #    残留值会让日志把 A 的基准记在 B 头上(v0.7.38 那两栏的第一版就是这样)。
+    _ctx = (text or "")[:10]
     for _k in FIT_SCALES + FIT_FINE:
         _fs = base_fs * _k
-        if text_px(text, _fs, bold) <= avail_w:
+        if text_px(text, _fs, bold, base=base_fs, ctx=_ctx) <= avail_w:
             return _fs
     # 连硬下限都放不下 —— 给地板档, 而不是折行/盖邻居。
     # ⚠️ 原来这里还有一段"按比例估一次"的注释: 实测字宽**不随字号线性变**(同一串在 14.95
@@ -10303,12 +10316,19 @@ class RootWidget(BoxLayout):
             # ⚠️ 采不到也要**明说**。本工程反复踩过"没印"被读成"没发生" —— 屏幕上没有这一行,
             #    读数的人分不清是"刷新率没变"还是"这一栏根本没在跑"。
             _lines.append("# 屏幕刷新率(采样期): **采不到**(桌面预览 / 无权限 / `_screen_hz()` 返回 0)")
-        _lines.append("# 字号预热表: %d 项 (Kivy 字体缓存上限约 64, 超了就互相挤)"
-                      % (len(_FONT_WARM_HUD or ()) + len(_FONT_WARM_SIZES or ())))
+        _wc = len(_FONT_WARM_HUD or ()) + len(_FONT_WARM_SIZES or ())
+        _lines.append("# 字号预热表: %d 项 (Kivy 字体缓存上限约 64, 超了就互相挤)  %s"
+                      % (_wc, "**超了! 会互相挤, 必须减字号总数**" if _wc > 60
+                         else ("贴着上限, 别再往上加" if _wc >= 56 else "有余量")))
         # ⚠️ 顺带把这两句读法写进日志 —— 下一份日志不用再回来翻源码就知道怎么读。
         _lines.append("#   读法2: 「倍率」若落在 FIT_SCALES(1.0/0.94/0.88/0.82/0.76/0.70) "
                       "之外, 那就是 v0.7.32 为了压到 64 上限以内**故意不烘**的 FIT_FINE 档 —— "
                       "**这是「要么超上限自己挤自己、要么多付一次冷开」的硬取舍, 不是漏烘。**")
+        # ⚠️ 2026-09-14 修: 「基准 / 倍率」两栏以前只在 `_fit1` 路径上有值, **直接调
+        #    `fit_font_size` 的路径记的是上一次 `_fit1` 的残留** ⇒ 假数(740 日志里四条
+        #    FINE 冷字号都写「基准57.2375」, 而用 sp(36) 的只有"未中大字"、它走不到 FINE)。
+        #    现在由 `_fit_font_size_slow` 现传真值, 并加了**文本前 10 个字**。
+        #    **看这一行时以文本为准。**
         _lines.append("#   读法: 「预热时量过=是」而仍然是冷 ⇒ **被 Kivy 的字体缓存挤掉了**"
                       "(warm 再多也没用, 要减字号总数); 「=否」⇒ 预热那一句被 `text_px` "
                       "自己的缓存挡掉了, 等于没烘。最近预热档的**差**若为 0 就排除"
@@ -11214,7 +11234,20 @@ class RootWidget(BoxLayout):
                 #    "挂在 text 上而不是在 20 个赋值点各调一次 —— 那样迟早漏掉一个, 而漏掉的
                 #    表现就是某个状态又折行了, 只有截图才看得见")—— **这一排表头就是漏掉的那个。**
                 #    代价: 第一次开这个弹窗会多付一次冷字号(真机约 40 毫秒), 之后走缓存。
-                self._fit_line(head, 12)
+                # ⚠️ **基准字号 12 -> 14**(2026-09-14, 玩家:「这个时间 平均/1%low帧什么的
+                #    标题字体的大小增加」)。原来表头 12sp **比下面的数据行(15sp)还小一档**,
+                #    看着不像表头。提到 14sp 之后:
+                #      · 宽屏(平板)上就是满 14sp;
+                #      · 窄屏上「平均/1%Low帧」在 14sp 要 ~96px, 超过 `fps_w=dp(94)` ⇒
+                #        `_fit_line` 自动缩到约 13.7sp —— **仍然比原来的 12 大, 且保证一行**。
+                #    ⚠️ **别为了"字够大"去加宽 `fps_w`**: 第三列拿的是**剩余宽度**,
+                #       加宽它就是把「中位跑分 / 波动」挤小(实测窄屏上会缩到 ~10.7sp, 更糟)。
+                #       表头这一排的总宽是固定的, 三个列头在抢同一块地。
+                #    ⚠️ `_fit_line` 在这里的两个作用都不能省: 自动缩字号(防折行) +
+                #       `_fit1(head)` 让"真的变了文字"时重挑一次。原来绑 `text_size=w.size`
+                #       两维都给 ⇒ 宽度不够就折行, 而这一排只有 dp(22) 高, 第二行被顶出格子。
+                #    代价: 第一次开这个弹窗会多付一次冷字号(真机约 40 毫秒), 之后走缓存。
+                self._fit_line(head, 14)
                 self._fit1(head)
                 columns.add_widget(head)
             content.add_widget(columns)
