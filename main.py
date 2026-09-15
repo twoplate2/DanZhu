@@ -4319,6 +4319,24 @@ class Sfx:
                 #    (`_await_ready` 见到就立刻放行), 根本不存在"等解码"这件事。
                 #    PC 的耗时全在上一行的「冷启动 XXXX ms」里。
                 rows = ["音频后端　%s" % bname, mode_row, "音效等待　0 ms"]
+                # ⚠️ 2026-09-16 玩家(PC 截图): 「之前有音频和语音加载数量统计, 你怎么给删了,
+                #    这次需要恢复了」。
+                #    **核实结论: PC 上从来没有过这两个数** —— 它们原先只长在下面的 named 分支
+                #    (安卓 SoundPool)里, 靠 `_n_bank` / `_expected`(见 `_bake_named`);
+                #    而 PC 走 `_bake_pcm`, **那两个字段根本没被赋值**(恒为 0)。
+                #    查证命令(全历史零命中 ⇒ 不是删了, 是没写过):
+                #      `git log -S'rows = ["音频后端' -- main.py`  ⇒ 这行是 v0.6.34 的
+                #      `git log -S"音效加载" -- main.py`             ⇒ 空
+                #    ⇒ 对玩家是"恢复", 对代码是"把安卓那边早就在报的数在 PC 上**现算**":
+                #      合成音 = bank 总数 - 语音数。**不重新合成、不碰 `bake_bank`**。
+                # ⚠️ **bank 为空时一行都不印** —— 否则会印出「音效加载　0 个」, 读起来像
+                #    全军覆没(正是 `_expected` 那段注释警告过的"报 0/0 被读成全没了")。
+                #    真静音时上面那行「音频后端　静音」已经把话说清了。
+                # ⚠️ `_voice_files()` 是**带缓存**的(见它的注释), 每次开面板调它不会去 listdir。
+                if self.bank:
+                    _nv = len(_voice_files())
+                    rows.append("音效加载　%d 个" % max(0, len(self.bank) - _nv))
+                    rows.append("语音加载　%d 个" % _nv)
                 if n_rc:
                     rows.append("后端重建　%d 次" % n_rc)
                 return rows
@@ -11309,9 +11327,13 @@ class RootWidget(BoxLayout):
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
         rows = []
-        _ver = _app_version()
-        if _ver:
-            rows.append("游戏版本　%s" % _ver)
+        # ⚠️ 2026-09-16 玩家: 「这个启动界面的**游戏版本可以删了** 因为标题里面就有版本号」。
+        #    原来这里印一行「游戏版本　v0.7.90」, 而上面那个标题就是
+        #    `_startup_title()` = **跳跳的弹珠机 v0.7.90** —— 同一屏同一个数印两遍。
+        #    删掉它同时回收一行的高度预算(这块面板行数是有硬预算的, 见 `audio_detail` 顶部的注释)。
+        #    ⚠️ 别再以"诊断时想要一个纯版本字段"为由加回来: 标题里那个就是版本号, 且这块面板
+        #       是**只读诊断**, 真需要纯文本版本可以去「设置」里的版本行(不在这里)。
+        #    (另一处 11332 行的「游戏版本」是**跑分历史详情**里的, 与这里无关, 别一起删。)
         try:
             _info = self._build_info()
         except Exception:
@@ -13944,122 +13966,92 @@ class RootWidget(BoxLayout):
             return ''
 
     def _show_hp_history(self):
-        """SOC 高压测试历史: **4 列**(时间 / 中位数 / 波动 / 详情)。
+        """SOC 高压测试历史: **4 列**(时间 / 中位数 / 平均差系数 / 详情按钮)。
 
         玩家 2026-09-15: 「高压测试也专门搞个log记录。有4列，时间、中位数、波动、按钮。
         点击按钮可以看到详细成绩和SOC平均频率。」
         ⚠️ 与「测试历史」是**两张表**: 那一张是性能测试(峰值/帧率),
            这一张是 SOC 高压(衰减/频率)。挤一张只会互相污染。
+
+        ⚠️⚠️ 2026-09-16 玩家看了真机截图: 「这个界面肯定不行吧, 你**直接把另外一个跑分的
+           历史log给抄袭过来**吧, 顺便带一个 log 清空功能」。
+           ⇒ 本函数整体按 `_show_bench_history`(「测试历史（渲染 / SoC）」)**逐项照搬**。
+           以前这里每一条都和它不一样, 那正是"两张表看着不像一套东西"的原因:
+             ① **不做行数推算, 也不调 `_popup_fit_content`** —— 列表用
+                `ScrollView(size_hint=(1, 1))` 吃掉剩余高度, 面板高度由弹窗固定给(`0.7 * _vh`)。
+                记录少就下面留白、多了才滚动 ⇒ 高度与记录数**无关**。
+                ⚠️ 末尾那次 `_popup_fit_content` **必须删掉**: 它把弹窗收到"内容最小高度",
+                   而 `ScrollView` 对 `minimum_height` 的贡献是 **0** ⇒ 列表会被压成 0 行。
+                   隔壁那张表本来就没有这次调用, 这正是它高度稳定的原因。
+             ② **表头独立排版**(按自己文字宽度分列、整行居中) + **全表共用一个字号**。
+                玩家 2026-09-15 定过案: 「让表头和表格内的内容不对齐就可以了, 时间才 2 个字,
+                内容那么长」。表头因此**不调** `_fit_line`/`_fit1`, 字号由统一那段给。
+             ③ 行高 `dp(26)`、脚注 `_auto_h(foot, dp(44))`、底部**两个按钮**(清空历史 + 关闭)。
         """
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='SOC高压测试历史', bold=True,
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
-        # ⚠️ 行数**只由屏幕决定**(下限 10), 与"有没有记录"无关 —— 空态和有记录时同一个高度。
-        #    玩家 2026-09-16: 「我**的意思是窗口的高度是固定的** 你这难道是自适应的」
-        #    「如果你是自适应的 **刚开始最起码支持 6 条吧**」。
-        #    ⇒ 面板高度不随记录数变(否则"有没有记录"会改变面板大小、读数时跳来跳去);
-        #      下限 10 已经超过他要的 6 条, 记录不足就**下面留白**, 记录超了才滚动。
-        #    ⚠️ `200` 这个固定预留是按 360dp 手机量的(脚注 40 + 标题 28 + 表头 22 +
-        #       关闭 46 + padding 32 + spacing 32 + Popup 外壳 44)。上一版写 240 是常数,
-        #       而平板横屏可用高只有 400dp 上下, 减掉就只剩 160dp ⇒ **只出得来 4 行**。
-        _vn = max(10, int((self._veq()[1] * 0.96 - dp(200)) // dp(30)))
+        _HP_COLS = ('时间', '中位数', '平均差系数')
         if not self.hp_history:
-            # ⚠️ 空态**也要占满同样的高度**(就是上面 `_vn` 那么多行) —— 否则空的时候面板缩成
-            #    一小条、有记录时又长高, 正是"窗口高度不固定"的形状。
-            _ph = BoxLayout(orientation='vertical', size_hint_y=None,
-                            height=dp(30 * _vn + 10))
-            _ph.add_widget(Widget(size_hint_y=1))
-            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连压 %d 秒即可产生一条' % int(SOC_SUSTAIN_WALL_SEC),
+            # ⚠️ 空态**靠两根弹簧竖向居中**, 面板高度**不变**(与隔壁那张表逐字同款)。
+            #    玩家 2026-09-15 给「测试历史」定的规矩: 「高度不变, 因为以后要 tmd 放数据啊」
+            #    —— 不能因为"有没有记录"让面板忽大忽小。真有问题也只是"空的时候字堆在底下",
+            #    而那该用**居中去解决, 不是改高度**。
+            content.add_widget(Widget(size_hint_y=1))          # 上弹簧
+            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连压 %d 秒即可产生一条'
+                               % int(SOC_SUSTAIN_WALL_SEC),
                           font_size='16sp', halign='center',
                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-            _ph.add_widget(empty)
-            _ph.add_widget(Widget(size_hint_y=1))
-            content.add_widget(_ph)
+            content.add_widget(empty)
+            content.add_widget(Widget(size_hint_y=1))          # 下弹簧
         else:
-            # ⚠️ 列宽 2026-09-15 调过: 原先是 5 列(时间/中位数/波动/归一化/详情), 加「归一化」
-            #    那一次把「详情」挤成过 25px(截图里表头黏在一起、按钮成细条) —— 教训是**加列
-            #    最容易挤坏的不是文字, 是那个按钮**。
-            #    **2026-09-15 玩家定稿: 删掉「归一化」和「波动」两列, 换成一列「平均差系数」**
-            #    (= 平均差 ÷ 均值, 见 `_mad_coef`) ⇒ 5 列变 4 列, 「详情」拿到的剩余宽度反而
-            #    **比改动前更多**, 不会再挤坏。
-            # ⚠️ 2026-09-16 玩家定稿: 「详情按钮变窄很多, 把时间内容宽度大幅度提高」。
-            #    改法是**把「详情」从"吃剩余"改成固定窄宽**, 时间列改成吃剩余 ——
-            #    于是屏越宽时间列越宽, 而「详情」在任何屏上都保持窄。
-            #    旧值 84/46/74 + 详情吃剩余 ⇒ 详情拿到 ~86dp(俩字只要 ~30dp), 而时间列
-            #    只有 84dp 却要放 14sp 下宽 113px 的完整时间戳 ⇒ 时间列字号被压到 10.4sp,
-            #    与另外两列的 14sp **不齐** —— 玩家报的就是这个"字体不均衡"。
-            #    第一步先把三列固定成 46/72/46 = 164dp, 剩下全给时间列。
-            # ⚠️⚠️ 2026-09-16 玩家在 Y700(2560x1600 平板, **竖屏**)上又报: 「**布局偏右 没有居中**」。
-            #    根因: 第一步把**时间列改成"吃剩余"**(`size_hint_x=1`), 而整张表**没有任何居中设定**。
-            #    手机上刚好(360dp 屏时间列约 126dp), 但在 8.8" 平板上弹窗宽 0.92*1600 ≈ 1472px,
-            #    时间列会吃掉约 1080px、剩下三列全挤在**右边缘** ⇒ 看着就是"整张表偏右"。
-            #    对照: 隔壁「测试历史（渲染 / SoC）」(`_show_bench_history`)一直是**固定列宽 +
-            #    `pos_hint={'center_x': 0.5}`**, 本来就居中 —— 两张表一个居中一个不居中,
-            #    玩家一眼就看出来了。
-            #    ⇒ 改成与它**同一套写法**(同一文件、同一个模式, 别另发明):
-            #      固定列宽 + `size_hint_x=None` + `width=_table_w` + `pos_hint={'center_x': 0.5}`,
-            #      表头与每一行**共用同一个 `_table_w`**(否则两边各对一套栅格, 永远对不齐)。
-            # ⚠️ 列宽是**量出来的**(`text_px(文本, sp(14))`, 桌面密度 1 ⇒ px == dp):
-            #    时间 `2026-09-15 14:07` **113** · `中位数`(表头 3 字, 比数据 40 宽) **42** ·
-            #    `平均差系数`(**表头 5 字是最长项** 70, 数据 `1.23%` 只要 41) · `详情` 按钮文字 28。
-            #    ⚠️ **表头不许被单独缩字号**: 表头与数据行共用同一套宽度 ⇒ 「平均差系数」必须
-            #       在 14sp 下放得下, 否则 `_fit_line` 只缩它一个、又变回"字体不均衡"。
-            #    留余量后 116/46/76/46 = **284dp**(360dp 机上内容区 299dp, 放得下)。
-            # ⚠️ 窄屏要**按比例收**: `size_hint_x=None` 的子控件宽度不够时**不会自己缩**,
-            #    会直接**溢出弹窗**(就是"字飘在游戏画面上"那一类)。`_tw_max` 是内容区宽度。
-            _hw = (dp(116), dp(46), dp(76), dp(46))
-            _tw_max = self._veq()[0] * 0.92 - dp(38)      # 弹窗宽 0.92*vw - content 的 padding 16*2 - 余量 6
-            _k = min(1.0, _tw_max / sum(_hw))
-            t_w = _hw[0] * _k
-            mid_w, mad_w, det_w = _hw[1] * _k, _hw[2] * _k, _hw[3] * _k
-            _table_w = t_w + mid_w + mad_w + det_w
-            columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
+            # 列宽与隔壁**同一套量法**(`text_px(文本, sp(14))`, 桌面密度 1 ⇒ px == dp):
+            #   时间 `2026-09-15 14:07` **113** · 中位数 `34652` **40** · 平均差系数 `2.14%` **41**
+            #   · 「详情」按钮文字 **28**。留出呼吸量 ⇒ 110/58/62/58 = **288dp**
+            #   (隔壁三列是 110/92/88 = 290dp —— 同一张脸)。
+            # ⚠️ 上一版是 116/46/76/46: 中位数那格只有 46 而文字 40 ⇒ **只剩 3px 边距**,
+            #    真机上时间戳与它**糊成一片**(玩家截图为证: `2026-09-15 23:06:34652`)。
+            #    这次三格都留出 9px 以上 —— 那就是"挤"的解药。
+            # ⚠️ 窄屏按比例收(`_k`): `size_hint_x=None` 的子控件宽度不够时**不会自己缩**,
+            #    会直接**溢出弹窗**(就是"字飘在游戏画面上"那一类)。
+            _HW = (dp(110), dp(58), dp(62), dp(58))
+            _tw_max = self._veq()[0] * 0.96 - dp(38)   # 弹窗宽 0.96*vw - content 的 padding 16*2 - 余量 6
+            _k = min(1.0, _tw_max / sum(_HW))
+            _HW = tuple(_w * _k for _w in _HW)
+            _table_w = sum(_HW)
+            # 表头**独立排版**: 各按自己文字的宽度分列, 整行居中(与隔壁同款)。
+            # ⚠️ 宽度按 `sp(14)` 量(不是裸 14.0 —— 那是**绝对 px**, density=2 的机器上只有一半大)。
+            _head_w = [min(_table_w / 4.0 * 1.6, max(dp(30), text_px(_t, sp(14)) + dp(6)))
+                       for _t in _HP_COLS]
+            _hw_sum = sum(_head_w)
+            if _hw_sum > _table_w:
+                _head_w = [_w * _table_w / _hw_sum for _w in _head_w]
+                _hw_sum = _table_w
+            columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_hw_sum,
                                 height=dp(22), pos_hint={'center_x': 0.5})
-            for text, width in (('时间', t_w), ('中位数', mid_w),
-                                ('平均差系数', mad_w), ('详情', det_w)):
-                head = Label(text=text, halign='center', valign='middle',
-                             color=hex_rgb(COL_SUB) + (1,),
-                             size_hint_x=None, width=width)
-                self._fit_line(head, 14)
-                self._fit1(head)
-                columns.add_widget(head)
+            _heads = []
+            for _t, _w in zip(_HP_COLS, _head_w):
+                h = Label(text=_t, halign='center', valign='middle',
+                          color=hex_rgb(COL_SUB) + (1,), size_hint_x=None)
+                h.width = _w
+                # ⚠️ 绑 `(w.width, None)` 而不是 `w.size`: 两维都给 ⇒ 宽度不够就**折行**,
+                #    而这一排只有 dp(22) 高, 第二行直接被顶出格子。
+                h.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                # ⚠️ **这里不调 `_fit_line`/`_fit1`** —— 表头要与数据行**同一个字号**,
+                #    统一由下面"全表共用一个字号"那段来定(单独缩表头就会出现两种字号)。
+                columns.add_widget(h)
+                _heads.append(h)
             content.add_widget(columns)
-            # ⚠⚠ **必须给显式高度**(2026-09-15 实测): `ScrollView` 不是带
-            #    `minimum_height` 的 Layout ⇒ `_popup_fit_content` 算内容最小高度时
-            #    读到 0, 弹窗只按"标题+表头+脚注+按钮"收 ⇒ **滚动区被压成 0,
-            #    一行数据都显示不出来**(截图为证: 表头在、下面空的)。
-            #    按行数算死高度就不依赖 Kivy 的布局时序了。
-            # ⚠️ 2026-09-16 玩家: 「**最起码得支持 8~10 条 log 吧**」。
-            #    改法: 下限从 3 抬到 **10**, 预留 240 -> **200**(脚注那 40dp 实测两行 12sp
-            #    只要 ~34dp, 有富余)。
-            # ⚠️⚠️ **不要把"上一版只显示 4 行"记成这个公式的锅** —— 算不出来。
-            #    `_veq()` 是**排过序的**(`return (w, h) if w <= h else (h, w)`, 见 `_veq`)⇒
-            #    横竖都返回「短边 × 长边」, 所以 Y700(2560x1600)上 `_veq()[1]` **恒为 2560px**
-            #    (≈1280dp @ density 2), 这个公式给的是 **30 行上下, 横拿竖拿一模一样**。
-            #    2560x1600 的平板上, 无论 240 还是 200 都算不出 4 行来。
-            #    ⇒ 当时只显示 4 条的**真实原因更可能是记录本来就只有 4 条**
-            #      (存储上限是 **100**, 见 `_load_hp_history`/`_save_hp_history`)。
-            #      以后见到"条数不对"先数记录, 别先改公式。
-            # ⚠️ 曾经在这里写过第 ③ 条"滚动区高度参与压缩(见 `_auto_sync` 那段)",
-            #    **那段并不存在** —— 引用悬空, 已删。真要做压缩得另写, 别照那句去找。
-            # ⚠️⚠️ 2026-09-16 玩家澄清: 「**我的意思是窗口的高度是固定的 你这难道是自适应的**」。
-            #    —— 面板高度**不能跟着记录数变**(那会让"有没有记录"改变面板大小、读数时跳来跳去),
-            #    这正是玩家当初给「测试历史」定的那条规矩。所以**去掉 `min(len(...))`**:
-            #    行数只由屏幕决定(下限 10, 兑现"最起码 8~10 条"), 记录不足就**下面留白**,
-            #    记录超了才滚动。
-            #    ⚠️ `_vn` **已在上面(空态分支之前)算好**, 这里不要再算一遍 ——
-            #       重复定义会让"空态用哪个高度"和"列表用哪个高度"两处各算各的, 迟早分叉。
-            # ⚠️ **每行按 30dp 算, 不是 28**(2026-09-16 实测截图): 行高 `dp(28)` 之外
-            #    还有 `inner` 的 `spacing=dp(2)`, n 行的真实内容高 = 28n + 2(n-1)。
-            #    原来写 `28*_vn+10` ⇒ 12 行时容器 346px 而内容 358px, **最后一行被裁一半**。
-            #    30*_vn 与上面容量公式同一把尺子, 两边不会再打架。
-            scroll = ScrollView(size_hint_y=None, height=dp(30 * _vn + 10))
+            # ⚠️ **`size_hint=(1, 1)`, 不是写死高度** —— 它吃掉面板的剩余高度, 面板高度因此
+            #    与记录数**无关**(玩家 2026-09-16: 「我**的意思是窗口的高度是固定的**」)。
+            #    上一版按 `_vn` 算死高度, 既多一套公式、又和弹窗高度打架, 这里整个删掉。
+            scroll = ScrollView(size_hint=(1, 1))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
-            t_rows, m_rows, mad_rows = [], [], []
+            rows = [[], [], []]          # 逐列一组, 只为下面"全表统一字号"取最长内容
             for r in reversed(self.hp_history[-100:]):
                 stamp = _hist_stamp(r.get('time'))
                 mid = r.get('median')
@@ -14070,54 +14062,137 @@ class RootWidget(BoxLayout):
                 _mad = r.get('mad')
                 mad_text = ('%.2f%%' % float(_mad)) if _mad is not None else '—'
                 row = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
-                                height=dp(28), pos_hint={'center_x': 0.5})
-                labs = []
-                for text, width in ((stamp, t_w), (mid_text, mid_w), (mad_text, mad_w)):
-                    lbl = Label(text=text, font_size='14sp', halign='center',
-                                valign='middle', color=hex_rgb(COL_TEXT) + (1,),
-                                size_hint_x=None, width=width)
-                    lbl.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+                                height=dp(26), pos_hint={'center_x': 0.5})
+                for _i, _t in enumerate((stamp, mid_text, mad_text)):
+                    lbl = Label(text=_t, halign='center', valign='middle',
+                                color=hex_rgb(COL_TEXT) + (1,), size_hint_x=None)
+                    lbl.width = _HW[_i]
+                    lbl.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
                     row.add_widget(lbl)
-                    labs.append(lbl)
-                # ⚠️ 最后一列是**按钮**(唯一一个), 不进 `_fit_uniform` —— 它不是文字行。
+                    rows[_i].append(lbl)
+                # ⚠️ 最后一列是**按钮**(唯一一个), 不进"全表统一字号" —— 它不是数据格。
                 btn = Button(text='详情', font_size='14sp', bold=True,
-                             background_normal='', size_hint_x=None, width=det_w,
+                             background_normal='', size_hint_x=None, width=_HW[3],
                              background_color=hex_rgb(COL_BTN) + (1,))
                 btn.bind(on_release=lambda _b, rr=r: self._show_hp_detail(rr))
                 row.add_widget(btn)
-                t_rows.append(labs[0])
-                m_rows.append(labs[1])
-                mad_rows.append(labs[2])
                 inner.add_widget(row)
-            self._fit_uniform(t_rows, sp(14))
-            self._fit_uniform(m_rows, sp(14))
-            self._fit_uniform(mad_rows, sp(14))
+            # ⚠️⚠️ **全表共用一个字号**(玩家 2026-09-15:「项目内的字体大小改成相同」)。
+            #    做法: 逐**数据列**量出"这列最多能放多大"(`fit_font_size` 走同一套阶梯),
+            #    再取**最小**的那个发给**所有**格子(表头 + 每一行的每一格)。
+            #    ⚠️ **不能逐列各缩** —— 表头(「平均差系数」5 字比数据长)会比数据行小一档,
+            #       同一张表里出两种字号, 那正是玩家截图指出过的问题。
+            #    ⚠️ **不能把所有格子塞进一个 `_fit_uniform`** —— 它取"组里最窄那列的宽度",
+            #       会被最窄的列拖死、整表缩到 ~11sp。
+            #    ⚠️ 必须按**数据列宽 `_HW`** 算, 不能按表头列宽 `_head_w`(踩过: 表头「时间」
+            #       只有 2 个字, 拿它当可用宽度会把字号压到 **5.88sp**)。
+            #    ⚠️ 最长内容**只从数据行取**, 表头不参与(拿表头算会把整张表拖小,
+            #       实测「中位分/平均差系数」9 个字把全表从 13.16sp 拖到 10.64sp)。
+            #    ⚠️ 必须传 `sp(14)`, 不是裸 `14.0`(那是**绝对 px**, density=2 的机器上只有一半大)。
+            _groups = [[_heads[_i]] + rows[_i] for _i in range(len(_HP_COLS))]
+            _fs_all = None
+            for _i, _g in enumerate(_groups):
+                _long = max(rows[_i], key=lambda x: text_px(x.text or '', sp(14)))
+                _f = fit_font_size(_long.text or '', sp(14), float(_HW[_i]))
+                _fs_all = _f if _fs_all is None else min(_fs_all, _f)
+            for _g in _groups:
+                for _c in _g:
+                    _c.font_size = _fs_all
             scroll.add_widget(inner)
             content.add_widget(scroll)
-            # ⚠️ 2026-09-16 玩家定稿: 「最简单的改进方案是, 把括号内的字都删了」。
-            #    两层好处: ① 括号里那个「群」字**不在字体子集里**(真机上显示成方块 ——
-            #    玩家报的"有一个字显示为 xx") ⇒ 删掉整段即根治, 不必重做字体;
-            #    ② 脚注从折成 3 行变回 2 行, 腾出的高度全给上面的历史列表。
-            #    ⚠️ **别再把口径沿革写回这里**: 那段解释属于代码注释(`_mad_coef` /
-            #    `_show_bench_history` 两处都有), 面板上只需要回答"这一列是什么"。
-            #    ⚠️ `h0` 60 -> 40: 两行 12sp 排版约 34px, 原来的 52 是给三行留的。
+            # 脚注: 只回答"这一列是什么"。口径沿革属于代码注释(`_mad_coef` /
+            # `_show_bench_history` 两处都有), 面板上不写。
+            # ⚠️ 2026-09-16 玩家定稿: 「最简单的改进方案是, 把括号内的字都删了」——
+            #    括号里那个「群」字**不在字体子集里**(真机上显示成方块) ⇒ 删掉整段即根治。
+            # ⚠️ `h0` 40 -> **44**: 与隔壁那张表**同一个值**(两张表脚注都是两行 12sp, 实测约 34px)。
             foot = Label(
                 text=('  中位数：高压那段各个 1 秒窗口速度的中位数\n'
                       '  平均差系数：平均差 ÷ 均值，越小越稳'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
-            self._auto_h(foot, dp(40))
+            self._auto_h(foot, dp(44))
             content.add_widget(foot)
-        close_btn = Button(text='关闭', font_size='16sp', bold=True,
-                           background_normal='',
-                           background_color=hex_rgb(COL_BTN_OFF) + (1,),
-                           size_hint_y=None, height=dp(46))
-        content.add_widget(close_btn)
+        # ⚠️ 「清空历史」只在**有记录**时才放出来 —— 空列表上摆一个"清空"是没意义的热区,
+        #    而且它离「关闭」只有 dp(8), 误触代价是**不可逆**的。(与隔壁同款)
+        if self.hp_history:
+            _acts = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+            clear_btn = Button(text='清空历史', font_size='16sp', bold=True,
+                               background_normal='',
+                               background_color=hex_rgb(COL_DARKRED) + (1,))
+            close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                               background_normal='',
+                               background_color=hex_rgb(COL_BTN_OFF) + (1,))
+            _acts.add_widget(clear_btn)
+            _acts.add_widget(close_btn)
+            content.add_widget(_acts)
+        else:
+            close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                               background_normal='',
+                               background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                               size_hint_y=None, height=dp(46))
+            content.add_widget(close_btn)
         _vw, _vh = self._veq()
+        # ⚠️ 宽 **0.92 -> 0.96**(照搬隔壁): 四列固定宽度要 288dp, 而 0.92 在 360dp 机上
+        #    只有 299dp 的内容区; 0.96 拿回 14.4px。
+        # ⚠️ 高 `0.7 * _vh` 是**固定**的 —— 面板高度不随记录数变(这就是玩家要的那条)。
+        # ⚠️ **末尾不调 `_popup_fit_content`** —— 理由见上面 docstring 第 ① 条。
         popup = RotPopup(title='', content=content, size_hint=(None, None),
-                         width=0.92 * _vw, height=0.7 * _vh,
+                         width=0.96 * _vw, height=0.7 * _vh,
                          auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
+        if self.hp_history:
+            # ⚠️ 清空之后**当场把面板重开一次** —— 玩家要立刻看到空态, 而不是盯着
+            #    一份已经删掉的旧表格。(旧面板先 dismiss, 否则会叠两层。)
+            def _ask_clear(*_):
+                popup.dismiss()
+                self._clear_hp_history()
+            clear_btn.bind(on_release=_ask_clear)
+        popup.open()
+
+    def _clear_hp_history(self):
+        """清空「SOC 高压测试历史」——**不可逆, 所以必须先过一道确认**。
+
+        ⚠️ 与 `_clear_bench_history` **同款**(玩家 2026-09-16: 「顺便带一个 log 清空功能」)。
+        ⚠️ **只清这一张表**(`plinko_hp_history.json`)。「模拟测试历史」是**另一张**
+           (`plinko_bench_history.json`) —— 两张表分开是玩家 2026-09-15 定过的案, 别一起清。
+        ⚠️ 确认框里**必须写清条数**, 让玩家知道要删掉多少东西(「不可恢复」四个字不能省)。
+        """
+        _n = len(self.hp_history)
+        if _n <= 0:
+            return
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(10))
+        ttl = self._fit_line(Label(text='清空 SOC 高压测试历史', bold=True, halign='center',
+                                   color=hex_rgb(COL_TEXT) + (1,),
+                                   size_hint_y=None, height=dp(28)), 19)
+        content.add_widget(ttl)
+        # ⚠️⚠️ **正文里绝不能出现 markdown 星号** —— Kivy 的 Label 不认 markdown,
+        #    `**3**` 会在屏幕上**原样显示成 `**3**`**(`fx_probe` 有一条专门钉这个)。
+        msg = Label(text='将删除全部 %d 条 SOC 高压测试历史，\n不可恢复。\n\n'
+                         '（模拟测试历史不受影响）' % _n,
+                    font_size='15sp', halign='center', valign='middle',
+                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
+        self._auto_h(msg, dp(90), dp(6))
+        content.add_widget(msg)
+        acts = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        cancel = Button(text='取消', font_size='16sp', bold=True, background_normal='',
+                        background_color=hex_rgb(COL_BTN_OFF) + (1,))
+        ok = Button(text='确定清空', font_size='16sp', bold=True, background_normal='',
+                    background_color=hex_rgb(COL_DARKRED) + (1,))
+        acts.add_widget(cancel)
+        acts.add_widget(ok)
+        content.add_widget(acts)
+        popup = self._popup(0.86, 260, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
+
+        def _confirm(*_):
+            self.hp_history = []
+            self._save_hp_history()          # 盘上也要清, 否则重启又回来了
+            popup.dismiss()
+            _set_label_text(self.status_lbl, 'SOC 高压测试历史已清空')
+            self._show_hp_history()          # 当场重开 → 看到空态
+
+        cancel.bind(on_release=popup.dismiss)
+        ok.bind(on_release=_confirm)
         popup.open()
         self._popup_fit_content(popup, content)
 
