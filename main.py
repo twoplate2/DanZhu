@@ -2398,6 +2398,13 @@ _HIST_HEAD = _HIST_SEP.join(_HIST_COLS)
 _PIN_ORDER = [None]      # [那个 list]; None = 还没找过
 _PIN_DONE = [None]       # set(); None = 还没建(省一个模块级 set)
 _PIN_MAX = 24
+# ⚠️ **第几次冷开才钉**(2026-09-15 从写死的 2 抬到 3)。真机 v0.7.56 一份 5.4 分钟的进程:
+#    **93 个字号 / 307 次冷开 / 复冷过的 54 个**, 而名额只有 `_PIN_MAX`=24 个 ⇒
+#    "谁先复冷谁占坑"会把名额分给一大堆只复冷 2 次的字号(省 1 次冷开), 而真正的慢性病
+#    (`57.24B x53` · `39.16 x31` · `45.19B x28`)反而可能排不上。抬到 3 之后名额就花在
+#    它们身上, 代价只是各自多冷开一次。
+# ⚠️ **别再往下调回 2**: 那是"名额不够 + 分错人", 不是"更早保护"。
+_PIN_AFTER = 3
 _PIN_STAT = [0, 0, 0]    # [钉成功, 钉失败, 复冷次数] —— **必须印进日志, 不许静默**
 _PIN_WHERE = ["还没找"]   # 定位结果的一句话说明(日志里印)
 _PIN_CAND = [0]          # 那次扫描里"形状对得上"的 list **一共有几个**(见 `_PIN_WHERE`)
@@ -7157,7 +7164,16 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
         _FRAME_FIT[1] += 1
         # ⚠️ **记账之前**先问一句"这个字号以前开过吗" —— 用来判"复冷"(见 `_pin_fontid`)。
         #    必须取记账**前**的状态: 记账之后它当然就在集合里了。
-        _was_open = (round(float(fs), 4), bool(bold)) in _FS_OPEN_SET
+        # ⚠️ **门槛从"第 2 次"抬到"第 3 次"**(2026-09-15, 真机数据定的)。
+        #    真机 v0.7.56 一份 5.4 分钟的进程日志: **93 个字号、307 次冷开、复冷过的 54 个**,
+        #    而 `_PIN_MAX` 只有 24 个名额 ⇒ 按"谁先复冷谁占坑"来分,**名额不够、而且分错了人**。
+        #    那 54 个里绝大多数只复冷 2~5 次(复冷 2 次 = 只省下 1 次冷开), 真正慢性的是少数:
+        #    `57.24B x53` · `39.16 x31` · `45.19B x28` · `48.20B x11` · `144.60B x8` …
+        #    抬到第 3 次之后, 名额就花在这几个身上 —— 代价只是它们各自多冷开一次。
+        #    计数取的是**本次之前**已经冷开过几次(`_FS_COLD_CNT` 在下面才 +1)。
+        _ck = (round(float(fs), 4), bool(bold))
+        _ce = _FS_COLD_CNT.get(_ck)
+        _prev_n = _ce[0] if _ce else 0      # 本次**之前**已经冷开过几次(下面才 +1)
         # ⚠️ 这一句就是"开了一个 fontid"的那一刻 —— 记账在这儿, 不在别处(见 `_FS_OPEN`)。
         # ⚠️ **静音窗口内不记账**(见 `_FS_MUTE_UNTIL`): 报告 UI 自己的标签不算被测对象。
         #    跳过的那几次**单独计数**, 并且必须印进日志 —— 不许静默。
@@ -7171,8 +7187,6 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
                 if len(_FS_OPEN) > _FS_OPEN_MAX:
                     del _FS_OPEN[0]
                 # 普查: 每个 fontid 一共冷开了几次(定"该钉几个"的唯一依据)。
-                _ck = (round(float(fs), 4), bool(bold))
-                _ce = _FS_COLD_CNT.get(_ck)
                 if _ce is None:
                     _FS_COLD_CNT[_ck] = [1, ctx or _COLD_FS_TAG[0] or "?"]
                 else:
@@ -7184,12 +7198,13 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
             _cl = CoreLabel(text=text, font_size=fs, bold=bold, text_size=(None, None))
             _cl.refresh()
             got = _cl.texture.size[0]
-            # ⚠️ **复冷 ⇒ 立刻钉住**(见 `_pin_fontid`): 同一个字号**第二次**被冷开, 说明它
-            #    刚被淘汰队列挤出去过。此刻 `refresh()` 刚把它重新插回 order 尾部, 正是
+            # ⚠️ **冷开够多次 ⇒ 钉住**(见 `_pin_fontid`): 同一个字号**反复**被冷开, 说明它
+            #    一直被淘汰队列挤出去。此刻 `refresh()` 刚把它重新插回 order 尾部, 正是
             #    摘掉它的最佳时机 —— 摘掉之后 dict 里那份再也不会被 `del`, 它不再复冷。
+            #    ⚠️ 门槛是 `_PIN_AFTER` 而不是 2 —— 为什么抬到 3, 见上面 `_prev_n` 那段。
             #    `_get_font_id()` 是 Kivy 自己拼的那个 6 段键 —— **必须用它**, 手拼会错
             #    (字体路径是运行期解析出来的, 手工拼不出来)。
-            if _was_open:
+            if _prev_n >= _PIN_AFTER - 1:
                 _PIN_STAT[2] += 1
                 try:
                     _pin_fontid(_cl._get_font_id())
@@ -11972,18 +11987,19 @@ class RootWidget(BoxLayout):
             #    一模一样。这里把"定没定到、钉了几个、失败几次、复冷几次"全摊开。
             _ps = _PIN_STAT
             _lines.append("# 字体钉子: 队列定位=%s · 钉住 **%d** 个(上限 %d) · "
-                          "失败 %d 次 · 触发(复冷) %d 次"
-                          % (_PIN_WHERE[0], _ps[0], _PIN_MAX, _ps[1], _ps[2]))
+                          "失败 %d 次 · 达到门槛(冷开满 %d 次)的有 %d 个"
+                          % (_PIN_WHERE[0], _ps[0], _PIN_MAX, _ps[1], _PIN_AFTER, _ps[2]))
             if _PIN_ORDER[0] is None:
                 _lines.append("#   ⚠️ **钉子没生效** —— 没在对象图里认出 Kivy 的淘汰队列"
                               "(`sdl2_cache_order`)。冷字号会照旧被驱逐, 这是**已知的失效**,"
                               " 不是「没问题」。")
             elif _PIN_CAND[0] > 1:
                 _lines.append("#   ⚠️ 形状命中的 list 有 **%d 个** —— 认的是先扫到的那个, **可能认错**。"
-                              " 若同时看到「钉住 0 个」, 那就是认错了(不是「本轮没有复冷」)。"
+                              " 若同时看到「钉住 0 个」, 那就是认错了(不是「没有字号冷开这么多次」)。"
                               % _PIN_CAND[0])
             elif _ps[0] == 0 and _ps[2] == 0:
-                _lines.append("#   本轮**一次复冷都没有** ⇒ 没有可钉的对象(这是好事, 不是失效)。")
+                _lines.append("#   本轮**没有任何字号冷开到 %d 次** ⇒ 没有可钉的对象"
+                              "(这是好事, 不是失效)。" % _PIN_AFTER)
             # 「本帧冷开几次」的分布 —— 回答"一帧到底会不会开十几个"。
             # ⚠️ 这是 `(N次/M测)` 的**普查版**: 那一栏只在「字号」挤进该帧最大两个子步骤时
             #    才印(21059 帧里只印过 2 帧), 拿它当普查是采样当普查 —— 对抗评审抓到过。
