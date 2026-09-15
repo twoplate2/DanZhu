@@ -963,12 +963,12 @@ def _bench_pin_fast_cpus():
     _bottom = min(_caps.values())
     # 不把极小的固件/读数差误判成大小核；K90 的 2746/2880MHz 簇差约 4.9%，会被识别。
     if _top <= _bottom * 1.02:
-        _status["reason"] = "可用 CPU 为同一性能簇"
+        _status["reason"] = "可用 CPU 为同一性能核组"
         return None
     # 同一最高簇的核心通常共享最高频率；留 2% 容差兼容厂商公布频率的微小差异。
     _target = {int(_cpu) for _cpu, _khz in _caps.items() if _khz >= _top * 0.98}
     if not _target or _target == _allowed:
-        _status["reason"] = "没有可收窄的性能簇"
+        _status["reason"] = "没有可收窄的性能核组"
         return None
     _status["caps_khz"] = dict(sorted(_caps.items()))
     _status["target"] = sorted(_target)
@@ -977,7 +977,7 @@ def _bench_pin_fast_cpus():
         _actual = set(os.sched_getaffinity(0))
         _status["actual"] = sorted(_actual)
         if not _actual.issubset(_target) or not _actual:
-            _status["reason"] = "系统未接受性能簇亲和性"
+            _status["reason"] = "系统未接受核组绑定"
             try:
                 os.sched_setaffinity(0, _allowed)
             except Exception:
@@ -12686,7 +12686,7 @@ class RootWidget(BoxLayout):
             _ps2 = getattr(self, "_phys_speed", None) or []
             _ps2 = [x for x in _ps2 if x > 0]
             if _ps2 and len(_ps2) == len(_pr) and _pr:
-                _lines.append("# 物理跑分**逐轮**纯算术探针(只碰寄存器): %s  (每秒轮数)"
+                _lines.append("# 物理跑分**逐轮**纯算术探针(不碰内存): %s  (每秒轮数)"
                               % " · ".join("%.0f" % x for x in _ps2))
                 # ⚠️ 两个量的**量纲不同**(一个是"步"、一个是"轮"), 直接相除得到的数没有意义。
                 #    要的是**它们各自相对第 1 轮的倍率** —— 两个倍率一比, 才回答得了
@@ -12699,7 +12699,7 @@ class RootWidget(BoxLayout):
                 _spr, _sps = max(_ps2) / min(_ps2), max(_pr) / min(_pr)
                 _lines.append("#   本轮内 探针最大/最小 = %.2f 倍 · 步/秒最大/最小 = %.2f 倍  ⇒ %s"
                               % (_spr, _sps,
-                                 "**步/秒抖得比探针厉害 ⇒ 不是核心速度的问题**"
+                                 "**步/秒抖得比探针明显 ⇒ 不是核心速度的问题**"
                                  if _sps > _spr * 1.3 else
                                  ("**两者抖得差不多 ⇒ 就是核心速度在变**"
                                   if _spr > 1.3 else "两者都稳(本轮没有可解释的波动)")))
@@ -12716,7 +12716,7 @@ class RootWidget(BoxLayout):
                     _lines.append("#   相对第 1 轮: **分配探针** %s   ← 与上面**纯算术探针**那一串比:"
                                   " 两个**一起掉** = 核心慢; **只有分配探针掉** = **内存/分配器被抢**"
                                   % " · ".join("%.3f" % (x / _pa3[0]) for x in _pa3))
-                    _lines.append("#   分配/算术 = %s   (这个比值**掉了**就说明内存那一侧吃亏,"
+                    _lines.append("#   分配/算术 = %s   (这个比值**掉了**就说明内存那一侧变慢,"
                                   "与核心速度无关)"
                                   % " · ".join("%.3f" % (_pa3[_i] / _ps2[_i])
                                                for _i in range(len(_pa3))))
@@ -12726,11 +12726,11 @@ class RootWidget(BoxLayout):
                 _lines.append("# 物理跑分**逐轮**纯算术探针: **没采到**")
             _pa = getattr(self, "_phys_aff", None) or []
             if _pa and any(x for x in _pa):
-                _lines.append("# 物理跑分线程的 **CPU 亲和性**(每轮采一次, `sched_getaffinity`): %s"
+                _lines.append("# 物理跑分线程的 **CPU 绑定核**(每轮采一次, `sched_getaffinity`): %s"
                               % " | ".join(("?" if x is None else ",".join(str(i) for i in x))
                                            for x in _pa))
             else:
-                _lines.append("# 物理跑分线程的 CPU 亲和性: **没采到**(非安卓 / 不支持)")
+                _lines.append("# 物理跑分线程的 CPU 绑定核: **没采到**(非安卓 / 不支持)")
             _rpin = getattr(self, "_render_cpu_pin", None) or {}
             if _rpin.get("pinned"):
                 _rtarget = _rpin.get("actual", _rpin.get("target", [])) or []
@@ -12801,7 +12801,7 @@ class RootWidget(BoxLayout):
                     _lines.append("#   高压逐窗 步/秒÷探针(×1e6): "
                                   + " · ".join("%d" % int(1000000.0 * _sv2[_i] / _hs2[_i])
                                                for _i in range(min(len(_sv2), len(_hs2)))))
-                    _lines.append("#     ↑ **这一串稳不稳**才是真衰减: 它平而步/秒在掉 ⇒ 机器整体"
+                    _lines.append("#     上面**这一串稳不稳**才是真衰减: 它平而步/秒在掉 ⇒ 机器整体"
                                   "慢了; 它跟着掉 ⇒ 渲染/内存那一侧变了")
                 else:
                     _lines.append("#   高压纯算术探针: **没采到**")
@@ -13972,10 +13972,17 @@ class RootWidget(BoxLayout):
             #    **2026-09-15 玩家定稿: 删掉「归一化」和「波动」两列, 换成一列「平均差系数」**
             #    (= 平均差 ÷ 均值, 见 `_mad_coef`) ⇒ 5 列变 4 列, 「详情」拿到的剩余宽度反而
             #    **比改动前更多**, 不会再挤坏。
-            time_w, mid_w, mad_w = dp(84), dp(46), dp(74)
+            # ⚠️ 2026-09-16 玩家定稿: 「详情按钮变窄很多, 把时间内容宽度大幅度提高」。
+            #    改法是**把「详情」从"吃剩余"改成固定窄宽**, 时间列改成吃剩余 ——
+            #    于是屏越宽时间列越宽, 而「详情」在任何屏上都保持窄。
+            #    旧值 84/46/74 + 详情吃剩余 ⇒ 详情拿到 ~86dp(俩字只要 ~30dp), 而时间列
+            #    只有 84dp 却要放 14sp 下宽 113px 的完整时间戳 ⇒ 时间列字号被压到 10.4sp,
+            #    与另外两列的 14sp **不齐** —— 玩家报的就是这个"字体不均衡"。
+            #    现在固定 46/72/46 = 164dp, 剩下全给时间列(360dp 机上约 126dp, **+50%**)。
+            mid_w, mad_w, det_w = dp(46), dp(72), dp(46)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
-            for text, width in (('时间', time_w), ('中位数', mid_w),
-                                ('平均差系数', mad_w), ('详情', None)):
+            for text, width in (('时间', None), ('中位数', mid_w),
+                                ('平均差系数', mad_w), ('详情', det_w)):
                 head = Label(text=text, halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
@@ -13990,8 +13997,19 @@ class RootWidget(BoxLayout):
             #    读到 0, 弹窗只按"标题+表头+脚注+按钮"收 ⇒ **滚动区被压成 0,
             #    一行数据都显示不出来**(截图为证: 表头在、下面空的)。
             #    按行数算死高度就不依赖 Kivy 的布局时序了。
-            _vn = max(1, min(len(self.hp_history), 8))
-            scroll = ScrollView(size_hint_y=None, height=dp(28 * _vn + 10))
+            # ⚠️ 2026-09-16 玩家: 「需要把高度大幅提高, 同 1 页显示更多历史数据」。
+            #    行数不再写死 8, 改成**按视口算**: 弹窗上限 0.96*_vh, 减去固定部分
+            #    (标题/表头/脚注/关闭/spacing/padding/Popup 外壳, 实测约 240dp),
+            #    余下的全给行(每行 28+2dp)。360x660 上约 13 行, 320x560 上约 9 行。
+            #    ⚠️ **必须留这个自适应**: 写死一个大数字会在小屏上把内容顶出弹窗外
+            #       (见 `_popup_fit_content` 里"字飘在游戏画面上"那一段)。
+            _vn = max(3, min(len(self.hp_history),
+                             int((self._veq()[1] * 0.96 - dp(240)) // dp(30))))
+            # ⚠️ **每行按 30dp 算, 不是 28**(2026-09-16 实测截图): 行高 `dp(28)` 之外
+            #    还有 `inner` 的 `spacing=dp(2)`, n 行的真实内容高 = 28n + 2(n-1)。
+            #    原来写 `28*_vn+10` ⇒ 12 行时容器 346px 而内容 358px, **最后一行被裁一半**。
+            #    30*_vn 与上面容量公式同一把尺子, 两边不会再打架。
+            scroll = ScrollView(size_hint_y=None, height=dp(30 * _vn + 10))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
             t_rows, m_rows, mad_rows = [], [], []
@@ -14006,7 +14024,7 @@ class RootWidget(BoxLayout):
                 mad_text = ('%.2f%%' % float(_mad)) if _mad is not None else '—'
                 row = BoxLayout(size_hint_y=None, height=dp(28))
                 labs = []
-                for text, width in ((stamp, time_w), (mid_text, mid_w), (mad_text, mad_w)):
+                for text, width in ((stamp, None), (mid_text, mid_w), (mad_text, mad_w)):
                     lbl = Label(text=text, font_size='14sp', halign='center',
                                 valign='middle', color=hex_rgb(COL_TEXT) + (1,),
                                 size_hint_x=None if width else 1)
@@ -14017,7 +14035,7 @@ class RootWidget(BoxLayout):
                     labs.append(lbl)
                 # ⚠️ 最后一列是**按钮**(唯一一个), 不进 `_fit_uniform` —— 它不是文字行。
                 btn = Button(text='详情', font_size='14sp', bold=True,
-                             background_normal='',
+                             background_normal='', size_hint_x=None, width=det_w,
                              background_color=hex_rgb(COL_BTN) + (1,))
                 btn.bind(on_release=lambda _b, rr=r: self._show_hp_detail(rr))
                 row.add_widget(btn)
@@ -14030,13 +14048,19 @@ class RootWidget(BoxLayout):
             self._fit_uniform(mad_rows, sp(14))
             scroll.add_widget(inner)
             content.add_widget(scroll)
+            # ⚠️ 2026-09-16 玩家定稿: 「最简单的改进方案是, 把括号内的字都删了」。
+            #    两层好处: ① 括号里那个「群」字**不在字体子集里**(真机上显示成方块 ——
+            #    玩家报的"有一个字显示为 xx") ⇒ 删掉整段即根治, 不必重做字体;
+            #    ② 脚注从折成 3 行变回 2 行, 腾出的高度全给上面的历史列表。
+            #    ⚠️ **别再把口径沿革写回这里**: 那段解释属于代码注释(`_mad_coef` /
+            #    `_show_bench_history` 两处都有), 面板上只需要回答"这一列是什么"。
+            #    ⚠️ `h0` 60 -> 40: 两行 12sp 排版约 34px, 原来的 52 是给三行留的。
             foot = Label(
                 text=('  中位数：高压那段各个 1 秒窗口速度的中位数\n'
-                      '  平均差系数：平均差 ÷ 均值，越小越稳（2026-09-15 起取代原「波动」，'
-                      '旧口径 (最大-最小)/中位数 只看两个极端点，一个离群值就能把它带飞）'),
+                      '  平均差系数：平均差 ÷ 均值，越小越稳'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
-            self._auto_h(foot, dp(52))
+            self._auto_h(foot, dp(40))
             content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='',
