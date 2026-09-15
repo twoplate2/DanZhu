@@ -875,6 +875,9 @@ _BENCH_SPEED = []
 # 波 1 每一轮的**对象分配探针**吞吐(见 `_alloc_probe`)。与 `_BENCH_SPEED` 配成一对:
 # 两个一起掉 = 核心慢; 只有这个掉 = 内存/分配器那一侧被抢。
 _BENCH_ALLOC = []
+# 波 2(高压)每一窗的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 和波 1 分开存 ——
+# 两波是**不同的两段时间**(波 1 有间隔、波 2 一秒不停), 混在一起就分不出是哪一段的。
+_SUST_SPEED = []
 
 
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
@@ -1025,6 +1028,15 @@ def benchmark_sustained(total_wall_sec=SOC_SUSTAIN_WALL_SEC,
     cpu_seconds_list = []
     total_flights = 0
     total_frames = 0
+    # ⚠️ **波 2 也要纯算术探针**(2026-09-15 玩家:「高压测试的跑分也应该同步修订」)。
+    #    理由和波 1 完全一样: "步/秒"会被**渲染抢内存**污染(波 1 实测 120fps 与 80fps
+    #    差 13.9%, 而探针只差 1.1%)。高压测试跑 6 分钟, **衰减曲线的绝对值**同样被污染。
+    #    ⚠️ 高压期间主线程的渲染负载**基本恒定**(没有球在飞), 所以**降幅比例**受影响小;
+    #       但"首窗/末窗的绝对值"和别的测试放在一起比时, 必须拿探针归一化。
+    #    ⚠️ 只在**每个窗口后**跑一次(1 CPU 秒的窗口, 探针 0.05 秒) —— 6 分钟里约 360 次,
+    #       累计 18 秒的额外 CPU, 占比 5%。**这是有意的**: 探针必须**全程陪着**,
+    #       才追得上温控造成的漂移。
+    _SUST_SPEED.clear()
     # ⚠️ **这里是墙钟**(2026-09-15 改): 与外循环判据同一根尺子。
     #    旧版用 `cpu_clock()` —— 那是"工作线程自己跑了多久", 与玩家等的真实时间差 1.31 倍。
     t_all = time.time()
@@ -1034,6 +1046,10 @@ def benchmark_sustained(total_wall_sec=SOC_SUSTAIN_WALL_SEC,
         cpu_seconds_list.append(used)
         total_flights += flights
         total_frames += frames
+        try:
+            _SUST_SPEED.append(_speed_probe())
+        except Exception:
+            _SUST_SPEED.append(0.0)
     return total_flights, total_frames, fps_list, cpu_seconds_list
 
 
@@ -10559,6 +10575,15 @@ class RootWidget(BoxLayout):
         _frq.sort()
         self._hp_fps = list(_fps or [])
         self._hp_cpu = list(_cpu or [])
+        # ⚠️ **高压的纯算术探针 + 归一化**(2026-09-15, 与波 1 同一条规矩):
+        #    高压跑分的绝对值同样会被"渲染抢内存"污染, 所以也要能归一化。
+        #    归一化 = 首窗步/秒 ÷ 首窗探针 ×1e6 —— ⚠️ **取首窗**, 不是中位:
+        #    高压要回答的是"**一上来能跑多快**"(峰值), 中位会被后面的温控衰减拉低。
+        self._hp_speed = [round(float(x), 1) for x in _SUST_SPEED]
+        _hv = [x for x in self._hp_fps if x > 0]
+        _hs = [x for x in self._hp_speed if x > 0]
+        self._hp_norm = (int(round(1000000.0 * _hv[0] / _hs[0]))
+                         if (_hv and _hs and _hs[0] > 0) else 0)
         self._hp_freq = {"p50": _frq[len(_frq) // 2] if _frq else 0,
                          "min": _frq[0] if _frq else 0,
                          "max": _frq[-1] if _frq else 0, "n": len(_frq),
@@ -10648,6 +10673,13 @@ class RootWidget(BoxLayout):
                     "version": _app_version(),
                     "device": self._device_info(),
                     "windows": [int(x) for x in self._hp_fps],
+                    # ⚠️ **归一化步/秒 + 逐窗探针**(2026-09-15 玩家:「高压测试的跑分也应该
+                    #    同步修订」)。高压的绝对值同样会被"渲染抢内存"污染, 所以它也得能
+                    #    归一化 —— **跨设置/跨设备比高压成绩只能用这个数**。
+                    #    `speed_runs` 逐窗存下来, 是为了事后判断"衰减是机器掉了还是测量抖了"。
+                    #    ⚠️ **旧记录没有这两个字段** ⇒ 面板印「无数据」, 绝不回填。
+                    "norm": int(getattr(self, "_hp_norm", 0) or 0),
+                    "speed_runs": list(getattr(self, "_hp_speed", None) or []),
                 })
                 if len(self.hp_history) > 100:
                     self.hp_history.pop(0)
@@ -12151,6 +12183,24 @@ class RootWidget(BoxLayout):
                                  _d2, int(min(_sv2))))
                 _lines.append("#   逐窗: " + ", ".join("%d" % x for x in _sv2))
                 _lines.append("#   " + _f2t)
+                # ⚠️ **高压的纯算术探针 + 归一化**(2026-09-15 玩家:「高压测试的跑分也应该
+                #    同步修订」)。高压的绝对值同样被"渲染抢内存"污染 ⇒ **跨设置/跨设备比高压
+                #    成绩只能用归一化那个数**。
+                #    ⚠️ 归一化取的是**首窗**(峰值), 不是中位 —— 中位会被后面的温控衰减拉低。
+                _hs2 = [x for x in (getattr(self, "_hp_speed", None) or []) if x > 0]
+                if _hs2 and _sv2:
+                    _lines.append("#   高压**逐窗**纯算术探针: "
+                                  + ", ".join("%.0f" % x for x in _hs2))
+                    _lines.append("#   高压**归一化** = 首窗步/秒 ÷ 首窗探针 ×1e6 = **%d**"
+                                  "   ← **跨设置/跨设备比高压成绩只能用这个数**"
+                                  % int(getattr(self, "_hp_norm", 0) or 0))
+                    _lines.append("#   高压逐窗 步/秒÷探针(×1e6): "
+                                  + " · ".join("%d" % int(1000000.0 * _sv2[_i] / _hs2[_i])
+                                               for _i in range(min(len(_sv2), len(_hs2)))))
+                    _lines.append("#     ↑ **这一串稳不稳**才是真衰减: 它平而步/秒在掉 ⇒ 机器整体"
+                                  "慢了; 它跟着掉 ⇒ 渲染/内存那一侧变了")
+                else:
+                    _lines.append("#   高压纯算术探针: **没采到**")
         except Exception:
             pass
         # ---- ★ 这一轮到底能不能和上一轮比(2026-09-14 加) ----
@@ -13305,10 +13355,16 @@ class RootWidget(BoxLayout):
             content.add_widget(empty)
             content.add_widget(Widget(size_hint_y=1))
         else:
-            time_w, mid_w, spr_w = dp(112), dp(76), dp(66)
+            # ⚠️ 列宽 2026-09-15 调过: 加了第五列「归一化」。**第一版把「详情」挤成了 25px**
+            #    (截图里表头 `归一化详情` 都黏在一起、按钮成细条) —— 教训是**加列最容易挤坏
+            #    的不是文字, 是那个按钮**。现在: 时间列改用 `_hist_stamp`(本年 `09-15 14:07`
+            #    只要 76px, 与模拟历史面板同一条规矩), 其余按实测内容(113/40/41/24)压到
+            #    88/46/44/42 —— **留出 ~55px 给「详情」**(`text_px('详情',14)=28px` + 边距)。
+            #    ⚠️ 探针 `hp_instr_probe` 的 **H6** 钉着"按钮宽度 >= 40px", 别再挤它。
+            time_w, mid_w, spr_w, nrm_w = dp(88), dp(46), dp(44), dp(42)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
             for text, width in (('时间', time_w), ('中位数', mid_w),
-                                ('波动', spr_w), ('详情', None)):
+                                ('波动', spr_w), ('归一化', nrm_w), ('详情', None)):
                 head = Label(text=text, halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
@@ -13327,16 +13383,22 @@ class RootWidget(BoxLayout):
             scroll = ScrollView(size_hint_y=None, height=dp(28 * _vn + 10))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
-            t_rows, m_rows, s_rows = [], [], []
+            t_rows, m_rows, s_rows, n_rows = [], [], [], []
             for r in reversed(self.hp_history[-100:]):
-                stamp = str(r.get('time', '--'))
+                stamp = _hist_stamp(r.get('time'))
                 mid = r.get('median')
                 spr = r.get('spread')
                 mid_text = '%d' % int(mid) if mid is not None else '—'
                 spr_text = '%.1f%%' % float(spr) if spr is not None else '—'
+                # ⚠️ **归一化**(2026-09-15): 首窗步/秒 ÷ 首窗纯算术探针 ×1e6。
+                #    高压成绩的绝对值同样被"渲染抢内存"污染 ⇒ **跨设置/跨设备比只能用这个**。
+                #    ⚠️ **旧记录没有它** ⇒ 印「无数据」, **绝不拿中位数回填**(印假数)。
+                _nz = int(r.get('norm', 0) or 0)
+                nrm_text = ('%d' % _nz) if _nz else '无数据'
                 row = BoxLayout(size_hint_y=None, height=dp(28))
                 labs = []
-                for text, width in ((stamp, time_w), (mid_text, mid_w), (spr_text, spr_w)):
+                for text, width in ((stamp, time_w), (mid_text, mid_w), (spr_text, spr_w),
+                                    (nrm_text, nrm_w)):
                     lbl = Label(text=text, font_size='14sp', halign='center',
                                 valign='middle', color=hex_rgb(COL_TEXT) + (1,),
                                 size_hint_x=None if width else 1)
@@ -13354,18 +13416,22 @@ class RootWidget(BoxLayout):
                 t_rows.append(labs[0])
                 m_rows.append(labs[1])
                 s_rows.append(labs[2])
+                n_rows.append(labs[3])
                 inner.add_widget(row)
             self._fit_uniform(t_rows, sp(14))
             self._fit_uniform(m_rows, sp(14))
             self._fit_uniform(s_rows, sp(14))
+            self._fit_uniform(n_rows, sp(14))
             scroll.add_widget(inner)
             content.add_widget(scroll)
             foot = Label(
                 text=('  中位数：高压那段各个 1 秒窗口速度的中位数\n'
-                      '  波动：(最大-最小)/中位数，越大越不稳'),
+                      '  波动：(最大-最小)/中位数，越大越不稳\n'
+                      '  归一化：首窗速度 ÷ 首窗纯算术探针 ×1e6 —— **跨设置/跨设备比高压成绩'
+                      '只能用这个数**（中位数会被渲染抢内存污染）'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
-            self._auto_h(foot, dp(44))
+            self._auto_h(foot, dp(62))
             content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='',
@@ -13374,7 +13440,7 @@ class RootWidget(BoxLayout):
         content.add_widget(close_btn)
         _vw, _vh = self._veq()
         popup = RotPopup(title='', content=content, size_hint=(None, None),
-                         width=0.86 * _vw, height=0.7 * _vh,
+                         width=0.92 * _vw, height=0.7 * _vh,
                          auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
