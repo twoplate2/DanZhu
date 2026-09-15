@@ -877,12 +877,16 @@ _BENCH_CPU_PIN = {}
 #    那是**错的** —— `_run_hp_test`(约 10718 行) / 渲染采样(约 11330 行) / `_run_benchmark`
 #    (约 11860 行) **三处都调** `_bench_pin_fast_cpus()`。别照旧注释做判断。
 _BENCH_PIN_FAST_CORES = True
-# 波 1 每一轮的**起跑段剔除**时长(见 `benchmark_trajectories._run_once`)。
-# 轮与轮之间有 `SOC_SAMPLE_GAP_SEC` 秒间隔, 大核在那几秒里已落到低频 OPP, 于是每个窗口的
-# **开头**那几百毫秒是在 DVFS 爬坡 —— 算进分母等于拿"降温"换了"降分", 两头都亏。
-# 真机 7 份日志里 **5 份的最低轮都是第 2 轮**(锁核后的 3 份里 3/3), 正是这个形状。
-# 这段负载**不计成绩**、不占分母。⚠️ 只移动测量窗口的起算点, 不碰任何物理/弹珠逻辑。
-_BENCH_RAMP_CPU_SEC = 0.4
+# 波 1 每轮的**窗口三段结构**(见 `benchmark_trajectories._run_once`):
+#   起跑段(不计成绩) → 计分段(`SOC_SAMPLE_CPU_SEC` 秒) → 收尾段(不计成绩)。
+# 为什么两头都不要(玩家 2026-09-15 建议「每次测量 4 秒, 但第 1 秒和最后 1 秒都不算」):
+#   · **头**: 轮间有 `SOC_SAMPLE_GAP_SEC` 秒间隔, 大核在那几秒里已落到低频 OPP, 窗口开头
+#     那几百毫秒是在 DVFS 爬坡 —— 真机 7 份日志里 **5 份的最低轮都是第 2 轮**(锁核后 3/3)。
+#   · **尾**: 窗口末尾会被"最后一颗球跑不完"截断, 且紧挨着下一轮的调度动作。
+# ⚠️ 这两个值是用 `temp/_window_scan.py` **实测扫描**出来的, 不是拍的 —— 见那里的数据。
+# ⚠️ 只影响"统计哪一段", 不碰任何物理/弹珠逻辑。
+_BENCH_HEAD_SEC = 1.0
+_BENCH_TAIL_SEC = 1.0
 # 波 1 每一轮的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 它在 `_run_once` **之外**跑,
 # 所以不占"步/秒"的分母; 它自己那份 CPU 时间由 `_speed_probe` 内部计量。
 _BENCH_SPEED = []
@@ -1045,6 +1049,31 @@ def _bench_restore_thread_priority(previous):
         _BENCH_TID_PRIO["restore_error"] = type(_exc).__name__
 
 
+def _mad_coef(vals):
+    """**平均差系数** = 平均差 ÷ 均值(玩家 2026-09-15 定稿, 取代原来的「波动」)。
+
+    为什么换掉原来的「波动」: 它的定义是 `(max-min)/中位` —— **只看两个极端点**, 一个离群值
+    就能把它整个带飞(那段旧注释自己都写着"跑分次数少时一个异常值就能把它带飞")。平均差用上
+    **每一个样本**, 对离群值的敏感度远低于极差。
+
+    ⚠️ 与变异系数(CV = σ/μ)的区别: 平均差**不平方**, 所以对离群值的敏感度比 σ 还低一档。
+
+    返回**百分数**(如 2.5 表示 2.5%); 样本少于 2 个或均值为 0 时返回 `None` —— **不编数**。
+    """
+    _v = []
+    for _x in (vals or []):
+        try:
+            _v.append(float(_x))
+        except Exception:
+            pass
+    if len(_v) < 2:
+        return None
+    _m = sum(_v) / len(_v)
+    if _m == 0:
+        return None
+    return 100.0 * sum(abs(_x - _m) for _x in _v) / len(_v) / _m
+
+
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
                            runs=SOC_SAMPLE_RUNS,
@@ -1071,36 +1100,40 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     def _run_once(cpu_seconds, seed):
         # 每个样本从同一条确定性输入序列起跑，波动反映 SoC 状态，而不是抽到不同球路。
         rng = random.Random(seed)
-        flights = 0
-        frames = 0
-        # ⚠️ **剔除起跑段**(2026-09-15): 轮与轮之间有 `gap_sec` 秒间隔, 大核在那几秒里已经
-        #    落到低频 OPP, 于是每个窗口的**开头**那几百毫秒是在 DVFS 爬坡 —— 把它算进分母
-        #    等于拿"降温"换了"降分", 两头都亏。真机 7 份日志里 **5 份的最低轮都是第 2 轮**
-        #    (锁核后的 3 份日志里 3/3), 正是这个形状。
-        #    做法: 先跑一小段**不计成绩**(不进 `flights`/`frames`/分母)的同种负载, 把频率顶
-        #    到位再起计时。
-        #    ⚠️ 预热用**独立的随机流** —— 否则会消耗主序列的随机数, 让"跑哪些球"变掉,
-        #       历史数据就不可比了。主序列 `rng` 一个数都不动。
-        #    ⚠️ 这里**只动测量窗口的起算点**, 一行物理/弹珠逻辑都不碰: 跑的仍是原样的
-        #       `launch_ball` + `advance_flight`。
-        _ramp_rng = random.Random(seed ^ 0x5A5A5A)
-        _ramp_t = cpu_clock()
-        while cpu_clock() - _ramp_t < BENCH_RAMP_CPU_SEC:
-            _rb = launch_ball(_ramp_rng.uniform(MISFIRE_POWER, 1.0), rng=_ramp_rng)
-            for _ in range(4000):
-                if advance_flight(_rb, geo) is not None:
-                    break
-        t0 = cpu_clock()
-        while cpu_clock() - t0 < cpu_seconds:
-            power = rng.uniform(MISFIRE_POWER, 1.0)
-            b = launch_ball(power, rng=rng)
-            for _ in range(4000):
-                landed = advance_flight(b, geo)
-                frames += 1
-                if landed is not None:
-                    flights += 1
-                    break
-        used = max(0.000001, cpu_clock() - t0)
+        # ⚠️ **窗口三段结构: 起跑段(不计) → 计分段 → 收尾段(不计)**
+        #    (2026-09-15, 玩家建议「每次测量 4 秒, 但第 1 秒和最后 1 秒都不算」)。
+        #    为什么两头都不要:
+        #      · **头**: 轮间有 `gap_sec` 秒间隔, 大核在那几秒里已经落到低频 OPP, 窗口开头那
+        #        几百毫秒是在 DVFS 爬坡 —— 真机 7 份日志里 **5 份的最低轮都是第 2 轮**
+        #        (锁核后的 3 份日志里 3/3), 正是这个形状。
+        #      · **尾**: 窗口末尾会被"最后一颗球跑不完"截断, 而且紧挨着下一轮的调度动作。
+        #    `flights` / `frames` / 分母 `used` **同源**, 都只覆盖中间那一段。
+        #    ⚠️ 不计分段用**独立的随机流** —— 否则会消耗主序列的随机数、让"跑哪些球"变掉,
+        #       历史就不可比了。主序列 `rng` 一个数都不动。
+        #    ⚠️ 这里只移动"统计哪一段", 跑的仍是原样的 `launch_ball` + `advance_flight`;
+        #       **弹珠逻辑一行不碰**。
+        _warm_rng = random.Random(seed ^ 0x5A5A5A)
+
+        def _burst(deadline, _rng, _count):
+            """跑到本线程 CPU 时间到 `deadline` 为止; `_count` 为假时只跑、不计数。"""
+            _fl = _fr = 0
+            while cpu_clock() < deadline:
+                _b = launch_ball(_rng.uniform(MISFIRE_POWER, 1.0), rng=_rng)
+                for _ in range(4000):
+                    _landed = advance_flight(_b, geo)
+                    if _count:
+                        _fr += 1
+                    if _landed is not None:
+                        if _count:
+                            _fl += 1
+                        break
+            return _fl, _fr
+
+        _burst(cpu_clock() + _BENCH_HEAD_SEC, _warm_rng, False)   # 起跑段: 只顶频率
+        _m0 = cpu_clock()
+        flights, frames = _burst(_m0 + cpu_seconds, rng, True)     # 计分段
+        used = max(0.000001, cpu_clock() - _m0)
+        _burst(cpu_clock() + _BENCH_TAIL_SEC, _warm_rng, False)   # 收尾段: 只顶频率
         return flights, frames, used
 
     # ⚠️⚠️ **门: 采样间隙里频率不算数**(2026-09-15 玩家:「必须用跑分时的平均频率
@@ -2702,14 +2735,16 @@ def _hist_stamp(raw):
 #    时间恢复完整年月日**(玩家 2026-09-15:「去掉归一化列 / 项目内的字体大小改成相同 /
 #    时间现在可以恢复年月日+时间格式了」)。
 # ⚠️ **为什么现在能放完整时间**: 只剩三列。三列最宽内容 = 时间 113(完整年月日)
-#    + 帧 96(**表头比数据长**) + 跑分·波动 89 = **298px**, 配进内容区 ~290px
-#    ⇒ 全表共用一个字号, 落在 **13.16sp**。
+#    + 帧 96(**表头比数据长**) + 跑分·平均差系数(**表头比数据长**) —— 第三列的表头在
+#    2026-09-15 从「中位跑分 / 波动」改成「跑分/平均差系数」时**已经按窄列重算过**:
+#    用简称而不是全称, 就是为了不把「详情」/时间列挤坏。**改这几个字之前先跑
+#    `temp/benchhist_probe.py` 看 F1/F2(不裁/不折行)与 [360] 那一行的字号。**
 # ⚠️ **全表共用一个字号**(不是逐列各缩): 逐列各缩时表头(`平均/1%Low帧` 比数据长)
 #    会比数据行小一档, 同一张表里两种字号 —— 玩家截图指出过。
 # ⚠️ **表头与数据行必须共用同一套列宽**(`_show_bench_history` 里的 `_HW`)。
-# ⚠️ **字段顺序**: 时间 / 平均·1%Low帧 / 中位跑分·波动。
+# ⚠️ **字段顺序**: 时间 / 平均·1%Low帧 / 跑分·平均差系数。
 # ⚠️ 想再加列/加字之前, 先去 `temp/benchhist_probe.py` 看 `[360]` 那一行的字号。
-_HIST_COLS = ('时间', '平均/1%Low帧', '中位跑分 / 波动')
+_HIST_COLS = ('时间', '平均/1%Low帧', '平均差系数')
 
 
 # ---- 字体"钉子"(2026-09-15, 对抗性评审 top 3 之一) ---------------------------
@@ -10899,12 +10934,17 @@ class RootWidget(BoxLayout):
         v = [x for x in self._hp_fps if x > 0]
         _step = max(1, len(v) // 12)
         _curve = " / ".join("%d" % v[_i] for _i in range(0, len(v), _step))
+        # ⚠️ 2026-09-15 玩家定稿: 高压这里**删掉「归一化」、删掉「波动」, 新增平均差系数**
+        #    (= 平均差 ÷ 均值, 见 `_mad_coef`)。旧「波动」是 (max-min)/中位, 只看两个极端点。
+        _mc = _mad_coef(v)
         return (_dv + chr(10)
                 + "高压 %.0f 秒（背靠背不停）" % SOC_SUSTAIN_WALL_SEC + chr(10)
                 + self._hp_cpu_pin_line() + chr(10)
                 + self._hp_tid_prio_line() + chr(10)
                 + "首 %d → 末 %d 步/秒（降 %.0f%%）" % (_f, _l, _d) + chr(10)
-                + "最低 %d · 中位 %d 步/秒" % (_lo, _mid) + chr(10) + chr(10)
+                + "最低 %d · 中位 %d 步/秒" % (_lo, _mid) + chr(10)
+                + ("平均差系数 %.2f%%" % _mc if _mc is not None else "平均差系数 无数据")
+                + chr(10) + chr(10)
                 + "每段采样：" + _curve + chr(10)
                 + "CPU 频率：" + self._hp_freq_line())
 
@@ -10929,6 +10969,11 @@ class RootWidget(BoxLayout):
                     "median": int(_mid2),
                     "spread": (round(100.0 * (_w2[-1] - _w2[0]) / _mid2, 1)
                                if (_w2 and _mid2 > 0) else None),
+                    # ⚠️ **平均差系数**(2026-09-15 玩家定稿): 高压评分的新口径, 取代「波动」。
+                    #    = 平均差 ÷ 均值(见 `_mad_coef`)。
+                    #    ⚠️ 旧字段 `spread` 与 `norm` **照旧存着**(老记录要能读、以后要复盘),
+                    #       只是**不再显示**。**别顺手把它们从记录里删掉。**
+                    "mad": (round(_mad_coef(_w2), 2) if _mad_coef(_w2) is not None else None),
                     "first": int(_f2), "last": int(_l2), "min": int(_lo2),
                     "decay": round(_d2, 1),
                     "freq_mean": int(_fr2.get("mean", 0) or 0),
@@ -12108,6 +12153,12 @@ class RootWidget(BoxLayout):
         phys_min = _phys_sorted[0] if _phys_sorted else 0.0
         phys_max = _phys_sorted[-1] if _phys_sorted else 0.0
         phys_spread = 100.0 * (phys_max - phys_min) / phys_fps if phys_fps > 0 else 0.0
+        # ⚠️ **平均差系数**(2026-09-15 玩家定稿): 显示改用这个, 取代旧「波动」。
+        #    旧口径 `(max-min)/中位` 只看两个极端点 —— 一个离群值就能把它整个带飞;
+        #    平均差用上**每一个**样本(见 `_mad_coef`)。
+        #    ⚠️ `phys_spread` **照旧算、照旧存**(老记录要能读、以后要复盘), 只是**不再显示**。
+        #       **别顺手把它从记录里删掉。**
+        phys_mad = _mad_coef(fps_list)
         phys_runs = len(fps_list)
         # ---- 波 2(高压)的统计(见 `benchmark_sustained`) ----
         # ⚠️ 口径: 首窗 vs **末窗**(不是 vs 最低)—— 问的是"一直压着跑**最后**掉到哪",
@@ -12160,6 +12211,9 @@ class RootWidget(BoxLayout):
             "phys_min": int(phys_min),
             "phys_max": int(phys_max),
             "phys_spread": round(phys_spread, 1),
+            # ⚠️ **平均差系数**(2026-09-15 玩家定稿): 取代「波动」作为稳定性读数。
+            #    旧字段 `phys_spread` 照旧存, 只是不再显示 —— 别删。
+            "phys_mad": (round(phys_mad, 2) if phys_mad is not None else None),
             "phys_cpu_seconds": round(sum(cpu_secs or []), 3),
             # ⚠️ 跑分**那一段**自己的 CPU 频率(见 `_run_benchmark`)。留着它才能事后回答
             #    "两次跑分差这么多, 是不是频率不同"。
@@ -12226,11 +12280,12 @@ class RootWidget(BoxLayout):
                   if _sv else '')
         score = ('%s\n'
                  '运算速度：%d 轮中位每秒 %d 步模拟\n'
-                 '稳定性：%d～%d 步/秒 · 波动 %.1f%%\n'
+                 '稳定性：%d～%d 步/秒 · 平均差系数 %s\n'
                  '%s'
                  '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
                  '%s') % (_dev_ver, phys_runs, int(phys_fps), int(phys_min), int(phys_max),
-                            phys_spread, _s_txt, avg_frames, cost_ms, _low_txt)
+                            (('%.2f%%' % phys_mad) if phys_mad is not None else '无数据'),
+                            _s_txt, avg_frames, cost_ms, _low_txt)
         score_lbl = Label(text=score, font_size='17sp', halign='left', valign='top',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
         self._auto_h(score_lbl, dp(130), dp(6))
@@ -12392,9 +12447,13 @@ class RootWidget(BoxLayout):
                               % _BENCH_FPS_FORCE)
             _pr = getattr(self, "_phys_fps_runs", None) or []
             if _pr:
-                _lines.append("# 物理跑分**逐轮**步/秒: %s  (共 %d 轮, 中位 %d, 波动 %.1f%%)"
+                # ⚠️ 2026-09-15 玩家定稿: 这里原来印的是「波动 = (max-min)/中位」, 换成
+                #    **平均差系数 = 平均差 ÷ 均值**(见 `_mad_coef`)。旧口径只看两个极端点,
+                #    一个离群值就能把它带飞。
+                _mc = _mad_coef(_pr)
+                _lines.append("# 物理跑分**逐轮**步/秒: %s  (共 %d 轮, 中位 %d, 平均差系数 %s)"
                               % (" · ".join("%.0f" % x for x in _pr), len(_pr), _pm,
-                                 (100.0 * (max(_pr) - min(_pr)) / _pm) if _pm > 0 else 0.0))
+                                 ("%.2f%%" % _mc) if _mc is not None else "无数据"))
             _pc = getattr(self, "_phys_cores", None) or {}
             if _pc:
                 _lines.append("# 物理跑分那段的 CPU **逐核**平均频率: %s"
@@ -13706,16 +13765,16 @@ class RootWidget(BoxLayout):
             content.add_widget(empty)
             content.add_widget(Widget(size_hint_y=1))
         else:
-            # ⚠️ 列宽 2026-09-15 调过: 加了第五列「归一化」。**第一版把「详情」挤成了 25px**
-            #    (截图里表头 `归一化详情` 都黏在一起、按钮成细条) —— 教训是**加列最容易挤坏
-            #    的不是文字, 是那个按钮**。现在: 时间列改用 `_hist_stamp`(本年 `09-15 14:07`
-            #    只要 76px, 与模拟历史面板同一条规矩), 其余按实测内容(113/40/41/24)压到
-            #    88/46/44/42 —— **留出 ~55px 给「详情」**(`text_px('详情',14)=28px` + 边距)。
-            #    ⚠️ 探针 `hp_instr_probe` 的 **H6** 钉着"按钮宽度 >= 40px", 别再挤它。
-            time_w, mid_w, spr_w, nrm_w = dp(88), dp(46), dp(44), dp(42)
+            # ⚠️ 列宽 2026-09-15 调过: 原先是 5 列(时间/中位数/波动/归一化/详情), 加「归一化」
+            #    那一次把「详情」挤成过 25px(截图里表头黏在一起、按钮成细条) —— 教训是**加列
+            #    最容易挤坏的不是文字, 是那个按钮**。
+            #    **2026-09-15 玩家定稿: 删掉「归一化」和「波动」两列, 换成一列「平均差系数」**
+            #    (= 平均差 ÷ 均值, 见 `_mad_coef`) ⇒ 5 列变 4 列, 「详情」拿到的剩余宽度反而
+            #    **比改动前更多**, 不会再挤坏。
+            time_w, mid_w, mad_w = dp(84), dp(46), dp(74)
             columns = BoxLayout(size_hint_y=None, height=dp(22))
             for text, width in (('时间', time_w), ('中位数', mid_w),
-                                ('波动', spr_w), ('归一化', nrm_w), ('详情', None)):
+                                ('平均差系数', mad_w), ('详情', None)):
                 head = Label(text=text, halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
                              size_hint_x=None if width else 1)
@@ -13734,22 +13793,19 @@ class RootWidget(BoxLayout):
             scroll = ScrollView(size_hint_y=None, height=dp(28 * _vn + 10))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
-            t_rows, m_rows, s_rows, n_rows = [], [], [], []
+            t_rows, m_rows, mad_rows = [], [], []
             for r in reversed(self.hp_history[-100:]):
                 stamp = _hist_stamp(r.get('time'))
                 mid = r.get('median')
-                spr = r.get('spread')
                 mid_text = '%d' % int(mid) if mid is not None else '—'
-                spr_text = '%.1f%%' % float(spr) if spr is not None else '—'
-                # ⚠️ **归一化**(2026-09-15): 首窗步/秒 ÷ 首窗纯算术探针 ×1e6。
-                #    高压成绩的绝对值同样被"渲染抢内存"污染 ⇒ **跨设置/跨设备比只能用这个**。
-                #    ⚠️ **旧记录没有它** ⇒ 印「无数据」, **绝不拿中位数回填**(印假数)。
-                _nz = int(r.get('norm', 0) or 0)
-                nrm_text = ('%d' % _nz) if _nz else '无数据'
+                # ⚠️ **平均差系数**(2026-09-15 玩家定稿): 取代原来的「波动」与「归一化」两列。
+                #    = 平均差 ÷ 均值(见 `_mad_coef`); 旧「波动」是 (max-min)/中位, 只看两端点。
+                #    ⚠️ **旧记录没有这个字段** ⇒ 印「—」, **绝不拿别的字段回填**(印假数)。
+                _mad = r.get('mad')
+                mad_text = ('%.2f%%' % float(_mad)) if _mad is not None else '—'
                 row = BoxLayout(size_hint_y=None, height=dp(28))
                 labs = []
-                for text, width in ((stamp, time_w), (mid_text, mid_w), (spr_text, spr_w),
-                                    (nrm_text, nrm_w)):
+                for text, width in ((stamp, time_w), (mid_text, mid_w), (mad_text, mad_w)):
                     lbl = Label(text=text, font_size='14sp', halign='center',
                                 valign='middle', color=hex_rgb(COL_TEXT) + (1,),
                                 size_hint_x=None if width else 1)
@@ -13758,7 +13814,7 @@ class RootWidget(BoxLayout):
                     lbl.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
                     row.add_widget(lbl)
                     labs.append(lbl)
-                # ⚠️ 第四列是**按钮**(唯一一个), 不进 `_fit_uniform` —— 它不是文字行。
+                # ⚠️ 最后一列是**按钮**(唯一一个), 不进 `_fit_uniform` —— 它不是文字行。
                 btn = Button(text='详情', font_size='14sp', bold=True,
                              background_normal='',
                              background_color=hex_rgb(COL_BTN) + (1,))
@@ -13766,23 +13822,20 @@ class RootWidget(BoxLayout):
                 row.add_widget(btn)
                 t_rows.append(labs[0])
                 m_rows.append(labs[1])
-                s_rows.append(labs[2])
-                n_rows.append(labs[3])
+                mad_rows.append(labs[2])
                 inner.add_widget(row)
             self._fit_uniform(t_rows, sp(14))
             self._fit_uniform(m_rows, sp(14))
-            self._fit_uniform(s_rows, sp(14))
-            self._fit_uniform(n_rows, sp(14))
+            self._fit_uniform(mad_rows, sp(14))
             scroll.add_widget(inner)
             content.add_widget(scroll)
             foot = Label(
                 text=('  中位数：高压那段各个 1 秒窗口速度的中位数\n'
-                      '  波动：(最大-最小)/中位数，越大越不稳\n'
-                      '  归一化：首窗速度 ÷ 首窗纯算术探针 ×1e6 —— **跨设置/跨设备比高压成绩'
-                      '只能用这个数**（中位数会被渲染抢内存污染）'),
+                      '  平均差系数：平均差 ÷ 均值，越小越稳（2026-09-15 起取代原「波动」，'
+                      '旧口径 (最大-最小)/中位数 只看两个极端点，一个离群值就能把它带飞）'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
-            self._auto_h(foot, dp(62))
+            self._auto_h(foot, dp(52))
             content.add_widget(foot)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='',
@@ -13812,12 +13865,14 @@ class RootWidget(BoxLayout):
                    % (_fp, int(r.get('freq_min', 0) or 0), int(r.get('freq_max', 0) or 0), _fn))
         else:
             _ft, _fd = '没采到', '非安卓 / 读不到 sysfs'
-        _spr = r.get('spread')
+        _mad = r.get('mad')
         _txt = (_n + str(r.get('device', '?')) + '  ' + str(r.get('version', '')) + _n
                 + str(r.get('time', '--')) + '   高压 %d 秒（背靠背不停）'
                 % int(r.get('sec', 0) or 0) + _n + _n
                 + '中位 %d 步/秒' % int(r.get('median', 0) or 0)
-                + ('（波动 %.1f%%）' % float(_spr) if _spr is not None else '') + _n
+                # ⚠️ 2026-09-15 玩家定稿: 「波动」换成**平均差系数**(= 平均差 ÷ 均值)。
+                #    旧记录没有 `mad` 字段 ⇒ 整段不印(**不回填、不印假数**)。
+                + (('（平均差系数 %.2f%%）' % float(_mad)) if _mad is not None else '') + _n
                 + '首 %d → 末 %d 步/秒（降 %.1f%%）' 
                 % (int(r.get('first', 0) or 0), int(r.get('last', 0) or 0),
                    float(r.get('decay', 0) or 0)) + _n
@@ -13948,12 +14003,15 @@ class RootWidget(BoxLayout):
                 #    reflect changed freq.")。**留一个会误导的列, 还挤掉对齐要用的宽度。**
                 #    ⚠️ `phys_freq_mean` **照旧存在 JSON 里**(老记录要能读、以后要复盘),
                 #       只是**不再显示**。**别顺手把它从记录里删掉。**
-                spread = r.get('phys_spread')
-                if spread is None:
+                # ⚠️ 2026-09-15 玩家定稿: 这里原来印的是「波动」(= (max-min)/中位), 换成
+                #    **平均差系数**(见 `_mad_coef`)。旧口径只看两个极端点。
+                #    ⚠️ 旧记录没有 `phys_mad` ⇒ 印「—」, **不回填、不印假数**。
+                mad = r.get('phys_mad')
+                if mad is None:
                     soc_text = '%d/—' % r.get('phys_fps', 0)
                 else:
                     soc_text = '%d/%.1f%%' % (
-                        r.get('phys_fps', 0), float(spread))
+                        r.get('phys_fps', 0), float(mad))
                 # ⚠️⚠️ **「归一化」那一列 2026-09-15 移出面板了**(玩家:「去掉归一化列」)。
                 #    理由: 实测它在跨设置之间**并不稳定**(535 / 603 / 597 / 572), 还不配
                 #    当"公平秤"; 而它占的宽度正好把**完整时间戳**挤掉了。
