@@ -863,6 +863,14 @@ BENCH_TARGET_LAUNCHES = 5
 _FREQ_GATE = [True]
 
 
+# ⚠️⚠️ 这段注释 2026-09-15 **改写过** —— 旧版写的是"那 2 倍只能来自 DVFS(核心频率)",
+#    而真机新数据把它推翻了: 红米 K90 Pro Max 三次同开"均衡", 最大频率 2624/2880/2875
+#    (只差 9%) 而跑分 12617/19316/21340(差 69%) ⇒ **不是最大频率能解释的**。
+#    现在只保留"按构造与刷新率无关"这一半(那半有 `thread_time` 当分母撑着),
+#    真正的原因**待测**: 逐核频率(`_cpufreq_cores`) + 亲和性(`_BENCH_AFF`) 就是为此加的。
+_BENCH_AFF = []          # 波 1 每一轮采一次 `os.sched_getaffinity(0)`; 拿不到填 None
+
+
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
                            runs=SOC_SAMPLE_RUNS,
@@ -915,11 +923,24 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     _FREQ_GATE[0] = True
     _run_once(warmup_cpu_sec, 98765)   # 升频/Python 热身，不计成绩
 
+    # ⚠️⚠️ **把这条线程的 CPU 亲和性记下来**(2026-09-15)。真机实测(红米 K90 Pro Max):
+    #    同一台机器、同样开"均衡", 只改"手机帧率上限 / 游戏帧率上限"这两个设定, 物理跑分
+    #    是 **12617 / 19316 / 21340**(差 69%), 而"最大 CPU 频率"只差 9%。
+    #    按构造这条线程与刷新率无关(独立线程 + `thread_time` 当分母), 所以差异只能来自
+    #    **OS 把它调度到哪几个核 / 那个核跑多少频率** —— 而那是我们看不见的。
+    #    `sched_getaffinity` 是**唯一**能从应用侧读到"它被限在哪几个核"的口子。
+    #    ⚠️ 非安卓/不支持时拿不到, **如实留空**, 调用方印"没采到", 不印假数。
+    #    ⚠️ **每轮都采**: 亲和性是可能中途变的(系统按负载收窄 cpuset), 只看开头会漏掉。
+    _BENCH_AFF.clear()
     fps_list = []
     cpu_seconds_list = []
     total_flights = 0
     total_frames = 0
     for _i in range(runs):
+        try:
+            _BENCH_AFF.append(sorted(os.sched_getaffinity(0)))
+        except Exception:
+            _BENCH_AFF.append(None)
         if _i > 0 and gap_sec > 0:
             _FREQ_GATE[0] = False      # 关门 → 这几秒的频率不进平均
             try:
@@ -996,14 +1017,31 @@ def benchmark_sustained(total_wall_sec=SOC_SUSTAIN_WALL_SEC,
     return total_flights, total_frames, fps_list, cpu_seconds_list
 
 
+# 逐核频率的累加器(只在采样窗口里填): {核号: [和, 次数, 最低, 最高]}。
+# ⚠️ 由 `_freq_sampler_start` 清空、`_freq_core_stats()` 读走 —— 和 `_CPUFRQ` 同一条命。
+_FREQ_CORE_STATS = {}
+
+
+def _freq_core_stats():
+    """把逐核累加器折成 `{核号: {'mean':.., 'min':.., 'max':.., 'n':..}}`(没采到返回 {})。"""
+    out = {}
+    for _k, _v in _FREQ_CORE_STATS.items():
+        if _v[1] > 0:
+            out[_k] = {"mean": _v[0] / _v[1], "min": _v[2], "max": _v[3], "n": _v[1]}
+    return out
+
+
 def _freq_sampler_start():
     """起一个 0.5 秒一次的主频采样线程, 返回 `(频率列表, 停止标志)`。
 
     用 `_cpufreq_mhz()`(读 sysfs), 非安卓/读不到时**采不到任何值**, 列表保持为空 ——
     调用方据此印「没采到」, **不印假数**。
+    ⚠️ 同一个循环里顺带累加**逐核**频率(`_FREQ_CORE_STATS`, 见 `_cpufreq_cores`) ——
+       多开几个小文件读, 0.5 秒一次, 开销可忽略。
     """
     _frq = []
     _stop = [False]
+    _FREQ_CORE_STATS.clear()
 
     def _samp():
         while not _stop[0]:
@@ -1014,6 +1052,17 @@ def _freq_sampler_start():
                     _v = _cpufreq_mhz()
                     if _v > 0:
                         _frq.append(_v)
+                    for _ci, _cm in _cpufreq_cores():
+                        _e = _FREQ_CORE_STATS.get(_ci)
+                        if _e is None:
+                            _FREQ_CORE_STATS[_ci] = [_cm, 1, _cm, _cm]
+                        else:
+                            _e[0] += _cm
+                            _e[1] += 1
+                            if _cm < _e[2]:
+                                _e[2] = _cm
+                            if _cm > _e[3]:
+                                _e[3] = _cm
             except Exception:
                 pass
             time.sleep(0.5)
@@ -3241,6 +3290,30 @@ _swap_wrap()
 #    ⚠️ 频率拿不到(桌面 / 被 SELinux 挡住)时一律吞掉当"读不到", 日志里那一段**不印**,
 #       而不是印一行 0 假装量到了。
 _CPUFRQ = {"freqs": [], "cap": 0.0, "stop": True, "thr": None}
+
+
+def _cpufreq_cores():
+    """逐核当前频率 `[(核号, MHz), ...]`, 只列**读得到**的核。读不到返回空表。
+
+    ⚠️⚠️ **为什么必须逐核**(2026-09-15): `_cpufreq_mhz()` 报的是**各核最大值**, 而
+       "跑分那条线程跑在哪个核上"是 **OS 调度**决定的 —— 大核 2.8GHz 的时候, 线程完全
+       可能正在一个 1.5GHz 的中核上。于是"最大频率"这一列在**这个问题上没有分辨力**。
+       真机实测(红米 K90 Pro Max, 三次同开"均衡"): 最大频率 2624/2880/2875(只差 9%),
+       而物理跑分 12617/19316/21340(**差 69%**) —— 拿"最大值"根本解释不了。
+       ⇒ 逐核之后, "大核 2.8G / 中核 1.4G" 是一眼能看到的, 不用猜。
+    ⚠️ 这里**不做** `_cpufreq_mhz()` 那个"连续两核读不到就停"的提前退出 ——
+       逐核要的就是**完整的一张表**, 中间缺一个核会让人以为是"那个核不存在"。
+    """
+    out = []
+    for i in range(12):                     # 8 核封顶, 留点余量给 12 核的机器
+        try:
+            with open("/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq" % i) as fh:
+                v = int(fh.read().strip() or 0)
+            if v > 0:
+                out.append((i, v / 1000.0))
+        except Exception:
+            continue
+    return out
 
 
 def _cpufreq_mhz():
@@ -11446,11 +11519,16 @@ class RootWidget(BoxLayout):
         ⚠️ **两波各自采一遍 CPU 频率**(`_freq_sampler_start`), 分开存。
            为什么必须单独采: 日志里那行「CPU 频率(采样期)」采的是**渲染窗口**那二十几秒,
            与物理跑分**不是同一段时间** —— 拿它解释跑分的差异是**张冠李戴**。
-           起因: 玩家实测**同一台设备**, 显示上限设成 60 与 120, 跑分差**接近 2 倍**。
-           而这两个 benchmark 按构造与刷新率无关(工作线程 + `time.thread_time` 当分母 +
-           先等主线程空闲) ⇒ 那 2 倍只能来自"同样的代码、不同的核心频率"(DVFS)。
-           分成两波之后, "波 2 掉了 40%"能直接对上"频率掉了多少", 一眼分清是不是温控。
-        ⚠️ 采样线程每 0.5 秒只读两次小文件, 对跑分的 GIL 干扰可忽略(原来是零采样)。
+        ⚠️⚠️ **这条注释 2026-09-15 改写**: 旧版在这里写「那 2 倍只能来自 DVFS(核心频率)」。
+           真机新数据把它**推翻**了 —— 红米 K90 Pro Max 三次同开"均衡", 只改"手机帧率上限 /
+           游戏帧率上限": 跑分 **12617 / 19316 / 21340**(差 69%), 而"最大 CPU 频率"只差
+           **9%**(2624/2880/2875)。**最大频率解释不了这个差。**
+           现在能确定的只有一半: 按构造它与刷新率无关(独立线程 + `thread_time` 当分母)。
+           另一半 —— "跑分线程跑在哪个核、那个核多少频率" —— **以前根本没有仪表**:
+           `_cpufreq_mhz()` 报的是**各核最大值**, 大核 2.8G 的时候线程可能正在中核 1.5G 上。
+           ⇒ 本轮加了逐核频率(`_cpufreq_cores`) + 亲和性(`_BENCH_AFF`), 就是为了把这一半
+             变成**可测的**。等真机数据回来再写结论, **别再猜一个填进去**。
+        ⚠️ 采样线程每 0.5 秒只读几次小文件, 对跑分的 GIL 干扰可忽略(原来是零采样)。
         """
         # ---- 波 1: 测性能(峰值) ----
         _f1, _s1 = _freq_sampler_start()
@@ -11471,6 +11549,12 @@ class RootWidget(BoxLayout):
         #    由 `_FREQ_GATE` 把**样本之间的 sleep 段**滤掉了(那几秒 CPU 闲, 会把均值拖低)。
         # ⚠️ `_phys_freq_p50/min/max/n` **一个都不删** —— JSON 里留着, 只是不再当"代表值"显示。
         self._phys_freq_mean = int(sum(_f1) / len(_f1)) if _f1 else 0
+        # ⚠️ **逐轮步/秒 + 逐核频率 + 亲和性**(2026-09-15 加) —— 三样都是为"同一台机器只改
+        #    帧率上限, 跑分差 69% 而最大频率只差 9%"这件事加的仪表。
+        #    最有用的是**逐轮**: 中位数把 5 轮压成一个数, 而"一直低"和"中途掉一轮"是两种病。
+        self._phys_fps_runs = [round(float(x), 1) for x in (fps_list or [])]
+        self._phys_cores = _freq_core_stats()
+        self._phys_aff = list(_BENCH_AFF)
         # ⚠️ **主测试不再跑高压段**(2026-09-15 玩家定案: 高压拆成独立按钮)。
         #    这里必须**主动清空**, 否则上一次高压测试的 `_sust_fps` 会残留在内存里,
         #    面板和日志就会把**旧的高压结果**当成这一次的印出来 —— 那是"印假数", 比没有更糟。
@@ -11613,6 +11697,10 @@ class RootWidget(BoxLayout):
             "render_median": round(render_median, 1),
             "render_1low": round(render_1low, 1),
             "phys_runs": phys_runs,
+            # ⚠️ **逐轮步/秒**(2026-09-15 加): 中位数会把"五轮一直低"和"中途掉一轮"压成
+            #    同一个数 —— 而那是两种病(前者是频率/核心, 后者是温控/系统干预)。
+            #    面板不印它(四列已经满了), 留在 JSON 里供事后查。
+            "phys_fps_runs": list(getattr(self, "_phys_fps_runs", None) or []),
             "phys_min": int(phys_min),
             "phys_max": int(phys_max),
             "phys_spread": round(phys_spread, 1),
@@ -11824,6 +11912,35 @@ class RootWidget(BoxLayout):
                 else:
                     _lines.append("# 物理跑分(中位 %d 步/秒) · 跑分那段的 CPU 平均频率: **没采到**"
                                   "(非安卓 / 读不到 sysfs)" % _pm)
+            # ⚠️⚠️ **逐轮步/秒 + 逐核频率 + 亲和性**(2026-09-15 加)。这三行是为这个问题加的:
+            #    真机同一台机器只改"手机帧率上限 / 游戏帧率上限", 跑分 12617/19316/21340
+            #    (**差 69%**), 而"最大 CPU 频率"只差 **9%** —— 老仪表解释不了。
+            #    · **逐轮**: 中位数把 5 轮压成一个数, 而"五轮一直低"和"中途掉一轮"是两种病。
+            #    · **逐核**: `平均频率` 那一格是**各核最大值** —— 大核 2.8G 的时候, 跑分线程
+            #      完全可能正在一个 1.5G 的中核上。逐核才看得出这种"大核空转"。
+            #    · **亲和性**: 唯一能从应用侧读到"这条线程被限在哪几个核"的口子。
+            _pr = getattr(self, "_phys_fps_runs", None) or []
+            if _pr:
+                _lines.append("# 物理跑分**逐轮**步/秒: %s  (共 %d 轮, 中位 %d, 波动 %.1f%%)"
+                              % (" · ".join("%.0f" % x for x in _pr), len(_pr), _pm,
+                                 (100.0 * (max(_pr) - min(_pr)) / _pm) if _pm > 0 else 0.0))
+            _pc = getattr(self, "_phys_cores", None) or {}
+            if _pc:
+                _lines.append("# 物理跑分那段的 CPU **逐核**平均频率: %s"
+                              % " · ".join("cpu%d %.0f(%.0f~%.0f)"
+                                           % (_k, _v["mean"], _v["min"], _v["max"])
+                                           for _k, _v in sorted(_pc.items())))
+                _lines.append("#   ⚠️ 上面那格「平均频率」是**各核最大值**; 逐核才看得出"
+                              "**跑分线程到底跑在快核还是慢核上**(大核 2.8G 时线程可能在 1.5G 的中核)")
+            else:
+                _lines.append("# 物理跑分那段的 CPU **逐核**平均频率: **没采到**(非安卓 / 读不到 sysfs)")
+            _pa = getattr(self, "_phys_aff", None) or []
+            if _pa and any(x for x in _pa):
+                _lines.append("# 物理跑分线程的 **CPU 亲和性**(每轮采一次, `sched_getaffinity`): %s"
+                              % " | ".join(("?" if x is None else ",".join(str(i) for i in x))
+                                           for x in _pa))
+            else:
+                _lines.append("# 物理跑分线程的 CPU 亲和性: **没采到**(非安卓 / 不支持)")
             # ⚠️ **波 2(高压)那两行** —— 与波 1 相邻印,
             #    两波的频率**必须分开看**(它们是不同的两段时间)。
             _sv2 = [x for x in (getattr(self, "_sust_fps", None) or []) if x > 0]
