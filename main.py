@@ -10711,19 +10711,21 @@ class RootWidget(BoxLayout):
     def _run_hp_test(self):
         # ⚠️ 工作线程: 只写属性, **不碰界面**(界面只能在 Clock 回调里动)。
         _frq, _stop = _freq_sampler_start()
-        # ⚠️ **测试的墙钟起点在这儿盖**, 不在 `_start_hp_test`: 中间隔着"等球落地"那一段,
-        #    盖在前面会把等待也算成测试时间。紧挨着 `benchmark_sustained` 之前盖,
-        #    量的就正好是测试本身。
-        self._hp_wall0 = time.time()
         # ⚠️⚠️ **波 2 全程把帧率按到 `_BENCH_FPS_FORCE`**(与波 1 同一条规矩)。
         _hp_render_fps = 0.0          # ⚠️ 先给初值: 下面抛异常时 finally 之后那一行不能 NameError
         _bench_fps_lock_on()
+        # 高压测试也是独立 CPU 工作线程；锁在性能簇，才不会把温控衰减和迁到慢核混为一谈。
+        _hp_aff_before = _bench_pin_fast_cpus()
         try:
+            # 锁核完成后才起墙钟；拓扑探测不计入高压测试时长。
+            self._hp_wall0 = time.time()
             _fc0, _wt0 = _FRAME_CALLS[0], time.time()
             _fl, _fr, _fps, _cpu = benchmark_sustained()
             _hp_render_fps = (_FRAME_CALLS[0] - _fc0) / max(1e-6, time.time() - _wt0)
         finally:
             _bench_fps_lock_off()
+            _bench_restore_cpu_affinity(_hp_aff_before)
+        self._hp_cpu_pin = dict(_BENCH_CPU_PIN)
         self._hp_render_fps = _hp_render_fps
         _stop[0] = True
         _frq.sort()
@@ -10773,6 +10775,14 @@ class RootWidget(BoxLayout):
                     % (_f["mean"], _f["min"], _f["max"], _f["n"]))
         return "没采到（非安卓 / 读不到 sysfs）"
 
+    def _hp_cpu_pin_line(self):
+        """高压结果中如实显示性能核锁定状态。"""
+        _pin = getattr(self, "_hp_cpu_pin", None) or {}
+        if _pin.get("pinned"):
+            _cpus = _pin.get("actual", _pin.get("target", [])) or []
+            return "性能核：已锁定 " + ",".join("cpu%d" % int(_cpu) for _cpu in _cpus)
+        return "性能核：未锁定（%s）" % (_pin.get("reason", "未执行") or "未知原因")
+
     def _hp_summary_text(self):
         """弹窗里那几行(短)。没数据返回空串 —— **不印假数**。"""
         st = self._hp_stats()
@@ -10790,6 +10800,7 @@ class RootWidget(BoxLayout):
         _curve = " / ".join("%d" % v[_i] for _i in range(0, len(v), _step))
         return (_dv + chr(10)
                 + "高压 %.0f 秒（背靠背不停）" % SOC_SUSTAIN_WALL_SEC + chr(10)
+                + self._hp_cpu_pin_line() + chr(10)
                 + "首 %d → 末 %d 步/秒（降 %.0f%%）" % (_f, _l, _d) + chr(10)
                 + "最低 %d · 中位 %d 步/秒" % (_lo, _mid) + chr(10) + chr(10)
                 + "每段采样：" + _curve + chr(10)
@@ -11314,6 +11325,10 @@ class RootWidget(BoxLayout):
             gc.callbacks.append(self._bench_gc_cb)
         except Exception:
             pass
+        # 阶段 1 测的是 Kivy 主渲染线程，不能像物理跑分那样在工作线程里锁。
+        # 这里运行在主线程，且只覆盖 on_flip 采样窗口；采样结束会先恢复，再启动物理工作线程。
+        self._render_aff_before = _bench_pin_fast_cpus()
+        self._render_cpu_pin = dict(_BENCH_CPU_PIN)
         Window.bind(on_flip=self._on_flip)
         self._launch_count = 0
         self._target_launches = BENCH_TARGET_LAUNCHES
@@ -11474,6 +11489,11 @@ class RootWidget(BoxLayout):
             self._auto_evt.cancel()
             self._auto_evt = None
         Window.unbind(on_flip=self._on_flip)
+        # 主渲染线程的锁核只属于帧率采样窗口；后续物理跑分会在它自己的工作线程上单独锁核。
+        _render_aff_before = getattr(self, "_render_aff_before", None)
+        self._render_aff_before = None
+        _bench_restore_cpu_affinity(_render_aff_before)
+        self._render_cpu_pin = dict(_BENCH_CPU_PIN)
         flips = self._flip_times or []
         self._render_lows = {}
         self._render_pct = {}
@@ -12345,6 +12365,16 @@ class RootWidget(BoxLayout):
                                            for x in _pa))
             else:
                 _lines.append("# 物理跑分线程的 CPU 亲和性: **没采到**(非安卓 / 不支持)")
+            _rpin = getattr(self, "_render_cpu_pin", None) or {}
+            if _rpin.get("pinned"):
+                _rtarget = _rpin.get("actual", _rpin.get("target", [])) or []
+                _rrestored = ",".join(str(_cpu) for _cpu in (_rpin.get("restored", []) or []))
+                _lines.append("# 帧率采样主线程性能核锁定: **已锁定** %s · 恢复 %s"
+                              % (",".join("cpu%d" % int(_cpu) for _cpu in _rtarget),
+                                 _rrestored or "失败"))
+            else:
+                _lines.append("# 帧率采样主线程性能核锁定: **未锁定**(%s)"
+                              % (_rpin.get("reason", "未执行") or "未知原因"))
             # `sched_getaffinity` 的全核集合只表示"允许调度"。这里额外写明本轮是否真的把
             # benchmark 工作线程锁在最高性能簇，避免把优化请求误读成已经生效。
             _pin = getattr(self, "_phys_cpu_pin", None) or {}
@@ -12356,11 +12386,11 @@ class RootWidget(BoxLayout):
                                   for _cpu in _ptarget)
                 _before = ",".join(str(_cpu) for _cpu in (_pin.get("before", []) or []))
                 _restored = ",".join(str(_cpu) for _cpu in (_pin.get("restored", []) or []))
-                _lines.append("# 跑分线程性能核锁定: **已锁定** %s (%s) · 原允许 %s · 恢复 %s"
+                _lines.append("# 物理跑分工作线程性能核锁定: **已锁定** %s (%s) · 原允许 %s · 恢复 %s"
                               % (",".join("cpu%d" % int(_cpu) for _cpu in _ptarget), _pfreq,
                                  _before or "?", _restored or "失败"))
             else:
-                _lines.append("# 跑分线程性能核锁定: **未锁定**(%s)"
+                _lines.append("# 物理跑分工作线程性能核锁定: **未锁定**(%s)"
                               % (_pin.get("reason", "未执行") or "未知原因"))
             # ⚠️ **波 2(高压)那两行** —— 与波 1 相邻印,
             #    两波的频率**必须分开看**(它们是不同的两段时间)。
