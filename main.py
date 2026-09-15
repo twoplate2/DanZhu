@@ -562,30 +562,18 @@ def _collide_pegs(b, rows):
                     b.squash_nx = njx; b.squash_ny = njy
                     b.spin += (b.vx * njy - b.vy * njx) * 0.02  # 自转积分
 def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
-    # ⚠️ 热路径优化(2026-09-15): 原来这里是 `cx = max(rx1, min(b.x, rx2))` —— 每次调用
-    #    两次嵌套内置调用。profile 实测 `min`/`max` 各被调 417 万次, 合计吃掉物理热路径
-    #    的 8.5%(这是全链路最大的一块**可内联**开销)。clamp 内联成条件式, 并把 `b.x`/`b.y`
-    #    缓存成局部: 本函数内**所有读取都在写回之前**(写回在末尾 `b.x = cx + ...`),
-    #    所以缓存与逐次读取等价。**数值逐位不变**(`temp/_phys_hash.py` 200 发×每帧 4 个
-    #    17 位浮点值的 sha256 作证)。
-    _bx = b.x
-    _by = b.y
-    cx = _bx if _bx < rx2 else rx2
-    if cx < rx1:
-        cx = rx1
-    cy = _by if _by < ry2 else ry2
-    if cy < ry1:
-        cy = ry1
-    dx = _bx - cx
-    dy = _by - cy
+    cx = max(rx1, min(b.x, rx2))
+    cy = max(ry1, min(b.y, ry2))
+    dx = b.x - cx
+    dy = b.y - cy
     d2 = dx * dx + dy * dy
     if d2 < BALL_R * BALL_R:
         d = math.sqrt(d2)
         if d > 1e-9:
             nx, ny = dx / d, dy / d
         else:                                   # 球心在矩形内: 朝最近边推出
-            left, right = _bx - rx1, rx2 - _bx
-            top, bot = _by - ry1, ry2 - _by
+            left, right = b.x - rx1, rx2 - b.x
+            top, bot = b.y - ry1, ry2 - b.y
             m = min(left, right, top, bot)
             if m == left:
                 nx, ny = -1.0, 0.0
@@ -670,36 +658,19 @@ def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
     st[0], st[1] = n, lf
     _mark(b, EV_ARC, -vn)
 
-def physics_step(b, geo, dt, _G=G, _VMAX=VMAX, _FLOOR=FLOOR, _BALL_R=BALL_R,
-                 _WALL_E=WALL_E, _E=E, _ARC_REACH=_ARC_REACH,
-                 _SUBSTEPS=SUBSTEPS, _HYPOT=math.hypot):
-    """推进一帧(拆 SUBSTEPS 子步)。落袋返回槽序号, 否则 None。
-
-    ⚠️ 默认参数绑定 = 热路径优化(2026-09-15): `G/VMAX/FLOOR/BALL_R/WALL_E/E/
-       _ARC_REACH/SUBSTEPS` 全文件**只在定义处赋值一次**(已逐条核对), 绑成默认参数把
-       每子步的 `LOAD_GLOBAL` 换成 `LOAD_FAST`。**数值逐位不变**(`--selftest` 的落格
-       分布门禁作证)。
-    ⚠️ `geo[...]` 的四个列表只在**本函数内**取局部: `self.geo["deflectors"]` 会被
-       **每一发的弧面抖动重新赋值**(见 `launch_ball` 附近的 `arc_dy`) ⇒ **绝不能**提到
-       `advance_flight` 那一层去。一次 `physics_step` 调用内没有东西会改 `geo`。
-    ⚠️ `_ARC_FRAME` **不许绑成默认参数**: 它是全局可变的(`advance_flight` 里每帧 `+= 1`)。
-    ⚠️ 这条路径是**跑分与真机共用的同一份代码** ⇒ 这里的收益是真吞吐, 不是把数字做漂亮。
-    """
-    sub = dt / _SUBSTEPS
-    _walls = geo["walls"]
-    _deflectors = geo["deflectors"]
-    _pegs = geo["peg_rows"]
-    _dividers = geo["dividers"]
-    for _ in range(_SUBSTEPS):
-        b.vy += _G * sub
-        sp = _HYPOT(b.vx, b.vy)
-        if sp > _VMAX:
-            f = _VMAX / sp
+def physics_step(b, geo, dt):
+    """推进一帧(拆 SUBSTEPS 子步)。落袋返回槽序号, 否则 None。"""
+    sub = dt / SUBSTEPS
+    for _ in range(SUBSTEPS):
+        b.vy += G * sub
+        sp = math.hypot(b.vx, b.vy)
+        if sp > VMAX:
+            f = VMAX / sp
             b.vx *= f
             b.vy *= f
         b.x += b.vx * sub
         b.y += b.vy * sub
-        for w in _walls:
+        for w in geo["walls"]:
             # ⚠️ 地板不是墙, 而是落袋边界(见下面落袋判据)。以前这里把 (0, FLOOR, CW, CH) 当
             # 普通弹性墙撞: 球在"被判定落袋"的同一子步里先被它以 WALL_E=0.5 弹成向上(实测首触
             # vy = -295~-312), 而这条路径**没有 LAND_BOUNCE_MAX_VY 上限**。两个后果:
@@ -712,42 +683,27 @@ def physics_step(b, geo, dt, _G=G, _VMAX=VMAX, _FLOOR=FLOOR, _BALL_R=BALL_R,
             # 而且落袋判定不再受"这一步有没有撞到地板墙"这个偶然影响。
             # ⚠️ 跳过是**槽号无关**的: 该矩形的碰撞法线恒为竖直(cx=clamp(b.x,0,CW)=b.x ⇒ dx=0),
             #    它从来没有改过 b.x —— 只改 vy 和 y。所以落格分布一位不变。
-            if w[1] == _FLOOR:
+            if w[1] == FLOOR:
                 continue
             _ylo = w[1] if w[1] < w[3] else w[3]
             _yhi = w[3] if w[1] < w[3] else w[1]
-            if _yhi < b.y - _BALL_R or _ylo > b.y + _BALL_R:
+            if _yhi < b.y - BALL_R or _ylo > b.y + BALL_R:
                 continue
-            # ⚠️ x 向 AABB 粗筛(2026-09-15 热路径): 左右两面墙的 y 覆盖**全程**(0~660),
-            #    上面那条 y 粗筛对它们**永不生效** ⇒ 每子步都白调一次 `_collide_rect`
-            #    (实测 `_collide_rect` 每帧被调 18 次, 其中约 12 次来自这两面墙)。
-            #    球心到矩形的最近点距离 >= 两个 AABB 的间距, 所以**两个轴都不重叠 ⇒ 必然
-            #    不碰**。这是**超集判据**(边界相等时仍会走 `_collide_rect`, 结论同样是"不碰"),
-            #    不改任何碰撞结果 —— `temp/_phys_hash.py` 的逐位哈希作证。
-            _wxlo = w[0] if w[0] < w[2] else w[2]
-            _wxhi = w[2] if w[0] < w[2] else w[0]
-            if b.x + _BALL_R < _wxlo or b.x - _BALL_R > _wxhi:
-                continue
-            _collide_rect(b, w[0], w[1], w[2], w[3], _WALL_E, EV_WALL)
-        for s in _deflectors:
+            _collide_rect(b, w[0], w[1], w[2], w[3], WALL_E, EV_WALL)
+        for s in geo["deflectors"]:
             _ylo = s[1] if s[1] < s[3] else s[3]
             _yhi = s[3] if s[1] < s[3] else s[1]
             if _yhi < b.y - _ARC_REACH or _ylo > b.y + _ARC_REACH:
                 continue
             _collide_arc(b, s[0], s[1], s[2], s[3], _ARC_FRAME)  # 缓动带球: 贴轨转向, 静音接触
-        _collide_pegs(b, _pegs)
-        for d in _dividers:
+        _collide_pegs(b, geo["peg_rows"])
+        for d in geo["dividers"]:
             _ylo = d[1] if d[1] < d[3] else d[3]
             _yhi = d[3] if d[1] < d[3] else d[1]
-            if _yhi < b.y - _BALL_R or _ylo > b.y + _BALL_R:
+            if _yhi < b.y - BALL_R or _ylo > b.y + BALL_R:
                 continue
-            # 同 walls: 加 x 向 AABB 粗筛(超集判据, 不改碰撞结果)。
-            _dxlo = d[0] if d[0] < d[2] else d[2]
-            _dxhi = d[2] if d[0] < d[2] else d[0]
-            if b.x + _BALL_R < _dxlo or b.x - _BALL_R > _dxhi:
-                continue
-            _collide_rect(b, d[0], d[1], d[2], d[3], _E, EV_DIV)
-        if b.y + _BALL_R >= _FLOOR - 0.5:
+            _collide_rect(b, d[0], d[1], d[2], d[3], E, EV_DIV)
+        if b.y + BALL_R >= FLOOR - 0.5:
             # 落袋 = 终态(2026-09-11 用户定稿): 就地钉住横速 + 贴地。
             # ⚠️ 这里**只清 vx, 保留 vy**:
             #   - 清 vx 让"结算槽 == 落格槽"成为**结构性不变量** —— 之后不管哪个调用方再推进
@@ -758,7 +714,7 @@ def physics_step(b, geo, dt, _G=G, _VMAX=VMAX, _FLOOR=FLOOR, _BALL_R=BALL_R,
             #   - 保留 vy 是为了落地那一下还能弹起来(回弹 = 撞击速度 × LAND_E), 见 LAND_BOUNCE_MIN_VY。
             #   - 贴地是把落袋位置规范化: 判据本身是 FLOOR-0.5, 不夹的话球可能停在半像素偏上,
             #     也可能(被地板墙推过)偏下, 视觉上不稳定。
-            b.y = _FLOOR - _BALL_R
+            b.y = FLOOR - BALL_R
             b.vx = 0.0
             i = int((b.x - FIELD_L) / SLOT_W)
             return max(0, min(NUM_SLOTS - 1, i))
@@ -916,8 +872,17 @@ _BENCH_AFF = []          # 波 1 每一轮采一次 `os.sched_getaffinity(0)`; �
 # 跑分线程的锁核结果。只用于日志：`sched_getaffinity` 只能说明"允许跑在哪些核"，
 # 不能证明实际没有在快/慢簇之间迁移；这里把可控的迁移变量去掉，并把成败如实记下。
 _BENCH_CPU_PIN = {}
-# 只影响物理跑分工作线程；正常游戏、渲染线程和高压测试都不改亲和性。
+# 只影响跑分/高压/渲染测量那**三条工作线程**；正常游戏线程不改亲和性。
+# ⚠️ 这条注释 2026-09-15 **更正过**: 旧版写的是"正常游戏、渲染线程和高压测试都不改亲和性",
+#    那是**错的** —— `_run_hp_test`(约 10718 行) / 渲染采样(约 11330 行) / `_run_benchmark`
+#    (约 11860 行) **三处都调** `_bench_pin_fast_cpus()`。别照旧注释做判断。
 _BENCH_PIN_FAST_CORES = True
+# 波 1 每一轮的**起跑段剔除**时长(见 `benchmark_trajectories._run_once`)。
+# 轮与轮之间有 `SOC_SAMPLE_GAP_SEC` 秒间隔, 大核在那几秒里已落到低频 OPP, 于是每个窗口的
+# **开头**那几百毫秒是在 DVFS 爬坡 —— 算进分母等于拿"降温"换了"降分", 两头都亏。
+# 真机 7 份日志里 **5 份的最低轮都是第 2 轮**(锁核后的 3 份里 3/3), 正是这个形状。
+# 这段负载**不计成绩**、不占分母。⚠️ 只移动测量窗口的起算点, 不碰任何物理/弹珠逻辑。
+_BENCH_RAMP_CPU_SEC = 0.4
 # 波 1 每一轮的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 它在 `_run_once` **之外**跑,
 # 所以不占"步/秒"的分母; 它自己那份 CPU 时间由 `_speed_probe` 内部计量。
 _BENCH_SPEED = []
@@ -1021,6 +986,65 @@ def _bench_restore_cpu_affinity(previous):
         _BENCH_CPU_PIN["restore_error"] = type(_exc).__name__
 
 
+# 跑分/高压**工作线程**的调度优先级状态。与 `_BENCH_CPU_PIN` 正交:
+#   亲和性管「允许跑在哪些核」, 优先级管「抢不抢得到 CPU」。
+# ⚠️ 只作用于跑分那颗线程, **不碰主线程、不碰物理/弹珠逻辑** —— 见 `_bench_raise_thread_priority`。
+_BENCH_TID_PRIO = {}
+_BENCH_RAISE_PRIO = True
+
+
+def _bench_raise_thread_priority():
+    """把**当前(跑分)线程**提到高调度优先级; 结果写进 `_BENCH_TID_PRIO` 供日志如实记录。
+
+    为什么需要它: 玩家要的是「**同一台设备重复跑要稳(波动越小越好), 更好的 CPU 要跑得高**」。
+    跑分线程和 Kivy 主线程在**同一个进程**里抢 CPU, 而进程内的调度权重是自己能改的
+    (App 改本进程线程的优先级不需要 root/特殊权限)。`_bench_pin_fast_cpus` 已经把线程收进
+    性能簇, 但那只说明"允许跑在 cpu6/7" —— **不保证抢得到**。这两件事合起来才把
+    "跑分线程被渲染挤走"这条变量按住。
+
+    ⚠️ 它**不改变任何被测结果**, 只改变这颗线程多久拿到一次 CPU。弹珠的运行逻辑一行不碰。
+    ⚠️ 非安卓 / 系统拒绝一律**安全降级并如实记因**, 不印假成功:
+       `getThreadPriority(0)` 读回实际值, 没变成负数就说明系统没接受这次请求。
+    返回供恢复的原优先级(None = 没改过)。
+    """
+    _BENCH_TID_PRIO.clear()
+    if not _BENCH_RAISE_PRIO:
+        _BENCH_TID_PRIO["reason"] = "已关闭"
+        return None
+    if platform != "android":
+        _BENCH_TID_PRIO["reason"] = "非安卓"
+        return None
+    try:
+        from jnius import autoclass
+        _P = autoclass("android.os.Process")
+        _before = int(_P.getThreadPriority(0))
+        _P.setThreadPriority(_P.THREAD_PRIORITY_URGENT_DISPLAY)
+        _after = int(_P.getThreadPriority(0))
+        _BENCH_TID_PRIO["before"] = _before
+        _BENCH_TID_PRIO["after"] = _after
+        if _after < 0:
+            _BENCH_TID_PRIO["raised"] = True
+            return _before
+        _BENCH_TID_PRIO["reason"] = "系统未接受(读回 %d)" % _after
+        return None
+    except Exception as _exc:
+        _BENCH_TID_PRIO["reason"] = "调用失败: %s" % type(_exc).__name__
+        return None
+
+
+def _bench_restore_thread_priority(previous):
+    """恢复跑分线程测试前的调度优先级(`None` = 没改过, 直接返回)。"""
+    if previous is None:
+        return
+    try:
+        from jnius import autoclass
+        _P = autoclass("android.os.Process")
+        _P.setThreadPriority(int(previous))
+        _BENCH_TID_PRIO["restored"] = int(_P.getThreadPriority(0))
+    except Exception as _exc:
+        _BENCH_TID_PRIO["restore_error"] = type(_exc).__name__
+
+
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
                            runs=SOC_SAMPLE_RUNS,
@@ -1049,6 +1073,23 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
         rng = random.Random(seed)
         flights = 0
         frames = 0
+        # ⚠️ **剔除起跑段**(2026-09-15): 轮与轮之间有 `gap_sec` 秒间隔, 大核在那几秒里已经
+        #    落到低频 OPP, 于是每个窗口的**开头**那几百毫秒是在 DVFS 爬坡 —— 把它算进分母
+        #    等于拿"降温"换了"降分", 两头都亏。真机 7 份日志里 **5 份的最低轮都是第 2 轮**
+        #    (锁核后的 3 份日志里 3/3), 正是这个形状。
+        #    做法: 先跑一小段**不计成绩**(不进 `flights`/`frames`/分母)的同种负载, 把频率顶
+        #    到位再起计时。
+        #    ⚠️ 预热用**独立的随机流** —— 否则会消耗主序列的随机数, 让"跑哪些球"变掉,
+        #       历史数据就不可比了。主序列 `rng` 一个数都不动。
+        #    ⚠️ 这里**只动测量窗口的起算点**, 一行物理/弹珠逻辑都不碰: 跑的仍是原样的
+        #       `launch_ball` + `advance_flight`。
+        _ramp_rng = random.Random(seed ^ 0x5A5A5A)
+        _ramp_t = cpu_clock()
+        while cpu_clock() - _ramp_t < BENCH_RAMP_CPU_SEC:
+            _rb = launch_ball(_ramp_rng.uniform(MISFIRE_POWER, 1.0), rng=_ramp_rng)
+            for _ in range(4000):
+                if advance_flight(_rb, geo) is not None:
+                    break
         t0 = cpu_clock()
         while cpu_clock() - t0 < cpu_seconds:
             power = rng.uniform(MISFIRE_POWER, 1.0)
@@ -10760,6 +10801,8 @@ class RootWidget(BoxLayout):
         _bench_fps_lock_on()
         # 高压测试也是独立 CPU 工作线程；锁在性能簇，才不会把温控衰减和迁到慢核混为一谈。
         _hp_aff_before = _bench_pin_fast_cpus()
+        # 调度优先级: 亲和性管"允许跑哪些核", 这里管"抢不抢得到"。**只改这颗线程**, 不碰物理。
+        _hp_prio_before = _bench_raise_thread_priority()
         try:
             # 锁核完成后才起墙钟；拓扑探测不计入高压测试时长。
             self._hp_wall0 = time.time()
@@ -10768,8 +10811,10 @@ class RootWidget(BoxLayout):
             _hp_render_fps = (_FRAME_CALLS[0] - _fc0) / max(1e-6, time.time() - _wt0)
         finally:
             _bench_fps_lock_off()
+            _bench_restore_thread_priority(_hp_prio_before)
             _bench_restore_cpu_affinity(_hp_aff_before)
         self._hp_cpu_pin = dict(_BENCH_CPU_PIN)
+        self._hp_tid_prio = dict(_BENCH_TID_PRIO)
         self._hp_render_fps = _hp_render_fps
         _stop[0] = True
         _frq.sort()
@@ -10827,6 +10872,18 @@ class RootWidget(BoxLayout):
             return "性能核：已锁定 " + ",".join("cpu%d" % int(_cpu) for _cpu in _cpus)
         return "性能核：未锁定（%s）" % (_pin.get("reason", "未执行") or "未知原因")
 
+    def _hp_tid_prio_line(self):
+        """如实显示跑分线程的**调度优先级**是否真的被系统接受（读回验证，不印假成功）。
+
+        `_BENCH_TID_PRIO` 由 `_bench_raise_thread_priority` 填: 只有当
+        `getThreadPriority(0)` 读回**负数**时才算生效 —— 系统可以静默拒绝。
+        """
+        _pr = getattr(self, "_hp_tid_prio", None) or {}
+        if _pr.get("raised"):
+            return "跑分线程优先级：已提升 %d → %d" % (int(_pr.get("before", 0)),
+                                                 int(_pr.get("after", 0)))
+        return "跑分线程优先级：未提升（%s）" % (_pr.get("reason", "未执行") or "未知原因")
+
     def _hp_summary_text(self):
         """弹窗里那几行(短)。没数据返回空串 —— **不印假数**。"""
         st = self._hp_stats()
@@ -10845,6 +10902,7 @@ class RootWidget(BoxLayout):
         return (_dv + chr(10)
                 + "高压 %.0f 秒（背靠背不停）" % SOC_SUSTAIN_WALL_SEC + chr(10)
                 + self._hp_cpu_pin_line() + chr(10)
+                + self._hp_tid_prio_line() + chr(10)
                 + "首 %d → 末 %d 步/秒（降 %.0f%%）" % (_f, _l, _d) + chr(10)
                 + "最低 %d · 中位 %d 步/秒" % (_lo, _mid) + chr(10) + chr(10)
                 + "每段采样：" + _curve + chr(10)
@@ -11902,10 +11960,13 @@ class RootWidget(BoxLayout):
         _bench_fps_lock_on()
         # 只收窄当前跑分工作线程；正常游戏和渲染线程的调度不受影响。
         _bench_aff_before = _bench_pin_fast_cpus()
+        # 调度优先级: 亲和性管"允许跑哪些核", 这里管"抢不抢得到"。**只改这颗线程**, 不碰物理。
+        _bench_prio_before = _bench_raise_thread_priority()
         try:
             flights, frames, fps_list, cpu_secs = benchmark_trajectories(on_sample=_on_sample)
         finally:
             _bench_fps_lock_off()
+            _bench_restore_thread_priority(_bench_prio_before)
             _bench_restore_cpu_affinity(_bench_aff_before)
         _s1[0] = True
         _f1.sort()
@@ -11925,6 +11986,7 @@ class RootWidget(BoxLayout):
         self._phys_cores = _freq_core_stats()
         self._phys_aff = list(_BENCH_AFF)
         self._phys_cpu_pin = dict(_BENCH_CPU_PIN)
+        self._phys_tid_prio = dict(_BENCH_TID_PRIO)
         self._phys_speed = [round(float(x), 1) for x in _BENCH_SPEED]
         self._phys_render_fps = [round(float(x), 2) for x in _BENCH_RENDER_FPS]
         self._phys_alloc = [round(float(x), 1) for x in _BENCH_ALLOC]
@@ -12436,6 +12498,17 @@ class RootWidget(BoxLayout):
             else:
                 _lines.append("# 物理跑分工作线程性能核锁定: **未锁定**(%s)"
                               % (_pin.get("reason", "未执行") or "未知原因"))
+            # ⚠️ **跑分线程的调度优先级**(2026-09-15): 与锁核正交的另一半 —— 锁核管"允许跑哪些
+            #    核", 优先级管"抢不抢得到 CPU"。系统可以静默拒绝, 所以这里印的是 `getThreadPriority(0)`
+            #    的**读回值**, 不是我们的请求值。没变负就是没生效, 如实写。
+            _pr = getattr(self, "_phys_tid_prio", None) or {}
+            if _pr.get("raised"):
+                _lines.append("# 物理跑分工作线程优先级: **已提升** %d → %d · 恢复 %s"
+                              % (int(_pr.get("before", 0)), int(_pr.get("after", 0)),
+                                 _pr.get("restored", "?")))
+            else:
+                _lines.append("# 物理跑分工作线程优先级: **未提升**(%s)"
+                              % (_pr.get("reason", "未执行") or "未知原因"))
             # ⚠️ **波 2(高压)那两行** —— 与波 1 相邻印,
             #    两波的频率**必须分开看**(它们是不同的两段时间)。
             _sv2 = [x for x in (getattr(self, "_sust_fps", None) or []) if x > 0]
