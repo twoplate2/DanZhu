@@ -562,18 +562,30 @@ def _collide_pegs(b, rows):
                     b.squash_nx = njx; b.squash_ny = njy
                     b.spin += (b.vx * njy - b.vy * njx) * 0.02  # 自转积分
 def _collide_rect(b, rx1, ry1, rx2, ry2, e, ev=0):
-    cx = max(rx1, min(b.x, rx2))
-    cy = max(ry1, min(b.y, ry2))
-    dx = b.x - cx
-    dy = b.y - cy
+    # ⚠️ 热路径优化(2026-09-15): 原来这里是 `cx = max(rx1, min(b.x, rx2))` —— 每次调用
+    #    两次嵌套内置调用。profile 实测 `min`/`max` 各被调 417 万次, 合计吃掉物理热路径
+    #    的 8.5%(这是全链路最大的一块**可内联**开销)。clamp 内联成条件式, 并把 `b.x`/`b.y`
+    #    缓存成局部: 本函数内**所有读取都在写回之前**(写回在末尾 `b.x = cx + ...`),
+    #    所以缓存与逐次读取等价。**数值逐位不变**(`temp/_phys_hash.py` 200 发×每帧 4 个
+    #    17 位浮点值的 sha256 作证)。
+    _bx = b.x
+    _by = b.y
+    cx = _bx if _bx < rx2 else rx2
+    if cx < rx1:
+        cx = rx1
+    cy = _by if _by < ry2 else ry2
+    if cy < ry1:
+        cy = ry1
+    dx = _bx - cx
+    dy = _by - cy
     d2 = dx * dx + dy * dy
     if d2 < BALL_R * BALL_R:
         d = math.sqrt(d2)
         if d > 1e-9:
             nx, ny = dx / d, dy / d
         else:                                   # 球心在矩形内: 朝最近边推出
-            left, right = b.x - rx1, rx2 - b.x
-            top, bot = b.y - ry1, ry2 - b.y
+            left, right = _bx - rx1, rx2 - _bx
+            top, bot = _by - ry1, ry2 - _by
             m = min(left, right, top, bot)
             if m == left:
                 nx, ny = -1.0, 0.0
@@ -658,19 +670,36 @@ def _collide_arc(b, x1, y1, x2, y2, frame=_ARC_FRAME):
     st[0], st[1] = n, lf
     _mark(b, EV_ARC, -vn)
 
-def physics_step(b, geo, dt):
-    """推进一帧(拆 SUBSTEPS 子步)。落袋返回槽序号, 否则 None。"""
-    sub = dt / SUBSTEPS
-    for _ in range(SUBSTEPS):
-        b.vy += G * sub
-        sp = math.hypot(b.vx, b.vy)
-        if sp > VMAX:
-            f = VMAX / sp
+def physics_step(b, geo, dt, _G=G, _VMAX=VMAX, _FLOOR=FLOOR, _BALL_R=BALL_R,
+                 _WALL_E=WALL_E, _E=E, _ARC_REACH=_ARC_REACH,
+                 _SUBSTEPS=SUBSTEPS, _HYPOT=math.hypot):
+    """推进一帧(拆 SUBSTEPS 子步)。落袋返回槽序号, 否则 None。
+
+    ⚠️ 默认参数绑定 = 热路径优化(2026-09-15): `G/VMAX/FLOOR/BALL_R/WALL_E/E/
+       _ARC_REACH/SUBSTEPS` 全文件**只在定义处赋值一次**(已逐条核对), 绑成默认参数把
+       每子步的 `LOAD_GLOBAL` 换成 `LOAD_FAST`。**数值逐位不变**(`--selftest` 的落格
+       分布门禁作证)。
+    ⚠️ `geo[...]` 的四个列表只在**本函数内**取局部: `self.geo["deflectors"]` 会被
+       **每一发的弧面抖动重新赋值**(见 `launch_ball` 附近的 `arc_dy`) ⇒ **绝不能**提到
+       `advance_flight` 那一层去。一次 `physics_step` 调用内没有东西会改 `geo`。
+    ⚠️ `_ARC_FRAME` **不许绑成默认参数**: 它是全局可变的(`advance_flight` 里每帧 `+= 1`)。
+    ⚠️ 这条路径是**跑分与真机共用的同一份代码** ⇒ 这里的收益是真吞吐, 不是把数字做漂亮。
+    """
+    sub = dt / _SUBSTEPS
+    _walls = geo["walls"]
+    _deflectors = geo["deflectors"]
+    _pegs = geo["peg_rows"]
+    _dividers = geo["dividers"]
+    for _ in range(_SUBSTEPS):
+        b.vy += _G * sub
+        sp = _HYPOT(b.vx, b.vy)
+        if sp > _VMAX:
+            f = _VMAX / sp
             b.vx *= f
             b.vy *= f
         b.x += b.vx * sub
         b.y += b.vy * sub
-        for w in geo["walls"]:
+        for w in _walls:
             # ⚠️ 地板不是墙, 而是落袋边界(见下面落袋判据)。以前这里把 (0, FLOOR, CW, CH) 当
             # 普通弹性墙撞: 球在"被判定落袋"的同一子步里先被它以 WALL_E=0.5 弹成向上(实测首触
             # vy = -295~-312), 而这条路径**没有 LAND_BOUNCE_MAX_VY 上限**。两个后果:
@@ -683,27 +712,42 @@ def physics_step(b, geo, dt):
             # 而且落袋判定不再受"这一步有没有撞到地板墙"这个偶然影响。
             # ⚠️ 跳过是**槽号无关**的: 该矩形的碰撞法线恒为竖直(cx=clamp(b.x,0,CW)=b.x ⇒ dx=0),
             #    它从来没有改过 b.x —— 只改 vy 和 y。所以落格分布一位不变。
-            if w[1] == FLOOR:
+            if w[1] == _FLOOR:
                 continue
             _ylo = w[1] if w[1] < w[3] else w[3]
             _yhi = w[3] if w[1] < w[3] else w[1]
-            if _yhi < b.y - BALL_R or _ylo > b.y + BALL_R:
+            if _yhi < b.y - _BALL_R or _ylo > b.y + _BALL_R:
                 continue
-            _collide_rect(b, w[0], w[1], w[2], w[3], WALL_E, EV_WALL)
-        for s in geo["deflectors"]:
+            # ⚠️ x 向 AABB 粗筛(2026-09-15 热路径): 左右两面墙的 y 覆盖**全程**(0~660),
+            #    上面那条 y 粗筛对它们**永不生效** ⇒ 每子步都白调一次 `_collide_rect`
+            #    (实测 `_collide_rect` 每帧被调 18 次, 其中约 12 次来自这两面墙)。
+            #    球心到矩形的最近点距离 >= 两个 AABB 的间距, 所以**两个轴都不重叠 ⇒ 必然
+            #    不碰**。这是**超集判据**(边界相等时仍会走 `_collide_rect`, 结论同样是"不碰"),
+            #    不改任何碰撞结果 —— `temp/_phys_hash.py` 的逐位哈希作证。
+            _wxlo = w[0] if w[0] < w[2] else w[2]
+            _wxhi = w[2] if w[0] < w[2] else w[0]
+            if b.x + _BALL_R < _wxlo or b.x - _BALL_R > _wxhi:
+                continue
+            _collide_rect(b, w[0], w[1], w[2], w[3], _WALL_E, EV_WALL)
+        for s in _deflectors:
             _ylo = s[1] if s[1] < s[3] else s[3]
             _yhi = s[3] if s[1] < s[3] else s[1]
             if _yhi < b.y - _ARC_REACH or _ylo > b.y + _ARC_REACH:
                 continue
             _collide_arc(b, s[0], s[1], s[2], s[3], _ARC_FRAME)  # 缓动带球: 贴轨转向, 静音接触
-        _collide_pegs(b, geo["peg_rows"])
-        for d in geo["dividers"]:
+        _collide_pegs(b, _pegs)
+        for d in _dividers:
             _ylo = d[1] if d[1] < d[3] else d[3]
             _yhi = d[3] if d[1] < d[3] else d[1]
-            if _yhi < b.y - BALL_R or _ylo > b.y + BALL_R:
+            if _yhi < b.y - _BALL_R or _ylo > b.y + _BALL_R:
                 continue
-            _collide_rect(b, d[0], d[1], d[2], d[3], E, EV_DIV)
-        if b.y + BALL_R >= FLOOR - 0.5:
+            # 同 walls: 加 x 向 AABB 粗筛(超集判据, 不改碰撞结果)。
+            _dxlo = d[0] if d[0] < d[2] else d[2]
+            _dxhi = d[2] if d[0] < d[2] else d[0]
+            if b.x + _BALL_R < _dxlo or b.x - _BALL_R > _dxhi:
+                continue
+            _collide_rect(b, d[0], d[1], d[2], d[3], _E, EV_DIV)
+        if b.y + _BALL_R >= _FLOOR - 0.5:
             # 落袋 = 终态(2026-09-11 用户定稿): 就地钉住横速 + 贴地。
             # ⚠️ 这里**只清 vx, 保留 vy**:
             #   - 清 vx 让"结算槽 == 落格槽"成为**结构性不变量** —— 之后不管哪个调用方再推进
@@ -714,7 +758,7 @@ def physics_step(b, geo, dt):
             #   - 保留 vy 是为了落地那一下还能弹起来(回弹 = 撞击速度 × LAND_E), 见 LAND_BOUNCE_MIN_VY。
             #   - 贴地是把落袋位置规范化: 判据本身是 FLOOR-0.5, 不夹的话球可能停在半像素偏上,
             #     也可能(被地板墙推过)偏下, 视觉上不稳定。
-            b.y = FLOOR - BALL_R
+            b.y = _FLOOR - _BALL_R
             b.vx = 0.0
             i = int((b.x - FIELD_L) / SLOT_W)
             return max(0, min(NUM_SLOTS - 1, i))
