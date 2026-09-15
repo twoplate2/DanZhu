@@ -872,6 +872,9 @@ _BENCH_AFF = []          # 波 1 每一轮采一次 `os.sched_getaffinity(0)`; �
 # 波 1 每一轮的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 它在 `_run_once` **之外**跑,
 # 所以不占"步/秒"的分母; 它自己那份 CPU 时间由 `_speed_probe` 内部计量。
 _BENCH_SPEED = []
+# 波 1 每一轮的**对象分配探针**吞吐(见 `_alloc_probe`)。与 `_BENCH_SPEED` 配成一对:
+# 两个一起掉 = 核心慢; 只有这个掉 = 内存/分配器那一侧被抢。
+_BENCH_ALLOC = []
 
 
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
@@ -936,6 +939,7 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     #    ⚠️ **每轮都采**: 亲和性是可能中途变的(系统按负载收窄 cpuset), 只看开头会漏掉。
     _BENCH_AFF.clear()
     _BENCH_SPEED.clear()
+    _BENCH_ALLOC.clear()
     fps_list = []
     cpu_seconds_list = []
     total_flights = 0
@@ -961,6 +965,11 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
             _BENCH_SPEED.append(_speed_probe())
         except Exception:
             _BENCH_SPEED.append(0.0)
+        # ⚠️ 分配探针紧跟其后 —— 和纯算术探针**同一处境**, 两个相减才是"内存那一侧"。
+        try:
+            _BENCH_ALLOC.append(_alloc_probe())
+        except Exception:
+            _BENCH_ALLOC.append(0.0)
         total_flights += flights
         total_frames += frames
         # ⚠️ 回调跑在**工作线程**上: 只能写普通属性, **绝不许碰界面**
@@ -1067,6 +1076,44 @@ def _speed_probe(cpu_seconds=0.05):
         for _i in range(600):
             _x += _i
         _n += 600
+    _u = max(1e-6, time.thread_time() - _t0)
+    return _n / _u
+
+
+
+
+class _ProbeObj(object):
+    """分配探针用的小对象 —— 刻意长得像 `Ball`(多个槽位 + 浮点属性)。"""
+    __slots__ = ("a", "b", "c", "d")
+
+
+def _alloc_probe(cpu_seconds=0.05):
+    """**对象分配**负载的吞吐(每秒几轮) —— 走 CPython 分配器 + 属性写读, **碰内存**。
+
+    ⚠️⚠️ 为什么要它(2026-09-15, 真机第四轮): `_speed_probe`(纯寄存器) 和它**配成一对**,
+       才分得开"核心慢"和"内存被抢":
+         · **两个一起掉** ⇒ 核心速度整体慢了(那 `scaling_cur_freq` 就在骗人)
+         · **只有这个掉** ⇒ **内存/分配器那一侧被抢了**
+       真机实测(红米 K90, ①游戏120+OS120 vs ③游戏60+OS120): 两次的**纯算术探针只差
+       1.1%**(35.42M vs 35.80M)、大核频率也一样钉在 2880, 而**物理步差 13.9%**
+       (18943 vs 21580) ⇒ 那 14% **与核心速度无关**, 只能是内存那一侧。
+       这个探针就是去把那一侧**单独量出来**的。
+    ⚠️ 和 `_speed_probe` 一样: 工作量固定、用**本线程 CPU 时间**计时, 在 `_run_once`
+       **之外**跑(不占"步/秒"的分母)。
+    """
+    _t0 = time.thread_time()
+    _n = 0
+    while time.thread_time() - _t0 < cpu_seconds:
+        _keep = []
+        for _i in range(200):
+            _o = _ProbeObj()                 # 分配(走分配器)
+            _o.a = _i * 0.5
+            _o.b = _o.a + 1.0
+            _o.c = _o.b * 0.25
+            _o.d = _o.c - _o.a
+            _keep.append(_o.d)
+        _n += 200
+        del _keep                            # 再回收(和游戏里一样是"分配-丢弃"的节奏)
     _u = max(1e-6, time.thread_time() - _t0)
     return _n / _u
 
@@ -2456,14 +2503,20 @@ def _hist_stamp(raw):
 #    已经算进字号账里)。
 # ⚠️ **字段顺序按玩家 2026-09-15 给的样例**:
 #      `08-25 59.8/53.0 4256Mhz 14685/5.8%`
-#    = 时间 / 平均·1%Low帧 / **CPU平均频率** / 中位跑分·波动
-#    —— 频率在**第三位**(跑分/波动之前), **不是**放在最后。
+#    = 时间 / 平均·1%Low帧 / **CPU平均频率** / 中位跑分·波动 / **归一化**
+#    —— 频率在**第三位**(跑分/波动之前), **不是**放在最后; 「归一化」是 2026-09-15
+#    追在**末尾**的第五列(新列只能加末尾, 与 `_bench_frames` 那条规矩同源)。
 # ⚠️ 单位写 `Mhz`(玩家两次都这么写), 不写成 `MHz`。
-# ⚠️ 宽度账(实测, `temp/benchhist_probe.py` 的 F 判据直接量建好的 Label):
-#    本年的行(`09-15 14:07` + 2 空格)在 360dp 上缩到约 **12.8sp**; 往年的行带年份
-#    会长一截 ⇒ **那一行会决定整表的字号**(`_fit_uniform` 取最宽那行)。
-#    想再加字之前, 先去那个探针里看 `[360] 最小字号` 那一行还在不在 11 以上。
-_HIST_COLS = ('时间', '平均/1%Low帧', 'CPU平均频率', '中位跑分 / 波动')
+# ⚠️⚠️ **宽度账(实测, 不是估的)**: 五列之后 360dp 上 `_fit_uniform` 落到的档是
+#    **11.48sp**(`temp/benchhist_probe.py` 的 F 判据直接量建好的 Label)。
+#    四列时是 **13.16sp** ⇒ **这一列的代价正好是玩家上次特意避开的那个字号**。
+#    量过备选(`_HIST_SEP.join` 后 `text_px(...,14.0)`, 可用宽 275.2px):
+#      五列(现在) 表头 369 / 数据 360   ·   砍掉频率列换归一化 279 / **294**   ·
+#      原四列 321 / 330   ·   五列+短表头 197 / 360(数据行接手, 白缩)
+#    ⇒ **砍掉频率列反而比原四列还窄**(`3902Mhz` 比 `603` 宽) —— 但玩家 2026-09-15
+#      **明确选了保留五列**, 理由是频率那一列他要看。**别再自作主张删它。**
+#    ⚠️ 想再加字之前, 先去那个探针里看 `[360] 最小字号` 那一行还在不在 11 以上。
+_HIST_COLS = ('时间', '平均/1%Low帧', 'CPU平均频率', '中位跑分 / 波动', '归一化')
 _HIST_SEP = '  '
 _HIST_HEAD = _HIST_SEP.join(_HIST_COLS)
 
@@ -11613,6 +11666,20 @@ class RootWidget(BoxLayout):
         self._phys_cores = _freq_core_stats()
         self._phys_aff = list(_BENCH_AFF)
         self._phys_speed = [round(float(x), 1) for x in _BENCH_SPEED]
+        self._phys_alloc = [round(float(x), 1) for x in _BENCH_ALLOC]
+        # ⚠️ **归一化跑分** = 中位步/秒 ÷ 中位纯算术探针 × 1e6。
+        #    为什么要有它(2026-09-15 真机三轮定案): "中位步/秒"**会被渲染帧率污染** ——
+        #    实测同一台机器 ①(渲染120.3fps) 18943 vs ③(渲染80.4fps) 21580, 差 13.9%,
+        #    而两次的**纯算术探针只差 1.1%**(核心速度一样)。把核心速度因子除掉之后,
+        #    剩下的才是"这台机器跑物理"的相对好坏 ⇒ **跨帧率设定比较只能用这个数**。
+        #    ⚠️ 它**不是**"机器快不快"的绝对指标(那要看步/秒本身) —— 两个一起看。
+        _sp_med = 0.0
+        if self._phys_speed:
+            _ss = sorted(x for x in self._phys_speed if x > 0)
+            _sp_med = _ss[len(_ss) // 2] if _ss else 0.0
+        _fp = sorted(float(x) for x in (fps_list or []) if x > 0)
+        _fp_med = _fp[len(_fp) // 2] if _fp else 0.0
+        self._phys_norm = int(round(1000000.0 * _fp_med / _sp_med)) if _sp_med > 0 else 0
         # ⚠️ **主测试不再跑高压段**(2026-09-15 玩家定案: 高压拆成独立按钮)。
         #    这里必须**主动清空**, 否则上一次高压测试的 `_sust_fps` 会残留在内存里,
         #    面板和日志就会把**旧的高压结果**当成这一次的印出来 —— 那是"印假数", 比没有更糟。
@@ -11759,6 +11826,14 @@ class RootWidget(BoxLayout):
             #    同一个数 —— 而那是两种病(前者是频率/核心, 后者是温控/系统干预)。
             #    面板不印它(四列已经满了), 留在 JSON 里供事后查。
             "phys_fps_runs": list(getattr(self, "_phys_fps_runs", None) or []),
+            # ⚠️ **归一化跑分**(2026-09-15): 中位步/秒 ÷ 中位纯算术探针 ×1e6。
+            #    真机三轮定案: "步/秒"本身**会被渲染帧率污染**(①渲染120.3fps 18943 vs
+            #    ③渲染80.4fps 21580, 差 13.9%), 而两次的纯算术探针只差 1.1%
+            #    ⇒ **跨帧率设定比较只能用归一化这个数**。
+            #    ⚠️ **旧记录没有它** ⇒ 面板印「无数据」, **绝不拿步/秒回填**(那是印假数)。
+            "phys_norm": int(getattr(self, "_phys_norm", 0) or 0),
+            "phys_speed_runs": list(getattr(self, "_phys_speed", None) or []),
+            "phys_alloc_runs": list(getattr(self, "_phys_alloc", None) or []),
             "phys_min": int(phys_min),
             "phys_max": int(phys_max),
             "phys_spread": round(phys_spread, 1),
@@ -12030,6 +12105,25 @@ class RootWidget(BoxLayout):
                                  if _sps > _spr * 1.3 else
                                  ("**两者抖得差不多 ⇒ 就是核心速度在变**"
                                   if _spr > 1.3 else "两者都稳(本轮没有可解释的波动)")))
+                # ⚠️ **归一化跑分** —— 跨帧率设定比较**只能**用这个数(见 `_run_benchmark`)。
+                _nz = int(getattr(self, "_phys_norm", 0) or 0)
+                if _nz:
+                    _lines.append("#   **归一化跑分** = 中位步/秒 ÷ 中位纯算术探针 ×1e6 = **%d**"
+                                  "   ← **跨帧率设定比跑分只能用这个数**: 步/秒本身会被渲染帧率"
+                                  "污染(实测 120fps 与 80fps 差 13.9%%, 而探针只差 1.1%%)" % _nz)
+                _pa3 = [x for x in (getattr(self, "_phys_alloc", None) or []) if x > 0]
+                if _pa3 and len(_pa3) == len(_ps2):
+                    _lines.append("# 物理跑分**逐轮**对象分配探针(碰分配器+内存): %s  (每秒轮数)"
+                                  % " · ".join("%.0f" % x for x in _pa3))
+                    _lines.append("#   相对第 1 轮: **分配探针** %s   ← 与上面**纯算术探针**那一串比:"
+                                  " 两个**一起掉** = 核心慢; **只有分配探针掉** = **内存/分配器被抢**"
+                                  % " · ".join("%.3f" % (x / _pa3[0]) for x in _pa3))
+                    _lines.append("#   分配/算术 = %s   (这个比值**掉了**就说明内存那一侧吃亏,"
+                                  "与核心速度无关)"
+                                  % " · ".join("%.3f" % (_pa3[_i] / _ps2[_i])
+                                               for _i in range(len(_pa3))))
+                else:
+                    _lines.append("# 物理跑分**逐轮**对象分配探针: **没采到**")
             elif not _ps2:
                 _lines.append("# 物理跑分**逐轮**纯算术探针: **没采到**")
             _pa = getattr(self, "_phys_aff", None) or []
@@ -13428,10 +13522,18 @@ class RootWidget(BoxLayout):
                 else:
                     soc_text = '%d/%.1f%%' % (
                         r.get('phys_fps', 0), float(spread))
+                # ⚠️ **归一化跑分**(2026-09-15 加, 见 `_run_benchmark` 那段): 中位步/秒 ÷
+                #    中位纯算术探针 ×1e6。**跨帧率设定比跑分只能用这个数** —— "步/秒"本身
+                #    会被渲染帧率污染(真机实测 120fps 18943 vs 80fps 21580, 差 13.9%,
+                #    而两次的探针只差 1.1%)。
+                #    ⚠️ **v0.7.62 以前的记录没有它** ⇒ 印「无数据」, **绝不拿步/秒回填**。
+                _nz = int(r.get('phys_norm', 0) or 0)
+                norm_text = ('%d' % _nz) if _nz else '无数据'
                 # ⚠️ 整行**一串空格分隔**, 不做列对齐(玩家 2026-09-15:「数据用空格分割,
                 #    不强制要求对齐了」)。字段顺序就是 `_HIST_COLS` 那个顺序 ——
                 #    表头与数据行 `join` 的是**同一个** `_HIST_SEP`。
-                row = Label(text=_HIST_SEP.join((stamp, fps_text, freq_text, soc_text)),
+                row = Label(text=_HIST_SEP.join((stamp, fps_text, freq_text, soc_text,
+                                                 norm_text)),
                             halign='center', valign='middle',
                             color=hex_rgb(COL_TEXT) + (1,),
                             size_hint_y=None, height=dp(26))
