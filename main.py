@@ -869,6 +869,9 @@ _FREQ_GATE = [True]
 #    现在只保留"按构造与刷新率无关"这一半(那半有 `thread_time` 当分母撑着),
 #    真正的原因**待测**: 逐核频率(`_cpufreq_cores`) + 亲和性(`_BENCH_AFF`) 就是为此加的。
 _BENCH_AFF = []          # 波 1 每一轮采一次 `os.sched_getaffinity(0)`; 拿不到填 None
+# 波 1 每一轮的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 它在 `_run_once` **之外**跑,
+# 所以不占"步/秒"的分母; 它自己那份 CPU 时间由 `_speed_probe` 内部计量。
+_BENCH_SPEED = []
 
 
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
@@ -932,6 +935,7 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     #    ⚠️ 非安卓/不支持时拿不到, **如实留空**, 调用方印"没采到", 不印假数。
     #    ⚠️ **每轮都采**: 亲和性是可能中途变的(系统按负载收窄 cpuset), 只看开头会漏掉。
     _BENCH_AFF.clear()
+    _BENCH_SPEED.clear()
     fps_list = []
     cpu_seconds_list = []
     total_flights = 0
@@ -950,6 +954,13 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
         flights, frames, used = _run_once(sample_cpu_sec, 12345)
         fps_list.append(frames / used)
         cpu_seconds_list.append(used)
+        # ⚠️ **纯算术探针紧跟在这一轮后面**(见 `_speed_probe`): 同样的热状态、同样的
+        #    调度处境。它**不占**上面那个分母(自己计时), 只是给"这一轮的机器到底有多快"
+        #    留一个**与内存无关**的参照。
+        try:
+            _BENCH_SPEED.append(_speed_probe())
+        except Exception:
+            _BENCH_SPEED.append(0.0)
         total_flights += flights
         total_frames += frames
         # ⚠️ 回调跑在**工作线程**上: 只能写普通属性, **绝不许碰界面**
@@ -1023,12 +1034,41 @@ _FREQ_CORE_STATS = {}
 
 
 def _freq_core_stats():
-    """把逐核累加器折成 `{核号: {'mean':.., 'min':.., 'max':.., 'n':..}}`(没采到返回 {})。"""
+    """折成 `{核号: {'mean','min','max','n','act'}}`(没采到返回 {})。
+
+    `act` = `cpuinfo_cur_freq`(实际值)的均值; **一个都没读到就是 0**, 不编数。
+    """
     out = {}
     for _k, _v in _FREQ_CORE_STATS.items():
         if _v[1] > 0:
-            out[_k] = {"mean": _v[0] / _v[1], "min": _v[2], "max": _v[3], "n": _v[1]}
+            out[_k] = {"mean": _v[0] / _v[1], "min": _v[2], "max": _v[3], "n": _v[1],
+                       "act": (_v[4] / _v[5]) if _v[5] > 0 else 0.0}
     return out
+
+
+def _speed_probe(cpu_seconds=0.05):
+    """**纯算术**负载的吞吐(每秒做了几轮) —— 只碰寄存器, 不碰内存。
+
+    ⚠️⚠️ 为什么要它(2026-09-15, 真机第三轮): 物理步/秒**不是纯核心速度**。`advance_flight`
+       是纯 Python, 每一步都在碰**对象头 / 属性字典 / 小对象分配**, 所以它对**缓存与内存
+       子系统**同样敏感。一个只碰寄存器的定工作量循环能把这两件事分开:
+         · **两个数一起掉** ⇒ 核心真的慢了 —— 那么 `scaling_cur_freq` 报的就不是实际值
+           (高通平台上它读的是调频器的**目标值**, 实际时钟可以被 EPSS/温控按下去而不回写)
+         · **只有物理步/秒掉** ⇒ 是缓存/内存被渲染抢了, 与核心速度无关
+       真机三次(同一台 K90, 只改帧率设定)跑分 18450 / 13596 / 21585(**差 59%**),
+       而逐核频率只差 6%、亲和性三次相同、`thread_time` 实测**确实**排除了 GIL 等待
+       (桌面实测满 GIL 压力只掉 1.3%) ⇒ **三个假设都排除了, 剩下这两种必须靠它分开**。
+    ⚠️ 工作量固定, 用**本线程 CPU 时间**计时, 所以"每秒几轮"就是有效核心速度。
+    """
+    _t0 = time.thread_time()
+    _n = 0
+    while time.thread_time() - _t0 < cpu_seconds:
+        _x = 0
+        for _i in range(600):
+            _x += _i
+        _n += 600
+    _u = max(1e-6, time.thread_time() - _t0)
+    return _n / _u
 
 
 def _freq_sampler_start():
@@ -1052,10 +1092,11 @@ def _freq_sampler_start():
                     _v = _cpufreq_mhz()
                     if _v > 0:
                         _frq.append(_v)
-                    for _ci, _cm in _cpufreq_cores():
+                    for _ci, _cm, _ca in _cpufreq_cores():
                         _e = _FREQ_CORE_STATS.get(_ci)
                         if _e is None:
-                            _FREQ_CORE_STATS[_ci] = [_cm, 1, _cm, _cm]
+                            _e = [_cm, 1, _cm, _cm, 0.0, 0]
+                            _FREQ_CORE_STATS[_ci] = _e
                         else:
                             _e[0] += _cm
                             _e[1] += 1
@@ -1063,6 +1104,9 @@ def _freq_sampler_start():
                                 _e[2] = _cm
                             if _cm > _e[3]:
                                 _e[3] = _cm
+                        if _ca > 0:              # 实际值: **读到才算**, 读不到不进分母
+                            _e[4] += _ca
+                            _e[5] += 1
             except Exception:
                 pass
             time.sleep(0.5)
@@ -3293,7 +3337,7 @@ _CPUFRQ = {"freqs": [], "cap": 0.0, "stop": True, "thr": None}
 
 
 def _cpufreq_cores():
-    """逐核当前频率 `[(核号, MHz), ...]`, 只列**读得到**的核。读不到返回空表。
+    """逐核当前频率 `[(核号, MHz请求值, MHz实际值), ...]`, 只列**读得到**的核。
 
     ⚠️⚠️ **为什么必须逐核**(2026-09-15): `_cpufreq_mhz()` 报的是**各核最大值**, 而
        "跑分那条线程跑在哪个核上"是 **OS 调度**决定的 —— 大核 2.8GHz 的时候, 线程完全
@@ -3301,18 +3345,31 @@ def _cpufreq_cores():
        真机实测(红米 K90 Pro Max, 三次同开"均衡"): 最大频率 2624/2880/2875(只差 9%),
        而物理跑分 12617/19316/21340(**差 69%**) —— 拿"最大值"根本解释不了。
        ⇒ 逐核之后, "大核 2.8G / 中核 1.4G" 是一眼能看到的, 不用猜。
+    ⚠️⚠️ **第三个字段是 `cpuinfo_cur_freq`(实际值), 不是 `scaling_cur_freq`(请求值)**。
+       2026-09-15 真机第二轮把"频率"这个假设也逼到墙角: 逐核之后大核**全程钉在 2880**、
+       前 6 核只差 6%, 而跑分差 **59%**。剩下的解释之一就是**这列车本身在骗人** ——
+       高通平台上 `scaling_cur_freq` 读的是**调频器的目标值**, 而实际时钟可以被
+       EPSS/温控按下去**而不回写**。`cpuinfo_cur_freq` 是直接读硬件那一侧的口子。
+       读不到就是 `0`, **不编数** —— 日志里如实印「实际值没读到」。
     ⚠️ 这里**不做** `_cpufreq_mhz()` 那个"连续两核读不到就停"的提前退出 ——
        逐核要的就是**完整的一张表**, 中间缺一个核会让人以为是"那个核不存在"。
     """
     out = []
     for i in range(12):                     # 8 核封顶, 留点余量给 12 核的机器
+        _dir = "/sys/devices/system/cpu/cpu%d/cpufreq/" % i
         try:
-            with open("/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq" % i) as fh:
+            with open(_dir + "scaling_cur_freq") as fh:
                 v = int(fh.read().strip() or 0)
-            if v > 0:
-                out.append((i, v / 1000.0))
         except Exception:
             continue
+        _a = 0
+        try:
+            with open(_dir + "cpuinfo_cur_freq") as fh:
+                _a = int(fh.read().strip() or 0)
+        except Exception:
+            _a = 0                            # 读不到就是 0, **不编数**
+        if v > 0:
+            out.append((i, v / 1000.0, _a / 1000.0))
     return out
 
 
@@ -11555,6 +11612,7 @@ class RootWidget(BoxLayout):
         self._phys_fps_runs = [round(float(x), 1) for x in (fps_list or [])]
         self._phys_cores = _freq_core_stats()
         self._phys_aff = list(_BENCH_AFF)
+        self._phys_speed = [round(float(x), 1) for x in _BENCH_SPEED]
         # ⚠️ **主测试不再跑高压段**(2026-09-15 玩家定案: 高压拆成独立按钮)。
         #    这里必须**主动清空**, 否则上一次高压测试的 `_sust_fps` 会残留在内存里,
         #    面板和日志就会把**旧的高压结果**当成这一次的印出来 —— 那是"印假数", 比没有更糟。
@@ -11932,8 +11990,48 @@ class RootWidget(BoxLayout):
                                            for _k, _v in sorted(_pc.items())))
                 _lines.append("#   ⚠️ 上面那格「平均频率」是**各核最大值**; 逐核才看得出"
                               "**跑分线程到底跑在快核还是慢核上**(大核 2.8G 时线程可能在 1.5G 的中核)")
+                # ⚠️ **实际值 vs 请求值** —— 高通平台上 `scaling_cur_freq` 读的是调频器的
+                #    **目标值**, 实际时钟可以被 EPSS/温控按下去而不回写。两者对不上就说明
+                #    "频率这一列本身在骗人", 前面所有"频率差不多"的结论都要作废。
+                _ac = {_k: _v["act"] for _k, _v in _pc.items() if _v.get("act")}
+                if _ac:
+                    _rd = [_v["act"] / _v["mean"] for _k, _v in _pc.items()
+                           if _v.get("act") and _v["mean"] > 0]
+                    _lines.append("# 物理跑分那段的 CPU **实际**频率(`cpuinfo_cur_freq`): %s"
+                                  % " · ".join("cpu%d %.0f" % (_k, _v) for _k, _v in sorted(_ac.items())))
+                    _lines.append("#   ⚠️ 实际/请求 = **%.2f 倍**(1.00 = 两者一致)。**明显小于 1 "
+                                  "⇒ `scaling_cur_freq` 报的不是实际值, 前面所有「频率差不多」"
+                                  "的结论都得作废**。" % (sum(_rd) / len(_rd)))
+                else:
+                    _lines.append("# 物理跑分那段的 CPU **实际**频率(`cpuinfo_cur_freq`): "
+                                  "**没读到**(这台机器不给 / 非安卓) —— 那就分不出"
+                                  "「频率掉下去了」还是「缓存被抢了」, 只能看下面那行探针")
             else:
                 _lines.append("# 物理跑分那段的 CPU **逐核**平均频率: **没采到**(非安卓 / 读不到 sysfs)")
+            # ⚠️⚠️ **纯算术探针** —— 把"核心真的慢了"和"缓存被抢了"分开的那把尺子。
+            #    判读写在行里, 因为这一行是给"下一次有人来查这个问题"看的。
+            _ps2 = getattr(self, "_phys_speed", None) or []
+            _ps2 = [x for x in _ps2 if x > 0]
+            if _ps2 and len(_ps2) == len(_pr) and _pr:
+                _lines.append("# 物理跑分**逐轮**纯算术探针(只碰寄存器): %s  (每秒轮数)"
+                              % " · ".join("%.0f" % x for x in _ps2))
+                # ⚠️ 两个量的**量纲不同**(一个是"步"、一个是"轮"), 直接相除得到的数没有意义。
+                #    要的是**它们各自相对第 1 轮的倍率** —— 两个倍率一比, 才回答得了
+                #    "是核心慢了还是缓存被抢了"。
+                _lines.append("#   相对第 1 轮: **步/秒** %s   |   **探针** %s"
+                              % (" · ".join("%.3f" % (x / _pr[0]) for x in _pr),
+                                 " · ".join("%.3f" % (x / _ps2[0]) for x in _ps2)))
+                _lines.append("#   ⚠️ 上面两串**比一比**: 步/秒掉得**明显比探针多** ⇒ 缓存/内存被抢;"
+                              " 两个**掉得差不多** ⇒ 核心真的慢了")
+                _spr, _sps = max(_ps2) / min(_ps2), max(_pr) / min(_pr)
+                _lines.append("#   本轮内 探针最大/最小 = %.2f 倍 · 步/秒最大/最小 = %.2f 倍  ⇒ %s"
+                              % (_spr, _sps,
+                                 "**步/秒抖得比探针厉害 ⇒ 不是核心速度的问题**"
+                                 if _sps > _spr * 1.3 else
+                                 ("**两者抖得差不多 ⇒ 就是核心速度在变**"
+                                  if _spr > 1.3 else "两者都稳(本轮没有可解释的波动)")))
+            elif not _ps2:
+                _lines.append("# 物理跑分**逐轮**纯算术探针: **没采到**")
             _pa = getattr(self, "_phys_aff", None) or []
             if _pa and any(x for x in _pa):
                 _lines.append("# 物理跑分线程的 **CPU 亲和性**(每轮采一次, `sched_getaffinity`): %s"
