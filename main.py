@@ -2744,7 +2744,7 @@ def _hist_stamp(raw):
 # ⚠️ **表头与数据行必须共用同一套列宽**(`_show_bench_history` 里的 `_HW`)。
 # ⚠️ **字段顺序**: 时间 / 平均·1%Low帧 / 跑分·平均差系数。
 # ⚠️ 想再加列/加字之前, 先去 `temp/benchhist_probe.py` 看 `[360]` 那一行的字号。
-_HIST_COLS = ('时间', '平均/1%Low帧', '平均差系数')
+_HIST_COLS = ('时间', '平均/1%Low帧', '中位分/平均差系数')
 
 
 # ---- 字体"钉子"(2026-09-15, 对抗性评审 top 3 之一) ---------------------------
@@ -13959,12 +13959,28 @@ class RootWidget(BoxLayout):
             #    ⚠️ 表头与数据行**共用同一个宽度元组** —— 否则两边各对一套栅格、永远对不齐。
             _HW = (dp(110), dp(92), dp(88))
             _table_w = sum(_HW)
+            # ⚠️⚠️ **表头独立排版**(2026-09-15 玩家定稿): 表头**不再**和数据行共用 `_HW`。
+            #    玩家原话:「你让表头和表格内的内容不对齐就可以了, 时间才 2 个字, 内容那么长」
+            #    —— 表头「时间」只要 ~26px, 而数据「2026-09-15 14:07」要 **113px**, 本来就不
+            #    该共用一套宽度。共用的时候, 表头里最长的那一列会把**全表字号**往下压
+            #    (实测「跑分/平均差系数」把 13.16sp 压到 **11.48sp**, 整张表的字都变小 ——
+            #    那才是真正的回归, 比"列没对齐"严重得多)。
+            #    ⇒ 表头按**自己文字的宽度**分列、整行居中; 数据行照旧用 `_HW`。
+            #    代价: 表头与数据**不逐列对齐** —— 玩家已确认接受这一条。
+            #    ⚠️ 宽度按基准 `sp(14)` 量(不是裸 14.0 —— 那是**绝对 px**, density=2 的机器上
+            #       只有一半大), 再夹到不超过数据行总宽, 免得窄屏上表头比数据还宽。
+            _head_w = [min(_table_w / 3.0 * 1.6, max(dp(30), text_px(_t, sp(14)) + dp(6)))
+                       for _t in _HIST_COLS]
+            _hw_sum = sum(_head_w)
+            if _hw_sum > _table_w:
+                _head_w = [_w * _table_w / _hw_sum for _w in _head_w]
+                _hw_sum = _table_w
             # 固定列宽表格不能默认贴在父容器左边；宽屏设备上这会明显偏左，
-            # 窄屏设备上也会造成标题/数据与面板中心不一致。表头和每一行共用同一整体宽度。
-            columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
+            # 窄屏设备上也会造成标题/数据与面板中心不一致。表头和每一行各自整体居中。
+            columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_hw_sum,
                                 height=dp(22), pos_hint={'center_x': 0.5})
             _heads = []
-            for _t, _w in zip(_HIST_COLS, _HW):
+            for _t, _w in zip(_HIST_COLS, _head_w):
                 h = Label(text=_t, halign='center', valign='middle',
                           color=hex_rgb(COL_SUB) + (1,), size_hint_x=None)
                 h.width = _w
@@ -14041,10 +14057,19 @@ class RootWidget(BoxLayout):
             #       density=2 的机器上只有一半大(实测被探针逮住过)。
             _groups = [[_heads[_i]] + rows[_i] for _i in range(len(_HW))]
             _fs_all = None
-            for _g in _groups:
-                _w = float(_g[0].width)
+            for _i, _g in enumerate(_groups):
+                # ⚠️⚠️ **字号必须按「数据列宽」`_HW` 算, 不能按表头列宽 `_head_w`**
+                #    (2026-09-15 踩过): 表头独立排版之后, `_g[0]` 是**表头** Label, 拿
+                #    `_g[0].width` 当可用宽度 ⇒ 第一列的表头「时间」只有 2 个字(30dp),
+                #    却要塞下该列最长的内容「2026-09-15 14:07」(113px) ⇒ 字号被压到
+                #    **5.88sp**(实测)。表头只是个标签, 它的宽度不该约束数据的字号。
+                _w = float(_HW[_i])
                 _bd = bool(getattr(_g[0], "bold", False))
-                _long = max(_g, key=lambda x: text_px(x.text or "", sp(14), _bd))
+                # ⚠️ **最长内容只从「数据行」里取, 表头不参与** —— 表头有自己的宽度
+                #    (`_head_w`, 见上), 拿它来约束字号会把整张表拖小(实测:
+                #    表头「中位分/平均差系数」9 个字把全表从 13.16sp 拖到 **10.64sp**)。
+                #    这正是玩家说的「表头和数据不对齐就可以了」要解决的问题。
+                _long = max(rows[_i], key=lambda x: text_px(x.text or "", sp(14), _bd))
                 _f = fit_font_size(_long.text or "", sp(14), _w, _bd)
                 _fs_all = _f if _fs_all is None else min(_fs_all, _f)
             for _g in _groups:
@@ -14072,8 +14097,11 @@ class RootWidget(BoxLayout):
             #      留下来的道理是"两块颜色要分开": 备注仍然用次级色、标题用主数字色, 只是
             #      谁是谁对调了。
             foot = Label(
-                text=('  中位跑分：物理引擎每秒模拟步数的中位数\n'
-                      '  波动：(最大跑分-最小跑分)/中位数跑分'),
+                # ⚠️ 2026-09-15 玩家定稿: **删掉「波动」那一行**(它是旧口径 (max-min)/中位,
+                #    已被 `_mad_coef` 取代), 换成新口径的说明。表头里出现了「平均差系数」,
+                #    脚注就得解释它 —— 否则玩家只看到一个没见过的词。
+                text=('  中位分：物理引擎每秒模拟步数的中位数\n'
+                      '  平均差系数：平均差 ÷ 均值，越小越稳'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
             self._auto_h(foot, dp(44))
