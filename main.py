@@ -12606,16 +12606,19 @@ class RootWidget(BoxLayout):
             #    所以必须印**实际**渲染帧率, 否则没法知道这次跑分到底是在什么环境下测的。
             _rf = getattr(self, "_phys_render_fps", None) or []
             _rf = [x for x in _rf if x > 0]
+            # ⚠️ 这里印的必须是**波 1 实际按到的那个值**(`_bench_fps_force_now()`), 不是
+            #    `_BENCH_FPS_FORCE` —— 自 v0.7.82 起波 1 用的是更低的 `_BENCH_FPS_FORCE_PHYS`,
+            #    印常量会在日志里写"上限 60"而实际渲染 12.9fps, 自相矛盾(真机 2026-09-15 实证)。
+            _fcap = int(_bench_fps_force_now())
             if _rf:
                 _mid = sorted(_rf)[len(_rf) // 2]
                 _lines.append("# 物理跑分**强制帧率上限 %d** · 那一段**实际渲染**: %s fps (中位 %.1f)%s"
-                              % (_BENCH_FPS_FORCE, " · ".join("%.1f" % x for x in _rf), _mid,
+                              % (_fcap, " · ".join("%.1f" % x for x in _rf), _mid,
                                  ("   ← 实际**高于** %d ⇒ **没按住**, 环境里还混着玩家的设定"
-                                  % _BENCH_FPS_FORCE) if _mid > _BENCH_FPS_FORCE * 1.15
+                                  % _fcap) if _mid > _fcap * 1.15
                                  else "   ← 按住了(实际 ≤ 强制值)"))
             else:
-                _lines.append("# 物理跑分**强制帧率上限 %d** · 实际渲染: **没采到**"
-                              % _BENCH_FPS_FORCE)
+                _lines.append("# 物理跑分**强制帧率上限 %d** · 实际渲染: **没采到**" % _fcap)
             _pr = getattr(self, "_phys_fps_runs", None) or []
             if _pr:
                 # ⚠️ 2026-09-15 玩家定稿: 这里原来印的是「波动 = (max-min)/中位」, 换成
