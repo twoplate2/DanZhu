@@ -14869,9 +14869,18 @@ class RootWidget(BoxLayout):
             tick.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
             ticks.add_widget(tick)
         content.add_widget(ticks)
-        hint = Label(text='实际帧率上限 = min（屏幕支持，安卓系统设定的上限，当前设定的上限）',
-                     font_size='13sp', halign='center', valign='middle',
-                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(42))
+        # ⚠️ 文案**砍到一行 + 字号放大**(2026-09-15 修, 玩家报"你这个字这么小"):
+        #    原来是一整句 34 字(实测 427dp), 而弹窗可用宽只有 419dp(540 桌面)/290dp(393 真机)
+        #    ⇒ 必然自动折行, 折点还落在「…当前设定 / 的上限）」上 —— 真机上那行只剩
+        #    「的上限）」三个字的孤行就是它。
+        #    现在: 文案 11 字(13sp 下 156dp), 字号 13sp -> 17sp ⇒ 实测 **205dp**。
+        #    余量: 393dp 屏可用 290dp / 360dp 屏 261dp / 320dp 老屏 226dp —— 三种都放得下。
+        #    ⚠️ 代价是**不再列举是哪三者**。弹窗标题已写明「帧率上限设定」、上面那根滑条
+        #       就是"当前设定", 上下文够; 想保留列举的话宽度会翻到 245dp, 字号就只能停在
+        #       13sp(== 玩家嫌小的那个)。
+        hint = Label(text='实际帧率上限 = 三者取最小',
+                     font_size='17sp', halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(30))
         hint.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
         content.add_widget(hint)
         actions = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
