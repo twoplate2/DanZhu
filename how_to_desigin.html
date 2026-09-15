@@ -115,7 +115,7 @@
   <h1><span>一个小游戏的大设计</span></h1>
   <p class="subtitle">一根<em>看得见力量</em>的弹簧，一颗<em>没人操控</em>的球，一台<em>会自己进化</em>的机器——<br>弹珠机，就不再只是弹珠机</p>
   <div class="hero-numbers">
-    <div class="hero-num"><div class="num">165×</div><div class="label">性能余量<br>得找台慢 165 倍的手机才拖得动它</div></div>
+    <div class="hero-num"><div class="num">167×</div><div class="label">性能余量<br>得找台慢 167 倍的手机，才刚到跑不动的边</div></div>
     <div class="hero-num"><div class="num">131fps</div><div class="label">1% 低帧率<br>平均 165 帧时最差也稳在 131</div></div>
     <div class="hero-num"><div class="num">360%</div><div class="label">最高常驻返奖率<br>四档可切 80/120/200/360<br>长按还有隐藏三档</div></div>
     <div class="hero-num"><div class="num">9/9</div><div class="label">九个格子<br>个个有机会</div></div>
@@ -253,8 +253,8 @@
     <div class="card reveal reveal-d1"><h3>跨启动持久化</h3><p>余额、已玩次数、命中率全部<span class="tag tag-green">存下来持久化</span>。杀进程重开不会重置——防沉迷机制真正有效。打满后重启自动静默重置，不会卡在"本轮已结束"弹窗。</p></div>
     <div class="card reveal reveal-d2"><h3>哑火零损失</h3><p>手指滑了、没按到位？<span class="tag tag-green">不扣珠子、不计次数、不换盘面</span>。想练多少次就练多少次，零损失。新手不需要一次就学会。</p></div>
     <div class="card reveal reveal-d2"><h3>它替你记着每一轮的账</h3><p>打完的轮次会一条条列出来：<span class="tag tag-green">第几轮、每轮几次、收手时还剩多少颗弹珠</span>。翻一翻就知道自己最近打得怎么样。没有记录时它会老实写<span class="tag tag-green">「暂无完成的轮次记录」</span>，不会假装有。</p></div>
-    <div class="card reveal reveal-d3"><h3>打满之后不是锁死，是"完成一轮"</h3><p>次数用完不会把你关在外面——它<span class="tag tag-green">自己静默重置</span>，下一局照样能玩。<span class="tag tag-green">重启也一样</span>：上次是打满状态退出的，启动时会自动处理好，不会一进来就卡在"本轮已结束"那个弹窗上。</p></div>
-    <div class="card reveal reveal-d3"><h3>珠子不够时，它会说话</h3><p>余额不够下这一注时，按钮不会闷着不动——会有<span class="tag tag-green">一声提示音</span>加一句<span class="tag tag-green">「弹珠数量不足」</span>的语音。同一句话有节流，连点不会叠成一团。它不让你在"为什么没反应"里猜。</p></div>
+    <div class="card reveal reveal-d3"><h3>打满之后不是锁死</h3><p>次数用完会弹一次<span class="tag tag-green">「完成一轮」的总结</span>，点确定就重置回满，下一局照样能玩。而且它记得你打到哪：上次是打满状态被关掉的，<span class="tag tag-green">下次启动会自动接上</span>，不会一进来就卡在"本轮已结束"那个弹窗上。</p></div>
+    <div class="card reveal reveal-d3"><h3>珠子不够时，它会说话</h3><p>余额不够下这一注时，按钮不会闷着不动——<span class="tag tag-green">开着声音时</span>会播一句「弹珠数量不足」，<span class="tag tag-green">关着声音时</span>退化成一声短提示音（不是两个一起响：这个位置上语音本来就是来顶替那声嗡鸣的）。同一句话有节流，连点不会叠成一团。它不让你在"为什么没反应"里猜。</p></div>
   </div>
 </section>
 
@@ -268,7 +268,7 @@
     <div class="card reveal reveal-d2"><h3>落地弹跳：球真的在弹</h3><p>球落入槽位后<span class="tag tag-purple">弹跳3~4次才停住</span>，弹跳系数随机变化避免机械重复。落地有金属锁扣声、弹跳有金属叮声。不再瞬移到槽中心——球停在哪就停在哪，自然得不像代码。</p></div>
     <div class="card reveal reveal-d2"><h3>钱算对了，球也停对了</h3><p>球冲进槽位时是带着横向的劲的，以前回弹那几下里它能<span class="tag tag-purple">滑过隔板、躺到隔壁格</span>——钱算在原来那格，球却停在旁边，看着就是不对劲。现在球一触到槽底就把横着的劲清零，回弹变成<span class="tag tag-purple">纯粹的上下弹</span>，物理上就不可能再滑出去。九个格子的隔板，谁都越不过去。</p></div>
     <div class="card reveal reveal-d2"><h3>飞行中统一灰化</h3><p>球在飞时，<span class="tag tag-purple">所有按钮+标签文字统一灰化</span>——返还比例、投入设置、统计文字全部变暗。只有弹珠数字和状态提示保持亮色。视觉层级一目了然：现在不是操作的时候，看球就行。</p></div>
-    <div class="card reveal reveal-d3"><h3>切换声音是静默的</h3><p>点「关闭声音」，<span class="tag tag-purple">声音当场停</span>——不会出现"我明明点了关、它还在响一秒"。<span class="tag tag-purple">反方向也一样：开回来不播提示音</span>。原来两个方向各念一句（关是「关闭声音」、开是「开启中奖音效」），后来<span class="tag tag-purple">两条语音一起删了</span>——理由很实在：在需要安静的场合误触一下，不管往哪个方向切，它都会突然出声。现在反馈只走按钮本身：绿底「音效已开」、深底「音效已关」，一眼可辨。</p></div>
+    <div class="card reveal reveal-d3"><h3>切换声音是静默的</h3><p>点一下那个声音按钮（<span class="tag tag-purple">「音效已开」→「音效已关」</span>），<span class="tag tag-purple">声音当场停</span>——不会出现"我明明点了关、它还在响一秒"。<span class="tag tag-purple">反方向也一样：开回来不播提示音</span>。原来两个方向各念一句（关是「关闭声音」、开是「开启中奖音效」），后来<span class="tag tag-purple">两条语音一起删了</span>——理由很实在：在需要安静的场合误触一下，不管往哪个方向切，它都会突然出声。现在反馈只走按钮本身：绿底与深底两种底色，一眼可辨。</p></div>
     <div class="card reveal reveal-d3"><h3>呼吸 + 返回键保护</h3><p>入袋"咚"和中奖语音之间有<span class="tag tag-purple">一小段刻意沉默</span>。Android返回键被拦截——<span class="tag tag-purple">误触不会退出</span>，整局进度不会清零。好的声音不是塞满每一毫秒，好的交互不是多一个退出路径。</p></div>
     <div class="card reveal reveal-d3"><h3>球在转，也会被撞扁</h3><p>球横着走的时候是<span class="tag tag-purple">真的在滚</span>——转的速度就是它蹭到钉子那一下的切向速度。撞得越狠，球身被压得越扁（高速时压 5%），掠过去时几乎不变形。<span class="tag tag-purple">就这两下小动作，让它不像一个贴着圆图标的点。</span>顺带一提，球的"视觉"半径是碰撞半径的 1.4 倍——只影响观感，不影响物理，所以它看起来是挨着钉子过去的，实际上没嵌进去。</p></div>
     <div class="card reveal reveal-d3"><h3>重置不是刷新页面，是"喊停"</h3><p>球正在飞、弹簧正压着、刚哑火——按下重置，<span class="tag tag-purple">一律当场打断</span>，回满 1000 颗，顺手报一声「弹珠数量已调整到1000个」。还有一处很细的讲究：上一句提示如果还在屏幕上没散，它会<span class="tag tag-purple">先清干净再说下一句</span>，不会两层字叠在一起。</p></div>
@@ -282,14 +282,14 @@
     <div class="card reveal reveal-d1"><h3>单事实源 + 代码生成</h3><p>PC 版是物理/音效/数学的<span class="tag tag-blue">唯一事实源</span>。Android 版由构建脚本从 PC 版原样抽取纯逻辑段 + 拼接手写界面段生成——<span class="tag tag-blue">物理代码一个字都不改</span>，杜绝手抄千行出错的系统性风险。</p></div>
     <div class="card reveal reveal-d1"><h3>GitHub Actions 云构建</h3><p>push 到 main → 自动出 APK。锁定版本组合，首次构建 20 分钟，<span class="tag tag-blue">缓存命中后 3 分钟</span>。全程不需要本地装 Android SDK。</p></div>
   </div>
-  <div class="insight reveal reveal-d3"><h3>一场真实的跨平台对拼（2026-08 实测）</h3><p>同口径跑分（纯 Python 单线程，两端跑同一个 CPython 3.11、同一套物理代码，无 JIT 无加速）：20 核桌面 i7-14700KF <span class="tag tag-blue">11516 步/秒</span> vs 骁龙 8 至尊版 Gen5 平板（拯救者 Y700 五代）<span class="tag tag-blue">约 10000 步/秒 = 桌面的 87%</span>。物理是单线程 Python——20 个核全程旁观，这是一场"单核贴身肉搏"：移动大核靠高 IPC 和单核 12MB 二级缓存追平桌面高频，剩下一成差距来自安卓的 Python 编译与内存延迟。而游戏每秒只需推进 60 步（物理固定 60Hz），两端余量都在 165 倍以上——<span class="tag tag-blue">跑分比的是余量，玩起来毫无差别</span>。</p></div>
+  <div class="insight reveal reveal-d3"><h3>一场真实的跨平台对拼（2026-08 实测）</h3><p>同口径跑分（纯 Python 单线程，两端跑同一个 CPython 3.11、同一套物理代码，无 JIT 无加速）：20 核桌面 i7-14700KF <span class="tag tag-blue">11516 步/秒</span> vs 骁龙 8 至尊版 Gen5 平板（拯救者 Y700 五代）<span class="tag tag-blue">约 10000 步/秒 = 桌面的 87%</span>。物理是单线程 Python——20 个核全程旁观，这是一场"单核贴身肉搏"：移动大核靠高 IPC 和单核 12MB 二级缓存追平桌面高频，剩下一成差距来自安卓的 Python 编译与内存延迟。而游戏每秒只需推进 60 步（物理固定 60Hz）——桌面那台余量约 <span class="tag tag-blue">192 倍</span>、平板约 <span class="tag tag-blue">167 倍</span>——<span class="tag tag-blue">跑分比的是余量，玩起来毫无差别</span>。</p></div>
 </section>
 
 <!-- ═══════════ 9.5 性能工程: 为什么不卡 ═══════════ -->
 <section class="section section-alt sect-heart" id="sec-perf">
   <div class="section-header"><h2>手机上为什么不卡</h2><p class="desc">平均 165 帧的机器上，最差的那 1% 帧也有 131 帧——这里记的是这 131 是怎么一层层抠出来的</p></div>
   <div class="grid-2">
-    <div class="card reveal reveal-d1"><h3>先把成绩摆出来</h3><p>在一台平均 <span class="tag tag-purple">165 帧</span>的机器上，最差的那 1% 帧也有 <span class="tag tag-purple">131 帧</span>——意思是<span class="tag tag-purple">连最难看的那个瞬间都还有 131 帧</span>。这个成绩相当硬：多数游戏"最差 1%"能到平均值的一半多就不错了，这里是 <span class="tag tag-purple">八成</span>。（另一台跑 120 帧的机器上是 90 帧，同样是四分之三的比率——这个比例在不同机器上稳定复现，说明它不是某台设备的运气。）<span class="tag tag-purple">而"平均帧"好看、"最差帧"难看，恰恰是玩家嘴里那种"说不上哪里卡，但就是不舒服"的来源</span>——所以下面这几张卡，讲的全是这 131 是怎么抠出来的。</p></div>
+    <div class="card reveal reveal-d1"><h3>先把成绩摆出来</h3><p>在一台平均 <span class="tag tag-purple">165 帧</span>的机器上，最差的那 1% 帧也有 <span class="tag tag-purple">131 帧</span>——注意这是<span class="tag tag-purple">"最慢的那 1% 帧平均下来"的帧率</span>，不是某一帧的最坏值（单帧最坏一定比它更低）。这个成绩相当硬：多数游戏"最差 1%"能到平均值的一半多就不错了，这里是 <span class="tag tag-purple">八成</span>。（另一台跑 120 帧的机器上是 90 帧，同样是四分之三的比率——这个比例在不同机器上稳定复现，说明它不是某台设备的运气。）<span class="tag tag-purple">而"平均帧"好看、"最差帧"难看，恰恰是玩家嘴里那种"说不上哪里卡，但就是不舒服"的来源</span>——所以下面这几张卡，讲的全是这 131 是怎么抠出来的。</p></div>
     <div class="card reveal reveal-d1"><h3>一个"叮"，能卡住一整帧</h3><p>玩家从很早就说「关掉音效之后流畅很多」，一直没人当真。直到真机面板把账算死：<span class="tag tag-purple">单次发声最慢 143.6 毫秒</span>；15 秒窗口里 50 次发声一共花掉 <span class="tag tag-purple">2674 毫秒</span>（平均每次 53.5 毫秒）——而一帧的间隔只有 12.5 毫秒。更决定性的一条：那一批 <span class="tag tag-purple">14 帧慢帧，14/14 全部落在发声上</span>。上一版还能说是巧合，14 比 14 没法再说是巧合。改法不是让声音变快，而是<span class="tag tag-purple">把发声整个搬出主线程</span>：主线程只负责画，从不站在那儿等一个音效播完。</p></div>
     <div class="card reveal reveal-d1"><h3>凶手是"把按钮变灰"这个动作</h3><p>球在飞的时候按钮要灰化，这是设计。但玩家报「球飞的时候一卡一卡的」，查下去才发现：<span class="tag tag-purple">Kivy 把文字颜色直接烘进了纹理</span>，所以每改一次按钮的置灰状态，就要把那行字重新排版、重新光栅化一遍。而 Kivy 会把这类活儿攒到同一帧做——那一帧就多出 12 到 21 毫秒，<span class="tag tag-purple">占掉这一帧 95% 以上的时间</span>。找到它之后换了个做法：变灰照旧（走那条本来就免费的路），而"锁住输入"改成在触摸层统一吞掉。真机上每一发本来有两次爆发——<span class="tag tag-purple">发射时禁用 16 次、回 ready 时启用 15 次</span>，每次卡 12~21 毫秒——现在这两串都没了。（顺带证伪了一条网上常见的"优化"建议：把置灰的颜色调成和正常色一样，完全没用，Kivy 照样无条件重排。）</p></div>
     <div class="card reveal reveal-d2"><h3>让字变淡，不必把字重画一遍</h3><p>中奖数字要淡出、飘字要淡出，原本的写法是改文字颜色——<span class="tag tag-purple">等于整段字重新画一遍再传上显卡</span>。飘字更离谱，是每帧无条件重写，真机实测"文字重排 33.4 次/秒"；而跑分期间每 3 秒造一个飘字，等于<span class="tag tag-purple">跑分一直在给自己的成绩上刑</span>。改法是给已经画好的纹理<span class="tag tag-purple">乘一个透明度</span>——纹理重建从 40 次变成 0 次，字照样淡出。</p></div>
@@ -301,7 +301,7 @@
     <div class="card reveal reveal-d3"><h3>一百颗珠子，不是每帧重画一遍</h3><p>装满一个杯子最多一百颗珠子，每颗都在动。如果每帧把整个画面从头画一遍，手机是撑不住的。所以改成<span class="tag tag-purple">三张"持久指令表"</span>——画好的东西留在那儿，每帧只改动的那几个数字（位置、大小、透明度）。验收方式也值得一说：截图不是能量的尺子（同一个实现自己比都能差 1~2%），所以改用<span class="tag tag-purple">逐条比对新旧两版画出来的指令流</span>，一条不差才算过。</p></div>
   </div>
   <div class="insight reveal reveal-d3"><h3>作者撤回了一个自己写的、快 29.8% 的优化</h3><p>有一版把物理引擎里几处查找和内联做掉，桌面实测吞吐<span class="tag tag-purple">+29.8%</span>，而且逐位验证过"弹珠的轨迹一个 bit 都没变"。看起来很完美——然后它被<span class="tag tag-purple">整段撤销</span>了。理由只有一句话：<span class="tag tag-purple">那是在改被测对象，等于把尺子的刻度改了</span>。跑分要回答的是"这台手机真实有多快"，如果为了让分数好看而把被测的引擎改快，那测出来的就不是这台机器了。所以这个优化没进游戏——<span class="tag tag-purple">快是次要的，准才是。</span></p></div>
-  <div class="insight reveal reveal-d3"><h3>"165 倍余量"到底是什么意思</h3><p>跑分测出来的速度是<span class="tag tag-purple">每秒一万步</span>（旗舰平板），而这个游戏每秒只需要推进<span class="tag tag-purple">六十步</span>（物理固定 60Hz，屏幕再快也是这个数）。这不是"够用"，是<span class="tag tag-purple">根本用不到</span>——换算成大白话：<span class="tag tag-purple">得找一台比测试机慢 165 倍的手机，才能刚好把它拖到流畅的边缘</span>。换句话说，就算这台机器的力气被别的东西占掉九成以上，剩下的照样够它跑满帧。</p></div>
+  <div class="insight reveal reveal-d3"><h3>"167 倍余量"到底是什么意思</h3><p>跑分测出来的速度是<span class="tag tag-purple">每秒一万步</span>（旗舰平板），而这个游戏每秒只需要推进<span class="tag tag-purple">六十步</span>（物理固定 60Hz，屏幕再快也是这个数）。这不是"够用"，是<span class="tag tag-purple">根本用不到</span>——换算成大白话：<span class="tag tag-purple">得找一台比测试机慢 167 倍的手机，才能刚好把它拖到流畅的边缘</span>。换句话说，就算这台机器的力气被别的东西占掉九成以上，剩下的照样够它跑满帧。</p></div>
   <div class="insight reveal reveal-d3"><h3>它不挑机器</h3><p>为什么能做到这样，可以一条条拆开看：它做的事<span class="tag tag-purple">全是纯 Python 单线程的二维计算</span>——没有 numpy、没有 C 扩展、没有 GPU 计算，全部第三方依赖只有三个（Python、一个界面库、一个负责跟安卓系统说话的桥）。声音方面更极端：<span class="tag tag-purple">四十多个音效一个文件都没有</span>，全是代码实时算出来的，不占存储、也不劳烦解码器；中文字体也被砍到只剩真正会用到的那些字。<span class="tag tag-purple">支持的系统一路回溯到 2014 年的 Android 5.0</span>，32 位的老机器也能跑。所以"不吃性能"不是一句形容词，是这几条加在一起的结果。</p></div>
 </section>
 
@@ -322,7 +322,7 @@
   <div class="insight reveal reveal-d3"><h3>它测的不是"这台手机好不好"，是"我这一版有没有变慢"</h3><p>跑分要回答的是一个很具体的问题：<span class="tag tag-gold">改完这一版，比上一版快了还是慢了？</span>——所以口径必须固定、可比、可复现，才敢拿它的数字做判断。这也是为什么它宁可把屏幕压黑、把帧率按到 10：<span class="tag tag-gold">被测的东西只有物理引擎一个，别的都得让路</span>。顺带一提，游戏自己的"体检"还不止跑分——那套四万次飞行的自动门禁（返奖率、落袋零穿帮、回弹手感）每次改物理都要重跑一遍，绿了才敢出包。</p></div>
 </section>
 
-<!-- ═══════════ 10. 横屏 ═══════════ -->
+<!-- ═══════════ 11. 横屏 ═══════════ -->
 <section class="section section-alt sect-build" id="sec-orient">
   <div class="section-header"><h2>横着拿，也只给你竖屏</h2><p class="desc">一台联想平板引发的"屏幕保卫战"——十几版提交、截图像素取证，才让画面永远是你熟悉的样子</p></div>
   <div class="grid-2">
@@ -420,7 +420,7 @@
   120% → 中奖 35.6%   平均赔付 1.201
   200% → 中奖 43.4%   平均赔付 2.013
   360% → 中奖 78.7%   平均赔付 3.610
-  360% 档一盘 9 格里 6~8 格有奖，几乎必中，代价是约一半的中奖是 x2；
+  360% 档一盘 9 格里 6~8 格有奖，几乎必中，代价是约四成四的中奖是 x2；
   x50/x100 只在 200%/360% 档的倍率分布里存在（80%/120% 档抽不出来）。
   「中奖率」与「每次中多少」是同一个旋钮的两端——返还率恒等于档位。</div>
     </div>
