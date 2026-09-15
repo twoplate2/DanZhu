@@ -120,7 +120,7 @@
     <div class="hero-num"><div class="num">360%</div><div class="label">最高常驻返奖率<br>四档可切 80/120/200/360<br>长按还有隐藏三档</div></div>
     <div class="hero-num"><div class="num">9/9</div><div class="label">九个格子<br>个个有机会</div></div>
     <div class="hero-num"><div class="num">4</div><div class="label">个旋钮<br>机器自己调参</div></div>
-    <div class="hero-num"><div class="num">63</div><div class="label">条语音<br>神经合成离线预录</div></div>
+    <div class="hero-num"><div class="num">62</div><div class="label">条语音<br>神经合成离线预录</div></div>
   </div>
   <div class="spring-stage"><canvas id="springCanvas"></canvas></div>
   <div class="spring-legend">
@@ -135,7 +135,7 @@
   <div class="section-header"><h2>第一眼，六个字</h2><p class="desc">每一次启动都会看到的那一页——它只做一件事：等声音真的准备好了，然后干干净净地消失</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>一道光，从字上扫过去</h3><p>「跳跳的弹珠机」六个字一起淡入，然后一道<span class="tag tag-blue">颜色分界从左扫到右</span>——扫过的部分是新的颜色，没扫到的还是旧的，像 KTV 歌词。<span class="tag tag-blue">粒度细到能停在一个字的中间</span>，所以看起来是"光扫过去"，不是"一格一格跳"。扫完一轮停一下，再来一轮——每一轮换成下一种颜色（<span class="tag tag-blue">银 → 沙金 → 灰绿</span>），循环往复。</p></div>
-    <div class="card reveal reveal-d1"><h3>它不是淡出，是"没了"</h3><p>声音一备好，这一页<span class="tag tag-blue">直接就没了，没有淡出</span>——不拖泥带水地放你进游戏。这里还有一条被现实打回去的设计：最早它至少停 1.9 秒，结果玩家反馈"演到一半卡住才进游戏"——因为那 1.9 秒里有 <span class="tag tag-blue">52% 的时间画面完全静止</span>（扫完了在等）。现在最短停留砍到 0.22 秒，正好是淡入的时间。<span class="tag tag-blue">它不会为了好看多留你半秒。</span></p></div>
+    <div class="card reveal reveal-d1"><h3>它不是淡出，是"没了"</h3><p>声音一备好，这一页<span class="tag tag-blue">直接就没了，没有淡出</span>——不拖泥带水地放你进游戏。这里还有一条被现实打回去的设计：最早它至少停 1.9 秒，结果玩家反馈「演到一半卡住才进游戏」——因为那 1.9 秒里有 <span class="tag tag-blue">52% 的时间画面完全静止</span>（扫完了在等）。现在最短停留砍到 0.22 秒，正好是淡入的时间。<span class="tag tag-blue">它不会为了好看多留你半秒。</span></p></div>
     <div class="card reveal reveal-d2"><h3>它站在门口替你挡着</h3><p>这一页还负责<span class="tag tag-blue">吞掉所有触摸</span>。听起来是个小细节，但它是"初次安装没声音"的另一半防线：如果这层能被点穿，玩家就能在声音还没解码完的时候按发射——<span class="tag tag-blue">那一发就是静音的</span>。所以它既是一层布景，也是一道门。</p></div>
     <div class="card reveal reveal-d2"><h3>"重放冷启动"：一间给 bug 留的暗房</h3><p>有个故障一年只犯一次，而且<span class="tag tag-blue">关掉重开就好了</span>——想抓现场只能卸载重装，可卸载会清掉你的余额。于是做了一个「重放冷启动」：点一下，就能原地重演一次"装完第一次打开"的样子，<span class="tag tag-blue">存档一根汗毛都不动</span>。为了做到这一点，它得清掉整个声音缓存、并让音频对象回到启动前的状态——<span class="tag tag-blue">注意是"按回去"，不是新建一个</span>，新建会让界面里所有旧引用全部接错。</p></div>
   </div>
@@ -192,14 +192,14 @@
 <section class="section sect-voice" id="sec-voice">
   <div class="section-header"><h2>游戏会说话</h2><p class="desc">中几倍、返多少，都用人的声音报给你，一句不乱、永不抢话</p></div>
   <div class="grid-3">
-    <div class="card reveal reveal-d1"><h3>63 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，连长按才出现的隐藏三档也各有专属播报，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。数字是<span class="tag tag-blue">拼出来的</span>：0~9 加上「十、百、千、万」和「两」，共 15 个独立片段，报 1250 就依次播「一千·二百·五十」，片段之间只留 5 毫秒，听起来是一个人在念，不是机器在蹦字。</p></div>
+    <div class="card reveal reveal-d1"><h3>62 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，连长按才出现的隐藏三档也各有专属播报，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。数字是<span class="tag tag-blue">拼出来的</span>：0~9 加上「十、百、千、万」和「两」，共 15 个独立片段，报 1250 就依次播「一千·二百·五十」，片段之间只留 5 毫秒，听起来是一个人在念，不是机器在蹦字。</p></div>
     <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>中奖音分<span class="tag tag-blue">7 档递增</span>：x2 只有3个音，像小铃铛；x3 加一音，x5 再加一音；x10 加到六个音、底下垫一层低音（像管风琴踏板），x20 七个音、收尾还撒一把碎星，x50 的底音再往下沉一截，x100 九个音、声场最宽最亮。混响逐档加深，声场逐渐"撑开"。</p></div>
     <div class="card reveal reveal-d2"><h3>全局语音互斥</h3><p>上一个语音没播完，新按钮语音<span class="tag tag-blue">直接不出声</span>。你快速连点两个按钮，只听到第一个——两个播报不会叠在一起变成一团浆糊。</p></div>
   </div>
   <div class="grid-2" style="margin-top:14px">
     <div class="card reveal reveal-d3"><h3>41 种音效，0 个文件</h3><p>弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。其中 6 种撞钉声的音高恰好构成一个<span class="tag tag-blue">全音阶</span>——任何两个音叠在一起都不会刺耳。球下落时随机撞钉，每次触发的音高不同、节奏不同，但无论怎么排列都是天然和谐的旋律，像在听一段每次都不一样的即兴音乐。</p></div>
     <div class="card reveal reveal-d3"><h3>三级降级，绝不哑火</h3><p>Android 原生硬件混音 → 电脑多声道直写声卡 → 软件兜底，任意一级坏了自动切下一级；最坏情况落到静音模式，<span class="tag tag-blue">也绝不崩溃</span>。</p></div>
-    <div class="card reveal reveal-d3"><h3>第一次装上，就一定有声音</h3><p>有玩家报过"刚装上打开没声音，关掉再开就有了"。这种问题最阴——<span class="tag tag-blue">它静默、不报错、不留痕</span>，所有可能的原因在屏幕上长得一模一样。根因是安卓的声音加载是异步的：拿到的编号<span class="tag tag-blue">不等于</span>这个音效已经解码完；冷启动一口气灌进四十多个合成音加六十多条语音，解码器根本来不及，这时候去播会<span class="tag tag-blue">安安静静地失败</span>（不抛异常）。所以现在加载页会等到"真的能响"才放你进去——<span class="tag tag-blue">用一个零音量试播当探针</span>，而不是"以为它能响"。</p></div>
+    <div class="card reveal reveal-d3"><h3>第一次装上，就一定有声音</h3><p>有玩家报过「刚装上打开没声音，关掉再开就有了」。这种问题最阴——<span class="tag tag-blue">它静默、不报错、不留痕</span>，所有可能的原因在屏幕上长得一模一样。根因是安卓的声音加载是异步的：拿到的编号<span class="tag tag-blue">不等于</span>这个音效已经解码完；冷启动一口气灌进四十多个合成音加六十多条语音，解码器根本来不及，这时候去播会<span class="tag tag-blue">安安静静地失败</span>（不抛异常）。所以现在加载页会等到"真的能响"才放你进去——<span class="tag tag-blue">用一个零音量试播当探针</span>，而不是"以为它能响"。</p></div>
     <div class="card reveal reveal-d3"><h3>最多八个音同时响，满了就少响一个</h3><p>为什么不"抢"？因为抢要把正在响的那条流掐掉再起一条，<span class="tag tag-blue">那一下要 10 毫秒——够掉一帧了</span>。丢一声你多半听不出来，卡一帧你一定看得出来。所以声音满了宁可少响一个，也不打断正在响的。顺带一提：<span class="tag tag-blue">它最多同响八个不是随便定的</span>——试过开到十六，没有可验证的收益，只是更多音频流一直活着，于是退回了八个。</p></div>
     <div class="card reveal reveal-d3"><h3>切走就闭嘴，回来接着响</h3><p>你按 Home 键、接个电话，声音立刻停——<span class="tag tag-blue">不是在后台偷偷放</span>；回到前台它才恢复。而"恢复"这件事<span class="tag tag-blue">只认一个入口：从后台回来</span>。它是被刻意收窄的——因为暂停会把正在播的那条流掐在半路，如果让"恢复"到处都能触发，就会把正在响的东西搅乱。</p></div>
     <div class="card reveal reveal-d3"><h3>只有"开"和"关"，没有中间档</h3><p>声音<span class="tag tag-blue">刻意只做两态</span>：全开（含语音播报）和全关。中间那档"有音效但不播报"试过，后来<span class="tag tag-blue">整档删掉了</span>——那种档位只会让人每次都要想一下"我现在到底是哪种"。而且这个设置<span class="tag tag-blue">刻意不存盘</span>：每次启动都是"已开"，不会出现"我明明关了它怎么还在响"。</p></div>
@@ -215,17 +215,17 @@
     <div class="card reveal reveal-d1"><h3>倍率就是颗数</h3><p>中了 x2，落下两颗；中了 x100，落下整整一百颗。数字不再只是一个跳动的倍数，而是<span class="tag tag-gold">一堆你能数得清、看得见、装得满的珠子</span>。中得越大，那阵珠子雨就下得越久。</p></div>
     <div class="card reveal reveal-d1"><h3>珠子什么颜色，就是你押的哪一档</h3><p>一颗绿、十颗蓝、五十颗红、一百颗紫——同一局里颜色不会混，<span class="tag tag-gold">杯子里那堆珠子是什么颜色，一眼就知道你押的是哪一档</span>。等到雨停，杯子里的颜色就是你这一局的身份。</p></div>
     <div class="card reveal reveal-d1"><h3>先亮灯，再压暗，杯子才登场</h3><p>结算完先停<span class="tag tag-gold">半秒</span>——让槽位的白闪和绿灯先被你看见——然后<span class="tag tag-gold">整个画面</span>才慢慢压暗（顶栏、返还比例、投入设置、底下的按钮，连板面一起沉下去，一个角落都不留），一只玻璃杯从上方降进画面中下部，珠子雨才跟着落下来。<span class="tag tag-gold">不抢跑</span>：该看清的顺序，一个都不跳。</p></div>
-    <div class="card reveal reveal-d1"><h3>装满之后，你不点它就不走</h3><p>珠子全部落定、杯子装满之后，画面就<span class="tag tag-gold">一直停在那儿等你看</span>——不点屏幕它永远不走，切到后台刷了会儿手机再回来，杯子还是原样摆着。什么时候谢幕，由你说了算。<span class="tag tag-gold">唯一的时间规矩是"别太急"</span>：最后一颗珠子落定后 0.6 秒之内点不算数，免得球还在往下掉就被自己点没了。曾经的做法是"按倍率停 0.6~1.2 秒自动走"（奖越大停越久），<span class="tag tag-gold">后来整条废掉了</span>——玩家见过一次"我还没看够它就没了"，这个模式就再也回不来了。</p></div>
+    <div class="card reveal reveal-d1"><h3>装满之后，你不点它就不走</h3><p>珠子全部落定、杯子装满之后，画面就<span class="tag tag-gold">一直停在那儿等你看</span>——不点屏幕它永远不走，切到后台刷了会儿手机再回来，杯子还是原样摆着。什么时候谢幕，由你说了算。<span class="tag tag-gold">唯一的时间规矩是"别太急"</span>：最后一颗珠子落定后 0.6 秒之内点不算数，免得球还在往下掉就被自己点没了。曾经的做法是"按倍率停 0.6~1.2 秒自动走"（奖越大停越久），<span class="tag tag-gold">后来整条废掉了</span>——玩家见过一次「我还没看够它就没了」，这个模式就再也回不来了。</p></div>
   </div>
   <div class="grid-2" style="margin-top:14px">
     <div class="card reveal reveal-d2"><h3>一百颗珠子也不会卡</h3><p>珠子怎么落、怎么叠，在<span class="tag tag-gold">演出开始之前就整套算完了</span>，播的时候画面只负责按时间把它放出来。所以哪怕一次落一百颗，画面依旧稳——你看到的是热闹，机器其实只是在"翻页"。</p></div>
     <div class="card reveal reveal-d2"><h3>每落一颗珠子，手上震一下</h3><p>珠子落进杯子的时候，<span class="tag tag-gold">手上会跟着震一下</span>——而且用的就是落地音那一次判定：响了才震，震了必响。玩家要的就是"听得见也摸得着"。<span class="tag tag-gold">为什么不做成两套独立的开关</span>？因为只要让震动自己去判一次时间，用不了多久就会和声音错开——变成"听见响、手上没感觉"，而那正是要消灭的东西。<span class="tag tag-gold">震动手感刻意做得很轻很短</span>（10~18 毫秒、随撞击强弱变）：这是珠子一颗颗落进杯子，不是大奖砸下来。</p></div>
     <div class="card reveal reveal-d2"><h3>压暗，要连边边角角一起暗</h3><p>杯子登场前整个画面要沉下去。这里有个很容易翻车的地方：画面上的"五行信息"和"底部按钮"<span class="tag tag-gold">是画在游戏区上面的</span>，如果只把板面压暗，横屏时那五行正好落在画面两侧，于是会出现<span class="tag tag-gold">"中间黑了、两边还亮着"</span>，中间还夹着几条细缝比周围更亮。现在的做法是把整块屏幕"减去游戏区"<span class="tag tag-gold">上下两块严丝合缝铺满</span>——不重叠、不留缝，演出结束再精确复原，一个像素不差。</p></div>
-    <div class="card reveal reveal-d2"><h3>堆法不是"一层一层码"的</h3><p>珠子是<span class="tag tag-gold">按三角格码起来的真三维堆</span>，不是画上去的贴图。但真正讲究的地方在这里：它<span class="tag tag-gold">不是按层落的</span>——那样每一局都会在屏幕上留下一样的"一层一块"的施工缝。它每次从<span class="tag tag-gold">"下面已经站稳的那几颗"里随机挑一颗</span>放下，所以这一局和上一局的落法是真的不一样。堆法备了 <span class="tag tag-gold">12 套</span>（四套的时候玩家说"感觉还是几个枚举"，因为每四局就循环一遍），还配了一条硬门禁：<span class="tag tag-gold">任意两颗珠子都不许重叠</span>。</p></div>
-    <div class="card reveal reveal-d3"><h3>报喜故意慢了 0.4 秒</h3><p>以前最后一颗球刚碰到底，中奖音、播报和大字就一起炸出来——可那颗球还要再弹两下才停，<span class="tag tag-gold">最后几下落地的声音全被盖住了</span>（玩家原话："我甚至听不到弹珠落地的声音"）。现在报喜统一往后挪 <span class="tag tag-gold">0.4 秒</span>，<span class="tag tag-gold">等最后几声响完，再报喜</span>。</p></div>
+    <div class="card reveal reveal-d2"><h3>堆法不是"一层一层码"的</h3><p>珠子是<span class="tag tag-gold">按三角格码起来的真三维堆</span>，不是画上去的贴图。但真正讲究的地方在这里：它<span class="tag tag-gold">不是按层落的</span>——那样每一局都会在屏幕上留下一样的"一层一块"的施工缝。它每次从<span class="tag tag-gold">"下面已经站稳的那几颗"里随机挑一颗</span>放下，所以这一局和上一局的落法是真的不一样。堆法备了 <span class="tag tag-gold">12 套</span>（四套的时候玩家说「感觉还是几个枚举」，因为每四局就循环一遍），还配了一条硬门禁：<span class="tag tag-gold">任意两颗珠子都不许重叠</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>报喜故意慢了 0.4 秒</h3><p>以前最后一颗球刚碰到底，中奖音、播报和大字就一起炸出来——可那颗球还要再弹两下才停，<span class="tag tag-gold">最后几下落地的声音全被盖住了</span>（玩家原话：「我甚至听不到弹珠落地的声音」）。现在报喜统一往后挪 <span class="tag tag-gold">0.4 秒</span>，<span class="tag tag-gold">等最后几声响完，再报喜</span>。</p></div>
     <div class="card reveal reveal-d3"><h3>灯只回答一个问题：这一格中了没有</h3><p>九个格子下面各有一盏灯：<span class="tag tag-gold">中了绿、没中红</span>——不管你中的是 x2 还是 x100，颜色都一样。这里曾经"聪明"过：按倍率给灯上色，结果 <span class="tag tag-gold">x5 的红灯跟"未中"的红一模一样</span>，一眼分不出来；而且倍率槽的色块本来就是按倍率取的色，灯再上一遍是重复信息。现在只有两种颜色，<span class="tag tag-gold">扫一眼就懂</span>。</p></div>
     <div class="card reveal reveal-d3"><h3>先给你一句话，再给你数字</h3><p>球一落袋，状态栏先写<span class="tag tag-gold">「命中 x5 · 结算中」</span>，而余额那一栏要<span class="tag tag-gold">慢 0.2 秒</span>才动。这不是卡——那 0.2 秒正好是画面最忙的一拍，硬写上去会掉帧；而且先有一句"中了"垫着，等数字的时候你不会怀疑它坏了。数字本身也不是"啪"一下换掉的，是<span class="tag tag-gold">滚上去的</span>：小奖滚半秒，x10 以上滚足 1.2 秒，让你看清多了一位数。</p></div>
-    <div class="card reveal reveal-d3"><h3>退场是"灯先亮、道具后走"</h3><p>杯子不是"啪一下消失"的——那正是玩家反馈"消失得太快、没有回味"之后改掉的老做法。现在退场时背景先亮回来，杯子再一边上浮、一边缩小、一边透明地退走，<span class="tag tag-gold">两件事错开一点点</span>，看起来才像"落幕"，而不是"断片"。</p></div>
+    <div class="card reveal reveal-d3"><h3>退场是"灯先亮、道具后走"</h3><p>杯子不是"啪一下消失"的——那是玩家反馈「消失得太快、没有回味」之后改掉的老做法。现在退场时背景先亮回来，杯子再一边上浮、一边缩小、一边透明地退走，<span class="tag tag-gold">两件事错开一点点</span>，看起来才像"落幕"，而不是"断片"。</p></div>
   </div>
   <div class="insight reveal reveal-d3"><h3>从落袋到装满，要多久</h3><p>x2 约 <span class="tag tag-gold">1.2 秒</span>、x100 约 <span class="tag tag-gold">2.8 秒</span>——这是从杯子进场到最后一颗珠子落定的那段。<span class="tag tag-gold">之后停多久，由你决定</span>（见上面那张卡）：小奖的整场演出比打一发球等它落袋还短，最大的 x100 也不过三秒上下——<span class="tag tag-gold">庆祝够不够，不看时长看密度</span>；再长就该烦了，而这个尺度刚好是"看完还想再来一发"的长度。</p></div>
   <div class="insight reveal reveal-d3"><h3>"容易中"和"中得多"，是同一个旋钮的两头</h3><p>四档里到底有多少局会中奖（实测）：80% 档约 <span class="tag tag-gold">24%</span>、120% 档约 36%、200% 档约 43%、360% 档约 <span class="tag tag-gold">79%</span>——最高档一盘九格里六到八格都有奖，几乎必中。<span class="tag tag-gold">代价是那一档里四成多的中奖都是 x2</span>。返还比例是定死的，所以"中得勤"必然意味着"每次中得小"——这不是两件事，是同一件事的两面，而这个取舍明确交给你自己挑。</p></div>
@@ -235,7 +235,7 @@
 <section class="section sect-nearmiss" id="sec-easter">
   <div class="section-header"><h2>藏在长按和意外里的彩蛋</h2><p class="desc">长按那个数字三秒，它会多给你三个档位；而有些球，会自己走回出发的地方</p></div>
   <div class="grid-2">
-    <div class="card reveal reveal-d1"><h3>长按三秒，多出三档</h3><p>「期望返还比例」那一排平时是四档：80% / 120% / 200% / 360%。<span class="tag tag-red">按住它三秒别松</span>，会弹出一个窗口，里面多出三档——1000%、2000%、5000%，外加一个「关闭隐藏」。选一档、点确定，返还比例当场就换了。<span class="tag tag-red">这三档是"必中档"</span>：九个格子全都有奖，投出去的那一发不会白瞎。代价也写在明面上——<span class="tag tag-red">最高那档里，五回中奖就有差不多一回是 x2</span>。<span class="tag tag-red">"必中"这件事其实是被玩家骂出来的</span>：有人吐槽"5000% 还空军"，一查才发现"空军"是"这一盘有几个格子有奖"管的、跟返还比例没关系——当时九格里总有一到三格是空的，实测空军率 21%。于是两个高档位统一改成九格全有奖。</p></div>
+    <div class="card reveal reveal-d1"><h3>长按三秒，多出三档</h3><p>「期望返还比例」那一排平时是四档：80% / 120% / 200% / 360%。<span class="tag tag-red">按住它三秒别松</span>，会弹出一个窗口，里面多出三档——1000%、2000%、5000%，外加一个「关闭隐藏」。选一档、点确定，返还比例当场就换了。<span class="tag tag-red">这三档是"必中档"</span>：九个格子全都有奖，投出去的那一发不会白瞎。代价也写在明面上——<span class="tag tag-red">最高那档里，五回中奖就有差不多一回是 x2</span>。<span class="tag tag-red">"必中"这件事其实是被玩家骂出来的</span>：有人吐槽「5000% 还空军」，一查才发现"空军"是"这一盘有几个格子有奖"管的、跟返还比例没关系——当时九格里总有一到三格是空的，实测空军率 21%。于是两个高档位统一改成九格全有奖。</p></div>
     <div class="card reveal reveal-d1"><h3>它是彩蛋，不是功能</h3><p>这三档<span class="tag tag-red">重启游戏就消失</span>，必须重新长按才拿得到——不会误触、也不会赖在下一局。设计上它更像一扇"开发者后门"，只是顺手交到你手里：想要极限刺激就用，不想要就当没看见。<span class="tag tag-red">切到另一个隐藏档时，上一个的按钮会自动收走</span>，同屏永远只留一个，不会越点越多。</p></div>
     <div class="card reveal reveal-d2"><h3>每次长按都弹，不记仇</h3><p>早期版本有个毛病：第一次解锁之后就<span class="tag tag-red">再也不弹第二次</span>了（一局只能开一回）。现在整条判断删掉了——每次长按都弹，默认高亮你当前那一档，切哪档都行。</p></div>
     <div class="card reveal reveal-d2"><h3>关掉时把话说全</h3><p>点「关闭隐藏」不会静悄悄地回去——语音会一次念完<span class="tag tag-red">"百分之两千的隐藏倍率已关闭，返还比例调整到百分之三百六十"</span>，既告诉你关的是哪一档，也告诉你回到了哪一档。不猜、不懵。（如果本来就待在常规档，点它什么都不做——不会莫名其妙跳回 360%。）</p></div>
@@ -268,7 +268,7 @@
     <div class="card reveal reveal-d2"><h3>落地弹跳：球真的在弹</h3><p>球落入槽位后<span class="tag tag-purple">弹跳3~4次才停住</span>，弹跳系数随机变化避免机械重复。落地有金属锁扣声、弹跳有金属叮声。不再瞬移到槽中心——球停在哪就停在哪，自然得不像代码。</p></div>
     <div class="card reveal reveal-d2"><h3>钱算对了，球也停对了</h3><p>球冲进槽位时是带着横向的劲的，以前回弹那几下里它能<span class="tag tag-purple">滑过隔板、躺到隔壁格</span>——钱算在原来那格，球却停在旁边，看着就是不对劲。现在球一触到槽底就把横着的劲清零，回弹变成<span class="tag tag-purple">纯粹的上下弹</span>，物理上就不可能再滑出去。九个格子的隔板，谁都越不过去。</p></div>
     <div class="card reveal reveal-d2"><h3>飞行中统一灰化</h3><p>球在飞时，<span class="tag tag-purple">所有按钮+标签文字统一灰化</span>——返还比例、投入设置、统计文字全部变暗。只有弹珠数字和状态提示保持亮色。视觉层级一目了然：现在不是操作的时候，看球就行。</p></div>
-    <div class="card reveal reveal-d3"><h3>关声音可以反悔</h3><p>点"关闭声音"后，系统<span class="tag tag-purple">先播完提示语音才真关</span>——延迟1秒。在这1秒内切回来，关闭自动取消。重启后声音状态与按钮显示一致，不会"看着是关的实际在响"。</p></div>
+    <div class="card reveal reveal-d3"><h3>关声音就是立刻关</h3><p>点「关闭声音」，<span class="tag tag-purple">声音当场停</span>——不会出现"我明明点了关、它还在响一秒"。这里原来会先念一句「音效已关」、再延迟一秒才真静音（那一秒是留给播报收尾的），后来那条语音<span class="tag tag-purple">整个删掉了</span>：既然要静音，就别再让它多说一句。重启后按钮显示与实际状态一致，不会"看着是关的、实际在响"。</p></div>
     <div class="card reveal reveal-d3"><h3>呼吸 + 返回键保护</h3><p>入袋"咚"和中奖语音之间有<span class="tag tag-purple">一小段刻意沉默</span>。Android返回键被拦截——<span class="tag tag-purple">误触不会退出</span>，整局进度不会清零。好的声音不是塞满每一毫秒，好的交互不是多一个退出路径。</p></div>
     <div class="card reveal reveal-d3"><h3>球在转，也会被撞扁</h3><p>球横着走的时候是<span class="tag tag-purple">真的在滚</span>——转的速度就是它蹭到钉子那一下的切向速度。撞得越狠，球身被压得越扁（高速时压 5%），掠过去时几乎不变形。<span class="tag tag-purple">就这两下小动作，让它不像一个贴着圆图标的点。</span>顺带一提，球的"视觉"半径是碰撞半径的 1.4 倍——只影响观感，不影响物理，所以它看起来是挨着钉子过去的，实际上没嵌进去。</p></div>
     <div class="card reveal reveal-d3"><h3>重置不是刷新页面，是"喊停"</h3><p>球正在飞、弹簧正压着、刚哑火——按下重置，<span class="tag tag-purple">一律当场打断</span>，回满 1000 颗，顺手报一声「弹珠数量已调整到1000个」。还有一处很细的讲究：上一句提示如果还在屏幕上没散，它会<span class="tag tag-purple">先清干净再说下一句</span>，不会两层字叠在一起。</p></div>
@@ -290,8 +290,8 @@
   <div class="section-header"><h2>手机上为什么不卡</h2><p class="desc">平均 165 帧的机器上，最差的那 1% 帧也有 131 帧——这里记的是这 131 是怎么一层层抠出来的</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>先把成绩摆出来</h3><p>在一台平均 <span class="tag tag-purple">165 帧</span>的机器上，最差的那 1% 帧也有 <span class="tag tag-purple">131 帧</span>——意思是<span class="tag tag-purple">连最难看的那个瞬间都还有 131 帧</span>。这个成绩相当硬：多数游戏"最差 1%"能到平均值的一半多就不错了，这里是 <span class="tag tag-purple">八成</span>。（另一台跑 120 帧的机器上是 90 帧，同样是四分之三的比率——这个比例在不同机器上稳定复现，说明它不是某台设备的运气。）<span class="tag tag-purple">而"平均帧"好看、"最差帧"难看，恰恰是玩家嘴里那种"说不上哪里卡，但就是不舒服"的来源</span>——所以下面这几张卡，讲的全是这 131 是怎么抠出来的。</p></div>
-    <div class="card reveal reveal-d1"><h3>一个"叮"，能卡住一整帧</h3><p>玩家从很早就说"关掉音效之后流畅很多"，一直没人当真。直到真机面板把账算死：<span class="tag tag-purple">单次发声最慢 143.6 毫秒</span>；15 秒窗口里 50 次发声一共花掉 <span class="tag tag-purple">2674 毫秒</span>（平均每次 53.5 毫秒）——而一帧的间隔只有 12.5 毫秒。更决定性的一条：那一批 <span class="tag tag-purple">14 帧慢帧，14/14 全部落在发声上</span>。上一版还能说是巧合，14 比 14 没法再说是巧合。改法不是让声音变快，而是<span class="tag tag-purple">把发声整个搬出主线程</span>：主线程只负责画，从不站在那儿等一个音效播完。</p></div>
-    <div class="card reveal reveal-d1"><h3>凶手是"把按钮变灰"这个动作</h3><p>球在飞的时候按钮要灰化，这是设计。但玩家报"球飞的时候一卡一卡的"，查下去才发现：<span class="tag tag-purple">Kivy 把文字颜色直接烘进了纹理</span>，所以每改一次按钮的置灰状态，就要把那行字重新排版、重新光栅化一遍。而 Kivy 会把这类活儿攒到同一帧做——那一帧就多出 12 到 21 毫秒，<span class="tag tag-purple">占掉这一帧 95% 以上的时间</span>。找到它之后换了个做法：变灰照旧（走那条本来就免费的路），而"锁住输入"改成在触摸层统一吞掉。真机上每一发本来有两次爆发——<span class="tag tag-purple">发射时禁用 16 次、回 ready 时启用 15 次</span>，每次卡 12~21 毫秒——现在这两串都没了。（顺带证伪了一条网上常见的"优化"建议：把置灰的颜色调成和正常色一样，完全没用，Kivy 照样无条件重排。）</p></div>
+    <div class="card reveal reveal-d1"><h3>一个"叮"，能卡住一整帧</h3><p>玩家从很早就说「关掉音效之后流畅很多」，一直没人当真。直到真机面板把账算死：<span class="tag tag-purple">单次发声最慢 143.6 毫秒</span>；15 秒窗口里 50 次发声一共花掉 <span class="tag tag-purple">2674 毫秒</span>（平均每次 53.5 毫秒）——而一帧的间隔只有 12.5 毫秒。更决定性的一条：那一批 <span class="tag tag-purple">14 帧慢帧，14/14 全部落在发声上</span>。上一版还能说是巧合，14 比 14 没法再说是巧合。改法不是让声音变快，而是<span class="tag tag-purple">把发声整个搬出主线程</span>：主线程只负责画，从不站在那儿等一个音效播完。</p></div>
+    <div class="card reveal reveal-d1"><h3>凶手是"把按钮变灰"这个动作</h3><p>球在飞的时候按钮要灰化，这是设计。但玩家报「球飞的时候一卡一卡的」，查下去才发现：<span class="tag tag-purple">Kivy 把文字颜色直接烘进了纹理</span>，所以每改一次按钮的置灰状态，就要把那行字重新排版、重新光栅化一遍。而 Kivy 会把这类活儿攒到同一帧做——那一帧就多出 12 到 21 毫秒，<span class="tag tag-purple">占掉这一帧 95% 以上的时间</span>。找到它之后换了个做法：变灰照旧（走那条本来就免费的路），而"锁住输入"改成在触摸层统一吞掉。真机上每一发本来有两次爆发——<span class="tag tag-purple">发射时禁用 16 次、回 ready 时启用 15 次</span>，每次卡 12~21 毫秒——现在这两串都没了。（顺带证伪了一条网上常见的"优化"建议：把置灰的颜色调成和正常色一样，完全没用，Kivy 照样无条件重排。）</p></div>
     <div class="card reveal reveal-d2"><h3>让字变淡，不必把字重画一遍</h3><p>中奖数字要淡出、飘字要淡出，原本的写法是改文字颜色——<span class="tag tag-purple">等于整段字重新画一遍再传上显卡</span>。飘字更离谱，是每帧无条件重写，真机实测"文字重排 33.4 次/秒"；而跑分期间每 3 秒造一个飘字，等于<span class="tag tag-purple">跑分一直在给自己的成绩上刑</span>。改法是给已经画好的纹理<span class="tag tag-purple">乘一个透明度</span>——纹理重建从 40 次变成 0 次，字照样淡出。</p></div>
     <div class="card reveal reveal-d2"><h3>最慢的那一帧，可能是手机在打扫房间</h3><p>1% 低帧率看的是"最坏的那 1%"，而最坏的那一帧有时候跟画面无关——是内存回收（GC）正好在那一下做全量扫描。有意思的是文档里原本明确写过"GC 不用优化，因为平均开销不变"——<span class="tag tag-purple">那个结论是按"平均帧"算的，而 1% 低帧只看最坏的那一帧，所以它作废</span>。改完之后，开局前先把该整理的整理完，再告诉系统<span class="tag tag-purple">"这些别再扫了"</span>。</p></div>
     <div class="card reveal reveal-d3"><h3>最大那行中奖字，提前画好</h3><p>中奖大字每次都是临时新建的。而第一次显示某个字号的字，要真真切切地光栅化一遍——8 到 11 毫秒。165Hz 的屏幕一帧只有 6.06 毫秒，<span class="tag tag-purple">这一帧必卡</span>。改法很简单：在你还没开始玩的时候，就把它提前画好放在那儿。实测 1% 低帧率 <span class="tag tag-purple">+18%</span>，而且排除了两个替代解释（CPU 频率、中奖次数）才敢认这个数。</p></div>
@@ -316,7 +316,7 @@
     <div class="card reveal reveal-d3"><h3>从"记录"变成"看得懂"</h3><p>每跑一次都存进一张历史表，最近 100 次都在：<span class="tag tag-gold">平均帧率 / 1% 低帧率</span>回答"画面卡不卡"，<span class="tag tag-gold">中位分</span>回答"算得多快"，还有一栏<span class="tag tag-gold">平均差系数</span>——它量的是"几次成绩散不散"，越小越稳。有了这一栏，同一版本跑两次到底差多少、是真差异还是随机抖动，一眼就能读出来。</p></div>
     <div class="card reveal reveal-d3"><h3>掉下去的那几帧，底下标着"当时在演什么"</h3><p>跑完还能看一张曲线：横轴是每一帧，哪几帧掉下去一目了然。更实用的是曲线下面配了一条<span class="tag tag-gold">阶段条</span>，与曲线<span class="tag tag-gold">共用同一根时间轴</span>——那一帧是在飞行、还是在演装杯，直接对齐着看，<span class="tag tag-gold">不用再拿表格去对</span>。底部还能一键把逐帧原始数据<span class="tag tag-gold">保存成 txt 文件</span>（导不出来才退回剪贴板——真机上剪贴板会截断，实测 3778 帧只贴出 425 行），格式是"结论写在最开头"的，即使内容被截断，结论也还在。</p></div>
     <div class="card reveal reveal-d3"><h3>刷新率不是你说多少就多少</h3><p>菜单里那格「帧率上限设定」能选 <span class="tag tag-gold">60 到 185 六档</span>，但它实际给你的永远是"<span class="tag tag-gold">屏幕支持、系统允许、你选的</span>"这三个数里最小的那个——省电模式和高温降频它绕不过去。所以你不会选了 120 却发现没生效，面板上会如实告诉你<span class="tag tag-gold">实际拿到了多少</span>。这里也踩过一个真机的坑：只压住自己这一侧、不同时压住"对系统的刷新率请求"，手机会进入"一边要 120、一边只画 60"的不一致状态，实测只按到 70.5 帧，根本没按住。</p></div>
-    <div class="card reveal reveal-d3"><h3>"启动信息"：一张截图定位故障</h3><p>有玩家报过"第一次装完打开必然没声音"。这种问题最难查——<span class="tag tag-gold">静默、不报错、不留痕</span>，所有可能的原因在屏幕上长得一模一样。于是菜单里多了一格「启动信息」：版本、制作日期、音频后端的名字、这次是冷启动还是热启动、音效等了多久、加载失败几次……<span class="tag tag-gold">按"出问题先看谁"的顺序排好</span>，一张截图就能看出是哪一支出了岔，不用猜。<span class="tag tag-gold">有唯一正常值的项只在偏离时才显示</span>，所以这块面板平时是安静的。</p></div>
+    <div class="card reveal reveal-d3"><h3>"启动信息"：一张截图定位故障</h3><p>有玩家报过「第一次装完打开必然没声音」。这种问题最难查——<span class="tag tag-gold">静默、不报错、不留痕</span>，所有可能的原因在屏幕上长得一模一样。于是菜单里多了一格「启动信息」：版本、制作日期、音频后端的名字、这次是冷启动还是热启动、音效等了多久、加载失败几次……<span class="tag tag-gold">按"出问题先看谁"的顺序排好</span>，一张截图就能看出是哪一支出了岔，不用猜。<span class="tag tag-gold">有唯一正常值的项只在偏离时才显示</span>，所以这块面板平时是安静的。</p></div>
   </div>
   <div class="insight reveal reveal-d3"><h3>跑分不会把游戏弄脏</h3><p>为了让每一轮跑的是同一批球、成绩可比，跑分期间会临时把九个格子的倍率<span class="tag tag-gold">钉成固定盘面</span>。钉进去容易，还回来才是关键——有一版就漏了这一步，玩家跑完分一看：<span class="tag tag-gold">九个格子全是 x100</span>。修完之后配了像素级检查：钉死后槽段差 11168 个像素、还回之后差 0 个像素，差一个都算不过。<span class="tag tag-gold">测量工具不该在被测的东西上留指纹。</span></p></div>
   <div class="insight reveal reveal-d3"><h3>它测的不是"这台手机好不好"，是"我这一版有没有变慢"</h3><p>跑分要回答的是一个很具体的问题：<span class="tag tag-gold">改完这一版，比上一版快了还是慢了？</span>——所以口径必须固定、可比、可复现，才敢拿它的数字做判断。这也是为什么它宁可把屏幕压黑、把帧率按到 10：<span class="tag tag-gold">被测的东西只有物理引擎一个，别的都得让路</span>。顺带一提，游戏自己的"体检"还不止跑分——那套四万次飞行的自动门禁（返奖率、落袋零穿帮、回弹手感）每次改物理都要重跑一遍，绿了才敢出包。</p></div>
@@ -362,11 +362,14 @@
   片段间5ms间隙依次Clock.schedule_once排队播放，支持"二/两"变体规则
 
 <span class="hl">语音来源（诚实注脚）:</span>
-  63 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 63 个 wav。
+  62 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 62 个 wav。
   RTP 切换语音 80/120/200/360 四条 2026-08-16 补齐（早期高档位静默的缺口已消灭，
   孤儿 voice_rtp_100 同步删除）——现在四档切换个个有声音。
   最高档 2026-09-10 由 300% 调为 360%（返奖率四档 = 80/120/200/360）。
-  隐藏档 1000/2000/5000% 三条 + 「关闭隐藏」三条 2026-09-12 补齐（共 63 条）。
+  隐藏档 1000/2000/5000% 三条 + 「关闭隐藏」三条 2026-09-12 补齐。
+  ⚠️ 「关闭声音」那条 2026-09-16 删除（玩家动机: 在办公室想静音, 按下去它却先大声
+     念了一句「音效已关」——一个"关声音"的按钮不该先制造声音）。关声音改为**立即静音**;
+     那个 wav 已从仓库删掉, **删了就不加载**（语音是按目录全量加载的）。
 
 <span class="hl">顺序即音色（一条死规矩）:</span>
   所有配方共用**同一条随机流**，靠固定种子保证每次启动音色完全一致。
@@ -507,7 +510,7 @@
     <div class="pillar reveal reveal-d1"><span class="p-icon">🛤</span><div class="p-title">三段式轨迹</div><div class="p-desc">升空·转弯·落袋</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">没人作弊</div><div class="p-desc">零穿帮·自然落格</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🧬</span><div class="p-title">机器养公平</div><div class="p-desc">进化寻优·4旋钮</div></div>
-    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">63条语音·41音效</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">62条语音·41音效</div></div>
     <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能自证</div><div class="p-desc">4万次自测·真机跑分</div></div>
   </div>
 </section>
