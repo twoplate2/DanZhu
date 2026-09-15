@@ -363,7 +363,7 @@ COL_METER = "#f0b000"
 # 白字压在上面读不清; 这两个是**同色相、够深**的一对(行动亮 / 历史暗), 白字都够清,
 # 而且与"模拟系"的红明显分开 —— 玩家要的"同 1 类是一个色系、不同类分开"就靠这一对。
 COL_SOC = "#c07a10"            # SOC 系: 行动(SOC高压测试)
-COL_SOC_DIM = "#7a4e0a"        # SOC 系: 历史(SOC测试历史)
+COL_SOC_DIM = "#7a4e0a"        # SOC 系: 历史(高压测试历史)
 COL_x = {2: "#1e8a5a", 3: "#3d8bfd", 5: "#e0533b", 10: "#9e1f30", 20: "#a335ee", 50: "#c88800", 100: "#ff8c00"}
 # 槽位倍率色(WoW 品质色调整版): x2绿 x3蓝 x5红 x10深红 x20紫 x50深金 x100深橙。
 # 同时是中奖大字/灯带的取色依据。x10深红、x20紫偏暗 → 白字; 其余亮底 → 黑字。
@@ -801,18 +801,56 @@ def advance_flight(b, geo):
     return physics_step(b, geo, FIXED_DT)
 
 SOC_WARMUP_CPU_SEC = 1.5
-SOC_SAMPLE_CPU_SEC = 1.0
-SOC_SAMPLE_RUNS = 3
-# ⚠️ **样本之间的间隔**(2026-09-15 加)。照 Geekbench 6 的标定: 它的 workload 之间**有间隔**,
-#    6.0 是 2 秒、**6.1 起加到 5 秒**, 官方给的理由是"**减少温控、降低逐次波动**"。
-#    没有间隔的话 7 轮背靠背连着满载, 后几轮会被自己烤热 —— 测到的就不是"这台机器能跑多快"。
-SOC_SAMPLE_GAP_SEC = 2.0
+# ⚠️ **样本时长 / 轮数 / 间隔 —— 2026-09-15 按玩家要求整套调大**
+#    (玩家:「跑分测试那个 34 秒太短了, 你改为 geekbench6.1 的标准吧」「主要是担心 pc 和手机不一样」;
+#     来回试了几版后自己定稿: **跑 5 次, 每次 3 秒, 每次休息 5 秒**)。
+#    · ✅ `SOC_SAMPLE_GAP_SEC = 5.0` **就是 Geekbench 6.1 的口径**: 它把 workload 间隔
+#      **从 2 秒加到 5 秒**(6.0 是 2 秒), 官方理由是"**减少温控、降低逐次波动**"。
+#      这正是玩家"担心 pc 和手机不一样"想要的 —— 间隔够长, SoC 才凉得下来, 测到的才是
+#      **峰值**而不是"半烤机"状态, PC 与手机的对比也才公平(手机热容小得多)。
+#      ⚠️ **别把它调小**: 中间试过 3 秒, 那是往反方向走(官方加长间隔就是为了防这个)。
+#      ⚠️ 它是**墙钟 sleep**, 不是 CPU 秒 —— 要的就是真实散热时间。
+#    · ⚠️ **样本时长与轮数不是 Geekbench 的规范**: 官方**没有公开**每个 workload 跑多久
+#      (查过, internals PDF 403)。所以"按 6.1 的标准"能唯一确定的只有上面那个 5 秒间隔。
+#    · ⚠️ **轮数取奇数 5**(玩家从 8 改到 7 再改到 5): `_bench_done` 取中位数用的是
+#      `sorted(v)[len(v)//2]` —— n=8 时那是 `sorted[4]`, 下面 4 个上面 3 个, 是**上中位数**
+#      (报出来偏悲观); 奇数时 `sorted[n//2]` 下面上面一样多, 才是真正居中的那个。
+#      ⚠️ 顺带: **5 轮 = 4 个间隔**(不是 5 个) —— 第一轮前不休息, 因为预热刚做完。
+#      (同一条 `sorted[n//2]` 也用在高压测试的 `_hp_stats` 上, 那里的窗口数由时长决定。)
+#    · 账(桌面实测比值 1.31): 跑 = 预热 1.5 + 5x3.0 = **16.5 CPU 秒 ≈ 22 秒真实时间**;
+#      休息 = 4 x 5.0 = **20 秒**; 物理段合计 ≈ **42 秒**; 主测试总计 ≈ **67 秒**(渲染 25 + 42)。
+#      整屏置灰层要挂这么久, 已告知玩家。
+#    · ⚠️ 轮数改了, 状态栏 `物理跑分 d/N` 的分母会**自动跟着变**(它读的就是本常量)。
+SOC_SAMPLE_CPU_SEC = 3.0
+SOC_SAMPLE_RUNS = 5
+SOC_SAMPLE_GAP_SEC = 5.0
 # ⚠️ **高压测试(独立的「高压测试」按钮, 2026-09-15 从主测试里拆出来)**。
-#    与波 1 相反 —— **窗口之间一秒都不停**, 整整压 300 秒(5 分钟), 专门看衰减。
+#    与波 1 相反 —— **窗口之间一秒都不停**, 专门看衰减。
 #    ⚠️ 玩家定案: 「新增高压测试按钮, **原有测试是原有时间**」—— 主测试不再跑高压段,
 #       它的时长/参数一个字不动(渲染 25s + 波 1 14.5s)。高压单独一键, 要跑多久跑多久。
-SOC_SUSTAIN_SEC = 300.0
-SOC_SUSTAIN_WINDOW_SEC = 1.0
+#
+# ⚠️⚠️ **2026-09-15 改口径: 从"CPU 秒"改成"真实时间(墙钟)秒"**。玩家三条要求:
+#    「真的至少测试 300 秒 / 测试结束后就要弹窗 / 面板显示的数别太违和」。
+#    · 病根: 面板报的是工作线程跑掉的 **CPU 秒**, 而主线程每帧要抢 GIL 渲染, 工作线程
+#      只拿到约 3/4 的核 —— 桌面实测比值 **1.31**(20 秒 CPU 的活要 26.2 秒墙钟,
+#      见 `temp/hp_tail_probe.py`) ⇒ 旧口径"压 300 秒"实际要玩家等 **约 393 秒**,
+#      而面板早在 300/300 就顶格了 ⇒ **面板在骗人**(玩家原话:「跑了 300/300 秒后,
+#      很久都没有弹出窗口」)。
+#    · 为什么不去调数字凑: 想让"面板显示 360、到 360 必弹"就得把工作量改成
+#      360/1.31 ≈ 275 秒, 但 **1.31 是这台电脑的比值, 不是常数**; 手机若为 1.5,
+#      275 秒的活要跑 413 秒 ⇒ 面板到 360/360 时活儿还剩 53 秒 —— **同一个 bug 原样回来**。
+#      猜比值只在测过的机器上成立。
+#    · 解法: **让循环条件本身就是墙钟**(见 `benchmark_sustained`) —— 分母 = 真实秒数目标,
+#      分子 = 秒表, 数学上必然在到点那一帧结束, 换任何设备都对得齐, 一个数都不用猜。
+#    · ⚠️ 代价(已告知玩家): ①**工作量随设备浮动**(桌面约干 275 CPU 秒的活) ——
+#      "步/秒"是**速率**(分母是各窗口自己消耗的 CPU 秒), 仍然可比; 而且受热时间对所有设备
+#      都恰好 360 秒, **对测衰减反而更公平**。②旧历史记录的 `sec`=300 是旧口径(CPU 工作量),
+#      新记录 =360 是新口径(真实时长), **新老不直接可比**; 步/秒那一列不受影响。
+#    · ⚠️ 两个名字必须分得清(这次 bug 的本质就是"两种秒混用一个名字"):
+#      `..._WALL_SEC` = 真实时间, 决定**跑多久**;
+#      `..._WINDOW_CPU_SEC` = 采样窗口, 仍是 **CPU 秒**, 决定**每份样本多长**("步/秒"的分母)。
+SOC_SUSTAIN_WALL_SEC = 360.0
+SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
 # 渲染采样窗口自动发几颗球(原来是 `self._target_launches = 5` 写死在跑分函数里, 提成常量)。
 BENCH_TARGET_LAUNCHES = 5
 
@@ -822,16 +860,17 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            runs=SOC_SAMPLE_RUNS,
                            gap_sec=SOC_SAMPLE_GAP_SEC,
                            on_sample=None):
-    """**波 1 —— 测性能(峰值)**: 1.5 秒 CPU 时间预热 + `runs` x 1 秒样本, 取中位数。
+    """**波 1 —— 测性能(峰值)**: `warmup_cpu_sec` 秒 CPU 预热 + `runs` 轮 x `sample_cpu_sec` 秒
+    样本, 取中位数。
 
     用工作线程自身的 ``thread_time`` 作时间基准，排除等待 GIL、渲染和系统调度的墙钟空档；
     每轮用实际消耗的 CPU 时间作分母，避免旧版「实际跑过 0.7 秒但固定除以 0.7」的偏差。
     返回 ``(总发数, 总步数, 各轮步/秒, 各轮实际CPU秒)``。
 
-    ⚠️ **样本之间留 `gap_sec` 秒**(2026-09-15 加): 照 Geekbench 6 的标定 —— 它的 workload
-       之间有间隔, 6.0 是 2 秒、**6.1 起加到 5 秒**, 官方理由是"**减少温控、降低逐次波动**"。
-       没有间隔就是"背靠背烤机", 后几轮被自己烤热 —— 那测到的是**持续性能**, 不是峰值。
-       想测持续性能走 `benchmark_sustained`(波 2), **两件事分开测**。
+    ⚠️ **样本之间留 `gap_sec` 秒**(2026-09-15 从 2 秒改成 **5 秒** —— **这就是 Geekbench 6.1
+       的口径**, 6.0 是 2 秒; 详见 `SOC_SAMPLE_GAP_SEC` 处)。没有间隔就是"背靠背烤机",
+       后几轮被自己烤热 —— 那测到的**不是峰值**。想测持续性能走 `benchmark_sustained`(波 2),
+       **两件事分开测**。
     ⚠️ **顺序必须是先本函数、再 `benchmark_sustained`** —— 反过来的话波 2 先把机器烤热,
        这里就不再是峰值了。
     ⚠️ 间隔期间**主线程照常渲染**, 采样线程也照常采频率 —— 那正是观察降频的窗口。
@@ -881,10 +920,9 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     return total_flights, total_frames, fps_list, cpu_seconds_list
 
 
-def benchmark_sustained(total_cpu_sec=SOC_SUSTAIN_SEC,
-                        window_cpu_sec=SOC_SUSTAIN_WINDOW_SEC,
-                        on_window=None):
-    """**波 2 —— 测高压(衰减)**: 窗口之间**一秒都不停**, 整整压 `total_cpu_sec` 秒 CPU 时间。
+def benchmark_sustained(total_wall_sec=SOC_SUSTAIN_WALL_SEC,
+                        window_cpu_sec=SOC_SUSTAIN_WINDOW_CPU_SEC):
+    """**波 2 —— 测高压(衰减)**: 窗口之间**一秒都不停**, 整整压 `total_wall_sec` 秒**真实时间**。
 
     与波 1 的区别就一个 —— **没有间隔**。问的问题也不同:
       波 1 问"这台机器**最好**能跑多快"(峰值, 跨次/跨设置可比);
@@ -893,8 +931,13 @@ def benchmark_sustained(total_cpu_sec=SOC_SUSTAIN_SEC,
     返回 ``(总发数, 总步数, 各窗口步/秒, 各窗口实际CPU秒)``。
     ⚠️ 口径与波 1 **逐字相同**(同一条确定性输入序列、`thread_time` 当分母、用实际消耗的
        CPU 秒做除法) —— 否则两波的数没法放在一起比。
-    ⚠️ 最后那个窗口常常是**残缺的**(时间到了被截断), 但分母用的是**它自己实际消耗的**
-       CPU 秒, 所以那个数仍然成立, 不是坏的。
+    ⚠️⚠️ **外循环按 `time.time()`(真实时间)退出, 不是 CPU 时间**(2026-09-15 改; 理由见
+       `SOC_SUSTAIN_WALL_SEC` 顶上那段长注释)。**窗口本身仍是 1 CPU 秒** —— 它决定"步/秒"
+       的分母, 不许跟着改。
+       副作用: 外循环在**窗口开始前**判条件, 所以最后一个窗口会**多做 ≤ 一个窗口**的活
+       ⇒ 总墙钟落在 `[total_wall_sec, total_wall_sec + 约1.4秒]`。
+       ⚠️ **别为了"精确到点"去截断最后一个窗口** —— 那样它的分母会变得很小、样本变噪,
+          而**末窗口正是衰减曲线的关键读数**(`_hp_stats` 的"末")。
     """
     geo = build_geo()
     cpu_clock = getattr(time, "thread_time", None) or time.process_time
@@ -920,20 +963,15 @@ def benchmark_sustained(total_cpu_sec=SOC_SUSTAIN_SEC,
     cpu_seconds_list = []
     total_flights = 0
     total_frames = 0
-    t_all = cpu_clock()
-    while cpu_clock() - t_all < total_cpu_sec:
+    # ⚠️ **这里是墙钟**(2026-09-15 改): 与外循环判据同一根尺子。
+    #    旧版用 `cpu_clock()` —— 那是"工作线程自己跑了多久", 与玩家等的真实时间差 1.31 倍。
+    t_all = time.time()
+    while time.time() - t_all < total_wall_sec:
         flights, frames, used = _run_once(window_cpu_sec, 12345)
         fps_list.append(frames / used)
         cpu_seconds_list.append(used)
         total_flights += flights
         total_frames += frames
-        # ⚠️ 回调跑在**工作线程**上: 只能写普通属性, **绝不许碰界面**。
-        #    报的是**真正跑完的 CPU 秒数** —— 这才是"进度"的真正含义。
-        if on_window is not None:
-            try:
-                on_window(min(cpu_clock() - t_all, total_cpu_sec), total_cpu_sec)
-            except Exception:
-                pass
     return total_flights, total_frames, fps_list, cpu_seconds_list
 
 
@@ -2260,6 +2298,29 @@ def _set_label_text(label, text):
         return True
     except Exception:
         return False
+
+
+def _bench_menu_desc():
+    """跑分菜单里那段说明的正文。
+
+    ⚠️ **抽成独立函数是为了让探针能直接读到"出货那一份"**(`temp/check_desc.py`
+       —— 它原来从 `tools/android_part_ui.py` 里正则捞字面量, 而 `tools/` 与
+       `android/main.py` **早已分叉**, 量到的是别的版本; 这个工程的惯例见
+       `_bench_save_board` 的注释:「抽成独立方法是为了能被探针直接调」)。
+
+    ⚠️ 末句的「连压 N 分钟」**必须走常量**(2026-09-15 改): 它原来是硬编码的
+       `连压 5 分钟`, 改 `SOC_SUSTAIN_WALL_SEC` 时**不会跟着变** —— 本轮把高压口径
+       从 300 秒改成 360 秒时差点漏掉, 那就会印"连压 5 分钟"而实际跑 6 分钟。
+    ⚠️ 开头那个「约 67 秒」是**手写的粗估**, 不是算出来的: 它 = 渲染窗口(约 25 秒,
+       由 `_target_launches` 发 5 颗球决定, 不是常量) + 波 1(预热 + `SOC_SAMPLE_RUNS` x
+       `SOC_SAMPLE_CPU_SEC` + 间隔)。改了那几个参数要回来改这个数 —— 可用
+       `python temp/check_desc.py` 顺手复核排版(它同时会量每行宽度)。
+    """
+    return ('模拟测试约 67 秒（含落珠动画）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n'
+            '2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n'
+            '物理引擎是纯 Python 写的。\n'
+            'SOC高压测试：连压 %d 分钟，看持续性能衰减。'
+            % (int(SOC_SUSTAIN_WALL_SEC) // 60))
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
 #    真机面板上那三帧的账**对不上** —— 40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
@@ -9839,12 +9900,28 @@ class RootWidget(BoxLayout):
     def _prog_text(self):
         """当前该显示的进度文案; 没有测试在跑就返回 None。"""
         if getattr(self, "_hp_running", False):
-            # ⚠⚠ **用工作线程自己报的 CPU 秒数, 不能用墙钟**。
-            #    实测: 单独跑 20 秒 CPU 只要 20.24 秒墙钟(1:1), 但在 app 里跑同一条链
-            #    **70 秒都没跑完** —— 工作线程挤不到 GIL。用墙钟报的话
-            #    进度早上到 300/300 而活儿还在干 ⇒ 玩家看到的"跑完了却很久不弹窗"。
-            _el, _tot = getattr(self, "_hp_prog", None) or (0.0, float(SOC_SUSTAIN_SEC))
-            return "SOC高压测试 %d/%d秒" % (int(_el), int(_tot))
+            # ⚠️ **2026-09-15 改**: 进度现在是**真秒表**, 不再是工作线程报的 CPU 秒数。
+            #    旧版(直到 v0.7.52)报的是 CPU 秒, 而活儿也按 CPU 秒跑 ⇒ 面板顶到 300/300 时
+            #    活儿还剩两成没干完 —— 玩家报的"跑完了却很久不弹窗"就是这么来的。
+            #    ⚠️ **别把这两条注释看反了**: 旧版那条"不能用墙钟当分子"的结论, 前提是
+            #       **循环条件用 CPU 秒** —— 那时面板是墙钟、循环是 CPU 秒, 两根尺子必然对不齐。
+            #       现在**循环条件本身就是墙钟**(`benchmark_sustained` 的 `total_wall_sec`),
+            #       分子分母同源 ⇒ 墙钟才是**唯一正确**的取值。
+            #       关键不在"用不用墙钟", 在"**和循环条件是不是同一根尺子**"。
+            _w0 = getattr(self, "_hp_wall0", 0.0)
+            _el = (time.time() - _w0) if _w0 else 0.0
+            _cap = int(SOC_SUSTAIN_WALL_SEC)
+            if _el >= _cap:
+                # 过点(玩家 2026-09-15:「如果时间超过 6 分钟, 如果还没有弹出窗口, text 上写
+                #   『成绩核算中：x秒』, 这个 x 代表进度」)。
+                # ⚠️ 这是**保险丝**, 不是常态: 桌面实测"核算 + 建弹窗"只要 **51 毫秒**
+                #    (写历史 JSON 1ms + 拼摘要 2ms + 建弹窗 50ms, 见 `temp/hp_tail_probe.py`),
+                #    而本轮询每 0.25 秒才刷一次 ⇒ **多数情况下这段文案一帧都不会被画出来**。
+                #    真会看到它的场合是"核算真慢了"或"主线程被卡住" —— 那时玩家看到的是一个
+                #    **在跳动的计数**, 而不是不动的 360/360(后者读起来就是死机)。
+                #    判据只认墙钟一条, **不需要额外的标志位**, 也就没有跨线程状态要同步。
+                return "成绩核算中：%d秒" % max(1, int(_el - _cap) + 1)
+            return "SOC高压测试 %d/%d秒" % (int(_el), _cap)
         if getattr(self, "_bench_running", False):
             # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15:「那 25 秒测试帧率的不
             #    显示任何进度消息, 后面全力测试 SOC 的时候才显示」)。
@@ -9897,11 +9974,13 @@ class RootWidget(BoxLayout):
         self._hp_running = True
         # ⚠️ 状态栏要先存一份再改, 跑完还回去 —— 与 `_bench_saved_status` 同一个写法。
         self._hp_saved_status = self.status_lbl.text
-        # ⚠️ 墙钟起点: 进度按**已过秒数**算(它本来就是按 CPU 时间跑的, 两者略有出入,
-        #    但进度条只要"大概走到哪"就够, 不必精确 —— 精确值在结果弹窗里)。
-        self._hp_t0 = time.time()
+        # ⚠️ **墙钟起点先归零, 由工作线程真正开跑那一刻再盖章**(见 `_run_hp_test`)。
+        #    为什么不在这儿直接 `time.time()`: 中间还隔着 `_wait_idle_then_hp` 等球落地那一段,
+        #    盖在这儿会把等待也算成测试时间。归零的语义是"还没开始", `_prog_text` 据此显示 0。
+        #    (旧版这里是个 `_hp_t0` 字段 —— 自 v0.7.52 起**没有任何读取方**, 本轮已删。)
+        self._hp_wall0 = 0.0
         self._prog_start()
-        _set_label_text(self.status_lbl, "SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_SEC))
+        _set_label_text(self.status_lbl, "SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
         self._set_controls_enabled(False)
         self._wait_idle_then_hp()
 
@@ -9915,14 +9994,12 @@ class RootWidget(BoxLayout):
     def _run_hp_test(self):
         # ⚠️ 工作线程: 只写属性, **不碰界面**(界面只能在 Clock 回调里动)。
         _frq, _stop = _freq_sampler_start()
-        self._hp_prog = (0.0, float(SOC_SUSTAIN_SEC))
-
-        def _on_window(_el, _tot):
-            self._hp_prog = (float(_el), float(_tot))
-
-        _fl, _fr, _fps, _cpu = benchmark_sustained(on_window=_on_window)
+        # ⚠️ **测试的墙钟起点在这儿盖**, 不在 `_start_hp_test`: 中间隔着"等球落地"那一段,
+        #    盖在前面会把等待也算成测试时间。紧挨着 `benchmark_sustained` 之前盖,
+        #    量的就正好是测试本身。
+        self._hp_wall0 = time.time()
+        _fl, _fr, _fps, _cpu = benchmark_sustained()
         _stop[0] = True
-        self._hp_prog = (float(SOC_SUSTAIN_SEC), float(SOC_SUSTAIN_SEC))
         _frq.sort()
         self._hp_fps = list(_fps or [])
         self._hp_cpu = list(_cpu or [])
@@ -9943,10 +10020,22 @@ class RootWidget(BoxLayout):
         return v[0], v[-1], sv[0], sv[len(sv) // 2], _d
 
     def _hp_freq_line(self):
+        """结果弹窗里那行 CPU 频率。
+
+        ⚠️ **口径取「平均」, 不取「中位」**(玩家 2026-09-15:「压力测试的 cpu 频率 … 这个地方
+           应该取平均值吧」)。理由: 频率采样是**双峰**的 —— 应用大部分时间在等 vsync, 调频器
+           把核压在最低档(真机 1133MHz), 满载窗口才冲到睿频(4608)。**中位数必然落在其中一个
+           峰上**, 报出来要么像"全程低频"要么像"全程满血", 两个都不代表这段测试; 而**平均值**
+           对应的是平均功耗/发热 —— 正是这个高压测试想回答的问题。
+        ⚠️ **改之前这里印中位、而历史详情印平均 —— 同一个测试两处口径不一样**, 玩家就是这么
+           发现的(他是在结果弹窗上看到的)。现在两处都是平均; 中位照旧印在**详情**的
+           「频率分布」那一行, 也照旧存在记录里(`freq_p50`), 没有删。
+        ⚠️ 文案长度刻意与本函数改前**一样**(「中位」→「平均」, 都是两字), 不动弹窗排版。
+        """
         _f = getattr(self, "_hp_freq", None) or {}
-        if _f.get("p50"):
-            return ("中位 %dMHz（最低 %d / 最高 %d，%d 个采样）"
-                    % (_f["p50"], _f["min"], _f["max"], _f["n"]))
+        if _f.get("mean"):
+            return ("平均 %dMHz（最低 %d / 最高 %d，%d 个采样）"
+                    % (_f["mean"], _f["min"], _f["max"], _f["n"]))
         return "没采到（非安卓 / 读不到 sysfs）"
 
     def _hp_summary_text(self):
@@ -9965,7 +10054,7 @@ class RootWidget(BoxLayout):
         _step = max(1, len(v) // 12)
         _curve = " / ".join("%d" % v[_i] for _i in range(0, len(v), _step))
         return (_dv + chr(10)
-                + "高压 %.0f 秒（背靠背不停）" % SOC_SUSTAIN_SEC + chr(10)
+                + "高压 %.0f 秒（背靠背不停）" % SOC_SUSTAIN_WALL_SEC + chr(10)
                 + "首 %d → 末 %d 步/秒（降 %.0f%%）" % (_f, _l, _d) + chr(10)
                 + "最低 %d · 中位 %d 步/秒" % (_lo, _mid) + chr(10) + chr(10)
                 + "每段采样：" + _curve + chr(10)
@@ -9999,7 +10088,7 @@ class RootWidget(BoxLayout):
                     "freq_min": int(_fr2.get("min", 0) or 0),
                     "freq_max": int(_fr2.get("max", 0) or 0),
                     "freq_n": int(_fr2.get("n", 0) or 0),
-                    "sec": int(SOC_SUSTAIN_SEC),
+                    "sec": int(SOC_SUSTAIN_WALL_SEC),
                     "version": _app_version(),
                     "device": self._device_info(),
                     "windows": [int(x) for x in self._hp_fps],
@@ -10034,7 +10123,7 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
     def _show_bench_menu(self):
-        """弹珠发射模拟测试菜单弹窗: 开始模拟测试 / 查看模拟历史 / SOC高压测试 / SOC测试历史 / 启动信息。"""
+        """弹珠发射模拟测试菜单弹窗: 开始模拟测试 / 查看模拟历史 / SOC高压测试 / 高压测试历史 / 启动信息。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
         _ver = _app_version()
         _title = ('弹珠发射模拟测试 ' + _ver) if _ver else '弹珠发射模拟测试'
@@ -10042,7 +10131,10 @@ class RootWidget(BoxLayout):
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='模拟测试约 34 秒（含落珠动画）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。\nSOC高压测试：连压 5 分钟，看持续性能衰减。',
+        # ⚠️ 文案在 `_bench_menu_desc()` 里(抽出去是为了让 `temp/check_desc.py` 能量到
+        #    **出货这一份**; 它以前从 `tools/` 捞字面量, 而两边早已分叉)。
+        # ⚠️ 末句的「连压 N 分钟」走常量, 别再写成硬编码字面量 —— 本轮改高压口径时差点漏掉。
+        desc_lbl = Label(text=_bench_menu_desc(),
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         # 说明是**多行正文** —— 只能用"高度跟着排版走"(缩字号会把整段一起缩小)。
@@ -10076,7 +10168,7 @@ class RootWidget(BoxLayout):
         hp_btn = Button(text='SOC高压测试', font_size='17sp', bold=True,
                         background_normal='', background_color=hex_rgb(COL_SOC) + (1,),
                         size_hint_y=None, height=dp(52))
-        hph_btn = Button(text='SOC测试历史', font_size='17sp', bold=True,
+        hph_btn = Button(text='高压测试历史', font_size='17sp', bold=True,
                          background_normal='', background_color=hex_rgb(COL_SOC_DIM) + (1,),
                          size_hint_y=None, height=dp(52))
         info_btn = Button(text='启动信息', font_size='17sp', bold=True,
@@ -11130,7 +11222,7 @@ class RootWidget(BoxLayout):
             #    "两次跑分差这么多, 是不是频率不同" —— 历史面板不印, 但 JSON 里有。
             "phys_freq_p50": int(getattr(self, "_phys_freq_p50", 0) or 0),
             # 波 2(高压) —— 面板只印一行, JSON 里把逐窗值和它那段的频率全留着。
-            "sust_sec": int(SOC_SUSTAIN_SEC),
+            "sust_sec": int(SOC_SUSTAIN_WALL_SEC),
             "sust_first": int(_s_first), "sust_last": int(_s_last),
             "sust_min": int(_s_min), "sust_decay_pct": round(_s_decay, 1),
             "sust_freq_p50": int(getattr(self, "_sust_freq_p50", 0) or 0),
@@ -11182,7 +11274,7 @@ class RootWidget(BoxLayout):
         _dev_ver = (dev + " / " + _ver) if _ver and _ver not in dev else dev
         # ⚠️ 高压那行**没有数据就整行不印**(不印假数) —— 与窗口/门槛那两处的规矩一致。
         _s_txt = (('高压 %d 秒：首 %d → 末 %d 步/秒（降 %.0f%%）· 最低 %d\n'
-                   % (int(SOC_SUSTAIN_SEC), int(_s_first), int(_s_last),
+                   % (int(SOC_SUSTAIN_WALL_SEC), int(_s_first), int(_s_last),
                       int(_s_decay), int(_s_min)))
                   if _sv else '')
         score = ('%s\n'
@@ -11334,7 +11426,7 @@ class RootWidget(BoxLayout):
                     _f2t = "高压那段的 CPU 频率: **没采到**"
                 _lines.append("# 高压 %d 秒(背靠背不停): 首 %d → 末 %d 步/秒"
                               "(降 %.0f%%) · 最低 %d"
-                              % (int(SOC_SUSTAIN_SEC), int(_sv2[0]), int(_sv2[-1]),
+                              % (int(SOC_SUSTAIN_WALL_SEC), int(_sv2[0]), int(_sv2[-1]),
                                  _d2, int(min(_sv2))))
                 _lines.append("#   逐窗: " + ", ".join("%d" % x for x in _sv2))
                 _lines.append("#   " + _f2t)
@@ -11786,6 +11878,23 @@ class RootWidget(BoxLayout):
                           % (_gc_n, float(d.get("gc_total", 0.0) or 0.0) * 1000.0,
                              float(d.get("gc_worst", 0.0) or 0.0) * 1000.0,
                              str(d.get("gc_worst_gen", -1)), str(d.get("backend", "?"))))
+            # ⚠️ **内存冻结必须落进日志**(2026-09-15 加)。这一行原来**只在成绩面板上显示**
+            #    (`main.py` 里那行 `内存冻结：已冻结 N 个常驻对象 …`), txt 里没有 ⇒ **离线看日志
+            #    时无从判断**。实测代价: 四轮 v0.7.50 日志里有一轮撞到 **21.2 毫秒的 gen-2**
+            #    (占那一轮最慢帧的全部), 而账面上它与另外三轮看不出任何差别 —— 于是"冻结到底
+            #    生效没有"这个问题**查不动**。面板那行的原注释本来就写着"冻结生效与否**必须
+            #    显示**", 但只显在面板上等于离线分析时没有。
+            # ⚠️ **`gc_frozen == 0` 也要印**(印成"没冻结"), 不能 `if frozen:` 就跳过 ——
+            #    那正是本仓库栽过的"静默": 冻结链没跑到/抛了异常时, 日志一片安静, 看起来
+            #    和"冻结成功所以没问题"一模一样。
+            _fz = int(d.get("gc_frozen", 0) or 0)
+            if _fz:
+                _lines.append("# 内存冻结: 已冻结 %d 个常驻对象 · 强制全量回收 冻结前 %.1f → 冻结后 %.1f 毫秒"
+                              % (_fz, float(d.get("gc_frz_before", 0.0) or 0.0),
+                                 float(d.get("gc_frz_after", 0.0) or 0.0)))
+            else:
+                _lines.append("# 内存冻结: **没冻结**(gc_frozen=0) —— 冻结链没跑到或抛了异常,"
+                              " 常驻对象仍被 gen-2 全量回收反复扫")
             # JNI: 主线程那一笔才是"卡我们"的; 后台那一笔只说明工作线程在忙。
             _jn = int(d.get("jni_n", 0) or 0)
             if _jn or float(d.get("ui_n", 0) or 0):
@@ -12388,7 +12497,7 @@ class RootWidget(BoxLayout):
         content.add_widget(title_lbl)
         if not self.hp_history:
             content.add_widget(Widget(size_hint_y=1))
-            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连压 %d 秒即可产生一条' % int(SOC_SUSTAIN_SEC),
+            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连压 %d 秒即可产生一条' % int(SOC_SUSTAIN_WALL_SEC),
                           font_size='16sp', halign='center',
                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
