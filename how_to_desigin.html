@@ -120,7 +120,7 @@
     <div class="hero-num"><div class="num">360%</div><div class="label">最高常驻返奖率<br>四档可切 80/120/200/360<br>长按还有隐藏三档</div></div>
     <div class="hero-num"><div class="num">9/9</div><div class="label">九个格子<br>个个有机会</div></div>
     <div class="hero-num"><div class="num">4</div><div class="label">个旋钮<br>机器自己调参</div></div>
-    <div class="hero-num"><div class="num">62</div><div class="label">条语音<br>神经合成离线预录</div></div>
+    <div class="hero-num"><div class="num">61</div><div class="label">条语音<br>神经合成离线预录</div></div>
   </div>
   <div class="spring-stage"><canvas id="springCanvas"></canvas></div>
   <div class="spring-legend">
@@ -192,7 +192,7 @@
 <section class="section sect-voice" id="sec-voice">
   <div class="section-header"><h2>游戏会说话</h2><p class="desc">中几倍、返多少，都用人的声音报给你，一句不乱、永不抢话</p></div>
   <div class="grid-3">
-    <div class="card reveal reveal-d1"><h3>62 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，连长按才出现的隐藏三档也各有专属播报，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。数字是<span class="tag tag-blue">拼出来的</span>：0~9 加上「十、百、千、万」和「两」，共 15 个独立片段，报 1250 就依次播「一千·二百·五十」，片段之间只留 5 毫秒，听起来是一个人在念，不是机器在蹦字。</p></div>
+    <div class="card reveal reveal-d1"><h3>61 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，连长按才出现的隐藏三档也各有专属播报，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。数字是<span class="tag tag-blue">拼出来的</span>：0~9 加上「十、百、千、万」和「两」，共 15 个独立片段，报 1250 就依次播「一千·二百·五十」，片段之间只留 5 毫秒，听起来是一个人在念，不是机器在蹦字。</p></div>
     <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>中奖音分<span class="tag tag-blue">7 档递增</span>：x2 只有3个音，像小铃铛；x3 加一音，x5 再加一音；x10 加到六个音、底下垫一层低音（像管风琴踏板），x20 七个音、收尾还撒一把碎星，x50 的底音再往下沉一截，x100 九个音、声场最宽最亮。混响逐档加深，声场逐渐"撑开"。</p></div>
     <div class="card reveal reveal-d2"><h3>全局语音互斥</h3><p>上一个语音没播完，新按钮语音<span class="tag tag-blue">直接不出声</span>。你快速连点两个按钮，只听到第一个——两个播报不会叠在一起变成一团浆糊。</p></div>
   </div>
@@ -268,7 +268,7 @@
     <div class="card reveal reveal-d2"><h3>落地弹跳：球真的在弹</h3><p>球落入槽位后<span class="tag tag-purple">弹跳3~4次才停住</span>，弹跳系数随机变化避免机械重复。落地有金属锁扣声、弹跳有金属叮声。不再瞬移到槽中心——球停在哪就停在哪，自然得不像代码。</p></div>
     <div class="card reveal reveal-d2"><h3>钱算对了，球也停对了</h3><p>球冲进槽位时是带着横向的劲的，以前回弹那几下里它能<span class="tag tag-purple">滑过隔板、躺到隔壁格</span>——钱算在原来那格，球却停在旁边，看着就是不对劲。现在球一触到槽底就把横着的劲清零，回弹变成<span class="tag tag-purple">纯粹的上下弹</span>，物理上就不可能再滑出去。九个格子的隔板，谁都越不过去。</p></div>
     <div class="card reveal reveal-d2"><h3>飞行中统一灰化</h3><p>球在飞时，<span class="tag tag-purple">所有按钮+标签文字统一灰化</span>——返还比例、投入设置、统计文字全部变暗。只有弹珠数字和状态提示保持亮色。视觉层级一目了然：现在不是操作的时候，看球就行。</p></div>
-    <div class="card reveal reveal-d3"><h3>关声音就是立刻关</h3><p>点「关闭声音」，<span class="tag tag-purple">声音当场停</span>——不会出现"我明明点了关、它还在响一秒"。这里原来会先念一句「关闭声音」、再延迟一秒才真静音（那一秒是留给播报收尾的），后来那条语音<span class="tag tag-purple">整个删掉了</span>：既然要静音，就别再让它多说一句。重启后按钮显示与实际状态一致，不会"看着是关的、实际在响"。</p></div>
+    <div class="card reveal reveal-d3"><h3>切换声音是静默的</h3><p>点「关闭声音」，<span class="tag tag-purple">声音当场停</span>——不会出现"我明明点了关、它还在响一秒"。<span class="tag tag-purple">反方向也一样：开回来不播提示音</span>。原来两个方向各念一句（关是「关闭声音」、开是「开启中奖音效」），后来<span class="tag tag-purple">两条语音一起删了</span>——理由很实在：在需要安静的场合误触一下，不管往哪个方向切，它都会突然出声。现在反馈只走按钮本身：绿底「音效已开」、深底「音效已关」，一眼可辨。</p></div>
     <div class="card reveal reveal-d3"><h3>呼吸 + 返回键保护</h3><p>入袋"咚"和中奖语音之间有<span class="tag tag-purple">一小段刻意沉默</span>。Android返回键被拦截——<span class="tag tag-purple">误触不会退出</span>，整局进度不会清零。好的声音不是塞满每一毫秒，好的交互不是多一个退出路径。</p></div>
     <div class="card reveal reveal-d3"><h3>球在转，也会被撞扁</h3><p>球横着走的时候是<span class="tag tag-purple">真的在滚</span>——转的速度就是它蹭到钉子那一下的切向速度。撞得越狠，球身被压得越扁（高速时压 5%），掠过去时几乎不变形。<span class="tag tag-purple">就这两下小动作，让它不像一个贴着圆图标的点。</span>顺带一提，球的"视觉"半径是碰撞半径的 1.4 倍——只影响观感，不影响物理，所以它看起来是挨着钉子过去的，实际上没嵌进去。</p></div>
     <div class="card reveal reveal-d3"><h3>重置不是刷新页面，是"喊停"</h3><p>球正在飞、弹簧正压着、刚哑火——按下重置，<span class="tag tag-purple">一律当场打断</span>，回满 1000 颗，顺手报一声「弹珠数量已调整到1000个」。还有一处很细的讲究：上一句提示如果还在屏幕上没散，它会<span class="tag tag-purple">先清干净再说下一句</span>，不会两层字叠在一起。</p></div>
@@ -362,14 +362,16 @@
   片段间5ms间隙依次Clock.schedule_once排队播放，支持"二/两"变体规则
 
 <span class="hl">语音来源（诚实注脚）:</span>
-  62 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 62 个 wav。
+  61 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 61 个 wav。
   RTP 切换语音 80/120/200/360 四条 2026-08-16 补齐（早期高档位静默的缺口已消灭，
   孤儿 voice_rtp_100 同步删除）——现在四档切换个个有声音。
   最高档 2026-09-10 由 300% 调为 360%（返奖率四档 = 80/120/200/360）。
   隐藏档 1000/2000/5000% 三条 + 「关闭隐藏」三条 2026-09-12 补齐。
-  ⚠️ 「关闭声音」那条 2026-09-16 删除（玩家动机: 在办公室想静音, 按下去它却先大声
-     念了一句「关闭声音」——一个"关声音"的按钮不该先制造声音）。关声音改为**立即静音**;
-     那个 wav 已从仓库删掉, **删了就不加载**（语音是按目录全量加载的）。
+  ⚠️ 声音开关的**两条提示语音 2026-09-16 全部删除**（玩家: 「删掉关闭声音的这个音效,
+     也不加载」+「开启声音也不要了。避免误触」）—— 在办公室想静音, 按下去它却先大声念
+     了一句「关闭声音」; 而误触反向切换时, 「开启中奖音效」同样会突然出声。
+     现在 `toggle_mute` 是**静默切换**, 反馈只走按钮显示; 两个 wav 都已从仓库删掉,
+     **删了就不加载**（语音按目录全量加载）。关声音也从"延迟 1 秒"改成**立即静音**。
 
 <span class="hl">顺序即音色（一条死规矩）:</span>
   所有配方共用**同一条随机流**，靠固定种子保证每次启动音色完全一致。
@@ -510,7 +512,7 @@
     <div class="pillar reveal reveal-d1"><span class="p-icon">🛤</span><div class="p-title">三段式轨迹</div><div class="p-desc">升空·转弯·落袋</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">没人作弊</div><div class="p-desc">零穿帮·自然落格</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🧬</span><div class="p-title">机器养公平</div><div class="p-desc">进化寻优·4旋钮</div></div>
-    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">62条语音·41音效</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">61条语音·41音效</div></div>
     <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能自证</div><div class="p-desc">4万次自测·真机跑分</div></div>
   </div>
 </section>
