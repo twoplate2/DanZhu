@@ -12,7 +12,7 @@
   .wrap{ max-width:960px;margin:0 auto;padding:0 24px; }
   .toc-bar{ position:sticky;top:0;z-index:100;background:rgba(11,18,32,0.92);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid rgba(255,255,255,0.05);padding:10px 0;overflow-x:auto;white-space:nowrap; }
   .toc-bar::-webkit-scrollbar{ height:0; }
-  .toc-inner{ display:flex;align-items:center;gap:6px;max-width:960px;margin:0 auto;padding:0 24px;font-size:0.82rem; }
+  .toc-inner{ display:flex;flex-wrap:wrap;align-items:center;gap:6px;max-width:1120px;margin:0 auto;padding:0 24px;font-size:0.82rem; }
   .toc-label{ color:var(--muted);font-weight:600;margin-right:8px;flex-shrink:0;font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em; }
   .toc-inner a{ color:var(--sub);text-decoration:none;padding:3px 10px;border-radius:14px;transition:all 0.2s;flex-shrink:0; }
   .toc-inner a:hover,.toc-inner a.active{ color:#fff;background:rgba(255,255,255,0.06); }
@@ -93,7 +93,7 @@
   @keyframes fadeUp{ from{ opacity:0;transform:translateY(20px); } to{ opacity:1;transform:translateY(0); } }
   .reveal{ opacity:0;animation:fadeUp 0.5s ease forwards; }
   .reveal-d1{ animation-delay:0.03s; }.reveal-d2{ animation-delay:0.07s; }.reveal-d3{ animation-delay:0.11s; }
-  @media(max-width:768px){ .grid-2,.grid-3{ grid-template-columns:1fr; }.pillars{ grid-template-columns:1fr 1fr; }.hero{ padding:40px 0 20px; }.hero h1{ font-size:1.4rem; }.section{ padding:32px 0; }.spring-stage{ height:180px; }.closing{ padding:36px 0 28px; }.appendix-body{ padding:0 14px 16px; } }
+  @media(max-width:768px){ .toc-inner{ flex-wrap:nowrap; }.grid-2,.grid-3{ grid-template-columns:1fr; }.pillars{ grid-template-columns:1fr 1fr; }.hero{ padding:40px 0 20px; }.hero h1{ font-size:1.4rem; }.section{ padding:32px 0; }.spring-stage{ height:180px; }.closing{ padding:36px 0 28px; }.appendix-body{ padding:0 14px 16px; } }
   @media(max-width:480px){ .pillars{ grid-template-columns:1fr 1fr; }.hero-num .num{ font-size:1.2rem; }.card{ padding:18px 14px; }.spring-stage{ height:150px; }.spring-legend{ gap:10px; }.hero-numbers{ gap:10px; } }
 </style>
 </head>
@@ -102,12 +102,12 @@
 
 <nav class="toc-bar"><div class="toc-inner">
   <span class="toc-label">目录</span>
-  <a href="#sec-spring">弹簧</a><a href="#sec-flight">三段式</a><a href="#sec-passive">被动</a><a href="#sec-evolve">进化</a>
-  <a href="#sec-voice">声音</a><a href="#sec-win">中奖</a><a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a><a href="#sec-orient">横屏</a>
+  <a href="#sec-veil">第一眼</a><a href="#sec-spring">弹簧</a><a href="#sec-flight">三段式</a><a href="#sec-passive">被动</a><a href="#sec-evolve">进化</a>
+  <a href="#sec-voice">声音</a><a href="#sec-win">中奖</a><a href="#sec-easter">彩蛋</a><a href="#sec-guard">防沉迷</a><a href="#sec-heart">细节</a><a href="#sec-build">跨平台</a><a href="#sec-perf">不卡</a><a href="#sec-bench">跑分</a><a href="#sec-orient">横屏</a>
   <span class="toc-sep">|</span>
   <a href="#appendix-a" style="color:var(--gold)">A·音效</a><a href="#appendix-b" style="color:var(--gold)">B·物理</a>
-  <a href="#appendix-c" style="color:var(--gold)">C·数学</a><a href="#appendix-e" style="color:var(--gold)">E·进化</a>
-  <a href="#appendix-d" style="color:var(--gold)">D·架构</a>
+  <a href="#appendix-c" style="color:var(--gold)">C·数学</a><a href="#appendix-d" style="color:var(--gold)">D·进化</a>
+  <a href="#appendix-e" style="color:var(--gold)">E·架构</a><a href="#appendix-f" style="color:var(--gold)">F·真机</a>
 </div></nav>
 
 <header class="hero">
@@ -115,10 +115,12 @@
   <h1><span>一个小游戏的大设计</span></h1>
   <p class="subtitle">一根<em>看得见力量</em>的弹簧，一颗<em>没人操控</em>的球，一台<em>会自己进化</em>的机器——<br>弹珠机，就不再只是弹珠机</p>
   <div class="hero-numbers">
-    <div class="hero-num"><div class="num">360%</div><div class="label">最高返奖率<br>四档可切 80/120/200/360</div></div>
+    <div class="hero-num"><div class="num">165×</div><div class="label">性能余量<br>得找台慢 165 倍的手机才拖得动它</div></div>
+    <div class="hero-num"><div class="num">131fps</div><div class="label">1% 低帧率<br>平均 165 帧时最差也稳在 131</div></div>
+    <div class="hero-num"><div class="num">360%</div><div class="label">最高常驻返奖率<br>四档可切 80/120/200/360<br>长按还有隐藏三档</div></div>
     <div class="hero-num"><div class="num">9/9</div><div class="label">九个格子<br>个个有机会</div></div>
     <div class="hero-num"><div class="num">4</div><div class="label">个旋钮<br>机器自己调参</div></div>
-    <div class="hero-num"><div class="num">57</div><div class="label">条语音<br>神经合成离线预录</div></div>
+    <div class="hero-num"><div class="num">63</div><div class="label">条语音<br>神经合成离线预录</div></div>
   </div>
   <div class="spring-stage"><canvas id="springCanvas"></canvas></div>
   <div class="spring-legend">
@@ -128,13 +130,25 @@
   </div>
 </header>
 
+<!-- ═══════════ 0. 第一眼: 加载页 ═══════════ -->
+<section class="section section-alt sect-voice" id="sec-veil">
+  <div class="section-header"><h2>第一眼，六个字</h2><p class="desc">每一次启动都会看到的那一页——它只做一件事：等声音真的准备好了，然后干干净净地消失</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>一道光，从字上扫过去</h3><p>「跳跳的弹珠机」六个字一起淡入，然后一道<span class="tag tag-blue">颜色分界从左扫到右</span>——扫过的部分是新的颜色，没扫到的还是旧的，像 KTV 歌词。<span class="tag tag-blue">粒度细到能停在一个字的中间</span>，所以看起来是"光扫过去"，不是"一格一格跳"。扫完一轮停一下，再来一轮——每一轮换成下一种颜色（<span class="tag tag-blue">银 → 沙金 → 灰绿</span>），循环往复。</p></div>
+    <div class="card reveal reveal-d1"><h3>它不是淡出，是"没了"</h3><p>声音一备好，这一页<span class="tag tag-blue">直接就没了，没有淡出</span>——不拖泥带水地放你进游戏。这里还有一条被现实打回去的设计：最早它至少停 1.9 秒，结果玩家反馈"演到一半卡住才进游戏"——因为那 1.9 秒里有 <span class="tag tag-blue">52% 的时间画面完全静止</span>（扫完了在等）。现在最短停留砍到 0.22 秒，正好是淡入的时间。<span class="tag tag-blue">它不会为了好看多留你半秒。</span></p></div>
+    <div class="card reveal reveal-d2"><h3>它站在门口替你挡着</h3><p>这一页还负责<span class="tag tag-blue">吞掉所有触摸</span>。听起来是个小细节，但它是"初次安装没声音"的另一半防线：如果这层能被点穿，玩家就能在声音还没解码完的时候按发射——<span class="tag tag-blue">那一发就是静音的</span>。所以它既是一层布景，也是一道门。</p></div>
+    <div class="card reveal reveal-d2"><h3>"重放冷启动"：一间给 bug 留的暗房</h3><p>有个故障一年只犯一次，而且<span class="tag tag-blue">关掉重开就好了</span>——想抓现场只能卸载重装，可卸载会清掉你的余额。于是做了一个「重放冷启动」：点一下，就能原地重演一次"装完第一次打开"的样子，<span class="tag tag-blue">存档一根汗毛都不动</span>。为了做到这一点，它得清掉整个声音缓存、并让音频对象回到启动前的状态——<span class="tag tag-blue">注意是"按回去"，不是新建一个</span>，新建会让界面里所有旧引用全部接错。</p></div>
+  </div>
+  <div class="insight reveal reveal-d3"><h3>为什么值得为"一年一次"做一条复现路径</h3><p>因为查不出来的 bug 和没有 bug，在日志上长得一模一样。这条路径的意义不是"修好了"，而是<span class="tag tag-blue">把它从"只能靠运气碰上"变成"想看随时能看"</span>——它还被特意做成"演完停在结果页等你点"，因为第一版是演完自动退，玩家原话：「成功之后没有暂停，直接回去了，我啥都没有看清」。<span class="tag tag-blue">连"让人看清结果"这件事，也是被玩家教会的。</span></p></div>
+</section>
+
 <!-- ═══════════ 1. 弹簧 ═══════════ -->
 <section class="section sect-spring" id="sec-spring">
   <div class="section-header"><h2>一根会说话的弹簧</h2><p class="desc">在弹珠机里，你能"看见"自己用了多大力——而且是真实的物理回弹</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>眼睛代替数字</h3><p>力度条是"仪表盘思维"。弹簧是"身体思维"——你看见它被压缩，本能就知道力量有多大。<span class="tag tag-gold">看颜色就知道力度</span>，不需要识字、不需要说明书。</p></div>
     <div class="card reveal reveal-d1"><h3>真实物理回弹</h3><p>松手后弹簧不是线性滑回原位，而是<span class="tag tag-gold">阻尼振荡</span>——过冲再回弹，3~4个可见周期后平稳停下。就像捏一根真正的弹簧，释放后它会"弹过头再回来"。<span class="tag tag-gold">零张图片</span>，每个像素都是算出来的。</p></div>
-    <div class="card reveal reveal-d1"><h3>蓄力决定球从哪进场</h3><p>你按得越用力，球飞得越高、进场越靠左；按得轻，球进场越靠右。<span class="tag tag-gold">力气大小 = 落点位置</span>，你上手一按就能感觉到。这背后对应着"力度互补"的设计——不同力气把九个格子自然铺满（详见「进化」一章）。</p></div>
+    <div class="card reveal reveal-d1"><h3>蓄力决定球从哪进场</h3><p>你按得越用力，球飞得越高、进场越靠左；按得轻，球进场越靠右。<span class="tag tag-gold">力气大小 = 落点位置</span>，你上手一按就能感觉到。这背后对应着"力度互补"的设计——不同力气把九个格子自然铺满（详见「进化」一章）。<span class="tag tag-gold">不过它不是单调的</span>：实测十档里有三处会往回跳一下（0.55 / 0.75 / 0.95），因为中间那些档位是"两三个格子轮流占大头"，不是一条直线——附录 E 那张表把十档的首钉位置全列出来了。</p></div>
   </div>
   <div class="insight reveal reveal-d2"><h3>三种颜色，三个故事</h3><p><span class="tag tag-gold">灰蓝色</span> = 还没用力 <span class="tag tag-gold">金黄色</span> = 正在蓄力，越来越"烫" <span class="tag tag-gold">橙红色</span> = 力度不够，弹不上去。满蓄力后持续按住不再是死寂——每隔一小会儿轻响一声"还顶着"的确认音，消除"是不是没在蓄力了"的疑惑。</p></div>
 </section>
@@ -157,6 +171,8 @@
   <div class="grid-2" style="margin-top:20px;">
     <div class="card reveal reveal-d2"><h3>你只管丢，剩下交给物理</h3><p>就像往一个装满钉子的斜槽里丢一颗玻璃珠——<span class="tag tag-green">你只管丢</span>，之后每一跳、每一滚、每一次撞钉子，都是它自己撞出来的。没人伸手去拨它，落到哪个口子就是哪个口子。<span class="tag tag-green">公平到不耍赖</span>，这是这台机器最大的诚意。</p></div>
     <div class="card reveal reveal-d2"><h3>卡住也不玩消失</h3><p>万一球真的卡在某个角落一动不动（大约 1 秒多），系统不会让它消失重来——而是<span class="tag tag-green">轻轻推它一下</span>，打破死循环让它继续掉；最多推十次，再不动才悄悄结算。玩家永远看不到"重来"，只会看到球突然往下掉了。</p></div>
+    <div class="card reveal reveal-d2"><h3>每一块隔板的正上方，都蹲着一颗钉</h3><p>球明明已经快到槽口了，还要被它<span class="tag tag-green">最后顶一下</span>——那一下就是"到底进哪一格"最揪心的一秒。这颗钉的位置和弹性是专门调过的：<span class="tag tag-green">顶得够狠让你悬着，又不至于把球顶飞</span>。整个钉阵的排布也只为这一件事服务：把"落哪一格"这个悬念，一直保留到最后一刻才揭晓。</p></div>
+    <div class="card reveal reveal-d2"><h3>球顶上那道弧，每一发都不一样</h3><p>球升到顶、被弧面带着转向的那道导轨，<span class="tag tag-green">每一发都会上下平移 ±6 像素</span>——所以哪怕你用一模一样的力气，第一颗钉的位置也<span class="tag tag-green">每次都不完全相同</span>（散布 ±10~15 像素）。这不是抖动，是刻意的：<span class="tag tag-green">让"同一发"打不出第二次一模一样的轨迹</span>，否则玩久了就会有人发现"按这个力气永远是这个结果"。</p></div>
   </div>
 </section>
 
@@ -176,13 +192,17 @@
 <section class="section sect-voice" id="sec-voice">
   <div class="section-header"><h2>游戏会说话</h2><p class="desc">中几倍、返多少，都用人的声音报给你，一句不乱、永不抢话</p></div>
   <div class="grid-3">
-    <div class="card reveal reveal-d1"><h3>57 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。</p></div>
+    <div class="card reveal reveal-d1"><h3>63 条神经合成语音</h3><p>中奖报数、余额不足提醒、轮次结束总结、<span class="tag tag-blue">返奖比例和投入切换</span>也有语音提示——四档返奖率切换个个有声音，连长按才出现的隐藏三档也各有专属播报，没有静默死角。<span class="tag tag-blue">听感像真人</span>的温柔女声（XiaoxiaoNeural 音色）离线预录，22050Hz 高保真。数字是<span class="tag tag-blue">拼出来的</span>：0~9 加上「十、百、千、万」和「两」，共 15 个独立片段，报 1250 就依次播「一千·二百·五十」，片段之间只留 5 毫秒，听起来是一个人在念，不是机器在蹦字。</p></div>
     <div class="card reveal reveal-d1"><h3>语音档也能听出中了多大</h3><p>中奖音分<span class="tag tag-blue">7 档递增</span>：x2 只有3个音，像小铃铛；x3 加一音，x5 再加一音；x10 加到六个音、底下垫一层低音（像管风琴踏板），x20 七个音、收尾还撒一把碎星，x50 的底音再往下沉一截，x100 九个音、声场最宽最亮。混响逐档加深，声场逐渐"撑开"。</p></div>
     <div class="card reveal reveal-d2"><h3>全局语音互斥</h3><p>上一个语音没播完，新按钮语音<span class="tag tag-blue">直接不出声</span>。你快速连点两个按钮，只听到第一个——两个播报不会叠在一起变成一团浆糊。</p></div>
   </div>
   <div class="grid-2" style="margin-top:14px">
     <div class="card reveal reveal-d3"><h3>41 种音效，0 个文件</h3><p>弹跳、碰撞、入袋、中奖——<span class="tag tag-blue">全部由代码实时生成</span>。其中 6 种撞钉声的音高恰好构成一个<span class="tag tag-blue">全音阶</span>——任何两个音叠在一起都不会刺耳。球下落时随机撞钉，每次触发的音高不同、节奏不同，但无论怎么排列都是天然和谐的旋律，像在听一段每次都不一样的即兴音乐。</p></div>
-    <div class="card reveal reveal-d3"><h3>四层后备，绝不哑火</h3><p>Android 原生硬件混音 → 电脑多声道直写声卡 → 软件兜底 → 静音模式不崩溃。任意一层坏了自动切下一层，<span class="tag tag-blue">玩家永远听得到声音</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>三级降级，绝不哑火</h3><p>Android 原生硬件混音 → 电脑多声道直写声卡 → 软件兜底，任意一级坏了自动切下一级；最坏情况落到静音模式，<span class="tag tag-blue">也绝不崩溃</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>第一次装上，就一定有声音</h3><p>有玩家报过"刚装上打开没声音，关掉再开就有了"。这种问题最阴——<span class="tag tag-blue">它静默、不报错、不留痕</span>，所有可能的原因在屏幕上长得一模一样。根因是安卓的声音加载是异步的：拿到的编号<span class="tag tag-blue">不等于</span>这个音效已经解码完；冷启动一口气灌进四十多个合成音加六十多条语音，解码器根本来不及，这时候去播会<span class="tag tag-blue">安安静静地失败</span>（不抛异常）。所以现在加载页会等到"真的能响"才放你进去——<span class="tag tag-blue">用一个零音量试播当探针</span>，而不是"以为它能响"。</p></div>
+    <div class="card reveal reveal-d3"><h3>最多八个音同时响，满了就少响一个</h3><p>为什么不"抢"？因为抢要把正在响的那条流掐掉再起一条，<span class="tag tag-blue">那一下要 10 毫秒——够掉一帧了</span>。丢一声你多半听不出来，卡一帧你一定看得出来。所以声音满了宁可少响一个，也不打断正在响的。顺带一提：<span class="tag tag-blue">它最多同响八个不是随便定的</span>——试过开到十六，没有可验证的收益，只是更多音频流一直活着，于是退回了八个。</p></div>
+    <div class="card reveal reveal-d3"><h3>切走就闭嘴，回来接着响</h3><p>你按 Home 键、接个电话，声音立刻停——<span class="tag tag-blue">不是在后台偷偷放</span>；回到前台它才恢复。而"恢复"这件事<span class="tag tag-blue">只认一个入口：从后台回来</span>。它是被刻意收窄的——因为暂停会把正在播的那条流掐在半路，如果让"恢复"到处都能触发，就会把正在响的东西搅乱。</p></div>
+    <div class="card reveal reveal-d3"><h3>只有"开"和"关"，没有中间档</h3><p>声音<span class="tag tag-blue">刻意只做两态</span>：全开（含语音播报）和全关。中间那档"有音效但不播报"试过，后来<span class="tag tag-blue">整档删掉了</span>——那种档位只会让人每次都要想一下"我现在到底是哪种"。而且这个设置<span class="tag tag-blue">刻意不存盘</span>：每次启动都是"已开"，不会出现"我明明关了它怎么还在响"。</p></div>
   </div>
 </section>
 
@@ -190,21 +210,39 @@
 
 <!-- ═══════════ 6. 中奖演出 ═══════════ -->
 <section class="section section-alt sect-spring" id="sec-win">
-  <div class="section-header"><h2>中了一次，就让你看见一次</h2><p class="desc">中了多少倍，天上就落下多少颗珠子——杯子装满了，才让你走</p></div>
+  <div class="section-header"><h2>中了一次，就让你看见一次</h2><p class="desc">中了多少倍，天上就落下多少颗珠子——不是数字跳一下，是实实在在下一场珠子雨。这套"落袋演出"在同类游戏里基本见不到</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>倍率就是颗数</h3><p>中了 x2，落下两颗；中了 x100，落下整整一百颗。数字不再只是一个跳动的倍数，而是<span class="tag tag-gold">一堆你能数得清、看得见、装得满的珠子</span>。中得越大，那阵珠子雨就下得越久。</p></div>
     <div class="card reveal reveal-d1"><h3>珠子什么颜色，就是你押的哪一档</h3><p>一颗绿、十颗蓝、五十颗红、一百颗紫——同一局里颜色不会混，<span class="tag tag-gold">杯子里那堆珠子是什么颜色，一眼就知道你押的是哪一档</span>。等到雨停，杯子里的颜色就是你这一局的身份。</p></div>
     <div class="card reveal reveal-d1"><h3>先亮灯，再压暗，杯子才登场</h3><p>结算完先停<span class="tag tag-gold">半秒</span>——让槽位的白闪和绿灯先被你看见——然后<span class="tag tag-gold">整个画面</span>才慢慢压暗（顶栏、返还比例、投入设置、底下的按钮，连板面一起沉下去，一个角落都不留），一只玻璃杯从上方降进画面中下部，珠子雨才跟着落下来。<span class="tag tag-gold">不抢跑</span>：该看清的顺序，一个都不跳。</p></div>
-    <div class="card reveal reveal-d1"><h3>装满之后的"回味时间"</h3><p>珠子全部落定、杯子装满之后，画面会<span class="tag tag-gold">静静地停一会儿</span>再退场：x2 停 0.6 秒、x3 停 0.7、x5 停 0.8、x10 停 0.9、x20 停 1.0、x50 停 1.1、x100 停 1.2 秒。<span class="tag tag-gold">为什么按"档"加而不是按倍数加？</span>因为倍数是一档一档翻倍的，每档多停一点点，体感上正好是"翻一倍，就多停一点"——奖越大，越舍得让你多看两眼。</p></div>
+    <div class="card reveal reveal-d1"><h3>装满之后，你不点它就不走</h3><p>珠子全部落定、杯子装满之后，画面就<span class="tag tag-gold">一直停在那儿等你看</span>——不点屏幕它永远不走，切到后台刷了会儿手机再回来，杯子还是原样摆着。什么时候谢幕，由你说了算。<span class="tag tag-gold">唯一的时间规矩是"别太急"</span>：最后一颗珠子落定后 0.6 秒之内点不算数，免得球还在往下掉就被自己点没了。曾经的做法是"按倍率停 0.6~1.2 秒自动走"（奖越大停越久），<span class="tag tag-gold">后来整条废掉了</span>——玩家见过一次"我还没看够它就没了"，这个模式就再也回不来了。</p></div>
   </div>
   <div class="grid-2" style="margin-top:14px">
     <div class="card reveal reveal-d2"><h3>一百颗珠子也不会卡</h3><p>珠子怎么落、怎么叠，在<span class="tag tag-gold">演出开始之前就整套算完了</span>，播的时候画面只负责按时间把它放出来。所以哪怕一次落一百颗，画面依旧稳——你看到的是热闹，机器其实只是在"翻页"。</p></div>
-    <div class="card reveal reveal-d2"><h3>每局堆得都不一样</h3><p>珠子是<span class="tag tag-gold">按三角格一圈圈码起来的真三维堆</span>，不是画上去的贴图；而且备了四套堆法轮流用，免得你连着中几把，每次都看到一模一样的一座小山。</p></div>
+    <div class="card reveal reveal-d2"><h3>每落一颗珠子，手上震一下</h3><p>珠子落进杯子的时候，<span class="tag tag-gold">手上会跟着震一下</span>——而且用的就是落地音那一次判定：响了才震，震了必响。玩家要的就是"听得见也摸得着"。<span class="tag tag-gold">为什么不做成两套独立的开关</span>？因为只要让震动自己去判一次时间，用不了多久就会和声音错开——变成"听见响、手上没感觉"，而那正是要消灭的东西。<span class="tag tag-gold">震动手感刻意做得很轻很短</span>（10~18 毫秒、随撞击强弱变）：这是珠子一颗颗落进杯子，不是大奖砸下来。</p></div>
+    <div class="card reveal reveal-d2"><h3>压暗，要连边边角角一起暗</h3><p>杯子登场前整个画面要沉下去。这里有个很容易翻车的地方：画面上的"五行信息"和"底部按钮"<span class="tag tag-gold">是画在游戏区上面的</span>，如果只把板面压暗，横屏时那五行正好落在画面两侧，于是会出现<span class="tag tag-gold">"中间黑了、两边还亮着"</span>，中间还夹着几条细缝比周围更亮。现在的做法是把整块屏幕"减去游戏区"<span class="tag tag-gold">上下两块严丝合缝铺满</span>——不重叠、不留缝，演出结束再精确复原，一个像素不差。</p></div>
+    <div class="card reveal reveal-d2"><h3>堆法不是"一层一层码"的</h3><p>珠子是<span class="tag tag-gold">按三角格码起来的真三维堆</span>，不是画上去的贴图。但真正讲究的地方在这里：它<span class="tag tag-gold">不是按层落的</span>——那样每一局都会在屏幕上留下一样的"一层一块"的施工缝。它每次从<span class="tag tag-gold">"下面已经站稳的那几颗"里随机挑一颗</span>放下，所以这一局和上一局的落法是真的不一样。堆法备了 <span class="tag tag-gold">12 套</span>（四套的时候玩家说"感觉还是几个枚举"，因为每四局就循环一遍），还配了一条硬门禁：<span class="tag tag-gold">任意两颗珠子都不许重叠</span>。</p></div>
     <div class="card reveal reveal-d3"><h3>报喜故意慢了 0.4 秒</h3><p>以前最后一颗球刚碰到底，中奖音、播报和大字就一起炸出来——可那颗球还要再弹两下才停，<span class="tag tag-gold">最后几下落地的声音全被盖住了</span>（玩家原话："我甚至听不到弹珠落地的声音"）。现在报喜统一往后挪 <span class="tag tag-gold">0.4 秒</span>，<span class="tag tag-gold">等最后几声响完，再报喜</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>灯只回答一个问题：这一格中了没有</h3><p>九个格子下面各有一盏灯：<span class="tag tag-gold">中了绿、没中红</span>——不管你中的是 x2 还是 x100，颜色都一样。这里曾经"聪明"过：按倍率给灯上色，结果 <span class="tag tag-gold">x5 的红灯跟"未中"的红一模一样</span>，一眼分不出来；而且倍率槽的色块本来就是按倍率取的色，灯再上一遍是重复信息。现在只有两种颜色，<span class="tag tag-gold">扫一眼就懂</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>先给你一句话，再给你数字</h3><p>球一落袋，状态栏先写<span class="tag tag-gold">「命中 x5 · 结算中」</span>，而余额那一栏要<span class="tag tag-gold">慢 0.2 秒</span>才动。这不是卡——那 0.2 秒正好是画面最忙的一拍，硬写上去会掉帧；而且先有一句"中了"垫着，等数字的时候你不会怀疑它坏了。数字本身也不是"啪"一下换掉的，是<span class="tag tag-gold">滚上去的</span>：小奖滚半秒，x10 以上滚足 1.2 秒，让你看清多了一位数。</p></div>
     <div class="card reveal reveal-d3"><h3>退场是"灯先亮、道具后走"</h3><p>杯子不是"啪一下消失"的——那正是玩家反馈"消失得太快、没有回味"之后改掉的老做法。现在退场时背景先亮回来，杯子再一边上浮、一边缩小、一边透明地退走，<span class="tag tag-gold">两件事错开一点点</span>，看起来才像"落幕"，而不是"断片"。</p></div>
   </div>
-  <div class="insight reveal reveal-d3"><h3>一场中奖有多长（实测）</h3><p>x2 约 <span class="tag tag-gold">2.6 秒</span>、x5 约 3.2 秒、x20 约 4.3 秒、x100 约 4.8 秒。小奖的整场演出比打一发球等它落袋还短，最大的 x100 也不过四秒多——<span class="tag tag-gold">庆祝够不够，不看时长看密度</span>；再长就该烦了，而这个尺度刚好是"看完还想再来一发"的长度。</p></div>
-  <div class="insight reveal reveal-d3"><h3>"容易中"和"中得多"，是同一个旋钮的两头</h3><p>四档里到底有多少局会中奖（实测）：80% 档约 <span class="tag tag-gold">24%</span>、120% 档约 36%、200% 档约 43%、360% 档约 <span class="tag tag-gold">79%</span>——最高档一盘九格里六到八格都有奖，几乎必中。<span class="tag tag-gold">代价是那一档里差不多一半的中奖都是 x2</span>。返还比例是定死的，所以"中得勤"必然意味着"每次中得小"——这不是两件事，是同一件事的两面，而这个取舍明确交给你自己挑。</p></div>
+  <div class="insight reveal reveal-d3"><h3>从落袋到装满，要多久</h3><p>x2 约 <span class="tag tag-gold">1.2 秒</span>、x100 约 <span class="tag tag-gold">2.8 秒</span>——这是从杯子进场到最后一颗珠子落定的那段。<span class="tag tag-gold">之后停多久，由你决定</span>（见上面那张卡）：小奖的整场演出比打一发球等它落袋还短，最大的 x100 也不过三秒上下——<span class="tag tag-gold">庆祝够不够，不看时长看密度</span>；再长就该烦了，而这个尺度刚好是"看完还想再来一发"的长度。</p></div>
+  <div class="insight reveal reveal-d3"><h3>"容易中"和"中得多"，是同一个旋钮的两头</h3><p>四档里到底有多少局会中奖（实测）：80% 档约 <span class="tag tag-gold">24%</span>、120% 档约 36%、200% 档约 43%、360% 档约 <span class="tag tag-gold">79%</span>——最高档一盘九格里六到八格都有奖，几乎必中。<span class="tag tag-gold">代价是那一档里四成多的中奖都是 x2</span>。返还比例是定死的，所以"中得勤"必然意味着"每次中得小"——这不是两件事，是同一件事的两面，而这个取舍明确交给你自己挑。</p></div>
+</section>
+
+<!-- ═══════════ 6.5 彩蛋: 隐藏返还率 ═══════════ -->
+<section class="section sect-nearmiss" id="sec-easter">
+  <div class="section-header"><h2>藏在长按和意外里的彩蛋</h2><p class="desc">长按那个数字三秒，它会多给你三个档位；而有些球，会自己走回出发的地方</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>长按三秒，多出三档</h3><p>「期望返还比例」那一排平时是四档：80% / 120% / 200% / 360%。<span class="tag tag-red">按住它三秒别松</span>，会弹出一个窗口，里面多出三档——1000%、2000%、5000%，外加一个「关闭隐藏」。选一档、点确定，返还比例当场就换了。<span class="tag tag-red">这三档是"必中档"</span>：九个格子全都有奖，投出去的那一发不会白瞎。代价也写在明面上——<span class="tag tag-red">最高那档里，五回中奖就有差不多一回是 x2</span>。<span class="tag tag-red">"必中"这件事其实是被玩家骂出来的</span>：有人吐槽"5000% 还空军"，一查才发现"空军"是"这一盘有几个格子有奖"管的、跟返还比例没关系——当时九格里总有一到三格是空的，实测空军率 21%。于是两个高档位统一改成九格全有奖。</p></div>
+    <div class="card reveal reveal-d1"><h3>它是彩蛋，不是功能</h3><p>这三档<span class="tag tag-red">重启游戏就消失</span>，必须重新长按才拿得到——不会误触、也不会赖在下一局。设计上它更像一扇"开发者后门"，只是顺手交到你手里：想要极限刺激就用，不想要就当没看见。<span class="tag tag-red">切到另一个隐藏档时，上一个的按钮会自动收走</span>，同屏永远只留一个，不会越点越多。</p></div>
+    <div class="card reveal reveal-d2"><h3>每次长按都弹，不记仇</h3><p>早期版本有个毛病：第一次解锁之后就<span class="tag tag-red">再也不弹第二次</span>了（一局只能开一回）。现在整条判断删掉了——每次长按都弹，默认高亮你当前那一档，切哪档都行。</p></div>
+    <div class="card reveal reveal-d2"><h3>关掉时把话说全</h3><p>点「关闭隐藏」不会静悄悄地回去——语音会一次念完<span class="tag tag-red">"百分之两千的隐藏倍率已关闭，返还比例调整到百分之三百六十"</span>，既告诉你关的是哪一档，也告诉你回到了哪一档。不猜、不懵。（如果本来就待在常规档，点它什么都不做——不会莫名其妙跳回 360%。）</p></div>
+    <div class="card reveal reveal-d3"><h3>有时候，球会走回自己出发的地方</h3><p>极少见的一种情况：球一路乱撞，最后<span class="tag tag-red">掉回了它出发的那条竖井</span>。这不算你输——机器<span class="tag tag-red">按两倍把弹珠还给你</span>，而且这一发<span class="tag tag-red">不计次数</span>（投 10 颗回来 20 颗，净赚 10 颗，这一局根本不算数）。屏幕上照常演一场完整的装杯（<span class="tag tag-red">跑分期间除外</span>——那时它直接把账算完、不表演也不弹窗，免得盖住跑分画面），演完再弹一句话跟你说明白，手上是<span class="tag tag-red">两下短促的震动</span>——不是大奖那种一下长震，一摸就知道"这不是中奖，这是捡到了"。</p></div>
+    <div class="card reveal reveal-d3"><h3>它长得像 bug，其实是设计</h3><p>球往回走这件事，第一眼看像是物理出错了。所以它没有被当成"异常"悄悄吞掉，而是<span class="tag tag-red">给它配了完整的演出、语音、弹窗和专门的震动</span>——玩家看到的是一个"居然还有这种事"的惊喜，而不是一个"球飞错地方了吧"的疑惑。<span class="tag tag-red">顺带一句：装杯一场都不落，而且这一局的次数和余额都是当场结清的</span>，不会出现"看着赚了、实际没算"。</p></div>
+  </div>
+  <div class="insight reveal reveal-d3"><h3>为什么这种"小东西"也要较真</h3><p>这个弹窗前后改了六版，规则一条条和玩家对着抠：默认选中当前档位、本来就是常规档时点「关闭隐藏」什么都不做、弹窗开着的时候再长按不许叠出第二个……这些没有人会专门夸，但只要有一条不对，摸到这个彩蛋的人第一反应就是"这里有 bug"。<span class="tag tag-red">彩蛋的门槛越低，越不能有毛刺。</span></p></div>
 </section>
 
 <!-- ═══════════ 7. 防沉迷 ═══════════ -->
@@ -214,6 +252,9 @@
     <div class="card reveal reveal-d1"><h3>每轮 N 次，打完自动停</h3><p>每轮<span class="tag tag-green">20、50或100次</span>可选。打完后弹出总结窗口+语音播报完整报数，可点"确定"快速结束，自动重置。用"恭喜完成一轮挑战"替代"你已被限制"。</p></div>
     <div class="card reveal reveal-d1"><h3>跨启动持久化</h3><p>余额、已玩次数、命中率全部<span class="tag tag-green">存下来持久化</span>。杀进程重开不会重置——防沉迷机制真正有效。打满后重启自动静默重置，不会卡在"本轮已结束"弹窗。</p></div>
     <div class="card reveal reveal-d2"><h3>哑火零损失</h3><p>手指滑了、没按到位？<span class="tag tag-green">不扣珠子、不计次数、不换盘面</span>。想练多少次就练多少次，零损失。新手不需要一次就学会。</p></div>
+    <div class="card reveal reveal-d2"><h3>它替你记着每一轮的账</h3><p>打完的轮次会一条条列出来：<span class="tag tag-green">第几轮、每轮几次、收手时还剩多少颗弹珠</span>。翻一翻就知道自己最近打得怎么样。没有记录时它会老实写<span class="tag tag-green">「暂无完成的轮次记录」</span>，不会假装有。</p></div>
+    <div class="card reveal reveal-d3"><h3>打满之后不是锁死，是"完成一轮"</h3><p>次数用完不会把你关在外面——它<span class="tag tag-green">自己静默重置</span>，下一局照样能玩。<span class="tag tag-green">重启也一样</span>：上次是打满状态退出的，启动时会自动处理好，不会一进来就卡在"本轮已结束"那个弹窗上。</p></div>
+    <div class="card reveal reveal-d3"><h3>珠子不够时，它会说话</h3><p>余额不够下这一注时，按钮不会闷着不动——会有<span class="tag tag-green">一声提示音</span>加一句<span class="tag tag-green">「弹珠数量不足」</span>的语音。同一句话有节流，连点不会叠成一团。它不让你在"为什么没反应"里猜。</p></div>
   </div>
 </section>
 
@@ -222,12 +263,15 @@
   <div class="section-header"><h2>藏在毫厘里的用心</h2><p class="desc">那些你可能永远不会注意到、但少了就会觉得"差点意思"的东西</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>发射震动 + 音量分级</h3><p>柱塞释放瞬间<span class="tag tag-purple">14ms 微震</span>（哑火 8ms），配合发射音效按力度分级。<span class="tag tag-purple">满蓄力和刚过阈值的发射声不再一样</span>——蓄力的听觉回报完整回归。</p></div>
+    <div class="card reveal reveal-d1"><h3>中奖有多重，手上有感觉</h3><p>发射那一下只是 14 毫秒轻震，而中奖是<span class="tag tag-purple">按倍率分档</span>的：x2 是手心一点（45 毫秒），x10 拖到 110 毫秒，x100 是整整 <span class="tag tag-purple">300 毫秒</span>的一记长震。<span class="tag tag-purple">闭着眼睛也能大致知道这次中了多大</span>——这是一条不用看屏幕的反馈通道。而那颗"回到出发点的球"，给的是两下短促的双震，跟大奖的长震一摸就能分开。</p></div>
     <div class="card reveal reveal-d1"><h3>钉子受击闪金光</h3><p>球撞到钉子时，那颗钉子会<span class="tag tag-purple">"叮"地闪一下金光、微微鼓一下</span>，300 毫秒后慢慢弹回原样。你每一次撞钉都有视觉反馈，球越活跃，钉子阵越"活"。</p></div>
     <div class="card reveal reveal-d2"><h3>落地弹跳：球真的在弹</h3><p>球落入槽位后<span class="tag tag-purple">弹跳3~4次才停住</span>，弹跳系数随机变化避免机械重复。落地有金属锁扣声、弹跳有金属叮声。不再瞬移到槽中心——球停在哪就停在哪，自然得不像代码。</p></div>
     <div class="card reveal reveal-d2"><h3>钱算对了，球也停对了</h3><p>球冲进槽位时是带着横向的劲的，以前回弹那几下里它能<span class="tag tag-purple">滑过隔板、躺到隔壁格</span>——钱算在原来那格，球却停在旁边，看着就是不对劲。现在球一触到槽底就把横着的劲清零，回弹变成<span class="tag tag-purple">纯粹的上下弹</span>，物理上就不可能再滑出去。九个格子的隔板，谁都越不过去。</p></div>
     <div class="card reveal reveal-d2"><h3>飞行中统一灰化</h3><p>球在飞时，<span class="tag tag-purple">所有按钮+标签文字统一灰化</span>——返还比例、投入设置、统计文字全部变暗。只有弹珠数字和状态提示保持亮色。视觉层级一目了然：现在不是操作的时候，看球就行。</p></div>
     <div class="card reveal reveal-d3"><h3>关声音可以反悔</h3><p>点"关闭声音"后，系统<span class="tag tag-purple">先播完提示语音才真关</span>——延迟1秒。在这1秒内切回来，关闭自动取消。重启后声音状态与按钮显示一致，不会"看着是关的实际在响"。</p></div>
     <div class="card reveal reveal-d3"><h3>呼吸 + 返回键保护</h3><p>入袋"咚"和中奖语音之间有<span class="tag tag-purple">一小段刻意沉默</span>。Android返回键被拦截——<span class="tag tag-purple">误触不会退出</span>，整局进度不会清零。好的声音不是塞满每一毫秒，好的交互不是多一个退出路径。</p></div>
+    <div class="card reveal reveal-d3"><h3>球在转，也会被撞扁</h3><p>球横着走的时候是<span class="tag tag-purple">真的在滚</span>——转的速度就是它蹭到钉子那一下的切向速度。撞得越狠，球身被压得越扁（高速时压 5%），掠过去时几乎不变形。<span class="tag tag-purple">就这两下小动作，让它不像一个贴着圆图标的点。</span>顺带一提，球的"视觉"半径是碰撞半径的 1.4 倍——只影响观感，不影响物理，所以它看起来是挨着钉子过去的，实际上没嵌进去。</p></div>
+    <div class="card reveal reveal-d3"><h3>重置不是刷新页面，是"喊停"</h3><p>球正在飞、弹簧正压着、刚哑火——按下重置，<span class="tag tag-purple">一律当场打断</span>，回满 1000 颗，顺手报一声「弹珠数量已调整到1000个」。还有一处很细的讲究：上一句提示如果还在屏幕上没散，它会<span class="tag tag-purple">先清干净再说下一句</span>，不会两层字叠在一起。</p></div>
   </div>
 </section>
 
@@ -238,8 +282,44 @@
     <div class="card reveal reveal-d1"><h3>单事实源 + 代码生成</h3><p>PC 版是物理/音效/数学的<span class="tag tag-blue">唯一事实源</span>。Android 版由构建脚本从 PC 版原样抽取纯逻辑段 + 拼接手写界面段生成——<span class="tag tag-blue">物理代码一个字都不改</span>，杜绝手抄千行出错的系统性风险。</p></div>
     <div class="card reveal reveal-d1"><h3>GitHub Actions 云构建</h3><p>push 到 main → 自动出 APK。锁定版本组合，首次构建 20 分钟，<span class="tag tag-blue">缓存命中后 3 分钟</span>。全程不需要本地装 Android SDK。</p></div>
   </div>
-  <div class="insight reveal reveal-d2"><h3>性能自己会证明</h3><p>长按标题"跳跳的弹珠机"3 秒 → 所有按钮灰化 → 先<span class="tag tag-blue">真实采样屏幕帧率</span>（自动发 3 发球），再后台跑<span class="tag tag-blue">物理模拟</span>（每次 0.7 秒、连跑 5 次取中位，短时长不触发手机降频）→ 弹窗显示<span class="tag tag-blue">设备型号、运算速度（每秒多少步）、每次发射耗时、平均帧率、1% 低帧率</span>。PC 和手机都支持，是骡子是马拉出来遛遛。<span class="tag tag-blue">自测四万次飞行</span>验证返奖率精确、落袋零穿帮、回弹感达标。</p></div>
-  <div class="insight reveal reveal-d3"><h3>一场真实的跨平台对拼（2026-08 实测）</h3><p>同口径跑分（纯 Python 单线程，0.7 秒 × 5 轮取中位，两端跑同一个 CPython 3.11、同一套物理代码，无 JIT 无加速）：20 核桌面 i7-14700KF <span class="tag tag-blue">11516 步/秒</span> vs 骁龙 8 至尊版 Gen5 平板（拯救者 Y700 五代）<span class="tag tag-blue">约 10000 步/秒 = 桌面的 87%</span>。物理是单线程 Python——20 个核全程旁观，这是一场"单核贴身肉搏"：移动大核靠高 IPC 和单核 12MB 二级缓存追平桌面高频，剩下一成差距来自安卓的 Python 编译与内存延迟。而游戏每秒只需 120 步，两端余量都约 85 倍——<span class="tag tag-blue">跑分比的是余量，玩起来毫无差别</span>。</p></div>
+  <div class="insight reveal reveal-d3"><h3>一场真实的跨平台对拼（2026-08 实测）</h3><p>同口径跑分（纯 Python 单线程，两端跑同一个 CPython 3.11、同一套物理代码，无 JIT 无加速）：20 核桌面 i7-14700KF <span class="tag tag-blue">11516 步/秒</span> vs 骁龙 8 至尊版 Gen5 平板（拯救者 Y700 五代）<span class="tag tag-blue">约 10000 步/秒 = 桌面的 87%</span>。物理是单线程 Python——20 个核全程旁观，这是一场"单核贴身肉搏"：移动大核靠高 IPC 和单核 12MB 二级缓存追平桌面高频，剩下一成差距来自安卓的 Python 编译与内存延迟。而游戏每秒只需推进 60 步（物理固定 60Hz），两端余量都在 165 倍以上——<span class="tag tag-blue">跑分比的是余量，玩起来毫无差别</span>。</p></div>
+</section>
+
+<!-- ═══════════ 9.5 性能工程: 为什么不卡 ═══════════ -->
+<section class="section section-alt sect-heart" id="sec-perf">
+  <div class="section-header"><h2>手机上为什么不卡</h2><p class="desc">平均 165 帧的机器上，最差的那 1% 帧也有 131 帧——这里记的是这 131 是怎么一层层抠出来的</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>先把成绩摆出来</h3><p>在一台平均 <span class="tag tag-purple">165 帧</span>的机器上，最差的那 1% 帧也有 <span class="tag tag-purple">131 帧</span>——意思是<span class="tag tag-purple">连最难看的那个瞬间都还有 131 帧</span>。这个成绩相当硬：多数游戏"最差 1%"能到平均值的一半多就不错了，这里是 <span class="tag tag-purple">八成</span>。（另一台跑 120 帧的机器上是 90 帧，同样是四分之三的比率——这个比例在不同机器上稳定复现，说明它不是某台设备的运气。）<span class="tag tag-purple">而"平均帧"好看、"最差帧"难看，恰恰是玩家嘴里那种"说不上哪里卡，但就是不舒服"的来源</span>——所以下面这几张卡，讲的全是这 131 是怎么抠出来的。</p></div>
+    <div class="card reveal reveal-d1"><h3>一个"叮"，能卡住一整帧</h3><p>玩家从很早就说"关掉音效之后流畅很多"，一直没人当真。直到真机面板把账算死：<span class="tag tag-purple">单次发声最慢 143.6 毫秒</span>；15 秒窗口里 50 次发声一共花掉 <span class="tag tag-purple">2674 毫秒</span>（平均每次 53.5 毫秒）——而一帧的间隔只有 12.5 毫秒。更决定性的一条：那一批 <span class="tag tag-purple">14 帧慢帧，14/14 全部落在发声上</span>。上一版还能说是巧合，14 比 14 没法再说是巧合。改法不是让声音变快，而是<span class="tag tag-purple">把发声整个搬出主线程</span>：主线程只负责画，从不站在那儿等一个音效播完。</p></div>
+    <div class="card reveal reveal-d1"><h3>凶手是"把按钮变灰"这个动作</h3><p>球在飞的时候按钮要灰化，这是设计。但玩家报"球飞的时候一卡一卡的"，查下去才发现：<span class="tag tag-purple">Kivy 把文字颜色直接烘进了纹理</span>，所以每改一次按钮的置灰状态，就要把那行字重新排版、重新光栅化一遍。而 Kivy 会把这类活儿攒到同一帧做——那一帧就多出 12 到 21 毫秒，<span class="tag tag-purple">占掉这一帧 95% 以上的时间</span>。找到它之后换了个做法：变灰照旧（走那条本来就免费的路），而"锁住输入"改成在触摸层统一吞掉。真机上每一发本来有两次爆发——<span class="tag tag-purple">发射时禁用 16 次、回 ready 时启用 15 次</span>，每次卡 12~21 毫秒——现在这两串都没了。（顺带证伪了一条网上常见的"优化"建议：把置灰的颜色调成和正常色一样，完全没用，Kivy 照样无条件重排。）</p></div>
+    <div class="card reveal reveal-d2"><h3>让字变淡，不必把字重画一遍</h3><p>中奖数字要淡出、飘字要淡出，原本的写法是改文字颜色——<span class="tag tag-purple">等于整段字重新画一遍再传上显卡</span>。飘字更离谱，是每帧无条件重写，真机实测"文字重排 33.4 次/秒"；而跑分期间每 3 秒造一个飘字，等于<span class="tag tag-purple">跑分一直在给自己的成绩上刑</span>。改法是给已经画好的纹理<span class="tag tag-purple">乘一个透明度</span>——纹理重建从 40 次变成 0 次，字照样淡出。</p></div>
+    <div class="card reveal reveal-d2"><h3>最慢的那一帧，可能是手机在打扫房间</h3><p>1% 低帧率看的是"最坏的那 1%"，而最坏的那一帧有时候跟画面无关——是内存回收（GC）正好在那一下做全量扫描。有意思的是文档里原本明确写过"GC 不用优化，因为平均开销不变"——<span class="tag tag-purple">那个结论是按"平均帧"算的，而 1% 低帧只看最坏的那一帧，所以它作废</span>。改完之后，开局前先把该整理的整理完，再告诉系统<span class="tag tag-purple">"这些别再扫了"</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>最大那行中奖字，提前画好</h3><p>中奖大字每次都是临时新建的。而第一次显示某个字号的字，要真真切切地光栅化一遍——8 到 11 毫秒。165Hz 的屏幕一帧只有 6.06 毫秒，<span class="tag tag-purple">这一帧必卡</span>。改法很简单：在你还没开始玩的时候，就把它提前画好放在那儿。实测 1% 低帧率 <span class="tag tag-purple">+18%</span>，而且排除了两个替代解释（CPU 频率、中奖次数）才敢认这个数。</p></div>
+    <div class="card reveal reveal-d3"><h3>杯里那些彩色球，也是代码一颗颗画的</h3><p>没有一张图片文件——每颗球都是 <span class="tag tag-purple">128×128 的像素现场算出来的</span>，一个颜色一套。而算一颗要一两百毫秒（手机上还没有图像库可用），所以它不会等你中了才做：<span class="tag tag-purple">你还在看启动画面的时候，它已经把你常用的那一档偷偷画好了</span>，一帧一颗，不声不响。连"一百颗珠子堆成什么样"也是同一套路——提前算完整套，播的时候只负责按时间放出来。</p></div>
+    <div class="card reveal reveal-d3"><h3>掐掉一个"越慢越慢"的正反馈</h3><p>如果某一帧被拖慢了，计时器会把积压的时间<span class="tag tag-purple">一次性全塞进这一帧补上</span>——而它补出来的那些物理步又要花时间，于是这帧更慢、下一帧积压更多。真机跑分时实测出现过<span class="tag tag-purple">单帧补了 37 个物理步</span>的极端情况。现在给单帧设了补步上限：<span class="tag tag-purple">宁可让球慢一瞬，也不让整台机器卡住</span>。</p></div>
+    <div class="card reveal reveal-d3"><h3>一行字，不该每出现一次就重画一遍</h3><p>屏幕上那行字，每出现一次都要重新"画"一遍。缓存做出来之后，桌面上全程文字重建从 76~80 次降到 26 次（命中率 66%）。但这里有个坑值得单说：这类缓存最会骗人的地方是<span class="tag tag-purple">尺寸全对、内容却是错的</span>——第一版缓存自测"命中 12 次"看着挺好，逐像素一比才发现 4 句里有 3 句显示的是别的内容。<span class="tag tag-purple">只看尺寸永远发现不了，必须逐像素比对。</span></p></div>
+    <div class="card reveal reveal-d3"><h3>一百颗珠子，不是每帧重画一遍</h3><p>装满一个杯子最多一百颗珠子，每颗都在动。如果每帧把整个画面从头画一遍，手机是撑不住的。所以改成<span class="tag tag-purple">三张"持久指令表"</span>——画好的东西留在那儿，每帧只改动的那几个数字（位置、大小、透明度）。验收方式也值得一说：截图不是能量的尺子（同一个实现自己比都能差 1~2%），所以改用<span class="tag tag-purple">逐条比对新旧两版画出来的指令流</span>，一条不差才算过。</p></div>
+  </div>
+  <div class="insight reveal reveal-d3"><h3>作者撤回了一个自己写的、快 29.8% 的优化</h3><p>有一版把物理引擎里几处查找和内联做掉，桌面实测吞吐<span class="tag tag-purple">+29.8%</span>，而且逐位验证过"弹珠的轨迹一个 bit 都没变"。看起来很完美——然后它被<span class="tag tag-purple">整段撤销</span>了。理由只有一句话：<span class="tag tag-purple">那是在改被测对象，等于把尺子的刻度改了</span>。跑分要回答的是"这台手机真实有多快"，如果为了让分数好看而把被测的引擎改快，那测出来的就不是这台机器了。所以这个优化没进游戏——<span class="tag tag-purple">快是次要的，准才是。</span></p></div>
+  <div class="insight reveal reveal-d3"><h3>"165 倍余量"到底是什么意思</h3><p>跑分测出来的速度是<span class="tag tag-purple">每秒一万步</span>（旗舰平板），而这个游戏每秒只需要推进<span class="tag tag-purple">六十步</span>（物理固定 60Hz，屏幕再快也是这个数）。这不是"够用"，是<span class="tag tag-purple">根本用不到</span>——换算成大白话：<span class="tag tag-purple">得找一台比测试机慢 165 倍的手机，才能刚好把它拖到流畅的边缘</span>。换句话说，就算这台机器的力气被别的东西占掉九成以上，剩下的照样够它跑满帧。</p></div>
+  <div class="insight reveal reveal-d3"><h3>它不挑机器</h3><p>为什么能做到这样，可以一条条拆开看：它做的事<span class="tag tag-purple">全是纯 Python 单线程的二维计算</span>——没有 numpy、没有 C 扩展、没有 GPU 计算，全部第三方依赖只有三个（Python、一个界面库、一个负责跟安卓系统说话的桥）。声音方面更极端：<span class="tag tag-purple">四十多个音效一个文件都没有</span>，全是代码实时算出来的，不占存储、也不劳烦解码器；中文字体也被砍到只剩真正会用到的那些字。<span class="tag tag-purple">支持的系统一路回溯到 2014 年的 Android 5.0</span>，32 位的老机器也能跑。所以"不吃性能"不是一句形容词，是这几条加在一起的结果。</p></div>
+</section>
+
+<!-- ═══════════ 10. 跑分 ═══════════ -->
+<section class="section sect-spring" id="sec-bench">
+  <div class="section-header"><h2>这台机器会给自己做体检</h2><p class="desc">长按标题三秒，它把"我到底跑不跑得动"如实报给你——连它自己慢在哪，也一并说清</p></div>
+  <div class="grid-2">
+    <div class="card reveal reveal-d1"><h3>两个问题，分开问</h3><p>长按标题「跳跳的弹珠机」三秒，弹出一个六格菜单。<span class="tag tag-gold">模拟测试约 67 秒</span>：先自动发几颗球量屏幕渲染帧率，再让物理引擎全力跑，问的是"峰值能多快"。<span class="tag tag-gold">SOC 高压测试连压 6 分钟</span>：一秒不停，问的是"一直满载会掉多少"——散热和降频的真相都在这儿。两个量纲不一样，所以不混在一起报。</p></div>
+    <div class="card reveal reveal-d1"><h3>测的时候屏幕全黑，只剩一行白字</h3><p>跑分期间整个画面压黑，只有一行白字报进度。<span class="tag tag-gold">这是刻意的</span>：这台机器的板面绘制在手机上并不便宜，如果跑分时还画满屏动画，它就在跟被测的物理引擎抢 CPU 和内存带宽——<span class="tag tag-gold">等于一边跑步一边拉着人聊天</span>。所以跑分时把帧率按到 10 帧，连发给系统的屏幕刷新率请求也一起按下去。</p></div>
+    <div class="card reveal reveal-d2"><h3>先把"尺子"本身校准</h3><p>同一台手机连跑两次能差一大截——这不是引擎不稳，是<span class="tag tag-gold">大核在跑分那几秒里换了频率</span>。所以量之前先做四件事：把跑分线程<span class="tag tag-gold">钉死在性能核</span>上（不许在大小核之间搬家）、把它的调度优先级提到最高（主线程让路）、每一轮<span class="tag tag-gold">砍掉起跑和收尾那一段</span>（起跑时频率还在爬坡，收尾时下一轮已经在排队）、只保留中间跑匀了的那几秒。每一轮还从<span class="tag tag-gold">同一条确定性输入序列</span>起跑——波动只会来自机器状态，不会来自"这轮抽到了不同的球"。</p></div>
+    <div class="card reveal reveal-d2"><h3>休息时间，不算进"平均频率"</h3><p>五轮样本之间有五秒间隔（这是 Geekbench 6 的口径，不背靠背烤机）。问题是那五秒里手机闲着、频率早掉下去了，如果一起平均进去，报出来的就是<span class="tag tag-gold">"跑分加休息"的平均频率</span>——数字好看，但不反映真相。所以频率采样有一道<span class="tag tag-gold">闸门</span>：只在真的在跑的时候计数。高压测试没有间隔，这道门对它恒开。</p></div>
+    <div class="card reveal reveal-d3"><h3>从"记录"变成"看得懂"</h3><p>每跑一次都存进一张历史表，最近 100 次都在：<span class="tag tag-gold">平均帧率 / 1% 低帧率</span>回答"画面卡不卡"，<span class="tag tag-gold">中位分</span>回答"算得多快"，还有一栏<span class="tag tag-gold">平均差系数</span>——它量的是"几次成绩散不散"，越小越稳。有了这一栏，同一版本跑两次到底差多少、是真差异还是随机抖动，一眼就能读出来。</p></div>
+    <div class="card reveal reveal-d3"><h3>掉下去的那几帧，底下标着"当时在演什么"</h3><p>跑完还能看一张曲线：横轴是每一帧，哪几帧掉下去一目了然。更实用的是曲线下面配了一条<span class="tag tag-gold">阶段条</span>，与曲线<span class="tag tag-gold">共用同一根时间轴</span>——那一帧是在飞行、还是在演装杯，直接对齐着看，<span class="tag tag-gold">不用再拿表格去对</span>。底部还能一键把逐帧原始数据<span class="tag tag-gold">保存成 txt 文件</span>（导不出来才退回剪贴板——真机上剪贴板会截断，实测 3778 帧只贴出 425 行），格式是"结论写在最开头"的，即使内容被截断，结论也还在。</p></div>
+    <div class="card reveal reveal-d3"><h3>刷新率不是你说多少就多少</h3><p>菜单里那格「帧率上限设定」能选 <span class="tag tag-gold">60 到 185 六档</span>，但它实际给你的永远是"<span class="tag tag-gold">屏幕支持、系统允许、你选的</span>"这三个数里最小的那个——省电模式和高温降频它绕不过去。所以你不会选了 120 却发现没生效，面板上会如实告诉你<span class="tag tag-gold">实际拿到了多少</span>。这里也踩过一个真机的坑：只压住自己这一侧、不同时压住"对系统的刷新率请求"，手机会进入"一边要 120、一边只画 60"的不一致状态，实测只按到 70.5 帧，根本没按住。</p></div>
+    <div class="card reveal reveal-d3"><h3>"启动信息"：一张截图定位故障</h3><p>有玩家报过"第一次装完打开必然没声音"。这种问题最难查——<span class="tag tag-gold">静默、不报错、不留痕</span>，所有可能的原因在屏幕上长得一模一样。于是菜单里多了一格「启动信息」：版本、制作日期、音频后端的名字、这次是冷启动还是热启动、音效等了多久、加载失败几次……<span class="tag tag-gold">按"出问题先看谁"的顺序排好</span>，一张截图就能看出是哪一支出了岔，不用猜。<span class="tag tag-gold">有唯一正常值的项只在偏离时才显示</span>，所以这块面板平时是安静的。</p></div>
+  </div>
+  <div class="insight reveal reveal-d3"><h3>跑分不会把游戏弄脏</h3><p>为了让每一轮跑的是同一批球、成绩可比，跑分期间会临时把九个格子的倍率<span class="tag tag-gold">钉成固定盘面</span>。钉进去容易，还回来才是关键——有一版就漏了这一步，玩家跑完分一看：<span class="tag tag-gold">九个格子全是 x100</span>。修完之后配了像素级检查：钉死后槽段差 11168 个像素、还回之后差 0 个像素，差一个都算不过。<span class="tag tag-gold">测量工具不该在被测的东西上留指纹。</span></p></div>
+  <div class="insight reveal reveal-d3"><h3>它测的不是"这台手机好不好"，是"我这一版有没有变慢"</h3><p>跑分要回答的是一个很具体的问题：<span class="tag tag-gold">改完这一版，比上一版快了还是慢了？</span>——所以口径必须固定、可比、可复现，才敢拿它的数字做判断。这也是为什么它宁可把屏幕压黑、把帧率按到 10：<span class="tag tag-gold">被测的东西只有物理引擎一个，别的都得让路</span>。顺带一提，游戏自己的"体检"还不止跑分——那套四万次飞行的自动门禁（返奖率、落袋零穿帮、回弹手感）每次改物理都要重跑一遍，绿了才敢出包。</p></div>
 </section>
 
 <!-- ═══════════ 10. 横屏 ═══════════ -->
@@ -247,17 +327,21 @@
   <div class="section-header"><h2>横着拿，也只给你竖屏</h2><p class="desc">一台联想平板引发的"屏幕保卫战"——十几版提交、截图像素取证，才让画面永远是你熟悉的样子</p></div>
   <div class="grid-2">
     <div class="card reveal reveal-d1"><h3>四方向跟着手转</h3><p>正着拿、倒着拿 180°、左横、右横——<span class="tag tag-blue">四个方向全跟重力感应</span>。倒着拿画面自动翻正，左边横过去和右边横过去，画面各自认得方向，永远正对你。</p></div>
+    <div class="card reveal reveal-d1"><h3>按屏幕形状分流</h3><p>方向策略不是"一刀切"：开机量一次屏幕的<span class="tag tag-blue">短边 ÷ 长边</span>，按比例分两路走。<span class="tag tag-blue">16:9 及更宽的屏（平板）</span>才给四方向旋转；<span class="tag tag-blue">比 16:9 更瘦长的手机</span>锁竖屏——因为瘦长机横过来时系统会多出一条横向状态栏压在旋转画面上，而小屏上看旋转后的竖构图也实在不适合读。同一份代码，两种屏幕两种答案。</p></div>
     <div class="card reveal reveal-d1"><h3>横拿时画面纹丝不改</h3><p>平板横过来的瞬间，画面<span class="tag tag-blue">还是竖屏时那个样子</span>——构图、大小、方向全不变，整屏铺满。玩家扭头看一眼，或把平板转回竖着继续玩。<span class="tag tag-blue">不做左右分栏，也不缩成小竖条</span>。</p></div>
-    <div class="card reveal reveal-d2"><h3>和系统"抢方向盘"</h3><p>联想大屏系统只认应用"正在说"的方向请求，不读安装清单里的声明——而游戏引擎每次启动都会自报"我是竖屏游戏"，于是被塞进半屏小盒。解法是<span class="tag tag-blue">每 0.7 秒大声纠正一次"我四个方向都行"</span>，转屏瞬间再立刻喊一遍，抢回话语权。</p></div>
+    <div class="card reveal reveal-d2"><h3>和系统"抢方向盘"</h3><p>联想大屏系统只认应用"正在说"的方向请求，不读安装清单里的声明——而游戏引擎每次启动都会自报"我是竖屏游戏"，于是被塞进半屏小盒。解法是<span class="tag tag-blue">每 0.7 秒大声纠正一次"我四个方向都行"</span>，转屏瞬间再立刻喊一遍。<span class="tag tag-blue">这不是喊一次就完</span>——那台系统只认"谁最后开口"，所以它得一直喊下去。</p></div>
     <div class="card reveal reveal-d2"><h3>手指和弹窗都跟着转</h3><p>画面整体旋转 90° 后，手指坐标做<span class="tag tag-blue">逆变换</span>——点哪是哪，蓄力、发射、长按标题呼出跑分全部跟手；所有弹窗挂进旋转层，<span class="tag tag-blue">跟着画面一起转</span>，不会横着飘出去。</p></div>
+    <div class="card reveal reveal-d2"><h3>顺手把上下两条系统栏也请出去</h3><p>游戏是全屏的，状态栏和导航栏都要<span class="tag tag-blue">藏起来</span>。麻烦在于：切出去再回来，系统栏会自己复活，所以每次回前台都得重新请一次——这条重申是<span class="tag tag-blue">每 2.5 秒</span>一次（它一开始是 0.7 秒，后来把"喊"的真实开销量出来，发现它在安卓上本身就是一笔周期性开销，于是降下来，该请的话一句没少）。而这类"叫系统做事"的调用，从普通线程去调会被系统直接拒绝（报错还被一个空捕获吞掉了，表现为<span class="tag tag-blue">"时好时坏、转一下屏又正常了"</span>）——现在全部走界面线程，从此不靠运气。</p></div>
+    <div class="card reveal reveal-d2"><h3>它不只"不拦着"高刷屏，还会主动去要</h3><p>开机时会<span class="tag tag-blue">向系统申请优先提到高刷新率</span>（最高请求到 165Hz）——所以同一台手机，装上它和装上一个没申请的 app，滑起来可能是两个手感。平板上还有另一件事：它<span class="tag tag-blue">不会把自己拉胖</span>——内容按 520:660 的比例居中站好，两边留深色边。<span class="tag tag-blue">宁可留边，也不把钉阵拉变形。</span></p></div>
+    <div class="card reveal reveal-d3"><h3>它也不是完全无感：转屏那一帧会重排</h3><p>系统真的把窗口从竖换成横的那一瞬间，画面会有<span class="tag tag-blue">一帧的重排</span>——这是没法彻底消除的（窗口尺寸在那一刻真的变了）。作者把它写进文档当"已知边界"，而不是假装没有。<span class="tag tag-blue">除此之外，旋转、触摸、弹窗全都是跟手的。</span></p></div>
   </div>
   <div class="insight reveal reveal-d3"><h3>十几版提交换来的三个教训</h3><p>① 大屏系统上"锁竖屏"不是"屏幕不转"，而是"被塞进小窗"——死路；② 声明写在安装清单里没用，<span class="tag tag-blue">这台系统只认运行时的请求</span>，谁最后开口听谁的；③ 定位问题别猜——截图像素取证 + 屏上诊断小字，一次锁定"系统到底给了多大的窗户"。最终方案四件套缺一不可：现代版本标签 + 清单声明 + 运行时守卫 + 反旋转层。</p></div>
 </section>
 
 <!-- ═══════════ APPENDICES ═══════════ -->
-<section class="appendix-section" id="appendix-a">
+<section class="appendix-section">
   <h2 style="text-align:center;color:var(--gold);font-size:1.2rem;margin-bottom:20px;">附录 — 技术深水区（给懂行的人）</h2>
-  <details>
+  <details id="appendix-a">
     <summary>附录A：音效与语音技术内幕</summary>
     <div class="appendix-body">
       <div class="grid-2">
@@ -269,25 +353,32 @@
   → _pack归一化到peak 0.72
 
 <span class="hl">发射音配方（_sfx_launch）:</span>
-  0.01s白噪声柱塞机械声 + 640→150Hz扫频弹簧声(0.28s, tau=0.16)
-  + 3阶分音共鸣(tau=0.22) → _pack归一化到peak 0.58
+  0.01s白噪声柱塞机械声 + 640→150Hz扫频弹簧声(0.11s)
+  + 2 个分音(基频152Hz, tau=0.16 / 0.06) → _pack归一化到peak 0.75
+  （整段 buffer 长 0.28s）
 
 <span class="hl">数字朗读引擎（number_voice_names）:</span>
   1250 → ["voice_d_1","voice_u_1000","voice_d_2","voice_u_100","voice_d_5","voice_u_10"]
   片段间5ms间隙依次Clock.schedule_once排队播放，支持"二/两"变体规则
 
 <span class="hl">语音来源（诚实注脚）:</span>
-  57 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 57 个 wav。
+  63 条语音为 edge-tts 神经网络合成（XiaoxiaoNeural 音色），离线预录 63 个 wav。
   RTP 切换语音 80/120/200/360 四条 2026-08-16 补齐（早期高档位静默的缺口已消灭，
   孤儿 voice_rtp_100 同步删除）——现在四档切换个个有声音。
-  最高档 2026-09-10 由 300% 调为 360%（返奖率四档 = 80/120/200/360）。</div>
+  最高档 2026-09-10 由 300% 调为 360%（返奖率四档 = 80/120/200/360）。
+  隐藏档 1000/2000/5000% 三条 + 「关闭隐藏」三条 2026-09-12 补齐（共 63 条）。
+
+<span class="hl">顺序即音色（一条死规矩）:</span>
+  所有配方共用**同一条随机流**，靠固定种子保证每次启动音色完全一致。
+  所以新增音效<b>只能追加在末尾</b> —— 插在中间会让它后面每一个音都跟着变味。
+  哪怕某个音现在已经不用了(如 flight)，它在序列里的位置也必须留着占位。</div>
     </div>
   </details>
-  <details>
+  <details id="appendix-b">
     <summary>附录B：物理引擎深潜</summary>
     <div class="appendix-body">
       <div class="grid-2">
-        <div class="card"><h3>三段式轨迹</h3><p>① 竖直上升(vx=0，零干预) → ② 弧面缓动带球转向（ARC_EASE_FRAMES=3 每帧约8.3°缓动到 35°切线，出口速度=入射速度不耗能，碰撞半径=视觉半径 ARC_VISUAL=1.4）→ ③ 抛体纯重力落袋。全程无引导/无预定槽/无预演修订。转向角 2026 年由 25° 调到 35°——角度太小会把落格压偏。</p></div>
+        <div class="card"><h3>三段式轨迹</h3><p>① 竖直上升(vx=0，零干预) → ② 弧面缓动带球转向（ARC_EASE_FRAMES=3 每帧约11.7°缓动到 35°切线，出口速度=入射速度不耗能，碰撞半径=视觉半径 ARC_VISUAL=1.4）→ ③ 抛体纯重力落袋。全程无引导/无预定槽/无预演修订。转向角 2026 年由 25° 调到 35°——角度太小会把落格压偏。</p></div>
         <div class="card"><h3>4 旋钮离散表（按力度档关联）</h3><p>KNOB_ARC_ANGLE / KNOB_ARC_BOOST / KNOB_CEIL_ANGLE / KNOB_CEIL_BOOST 四张表，10 个力度档（KNOB_POWERS=[0.15..1.00]），每档 3~6 个「离散值+权重」对。boost 限幅 [0.65,1.25]（加速≤25%/减速≤35%）。每发按力度档采样。</p></div>
       </div>
       <div class="data-block"><span class="hl">物理核心参数（2026-08 定稿）:</span>
@@ -295,18 +386,18 @@
   PEG_BOUNCE_VY_MAX=280（弹高≤39px<行距55）  PEG_BOUNCE_VY_MIN=70  PEG_KEEP_VY=0.35
   PEG_FRICTION=0.95 / PEG_FRICTION_VY=0.97  PEG_REFLECT_VX_MAX=300  PEG_MIN_ESCAPE=150
   PEG_CROWN_ESCAPE=60  ARC_OUT_ANGLE=35°  ARC_EASE_FRAMES=3  ARC_VISUAL=1.4
-  LAND_E=0.42  LAND_BOUNCE_MIN_VY=220  MISFIRE_POWER=0.15
+  LAND_E=0.42  LAND_BOUNCE_MIN_VY=440  MISFIRE_POWER=0.15
   发射: LAUNCH_MIN=1077  LAUNCH_MAX=1114
   天花板: 撞顶按力度档采样 KNOB_CEIL_ANGLE（速度向量旋转）+ KNOB_CEIL_BOOST（vx,vy同乘）
            撞顶保底 vy≥180 防"吸住"；修 EV_CEIL 死事件位（顶墙碰撞记 EV_CEIL 而非 EV_WALL）
   RTP 四档 = 80 / 120 / 200 / 360%</div>
     </div>
   </details>
-  <details>
+  <details id="appendix-c">
     <summary>附录C：RTP 数学与验证</summary>
     <div class="appendix-body">
       <div class="grid-2">
-        <div class="card"><h3>RTP 精确 = 档位</h3><p>每档两张盘面分布表：K_DIST[rtp] 决定"本局九格里有几个格子有奖"（80% 档多为 2 格，360% 档 6~8 格），VALUE_DIST[rtp] 决定这些格子填什么倍率（x2 占大头，往上逐级稀疏，倍率期望恒为 3.35）。这两张表不是人手调出来的，而是由 _solve_p2 闭式反解配平：E[赔付] ≡ 档位。均匀落格 E[赔付]=档位（无 min/max 保底、无 choose_target 修正）。x50/x100 只在 200%/360% 两档存在。</p></div>
+        <div class="card"><h3>RTP 精确 = 档位</h3><p>每档两张盘面分布表：K_DIST[rtp] 决定"本局九格里有几个格子有奖"（80% 档多为 2 格，360% 档 6~8 格），VALUE_DIST[rtp] 决定这些格子填什么倍率（x2 占大头，往上逐级稀疏）。这两张表不是人手调出来的，而是由 _solve_p2 闭式反解配平：E[赔付] ≡ 档位。均匀落格 E[赔付]=档位（无 min/max 保底、无 choose_target 修正）。x50/x100 只在 200%/360% 两档存在。</p></div>
         <div class="card"><h3>自测门禁（n=40000）</h3><p>均匀落格 E[赔付]=档位±0.05、卡死=0、撞钉音>90%、哑火零泄漏、弧面接触率≈100%、冲顶x跨度≥20px、首钉75~110帧、折角≤4°/相邻帧差≤1°、回弹感硬门禁(≥10px占比≥25%/≥20px≥5%/max≤45px)、下落节奏(减速比0.45~0.80+滞留≤30帧+行穿行≥0.15s)、横向稳定性(vx从&lt;80突增&gt;280次数=0)、悬念率哨兵。</p></div>
       </div>
       <div class="data-block"><span class="hl">均匀度系数（L1 平均差）:</span>
@@ -329,8 +420,8 @@
   「中奖率」与「每次中多少」是同一个旋钮的两端——返还率恒等于档位。</div>
     </div>
   </details>
-  <details>
-    <summary>附录E：遗传算法寻优（机器自己调参）</summary>
+  <details id="appendix-d">
+    <summary>附录D：遗传算法寻优（机器自己调参）</summary>
     <div class="appendix-body">
       <div class="grid-2">
         <div class="card"><h3>三阶段 GA</h3><p>脚本 ../scratch/optimize_knobs.py（scratch 在父项目仓库，不在 Android 仓库里）。三阶段演进：①每档独立 GA(48维，已弃) → ②联合 GA(480维，个体=10档完整配置) → ③降维 arc-only(120维，只优化弧面角度)+种子初始化（从当前配置起跳，收敛快6倍）。</p></div>
@@ -359,12 +450,16 @@
   种子初始化：纯随机起点 gen0 只有 0.74（比基线 0.86 差），改用当前配置+变异起跳</div>
     </div>
   </details>
-  <details>
-    <summary>附录D：跨平台架构与横屏适配</summary>
+  <details id="appendix-e">
+    <summary>附录E：跨平台架构与横屏适配</summary>
     <div class="appendix-body">
       <div class="grid-2">
         <div class="card"><h3>代码生成管道</h3><p>build_android_main.py 从 plinko.py 原样抽取逻辑段 + 拼接 head/backends/ui 三个 Kivy 手写段。改物理→重跑生成器→两版永不漂移。</p></div>
         <div class="card"><h3>锁定版本组合</h3><p>Kivy 2.3.0 + p4a v2024.01.21 + buildozer 1.5.0 + Cython&lt;3.0 + host Python 3.10 + NDK 25b + ubuntu-22.04。缓存命中后 2.5-3 分钟出 APK。</p></div>
+        <div class="card"><h3>字体子集化：8MB → 0.4MB</h3><p>中文字体一个就有 8MB，而游戏真正会用到的字只有一千多个。砍到 0.4MB 之后，装得更小，冷启动时读字体那一下也从 30 毫秒降到 <b>0.39 毫秒</b>。验收方式是<b>全字集逐字节对拍</b>——1602 个字 × 5 个字号 × 粗体两种，共 16020 次渲染，像素差异 0 处。</p></div>
+        <div class="card"><h3>所有"叫系统做事"的活，都搬出了主线程</h3><p>发声、震动、方向守卫、设定落盘——这四条链全部改成"主线程只递条子，别的线程去排队"。理由有实测数据：手机上一次发声调用最慢能花掉 <b>143.6 毫秒</b>，而一帧只有 12.5 毫秒。还有一条硬规矩：队列要是没建起来，就退回同步调用，<b>绝不静默失效</b>——宁可慢，不能丢。</p></div>
+        <div class="card"><h3>字体钉子：不让系统把用过的字丢掉</h3><p>真机实测：5 分半钟里系统<b>开过 93 个不同字号、冷开 307 次</b>，其中 54 次是"复冷"——明明烘过，又被后来的字号挤掉了，一次 47 毫秒。查下去发现系统的字体缓存只有 <b>64 格</b>、按插入顺序淘汰。解法很巧：某个字号<b>第三次</b>被冷开（也就是已经被挤掉过两次）时，把它从淘汰队列里<b>摘出来且不再放回去</b>，它就永远排不进队列。而且只在"真的被扔过两次"时才摘——不预设名单，数量自己就限住了。</p></div>
+        <div class="card"><h3>这台机器还能自己考自己</h3><p>除了给人玩的版本，它带几条自己用的命令：一条跑<b>四万次飞行</b>验算返奖率与物理不变量（自测门禁，里面还含一道<b>音效体检</b>：削波 / 直流偏移 / 首尾爆音 / 静音），一条<b>自动建窗、蓄力、发射、截图、再触发一次中奖</b>（冒烟）。出包前作者跑的就是这两条。<span class="hl">把全部音效导出成 wav 供试听那条在电脑版上。</span></p></div>
       </div>
       <div class="data-block"><span class="hl">横屏反旋转层（2026-08-17 定稿，四件套缺一不可）:</span>
   ① manifest: screenOrientation=fullSensor + resizeableActivity=true（p4a/hook.py 注入）
@@ -386,18 +481,33 @@
   桌面 --landscape 参数可模拟横窗（1740×1000）验证横屏布局</div>
     </div>
   </details>
+  <details id="appendix-f">
+    <summary>附录F：真机上的三个"灵异现象"（附带一套排查方法）</summary>
+    <div class="appendix-body">
+      <div class="data-block"><span class="hl">共同点：这三种毛病，在电脑上怎么测都是绿的。</span>
+真机专有的东西（线程规矩、系统界面、触摸事件的派发次序）在桌面上根本不存在，
+所以"本地全过"与"手机上能用"之间隔着一条沟 —— 只能靠真机日志和像素取证去填。
+<span class="hl">而每条修完之后，都补了一个"能重放"的检查，不靠手试。</span></div>
+      <div class="grid-2">
+        <div class="card"><h3>一、打开就闪退，只在手机上活 0.7 秒</h3><p>桌面测试全绿，一上真机启动就崩。插上数据线抓崩溃日志，一眼定位：定时器的回调<b>参数签名少写了一个</b>——框架会往回调里塞一个时间参数，而回调写成了零参。<b>致命的地方在于</b>：类型错误发生在函数体执行之前，所以"函数体内判断了平台"和"里面套了 try/except"通通无效（保险在屋里，人死在门外）。同一个 bug 连崩了两个版本，中途还把根因错记到别处。</p></div>
+        <div class="card"><h3>二、全屏不生效，转一下屏幕就"自愈"</h3><p>竖屏启动时系统栏不隐藏，但<b>转一次屏它就正常了、而且从此一直正常</b>。顺着"为什么转屏能治好它"挖下去：从普通线程直接调系统的界面接口会抛"线程不对"异常，而那条异常被一个 <b>except Exception: pass</b> 吞掉了——于是功能时好时坏，看起来像运气问题。通用法则：凡是要碰界面对象，一律投递到界面线程去执行。</p></div>
+        <div class="card"><h3>三、横过来之后，所有按钮都点不到</h3><p>画面渲染对了，不等于触摸对了。三层叠在一起，每一层单独看都"像是对的"：<b>①</b> 直接给触摸点赋值坐标，不会同步更新它的分量（必须走变换矩阵）；<b>②</b> 把旋转层的原点当成相对坐标系、多减了一次偏移，1740×1000 上实测偏出 (370, −370)；<b>③</b> 按钮一旦抓住手指，后续的移动与抬起事件不走普通回调，必须覆写坐标转换——否则"按下有反馈、抬起没动作"。</p></div>
+        <div class="card"><h3>验收方式：把触摸事件"重放"一遍</h3><p>横屏触摸没法在电脑上用手点，于是写了个探针<b>注入合成触摸事件</b>，完整走一遍系统的两段派发，把上面三个坑一次照出来。这也是它们能被修干净的原因——<b>不是靠手试，是靠可重放的检查</b>。顺带一个教训：只重放第一段的写法，测不出第三个坑。</p></div>
+      </div>
+    </div>
+  </details>
 </section>
 
 <!-- ═══════════ CLOSING ═══════════ -->
 <section class="closing">
-  <div class="big-quote">41 个音效没有一个是文件。<br>一根弹簧没有一张图片。<br>一颗球从离手到落袋，没人碰它一下。<br>一块屏横过来竖过去，画面还是那个画面。<br>九个格子的公平，是程序自己"养"出来的。<br><br><em>这不是炫技，这是对玩家的尊重。</em></div>
+  <div class="big-quote">41 个音效没有一个是文件。<br>一根弹簧没有一张图片。<br>一颗球从离手到落袋，没人碰它一下。<br>一块屏横过来竖过去，画面还是那个画面。<br>九个格子的公平，是程序自己"养"出来的。<br>连最难看的那一帧，也还有 131 帧。<br><br><em>这不是炫技，这是对玩家的尊重。</em></div>
   <div class="kick reveal">比够用，多走一步。</div>
   <div class="pillars">
     <div class="pillar reveal reveal-d1"><span class="p-icon">🔌</span><div class="p-title">弹簧会说话</div><div class="p-desc">颜色即力度·真实回弹</div></div>
     <div class="pillar reveal reveal-d1"><span class="p-icon">🛤</span><div class="p-title">三段式轨迹</div><div class="p-desc">升空·转弯·落袋</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🎯</span><div class="p-title">没人作弊</div><div class="p-desc">零穿帮·自然落格</div></div>
     <div class="pillar reveal reveal-d2"><span class="p-icon">🧬</span><div class="p-title">机器养公平</div><div class="p-desc">进化寻优·4旋钮</div></div>
-    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">57条语音·41音效</div></div>
+    <div class="pillar reveal reveal-d3"><span class="p-icon">🗣</span><div class="p-title">游戏会说话</div><div class="p-desc">63条语音·41音效</div></div>
     <div class="pillar reveal reveal-d3"><span class="p-icon">⚡</span><div class="p-title">性能自证</div><div class="p-desc">4万次自测·真机跑分</div></div>
   </div>
 </section>
@@ -405,7 +515,7 @@
 <footer class="footer">
   <div class="color-bar"><span style="background:var(--gold)"></span><span style="background:var(--blue)"></span><span style="background:var(--green)"></span><span style="background:var(--purple)"></span><span style="background:var(--red)"></span></div>
   <div class="ftitle">跳跳的弹珠机 — DanZhu Plinko</div>
-  <div class="fsub">Python + Kivy · Android 版<span class="separator"></span>设计评审报告 · 2026.09</div>
+  <div class="fsub">Python + Kivy · Android 版<span class="separator"></span>设计评审报告 · 2026.09<span class="separator"></span>数字口径以 android/main.py 为准</div>
   <a href="https://github.com/twoplate2/DanZhu" target="_blank" rel="noopener">github.com/twoplate2/DanZhu</a>
 </footer>
 </div>
