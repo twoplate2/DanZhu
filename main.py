@@ -2504,37 +2504,20 @@ def _hist_stamp(raw):
         return _s or '--'
 
 
-# ---- 「模拟测试历史」那张表的四个字段(2026-09-15) ---------------------------
-# ⚠️⚠️ **为什么是"一串空格分隔"而不是固定列宽的表格**: 玩家 2026-09-15 加第四列
-#    (CPU平均频率)之后实测(`temp/hist_colwidth_probe.py`)四列在 14sp 下要 **333px**,
-#    而弹窗内容区在 360dp 上只有 277.6px(0.92 宽) —— **放不下**。
-#    固定列宽时"每一列各自要装下自己最宽的那一串"(时间 58 / 帧 96 / 跑分 95 / 频率 84),
-#    余量要付四遍; 改成整行一起排之后**同一行数据只要 272px**, 满 14sp 就放得下。
-#    ⇒ 玩家原话:「数据用空格分割, 不强制要求对齐了」。
-# ⚠️ **表头与数据行必须共用同一个分隔串** —— 于是把它提成常量, 两边都 `join` 它,
-#    从结构上杜绝"表头用一种分隔、数据行用另一种"。
-# ⚠️ **是 2 个空格, 不是 1 个**(玩家 2026-09-15 定案)。原因: 比例字体里空格很窄,
-#    1 个空格时 `10:03 59.8` 在屏幕上读起来就是 `10:03:59.8` —— 时间和帧率黏成一串,
-#    而这一列的时间本身就带冒号。2 个空格把字段边界做出来了(代价约 +12px/行,
-#    已经算进字号账里)。
-# ⚠️ **字段顺序按玩家 2026-09-15 给的样例**:
-#      `08-25 59.8/53.0 4256Mhz 14685/5.8%`
-#    = 时间 / 平均·1%Low帧 / **CPU平均频率** / 中位跑分·波动 / **归一化**
-#    —— 频率在**第三位**(跑分/波动之前), **不是**放在最后; 「归一化」是 2026-09-15
-#    追在**末尾**的第五列(新列只能加末尾, 与 `_bench_frames` 那条规矩同源)。
-# ⚠️ 单位写 `Mhz`(玩家两次都这么写), 不写成 `MHz`。
-# ⚠️⚠️ **宽度账(实测, 不是估的)**: 五列之后 360dp 上 `_fit_uniform` 落到的档是
-#    **11.48sp**(`temp/benchhist_probe.py` 的 F 判据直接量建好的 Label)。
-#    四列时是 **13.16sp** ⇒ **这一列的代价正好是玩家上次特意避开的那个字号**。
-#    量过备选(`_HIST_SEP.join` 后 `text_px(...,14.0)`, 可用宽 275.2px):
-#      五列(现在) 表头 369 / 数据 360   ·   砍掉频率列换归一化 279 / **294**   ·
-#      原四列 321 / 330   ·   五列+短表头 197 / 360(数据行接手, 白缩)
-#    ⇒ **砍掉频率列反而比原四列还窄**(`3902Mhz` 比 `603` 宽) —— 但玩家 2026-09-15
-#      **明确选了保留五列**, 理由是频率那一列他要看。**别再自作主张删它。**
-#    ⚠️ 想再加字之前, 先去那个探针里看 `[360] 最小字号` 那一行还在不在 11 以上。
-_HIST_COLS = ('时间', '平均/1%Low帧', 'CPU平均频率', '中位跑分 / 波动', '归一化')
-_HIST_SEP = '  '
-_HIST_HEAD = _HIST_SEP.join(_HIST_COLS)
+# ---- 「模拟测试历史」那张表的字段(2026-09-15, 第四次定稿) -------------------
+# ⚠️⚠️ **这一格的版式改过四轮, 把结论留在这儿, 别再从头试一遍**:
+#    ① 固定四列 → ② 「数据用空格分割, 不强制要求对齐」(因为四列各付一遍余量要 333px,
+#       而内容区只有 299.2px) → ③ 加第五列「归一化」(字号掉到 11.48sp) →
+#    ④ **删掉「CPU平均频率」+ 回归固定列宽对齐**(就是现在这版)。
+#    —— 玩家 2026-09-15 的原话:「删掉频率那一列, 排版回归准表格, 不要用空格来分割」。
+# ⚠️ **为什么现在能对齐了**: 删掉频率那一列把宽度让了出来。四列按各自最宽内容
+#    (时间 113 / 帧 69 / 跑分·波动 86 / 归一化 42 = 310px)配到内容区 275.2px 里,
+#    每列再由自己的 `_fit_uniform` 缩字号(实测落在 12~14sp, 见探针 F 判据)。
+# ⚠️ **表头与数据行必须共用同一套列宽**(`_show_bench_history` 里的 `_HW`) ——
+#    分成两处写就一定会漂。
+# ⚠️ **字段顺序**: 时间 / 平均·1%Low帧 / 中位跑分·波动 / **归一化**。
+# ⚠️ 想再加列/加字之前, 先去 `temp/benchhist_probe.py` 看 `[360] 最小字号` 还在不在 11 以上。
+_HIST_COLS = ('时间', '平均/1%Low帧', '中位跑分 / 波动', '归一化')
 
 
 # ---- 字体"钉子"(2026-09-15, 对抗性评审 top 3 之一) ---------------------------
@@ -13539,26 +13522,35 @@ class RootWidget(BoxLayout):
             #    —— **零余量**。原来是「平均/1%Low」(70px) 有 12px 余量, v0.7.28 按要求加上
             #    「帧」之后把余量吃光了, 任何一点取整/字体缩放都会把它顶成两行。
             #    94 恢复成原来那 12px 余量。第三列拿的是剩余宽度, 实测它的表头只要 83px, 够。
-            # ⚠️⚠️ **不做固定列宽了**(玩家 2026-09-15:「数据用空格分割, 不强制要求对齐了」)。
-            #    实测(`temp/hist_colwidth_probe.py`): 四列按各自最宽的那串算要 **333px**,
-            #    而 360dp 的内容区(0.92 宽)只有 299.2px ⇒ 硬排就得把字号缩到 ~11.7sp。
-            #    改成**整行一串空格分隔**之后, 同一行只要 **272px** —— **满 14sp 就放得下**。
-            #    省下来的正是"每列各自的余量付四遍"。
-            #    ⚠️ 代价是**上下不对齐**(比例字体, 列宽随内容浮动) —— 这是玩家明确接受的。
-            head = Label(text=_HIST_HEAD, halign='center', valign='middle',
-                         color=hex_rgb(COL_SUB) + (1,),
-                         size_hint_y=None, height=dp(22))
-            head.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
-            # ⚠️ **必须走 `_fit_line`(自动缩字号)** —— 表头比数据行长得多(315px vs 272px),
-            #    窄屏上得靠它缩。⚠️ 绑的必须是 `(w.width, None)` **不是** `w.size`:
-            #    两维都给 ⇒ 宽度不够就**折行**, 而这一排只有 dp(22) 高, 第二行直接被顶出格子。
-            self._fit_line(head, 14)
-            self._fit1(head)
-            content.add_widget(head)
+            # ⚠️⚠️ **回归"准表格"(固定列宽对齐)**(玩家 2026-09-15 定案)。
+            #    前一版是"整行一串空格分隔、上下不对齐", 起因是四列按各自最宽算要 333px
+            #    而内容区只有 299.2px。玩家看了一阵之后**改主意: 要对齐**。
+            #    ⚠️ 同时**删掉「CPU平均频率」那一列** —— 它已被实测证伪(真机: 大核报 2712MHz
+            #    而同一轮的纯算术探针低 16%; 高通 LMH 平台 `scaling_cur_freq` 报的是
+            #    **调频器的目标值**, 实际时钟被硬件按下去**不回写**)。删掉它正好把宽度
+            #    让出来给对齐。
+            #    ⚠️ 列宽是**量出来的**(`text_px`, 非粗体 14sp): 各列最宽内容
+            #       时间 113(往年)/94(本年 76, 留余量) · 帧 69 · 跑分·波动 86 · 归一化 42,
+            #       合计 310px > 内容区 **275.2px** ⇒ 按比例压到 94/62/80/38 = **274px**,
+            #       各列再由自己的 `_fit_uniform` 缩字号(实测落在 12~14sp, 见探针 F 判据)。
+            #    ⚠️ 表头与数据行**共用同一个宽度元组** —— 否则两边各对一套栅格、永远对不齐。
+            _HW = (dp(96), dp(82), dp(76), dp(36))
+            columns = BoxLayout(size_hint_y=None, height=dp(22))
+            for _t, _w in zip(_HIST_COLS, _HW):
+                h = Label(text=_t, halign='center', valign='middle',
+                          color=hex_rgb(COL_SUB) + (1,), size_hint_x=None)
+                h.width = _w
+                # ⚠️ 绑 `(w.width, None)` 而不是 `w.size`: 两维都给 ⇒ 宽度不够就**折行**,
+                #    而这一排只有 dp(22) 高, 第二行直接被顶出格子。
+                h.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                self._fit_line(h, 14)
+                self._fit1(h)
+                columns.add_widget(h)
+            content.add_widget(columns)
             scroll = ScrollView(size_hint=(1, 1))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
-            rows = []
+            rows = [[], [], [], []]          # 逐列一组 —— `_fit_uniform` 是**按列**统一的
             for r in reversed(self.bench_history[-100:]):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
@@ -13572,16 +13564,14 @@ class RootWidget(BoxLayout):
                     fps_text = '—'
                 else:
                     fps_text = '%.1f/%.1f' % (float(render), float(low))
-                # ⚠️ **CPU 平均频率**(玩家 2026-09-15 要的那一列, 排在**第三位**)。
-                #    · 取的是**跑分时**的平均(采样间隙已被 `_FREQ_GATE` 滤掉), **不是中位数**
-                #      —— 玩家原话「cpu频率不能用中位数」。
-                #    · **旧记录**里从来没存过平均(那之前只存了 `phys_freq_p50`) ⇒ 显示
-                #      「无数据」。**不拿中位数回落** —— 玩家明说不能用中位数, 拿别的数顶就是印假数。
-                #    · ⚠️ 玩家 2026-09-15:「如果无/读不到频率 改为 **无数据** 而不是一个 `-`」
-                #      —— 破折号会被读成"这一格坏了", 「无数据」才是"没采到"的正常态。
-                #    · 单位写 `Mhz`(玩家两次都这么写), 不写成 `MHz`。
-                _fmean = r.get('phys_freq_mean')
-                freq_text = ('%dMhz' % int(_fmean)) if _fmean else '无数据'
+                # ⚠️⚠️ **「CPU平均频率」那一格 2026-09-15 删掉了**(玩家定案)。
+                #    理由是它**已被实测证伪**: 真机上大核报 2712MHz 而同一轮的纯算术探针
+                #    低了 16%; 高通 LMH 平台上 `scaling_cur_freq` 报的是**调频器的目标值**,
+                #    实际时钟被硬件按下去**不回写**(Qualcomm 论坛原话: "LMH mitigations are
+                #    HW controlled and cpu freq is reduced at HW level. sysfs nodes will not
+                #    reflect changed freq.")。**留一个会误导的列, 还挤掉对齐要用的宽度。**
+                #    ⚠️ `phys_freq_mean` **照旧存在 JSON 里**(老记录要能读、以后要复盘),
+                #       只是**不再显示**。**别顺手把它从记录里删掉。**
                 spread = r.get('phys_spread')
                 if spread is None:
                     soc_text = '%d/—' % r.get('phys_fps', 0)
@@ -13595,25 +13585,25 @@ class RootWidget(BoxLayout):
                 #    ⚠️ **v0.7.62 以前的记录没有它** ⇒ 印「无数据」, **绝不拿步/秒回填**。
                 _nz = int(r.get('phys_norm', 0) or 0)
                 norm_text = ('%d' % _nz) if _nz else '无数据'
-                # ⚠️ 整行**一串空格分隔**, 不做列对齐(玩家 2026-09-15:「数据用空格分割,
-                #    不强制要求对齐了」)。字段顺序就是 `_HIST_COLS` 那个顺序 ——
-                #    表头与数据行 `join` 的是**同一个** `_HIST_SEP`。
-                row = Label(text=_HIST_SEP.join((stamp, fps_text, freq_text, soc_text,
-                                                 norm_text)),
-                            halign='center', valign='middle',
-                            color=hex_rgb(COL_TEXT) + (1,),
-                            size_hint_y=None, height=dp(26))
-                # ⚠️ 绑 `(w.width, None)` 而**不是** `w.size`: 两维都给 ⇒ 宽度不够就折行,
-                #    这是本工程 2026-09-15 踩过的那个坑(表头就是这么折的)。
-                row.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
-                rows.append(row)
+                # ⚠️ **整行改成一排固定列宽的 Label**(2026-09-15 玩家:「排版回归准表格,
+                #    不要用空格来分割」)。列宽与表头**共用 `_HW`**。
+                row = BoxLayout(size_hint_y=None, height=dp(26))
+                for _i, (_t, _w) in enumerate(zip((stamp, fps_text, soc_text, norm_text), _HW)):
+                    lbl = Label(text=_t, halign='center', valign='middle',
+                                color=hex_rgb(COL_TEXT) + (1,), size_hint_x=None)
+                    lbl.width = _w
+                    # ⚠️ 绑 `(w.width, None)` 而**不是** `w.size`: 两维都给 ⇒ 宽度不够就折行。
+                    lbl.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                    row.add_widget(lbl)
+                    rows[_i].append(lbl)
                 inner.add_widget(row)
-            # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
-            #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
+            # ⚠️ 必须 `sp(14)` 而不是 `14.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
+            #    传裸 14.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
             #    同一批行 17.0 而别的 17sp 行是 34.0)。
-            # ⚠️ **只一条** —— 现在整行是**一个 Label**, 所以一组就是全表。
-            #    这正是 `_fit_uniform` 存在的理由(整表同一个字号, 不许参差)。
-            self._fit_uniform(rows, sp(14))
+            # ⚠️ **逐列各调一次** —— 列宽不同, 统一一个字号会让窄列被裁。这正是
+            #    `_fit_uniform` 存在的理由(同一列内不许参差)。
+            for _c in rows:
+                self._fit_uniform(_c, sp(14))
             scroll.add_widget(inner)
             content.add_widget(scroll)
             # 底部口径说明(2026-09-14, 玩家要的)。⚠️ **两个「中位」不是同一个东西**:
@@ -13666,7 +13656,7 @@ class RootWidget(BoxLayout):
         #    360dp 上四列要多 55px, 加宽这一档拿回 21.6px, 其余靠缩字号。
         _vw, _vh = self._veq()
         popup = RotPopup(title='', content=content, size_hint=(None, None),
-                         width=0.92 * _vw, height=0.7 * _vh,
+                         width=0.96 * _vw, height=0.7 * _vh,   # ⚠️ 0.92 -> 0.96: 固定列宽要 340px 而 0.92 只有 275px
                          auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
         if self.bench_history:
