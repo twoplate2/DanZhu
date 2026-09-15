@@ -869,6 +869,11 @@ _FREQ_GATE = [True]
 #    现在只保留"按构造与刷新率无关"这一半(那半有 `thread_time` 当分母撑着),
 #    真正的原因**待测**: 逐核频率(`_cpufreq_cores`) + 亲和性(`_BENCH_AFF`) 就是为此加的。
 _BENCH_AFF = []          # 波 1 每一轮采一次 `os.sched_getaffinity(0)`; 拿不到填 None
+# 跑分线程的锁核结果。只用于日志：`sched_getaffinity` 只能说明"允许跑在哪些核"，
+# 不能证明实际没有在快/慢簇之间迁移；这里把可控的迁移变量去掉，并把成败如实记下。
+_BENCH_CPU_PIN = {}
+# 只影响物理跑分工作线程；正常游戏、渲染线程和高压测试都不改亲和性。
+_BENCH_PIN_FAST_CORES = True
 # 波 1 每一轮的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 它在 `_run_once` **之外**跑,
 # 所以不占"步/秒"的分母; 它自己那份 CPU 时间由 `_speed_probe` 内部计量。
 _BENCH_SPEED = []
@@ -881,6 +886,95 @@ _SUST_SPEED = []
 # 波 1 每一轮**实际渲染出来**多少帧/秒(用 `_FRAME_CALLS` 的增量 ÷ 墙钟)。
 # ⚠️ **必须有这个数**: "请求 60" 不等于 "拿到 60" —— 真机实测过请求 60 而拿到 80.4fps。
 _BENCH_RENDER_FPS = []
+
+
+def _bench_cpu_max_khz(cpu):
+    """读取一个 CPU 的静态最高频率(kHz)，读不到返回 0。
+
+    `cpuinfo_max_freq` 是硬件/策略给出的能力上限，不能拿来推断某一刻的实际频率；
+    这里只用它识别大小核簇，避免用会随负载抖动的 `scaling_cur_freq` 选核。
+    """
+    _base = "/sys/devices/system/cpu/cpu%d/cpufreq/" % int(cpu)
+    for _name in ("cpuinfo_max_freq", "scaling_max_freq"):
+        try:
+            with open(_base + _name) as _fh:
+                _v = int(_fh.read().strip() or 0)
+            if _v > 0:
+                return _v
+        except Exception:
+            pass
+    return 0
+
+
+def _bench_pin_fast_cpus():
+    """将**当前跑分线程**限制在可用的最高性能 CPU 簇，返回供恢复的原集合。
+
+    锁核不是给游戏提速，而是消除 benchmark 在性能核/中核之间迁移这一测量变量。
+    Android/设备不允许、拓扑读不出或本来就是同构核时一律不锁，并在日志中留下原因。
+    """
+    _BENCH_CPU_PIN.clear()
+    _status = _BENCH_CPU_PIN
+    _status["enabled"] = bool(_BENCH_PIN_FAST_CORES)
+    if not _BENCH_PIN_FAST_CORES:
+        _status["reason"] = "已关闭"
+        return None
+    if platform != "android":
+        _status["reason"] = "非安卓"
+        return None
+    try:
+        _allowed = set(os.sched_getaffinity(0))
+    except Exception:
+        _status["reason"] = "sched_getaffinity 不可用"
+        return None
+    if not _allowed:
+        _status["reason"] = "当前允许 CPU 集为空"
+        return None
+    _status["before"] = sorted(_allowed)
+    _caps = {int(_cpu): _bench_cpu_max_khz(_cpu) for _cpu in _allowed}
+    _caps = {int(_cpu): int(_khz) for _cpu, _khz in _caps.items() if _khz > 0}
+    if len(_caps) < 2:
+        _status["reason"] = "读不到足够的 CPU 最高频率"
+        return None
+    _top = max(_caps.values())
+    _bottom = min(_caps.values())
+    # 不把极小的固件/读数差误判成大小核；K90 的 2746/2880MHz 簇差约 4.9%，会被识别。
+    if _top <= _bottom * 1.02:
+        _status["reason"] = "可用 CPU 为同一性能簇"
+        return None
+    # 同一最高簇的核心通常共享最高频率；留 2% 容差兼容厂商公布频率的微小差异。
+    _target = {int(_cpu) for _cpu, _khz in _caps.items() if _khz >= _top * 0.98}
+    if not _target or _target == _allowed:
+        _status["reason"] = "没有可收窄的性能簇"
+        return None
+    _status["caps_khz"] = dict(sorted(_caps.items()))
+    _status["target"] = sorted(_target)
+    try:
+        os.sched_setaffinity(0, _target)
+        _actual = set(os.sched_getaffinity(0))
+        _status["actual"] = sorted(_actual)
+        if not _actual.issubset(_target) or not _actual:
+            _status["reason"] = "系统未接受性能簇亲和性"
+            try:
+                os.sched_setaffinity(0, _allowed)
+            except Exception:
+                pass
+            return None
+        _status["pinned"] = True
+        return _allowed
+    except Exception as _exc:
+        _status["reason"] = "sched_setaffinity 失败: %s" % type(_exc).__name__
+        return None
+
+
+def _bench_restore_cpu_affinity(previous):
+    """恢复 `_bench_pin_fast_cpus` 改过的当前线程亲和性。"""
+    if not previous:
+        return
+    try:
+        os.sched_setaffinity(0, previous)
+        _BENCH_CPU_PIN["restored"] = sorted(os.sched_getaffinity(0))
+    except Exception as _exc:
+        _BENCH_CPU_PIN["restore_error"] = type(_exc).__name__
 
 
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
@@ -11742,10 +11836,13 @@ class RootWidget(BoxLayout):
         # ⚠️⚠️ **波 1 全程把帧率按到 `_BENCH_FPS_FORCE`**(见那段说明)。
         #    `finally` 是硬的: 跑分中途抛异常也必须把帧率还回去, 否则玩家会一直卡在 60fps。
         _bench_fps_lock_on()
+        # 只收窄当前跑分工作线程；正常游戏和渲染线程的调度不受影响。
+        _bench_aff_before = _bench_pin_fast_cpus()
         try:
             flights, frames, fps_list, cpu_secs = benchmark_trajectories(on_sample=_on_sample)
         finally:
             _bench_fps_lock_off()
+            _bench_restore_cpu_affinity(_bench_aff_before)
         _s1[0] = True
         _f1.sort()
         self._phys_freq_p50 = _f1[len(_f1) // 2] if _f1 else 0
@@ -11763,6 +11860,7 @@ class RootWidget(BoxLayout):
         self._phys_fps_runs = [round(float(x), 1) for x in (fps_list or [])]
         self._phys_cores = _freq_core_stats()
         self._phys_aff = list(_BENCH_AFF)
+        self._phys_cpu_pin = dict(_BENCH_CPU_PIN)
         self._phys_speed = [round(float(x), 1) for x in _BENCH_SPEED]
         self._phys_render_fps = [round(float(x), 2) for x in _BENCH_RENDER_FPS]
         self._phys_alloc = [round(float(x), 1) for x in _BENCH_ALLOC]
@@ -12247,6 +12345,23 @@ class RootWidget(BoxLayout):
                                            for x in _pa))
             else:
                 _lines.append("# 物理跑分线程的 CPU 亲和性: **没采到**(非安卓 / 不支持)")
+            # `sched_getaffinity` 的全核集合只表示"允许调度"。这里额外写明本轮是否真的把
+            # benchmark 工作线程锁在最高性能簇，避免把优化请求误读成已经生效。
+            _pin = getattr(self, "_phys_cpu_pin", None) or {}
+            if _pin.get("pinned"):
+                _pcaps = _pin.get("caps_khz", {}) or {}
+                _ptarget = _pin.get("actual", _pin.get("target", [])) or []
+                _pfreq = ",".join("cpu%d=%dMHz" % (int(_cpu),
+                                   int(_pcaps.get(_cpu, _pcaps.get(str(_cpu), 0))) // 1000)
+                                  for _cpu in _ptarget)
+                _before = ",".join(str(_cpu) for _cpu in (_pin.get("before", []) or []))
+                _restored = ",".join(str(_cpu) for _cpu in (_pin.get("restored", []) or []))
+                _lines.append("# 跑分线程性能核锁定: **已锁定** %s (%s) · 原允许 %s · 恢复 %s"
+                              % (",".join("cpu%d" % int(_cpu) for _cpu in _ptarget), _pfreq,
+                                 _before or "?", _restored or "失败"))
+            else:
+                _lines.append("# 跑分线程性能核锁定: **未锁定**(%s)"
+                              % (_pin.get("reason", "未执行") or "未知原因"))
             # ⚠️ **波 2(高压)那两行** —— 与波 1 相邻印,
             #    两波的频率**必须分开看**(它们是不同的两段时间)。
             _sv2 = [x for x in (getattr(self, "_sust_fps", None) or []) if x > 0]
