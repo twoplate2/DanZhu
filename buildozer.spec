@@ -2101,6 +2101,34 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   门禁: fx_probe 330 条(+3)。
 #   验证: --selftest OK · fx_probe 330 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
 #
+# 【v0.7.83 修 v0.7.82 的真机卡死: 黑屏/白字必须建在主线程】
+#
+#   **玩家 2026-09-15 真机报的**: 「我刚开始跑帧率就显示这个。而且一直卡住不动了」
+#   (截图: 黑屏出来了、白字停在「物理跑分 0/5」一动不动)。
+#
+#   根因: v0.7.82 我把 `_show_bench_dim()` / `_set_bench_msg()` 写进了
+#   **`_run_benchmark` / `_run_hp_test` 的开头**, 而那两个函数跑在**工作线程**上
+#   (`threading.Thread(target=self._run_benchmark)`); 它们要碰 Kivy 的 canvas 指令与
+#   **CoreLabel 的文字光栅化** —— **跨线程做这个会卡死**。
+#
+#   修法: 把这两句搬到**主线程那一侧**的启动器 `_wait_idle_then_bench` /
+#   `_wait_idle_then_hp` 里(它们是 Clock 回调), 工作线程体里只留一句注释说明为什么不在那儿。
+#   ⚠️ **别搬回去** —— 线程体里再出现 `_show_bench_dim(` / `_set_bench_msg(` 就是回归。
+#
+#   ⚠️⚠️ **为什么上一版的门禁全绿却漏了它**: `temp/_e2e_bench.py` 直接调
+#      `benchmark_trajectories`, **根本不经过 GUI 那条路径**; 而 `bench_instr_probe`
+#      是直接调 `rw._run_benchmark()`(线程体), 也不走启动器。**两条路都绕开了 bug 所在处。**
+#
+#   ⇒ 新增门禁 `temp/_bench_screen_probe.py`(**7 条**), 走**真 GUI 启动路径**:
+#      T1 结构: 两个工作线程体里**不许**出现建屏/写白字(阴性对照: 搬回去当场变红)
+#      T2 结构: 两个主线程启动器里**必须**有它们
+#      T3 行为: 黑屏**真的出现**;  T3b 白字**真的在更新**(不是停在 0/N)
+#      T4 行为: 跑分期间主线程**还在动**(帧计数在涨) —— 卡死的直接判据
+#      另: 本探针顺带量到 `_BENCH_FPS_FORCE_PHYS=10` **在桌面确实生效**(1.6 秒涨 21 帧 ≈ 13fps)。
+#
+#   验证: `_bench_screen_probe` **7/7** · `bench_instr_probe` 23/23 · `hp_instr_probe` 8/8 ·
+#   `benchhist_probe` 21/21 · `--selftest` OK · 物理逐位哈希不变(`4d7a7e07...4fe4b7cb`)。
+#
 # 【v0.7.82 跑分黑屏+白字 · 探针改「分块取最大」(仍不碰球)】
 #
 #   一、**跑分黑屏 + 白字**(玩家 2026-09-15:「你直接黑屏就行, 上面写几个字就可以」+
@@ -3869,7 +3897,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe 336 条(+6: 持久指令表四条 + 面板两档两条; 另更新了几条被取代的旧断言)。
 #   验证: --selftest OK · fx_probe 336 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
-version = 0.7.82
+version = 0.7.83
 
 
 

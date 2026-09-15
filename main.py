@@ -10967,11 +10967,8 @@ class RootWidget(BoxLayout):
         #    (旧版这里是个 `_hp_t0` 字段 —— 自 v0.7.52 起**没有任何读取方**, 本轮已删。)
         self._hp_wall0 = 0.0
         self._prog_start()
-        # ⚠️ **黑屏 + 白字**(2026-09-15 玩家: 「如果顺利的话, 压力测试也使用这个画面
-        #    (黑屏, 白字, 白字过一会更新一次进度)」)。白字由 `_prog_tick` 每 0.25 秒
-        #    跟着进度刷 —— 与波 1 同一套(`_show_bench_dim` / `_set_bench_msg`)。
-        self._show_bench_dim()
-        self._set_bench_msg("SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
+        # ⚠️ **黑屏与白字不在这里建** —— 本函数跑在**工作线程**上, 而它们要碰 Kivy 的
+        #    canvas / CoreLabel。**在调用方 `_wait_idle_then_hp`(主线程)那里建。**
         _set_label_text(self.status_lbl, "SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
         self._set_controls_enabled(False)
         self._wait_idle_then_hp()
@@ -10979,6 +10976,11 @@ class RootWidget(BoxLayout):
     def _wait_idle_then_hp(self, dt=0):
         """等球落地(主线程空闲)再起 —— 与 `_wait_idle_then_bench` 同一个理由: 别抢 CPU。"""
         if self.state == "ready":
+            # ⚠️⚠️ **黑屏与白字在主线程建**(与波 1 同一条规矩, 见 `_wait_idle_then_bench`):
+            #    `_run_hp_test` 是工作线程, 而这两个碰 Kivy 的 canvas / CoreLabel
+            #    —— 跨线程做会卡死。
+            self._show_bench_dim()
+            self._set_bench_msg("SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
             threading.Thread(target=self._run_hp_test, daemon=True).start()
         else:
             Clock.schedule_once(self._wait_idle_then_hp, 0.5)
@@ -11514,12 +11516,8 @@ class RootWidget(BoxLayout):
         self._phys_started = False
         self._phys_done = 0
         self._prog_start()
-        # ⚠️ **黑屏 + 白字**(2026-09-15 玩家: 「你直接黑屏就行, 上面写几个字就可以」)。
-        #    跑分期间没什么可看的(而且是从 `state==ready` 起的, 本来就没球没演出),
-        #    少画就是少抢 CPU/内存带宽 —— 这是"不改弹珠逻辑"前提下唯一还能抬高跑分的路。
-        #    白字由 `_prog_tick` 每 0.25 秒跟着进度刷。
-        self._show_bench_dim()
-        self._set_bench_msg("物理跑分 0/%d" % SOC_SAMPLE_RUNS)
+        # ⚠️ **黑屏与白字不在这里建** —— 本函数跑在**工作线程**上, 而它们要碰 Kivy 的
+        #    canvas / CoreLabel。**在调用方 `_wait_idle_then_bench`(主线程)那里建。**
         # ⚠️⚠️ **盘面也要存**(2026-09-15 玩家报的 bug, 与 `_bench_saved_status` 同一个理由)。
         #    跑分期间 `_auto_launch_tick` 每一发都把 9 个槽**全钉成 `BENCH_BOARD[i]` 那一个值**
         #    (第 5 发是 `100`), 而且**写回了缓存** `self._boards[self.rtp_target]`。
@@ -12131,6 +12129,13 @@ class RootWidget(BoxLayout):
     def _wait_idle_then_bench(self, dt=0):
         """等球落地(主线程空闲)再启动物理 benchmark, 避免抢 CPU 干扰结果。"""
         if self.state == "ready":
+            # ⚠️⚠️ **黑屏与白字必须在主线程建**(2026-09-15 真机卡死事故)。
+            #    它们是 Kivy 的 canvas 指令与 **CoreLabel 的文字光栅化** —— 而
+            #    `_run_benchmark` 跑在**工作线程**上。之前我把这两句写进了线程体里,
+            #    真机表现: **黑屏出来了、白字停在「物理跑分 0/5」一动不动, 整轮卡死**。
+            #    ⇒ 建在**主线程这一侧**(本函数是 Clock 回调), 别搬回线程体里。
+            self._show_bench_dim()
+            self._set_bench_msg("物理跑分 0/%d" % SOC_SAMPLE_RUNS)
             threading.Thread(target=self._run_benchmark, daemon=True).start()
         else:
             Clock.schedule_once(self._wait_idle_then_bench, 0.5)
