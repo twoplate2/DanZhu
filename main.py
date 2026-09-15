@@ -2975,7 +2975,18 @@ def _swap_wrap():
         #    ⚠️ 必须在 `_orig` **之前**记 —— `_on_flip` 是在 `_orig` 里面被派发的,
         #       它读完 `_FRAME_BRK` 就清空; 记晚了这一帧就白记。
         if _FRAME_END[0] > 0.0:
-            _brk_add("尾", _FRAME_END[0])
+            # 2026-09-15: 老实现是 `_brk_add("尾", _FRAME_END[0])` 一格记完整段墙钟残差。
+            # 现在按上面的 `_clock_wrap()` 切两刀(第三段 flip 自身在 `_FRAME_SWAP` 里):
+            #   `尾·回调` = `_frame` 跑完 → Clock 本轮跑完;  `尾·空档` = Clock 跑完 → 进 flip。
+            # 两段之和 == 老那一格的总和, 语义不丢; 拿不到 Clock 标记就原样退回。
+            _ce = _CLOCK_END[0]
+            if _ce > _FRAME_END[0]:
+                _FRAME_BRK["尾·回调"] = (_FRAME_BRK.get("尾·回调", 0.0)
+                                        + (_ce - _FRAME_END[0]))
+                _FRAME_BRK["尾·空档"] = (_FRAME_BRK.get("尾·空档", 0.0)
+                                        + (time.perf_counter() - _ce))
+            else:
+                _brk_add("尾", _FRAME_END[0])
             _FRAME_END[0] = 0.0
         _t0 = time.perf_counter()
         try:
@@ -2990,6 +3001,44 @@ def _swap_wrap():
         pass
 
 
+def _clock_wrap():
+    """给 `Clock.tick` 的**结束**盖一个时间戳 —— 「尾」三分段的中间那一刀。
+
+    为什么需要它(2026-09-15, 对抗评审第 2 批): 老的「尾」= `_frame` 跑完 → 进 `flip` 之间的
+    **整段墙钟残差**, 是一个 lump。而对抗评审里两位专家对"参考带帧多出来的 2~3ms 去哪了"
+    吵了一整轮 —— 就是因为这段里没有细分:
+      · `尾·回调` = `_frame` 跑完 → Kivy Clock 本轮其余事件跑完(还有别的 `schedule_interval`)
+      · `尾·空档` = Clock 跑完 → 真正进 `flip`(事件循环/驱动的空当)
+      · 再加已有的 `_FRAME_SWAP`(flip 自身耗时) ⇒ 一共三段, 不再是一个 lump。
+    ⚠️ 必须在 `_orig` **之后**记(`finally`), 而且只在采样期记(`_TEXUPD_ACTIVE`)。
+    ⚠️ 拿不到这一刀时, `flip` 那边会**退回原来那一格「尾」** —— 绝不因为少一个标记就把账丢了。
+    ⚠️ 报「尾·回调 / 尾·空档」两个键, 而 `_bench_frames` 是按"取最大的两个子步骤"记的,
+       所以旧日志里的「尾」在读数上自然被这两格取代。
+    """
+    try:
+        from kivy.clock import Clock as _KC
+        _ccls = type(_KC)
+        _corig = getattr(_ccls, "tick", None)
+        if _corig is None or getattr(_corig, "_probe_wrapped", False):
+            return
+
+        def tick(self, *a, **k):
+            try:
+                return _corig(self, *a, **k)
+            finally:
+                if _TEXUPD_ACTIVE[0]:
+                    _CLOCK_END[0] = time.perf_counter()
+
+        tick._probe_wrapped = True
+        try:
+            _ccls.tick = tick
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+_clock_wrap()
 _swap_wrap()
 
 
@@ -6849,6 +6898,30 @@ _FS_OPEN = []            # [(序号, 字号, bold, 调用方/文案前 10 字)] 
 _FS_OPEN_SET = set()     # {(字号, bold)} 去重后 = 开过的**不同** fontid 数
 _FS_OPEN_MAX = 300       # 只留最近的, 别让它无限长
 
+# ---- 账本静音 + 两个"普查"计数器(2026-09-15, 对抗性评审第 0 批) ----------------
+# ⚠️ **为什么要静音**: 玩家要导出日志, 就得打开「帧率曲线」弹窗并按「保存日志」——
+#    而那个弹窗**自己的标题**走 `_fit_line` → 一次走满 13 档阶梯 → **一口气开 12~13 个
+#    fontid**。证据: 账本尾部那 12 个连降数 = 基准 57.2375 × 阶梯(相邻比值逐位吻合到
+#    小数点后四位), 而 `57.2375/19 = 45.1875/15 = 39.16/13 = 3.0125` 正是密度。
+#    ⇒ **"测量动作污染被测对象"**: 保存日志这个动作, 把日志里印的那个计数撑大 12。
+#    ⇒ 面板构建期间(含紧随其后的**布局收敛**, 那是异步的、跨好几帧)暂停记账。
+# ⚠️ **不许静默**: 静音期间被跳过的次数**照记并必须印进日志**。本仓库栽过太多次
+#    "没印"被读成"没发生"。
+_FS_MUTE_UNTIL = [0.0]   # 静音到这个墙钟时刻; 0.0 = 不静音
+_FS_MUTED_N = [0]        # 静音期间**被跳过**的冷开次数(必须印出来)
+_FS_MUTE_SEC = 1.5       # 窗口长度: 弹窗构建 + 布局收敛(异步, 要跨好几帧才定稿)
+# `fontid -> [冷开次数, 最后一次的调用方]`。**这是把 P 从"采样"变成"普查"的那个计数器**:
+# 原来只有 `_COLD_FS` 留最慢 5 条 —— 它本身就是采样, 所以"到底该钉几个 fontid"根本定不了。
+_FS_COLD_CNT = {}
+# 「本帧冷开了几次」→「这种帧出现了多少次」。**回答"一帧到底会不会开十几个"**:
+# `(N次/M测)` 只在「字号」挤进该帧最大两个子步骤时才印, 21059 帧里只有 2 帧印过 ——
+# 那是采样不是普查, 正是对抗评审里两位专家分歧的那个点。
+_FIT_HIST = {}
+# 「尾」的**两段拆分**用(2026-09-15, 第 2 批): `_frame` 跑完 → Kivy Clock 跑完 → 进 flip。
+# 老实现只有一个「尾」= 整段墙钟残差, 分不出里面是回调还是空档 —— 而那正是参考带帧
+# 那 2~3ms 的去处之争(对抗评审 S2)。
+_CLOCK_END = [0.0]
+
 def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
     """一段文字在字号 fs 下的**单行宽度**(px)。结果缓存。"""
     if not text:
@@ -6868,14 +6941,26 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
         #    `text_px` 从不产生纹理, 只量宽度。
         _FRAME_FIT[1] += 1
         # ⚠️ 这一句就是"开了一个 fontid"的那一刻 —— 记账在这儿, 不在别处(见 `_FS_OPEN`)。
-        try:
-            _FS_OPEN.append((len(_FS_OPEN), float(fs), bool(bold),
-                             ctx or _COLD_FS_TAG[0] or "?"))
-            _FS_OPEN_SET.add((round(float(fs), 4), bool(bold)))
-            if len(_FS_OPEN) > _FS_OPEN_MAX:
-                del _FS_OPEN[0]
-        except Exception:
-            pass
+        # ⚠️ **静音窗口内不记账**(见 `_FS_MUTE_UNTIL`): 报告 UI 自己的标签不算被测对象。
+        #    跳过的那几次**单独计数**, 并且必须印进日志 —— 不许静默。
+        if time.time() < _FS_MUTE_UNTIL[0]:
+            _FS_MUTED_N[0] += 1
+        else:
+            try:
+                _FS_OPEN.append((len(_FS_OPEN), float(fs), bool(bold),
+                                 ctx or _COLD_FS_TAG[0] or "?"))
+                _FS_OPEN_SET.add((round(float(fs), 4), bool(bold)))
+                if len(_FS_OPEN) > _FS_OPEN_MAX:
+                    del _FS_OPEN[0]
+                # 普查: 每个 fontid 一共冷开了几次(定"该钉几个"的唯一依据)。
+                _ck = (round(float(fs), 4), bool(bold))
+                _ce = _FS_COLD_CNT.get(_ck)
+                if _ce is None:
+                    _FS_COLD_CNT[_ck] = [1, ctx or _COLD_FS_TAG[0] or "?"]
+                else:
+                    _ce[0] += 1
+            except Exception:
+                pass
         _t_cold = time.perf_counter()
         try:
             _cl = CoreLabel(text=text, font_size=fs, bold=bold, text_size=(None, None))
@@ -10654,6 +10739,10 @@ class RootWidget(BoxLayout):
                                        # 光有 `字号50.7` 这一个数, 分不出"一次走完阶梯+二分"
                                        # 还是"一帧里十个标签同时换字", 而那两件事的修法完全相反。
                                        (_FRAME_FIT[0], _FRAME_FIT[1])))
+            # ⚠️ 本帧冷开次数的**普查**(2026-09-15, 对抗评审第 0 批): `(N次/M测)` 只在
+            #    「字号」挤进该帧最大两个子步骤时才印 —— 21059 帧里只印过 2 帧, 是采样。
+            #    这一行让"一帧到底会不会开十几个"变成普查。**必须在下面清零之前记。**
+            _FIT_HIST[_FRAME_FIT[1]] = _FIT_HIST.get(_FRAME_FIT[1], 0) + 1
             _FRAME_BRK.clear()
             _FRAME_FIT[0] = 0
             _FRAME_FIT[1] = 0
@@ -11394,7 +11483,13 @@ class RootWidget(BoxLayout):
                              float(getattr(self, "_render_fps", 0.0)),
                              float(getattr(self, "_render_median_fps", 0.0)),
                              float(getattr(self, "_render_1low", 0.0))))
-            _lines.append("# 长停顿门槛 %.2f 毫秒(中位帧 %.2f 毫秒 × 2 = 中位帧率的 50%%; 命中 %d 帧)"
+            # ⚠️⚠️ **两套口径必须各自带名印出来**(2026-09-15, 对抗评审抓到的).
+            #    这一行是【口径 A】: 帧间隔 ≥ 中位 × 2(等价于"中位帧率的 50%")。
+            #    它与下面【口径 B】(中位帧率的 55%)**是两个不同的量**, 却**都叫 ★** ——
+            #    实测第 2 轮 A=3 帧而 B=8 帧, 差 167%; 而**第 1 轮两者都给 1**,
+            #    所以只看一轮永远发现不了"它们不是一个东西"。简报里就是这么混起来的。
+            _lines.append("# ★口径A 长停顿「帧间隔 ≥ 中位×2」= 门槛 %.2f 毫秒(中位帧 %.2f 毫秒);"
+                          " 命中 **%d** 帧   ← 这是「长停顿」口径"
                           % (_thr, _p50, len(_slow_idx)))
             # ⚠️ **物理跑分 + 它那一段自己的 CPU 频率**(2026-09-15 加)。
             #    起因: 玩家实测同一台设备在 60Hz 与 120Hz 下跑分差**接近 2 倍**, 而跑分本该
@@ -11478,9 +11573,11 @@ class RootWidget(BoxLayout):
         # ⚠️ `1%%Low` 的双百分号**不能省**: 这一行是 `%` 格式化的, 写成 `1%Low` 会被当成
         #    格式符(`%L`), 报的是 "not enough arguments for format string" —— 报错信息
         #    指向 `%d` 的个数, 而**真正的原因在后面那个 `%`**。
-        _lines.append("# ★ 低于「中位帧率 55%%」(%.1f fps) 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d / 带字号 %d"
-                      "   ← **跨版本比较用这一条, 别用 1%%Low**"
-                      % (1000.0 / _th90, len(_below90), _b90_tex, _b90_face, _b90_fit))
+        _lines.append("# ★口径B 低于「中位帧率 55%%」(%.1f fps = 帧间隔 ≥ %.3f 毫秒 = 中位×%.3f)"
+                      " 的帧数: %d  ·  其中带文字重建 %d / 带板面 %d / 带字号 %d"
+                      "   ← **跨版本比较用这一条**(口径A 是另一回事, 见上)"
+                      % (1000.0 / _th90, _th90, (_th90 / _p50) if _p50 > 0 else 0.0,
+                         len(_below90), _b90_tex, _b90_face, _b90_fit))
         # 参考带单独一行(玩家定稿: 50%~70% 只作参考, 不进硬指标)。
         _lines.append("# ★ 参考带「中位帧率 55%%~75%%」(%.1f~%.1f fps): %d 帧  ·  中位帧 %.2f 毫秒"
                       "   ← 这**不是**指标, 只用来看趋势(跟着上面的硬指标一起降才对)"
@@ -11564,19 +11661,58 @@ class RootWidget(BoxLayout):
             #    读数的人分不清是"刷新率没变"还是"这一栏根本没在跑"。
             _lines.append("# 屏幕刷新率(采样期): **采不到**(桌面预览 / 无权限 / `_screen_hz()` 返回 0)")
         _wc = len(_FONT_WARM_HUD or ()) + len(_FONT_WARM_SIZES or ())
-        _lines.append("# 字号预热表: %d 项 (Kivy 字体缓存上限约 64, 超了就互相挤)  %s"
-                      % (_wc, "**超了! 会互相挤, 必须减字号总数**" if _wc > 60
-                         else ("贴着上限, 别再往上加" if _wc >= 56 else "有余量")))
         # ---- 字体缓存账本(见 `_FS_OPEN`): 回答"冷字号到底是被谁挤掉的" ----
         # ⚠️ 判据不靠猜: **一次冷测量 = 真的开了一个 fontid**。
-        #    不同字号数 > 64 ⇒ LRU 淘汰是铁的 —— "预热时量过=是 却仍冷" 就是这么来的。
-        #    再看"这次冷开之前最近开过哪些", 就知道是谁挤的(猜想: 弹窗那批)。
+        #    不同字号数 > 64 ⇒ 淘汰是铁的 —— "预热时量过=是 却仍冷" 就是这么来的。
+        #    再看"这次冷开之前最近开过哪些", 就知道是谁挤的(实锤: 「帧率曲线」弹窗的标题)。
         try:
             _nopen = len(_FS_OPEN_SET)
+            # ⚠️⚠️ **判据看的是"实际开过几个", 不是"我烘了几项"**(2026-09-15, 对抗评审)。
+            #    原来这里拿 `_wc`(=预热表项数 52) 去比 64 ⇒ 恒印「有余量」, 而**紧跟着的下一行**
+            #    印的是"开过 86 个 ⇒ 必然发生过淘汰" —— **同一份日志里两行结论相反**, 而且
+            #    乐观的那一行在读者的视线更前面。病灶不是"没有警报", 是判据量错了对象:
+            #    占住 64 个槽位的是**实际开过的 fontid 数**, 预热表只是其中一部分。
+            # ⚠️ **判据那行必须排在预热项数那一行之前** —— 先看到的要是真正会溢出缓存的那个数。
+            _lines.append("# 字号缓存判据: 实际开过 **%d** 个不同字号"
+                          " (Kivy 字体缓存上限约 64)  %s"
+                          % (_nopen,
+                             "**超了 —— 必然发生淘汰, 必须减总数**" if _nopen > 60
+                             else ("贴着上限, 别再往上加" if _nopen >= 56 else "有余量")))
+            _lines.append("# 字号预热表: %d 项 —— ⚠️ **这一行只说明「我烘了几项」, 不是判据**;"
+                          " 挤爆缓存的是上面「实际开过」那个数" % _wc)
+            if _FS_MUTED_N[0]:
+                # ⚠️ 静音了多少次**必须印** —— 否则"账本变小了"会被读成"真的少开了"。
+                _lines.append("#   （其中**报告 UI 期间静音跳过 %d 次** —— 打开「帧率曲线」弹窗"
+                              "本身会开 12~13 个 fontid, 那是测量动作污染被测对象, 已剔除）"
+                              % _FS_MUTED_N[0])
             _lines.append("# 字体缓存账本: 到现在一共开过 **%d** 个不同字号 (上限约 64) %s"
                           % (_nopen,
                              "**必然发生过 LRU 淘汰**" if _nopen > 60
                              else "还没撑爆"))
+            # ---- 两个**普查**计数器(2026-09-15 加) ----
+            # 「每个 fontid 冷开了几次」—— 定"该钉几个"的唯一依据(原来只有 `_COLD_FS` 的
+            # 最慢 5 条, 那是采样)。按次数降序, 只印前 12 个。
+            if _FS_COLD_CNT:
+                _top = sorted(_FS_COLD_CNT.items(), key=lambda kv: -kv[1][0])[:12]
+                _lines.append("# 冷开次数普查: 共 %d 个不同字号被冷开过, 总计 %d 次 ·"
+                              " **复冷过的 %d 个**"
+                              % (len(_FS_COLD_CNT),
+                                 sum(v[0] for v in _FS_COLD_CNT.values()),
+                                 sum(1 for v in _FS_COLD_CNT.values() if v[0] > 1)))
+                _lines.append("#   前 12 名(字号/bold → 次数[最后调用方]): "
+                              + " · ".join("%.2f%s x%d[%s]"
+                                           % (k[0], "B" if k[1] else "", v[0], str(v[1])[:8])
+                                           for k, v in _top))
+            else:
+                _lines.append("# 冷开次数普查: **一次冷开都没有**(全部命中预热表)")
+            # 「本帧冷开几次」的分布 —— 回答"一帧到底会不会开十几个"。
+            # ⚠️ 这是 `(N次/M测)` 的**普查版**: 那一栏只在「字号」挤进该帧最大两个子步骤时
+            #    才印(21059 帧里只印过 2 帧), 拿它当普查是采样当普查 —— 对抗评审抓到过。
+            if _FIT_HIST:
+                _tot = sum(_FIT_HIST.values())
+                _lines.append("# 帧内冷开分布: " + " · ".join(
+                    "%d次 %d帧(%.2f%%)" % (_k, _v, 100.0 * _v / max(1, _tot))
+                    for _k, _v in sorted(_FIT_HIST.items())))
             if _FS_OPEN:
                 _lines.append("#   最近开过的 12 个(字号[调用方]): "
                               + " · ".join("%.2f[%s]" % (_x[1], str(_x[3])[:10])
@@ -12091,6 +12227,15 @@ class RootWidget(BoxLayout):
     def _show_fps_curve(self):
         """展示本轮提交帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。"""
         gaps = list(getattr(self, "_render_gaps_ms", []) or [])
+        # ⚠️⚠️ **本面板自己的标签不计入字体账本**(2026-09-15, 对抗评审第 0 批)。
+        #    病根: 下面那个标题走 `_fit_line` → `_fit_font_size_slow` **一次走满 13 档阶梯**
+        #    ⇒ 一口气开 12~13 个 fontid。而玩家**必须**打开这个面板才能导出日志
+        #    ⇒ **保存日志这个动作, 把日志里印的那个计数撑大 12** —— 测量动作污染被测对象。
+        #    铁证: 账本尾部那 12 个连降数 = 基准 57.2375 × 阶梯(相邻比值逐位吻合到小数点
+        #    后四位), 而 `57.2375/19 = 45.1875/15 = 39.16/13 = 3.0125` 正是本机密度。
+        #    ⚠️ 窗口是**时间**不是"函数返回": 布局收敛是异步的, 跨好几帧才定稿。
+        #    ⚠️ 跳过几次**照记**(`_FS_MUTED_N`)并印进日志 —— 不许静默。
+        _FS_MUTE_UNTIL[0] = time.time() + _FS_MUTE_SEC
         # 每一帧"当时在演什么", 与 `gaps` **同序等长** —— 两者来自同一批 `on_flip` 采样:
         # `_on_flip` 一直在往 `_bench_frames` 里存 `(帧间隔, 场景标签)`, 曲线原来只取了前半截。
         # 接到曲线上之后, "哪几帧在掉" 和 "那几帧在演什么" 就是上下对齐看的, 不用再对表格。
