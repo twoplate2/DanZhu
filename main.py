@@ -855,6 +855,14 @@ SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
 BENCH_TARGET_LAUNCHES = 5
 
 
+# 「频率采样门」(2026-09-15)。**唯一的写者是 `benchmark_trajectories`**(样本之间的
+# `sleep(gap_sec)` 期间关门); 唯一的读者是 `_freq_sampler_start` 起的那个采样线程。
+# 默认 True = 一直采 —— 所以 `benchmark_sustained`(波 2 / SOC 高压, **没有间隙**)不受影响。
+# ⚠️ 为什么必须是**进程级**而不是参数: 采样线程与 benchmark 是两个线程、两个调用栈,
+#    它们之间只有模块级状态这一条路。
+_FREQ_GATE = [True]
+
+
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
                            runs=SOC_SAMPLE_RUNS,
@@ -896,6 +904,15 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
         used = max(0.000001, cpu_clock() - t0)
         return flights, frames, used
 
+    # ⚠️⚠️ **门: 采样间隙里频率不算数**(2026-09-15 玩家:「必须用跑分时的平均频率
+    #    (空闲的时候可以不计)」)。采样线程是每 0.5 秒无脑采一次的, 而样本之间有
+    #    `gap_sec` 秒的 sleep(默认 5 秒 × 4 次 = **20 秒**), 那几段应用基本闲着、
+    #    频率是低频 —— 不关门的话"平均频率"会被这 20 秒拖下水, 报出来的是
+    #    "跑分 + 休息"的平均, 不是"跑分时"的平均。
+    # ⚠️ 进门先开门: 预热那一段也算"在跑"(它同样满载)。
+    # ⚠️ `benchmark_sustained`(波 2 / SOC 高压)**没有间隙**, 门对它恒真 —— 默认就是 True,
+    #    只有本函数会去翻, 互不干扰。
+    _FREQ_GATE[0] = True
     _run_once(warmup_cpu_sec, 98765)   # 升频/Python 热身，不计成绩
 
     fps_list = []
@@ -904,7 +921,11 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     total_frames = 0
     for _i in range(runs):
         if _i > 0 and gap_sec > 0:
-            time.sleep(gap_sec)        # ⚠️ 只在样本之间停, 第一轮前不停(预热刚做完)
+            _FREQ_GATE[0] = False      # 关门 → 这几秒的频率不进平均
+            try:
+                time.sleep(gap_sec)    # ⚠️ 只在样本之间停, 第一轮前不停(预热刚做完)
+            finally:
+                _FREQ_GATE[0] = True   # ⚠️ finally: 中断了也必须把门开回来
         flights, frames, used = _run_once(sample_cpu_sec, 12345)
         fps_list.append(frames / used)
         cpu_seconds_list.append(used)
@@ -987,9 +1008,12 @@ def _freq_sampler_start():
     def _samp():
         while not _stop[0]:
             try:
-                _v = _cpufreq_mhz()
-                if _v > 0:
-                    _frq.append(_v)
+                # ⚠️ **关门期间不采**(见 `_FREQ_GATE`): 样本之间那几秒 sleep 里 CPU 是闲的,
+                #    采进来会把"跑分时的平均频率"拖低 —— 玩家要的是"跑分时"的平均。
+                if _FREQ_GATE[0]:
+                    _v = _cpufreq_mhz()
+                    if _v > 0:
+                        _frq.append(_v)
             except Exception:
                 pass
             time.sleep(0.5)
@@ -2298,6 +2322,47 @@ def _set_label_text(label, text):
         return True
     except Exception:
         return False
+
+
+def _hist_stamp(raw):
+    """把记录里的 `2026-09-15 14:07` 缩成**日期**: 本年 `09-15`, 非本年 `25-09-15`。
+
+    玩家 2026-09-15:「把时间精简为日期, 只有月日 2 个数值, 比如 09-14, 代表 9 月 14 日」。
+
+    ⚠️ **只改显示** —— 盘上照旧存完整时间戳(`%Y-%m-%d %H:%M`), 所以旧记录一条都不用动,
+       别处要完整时间也还拿得到。
+    ⚠️ **跨年必须带年份**: 光看 `09-14` 分不出是今年还是去年, 而历史最多留 100 条、
+       天天跑的话跨年是迟早的事。**只有非本年才多印两位年** —— 一年以内的记录仍是玩家
+       要的那个短样子。(列宽也按 `25-09-15` 的 8 个字符留的。)
+    ⚠️ 认不出来的格式**原样返回**, 绝不吞掉信息、也不抛。
+    """
+    _s = str(raw if raw is not None else '--')
+    try:
+        _d = time.strptime(_s[:16], "%Y-%m-%d %H:%M")
+        if _d.tm_year == time.localtime().tm_year:
+            return "%02d-%02d" % (_d.tm_mon, _d.tm_mday)
+        return "%02d-%02d-%02d" % (_d.tm_year % 100, _d.tm_mon, _d.tm_mday)
+    except Exception:
+        return _s
+
+
+# ---- 「模拟测试历史」那张表的四个字段(2026-09-15) ---------------------------
+# ⚠️⚠️ **为什么是"一串空格分隔"而不是固定列宽的表格**: 玩家 2026-09-15 加第四列
+#    (CPU平均频率)之后实测(`temp/hist_colwidth_probe.py`)四列在 14sp 下要 **333px**,
+#    而弹窗内容区在 360dp 上只有 277.6px(0.92 宽) —— **放不下**。
+#    固定列宽时"每一列各自要装下自己最宽的那一串"(时间 58 / 帧 96 / 跑分 95 / 频率 84),
+#    余量要付四遍; 改成整行一起排之后**同一行数据只要 272px**, 满 14sp 就放得下。
+#    ⇒ 玩家原话:「数据用空格分割, 不强制要求对齐了」。
+# ⚠️ **表头与数据行必须共用同一个分隔串** —— 于是把它提成常量, 两边都 `join` 它,
+#    从结构上杜绝"表头用一种分隔、数据行用另一种"。
+# ⚠️ **字段顺序按玩家 2026-09-15 给的样例**:
+#      `08-25 59.8/53.0 4256Mhz 14685/5.8%`
+#    = 时间 / 平均·1%Low帧 / **CPU平均频率** / 中位跑分·波动
+#    —— 频率在**第三位**(跑分/波动之前), **不是**放在最后。
+# ⚠️ 单位写 `Mhz`(玩家两次都这么写), 不写成 `MHz`。
+_HIST_COLS = ('时间', '平均/1%Low帧', 'CPU平均频率', '中位跑分 / 波动')
+_HIST_SEP = ' '
+_HIST_HEAD = _HIST_SEP.join(_HIST_COLS)
 
 
 def _bench_menu_desc():
@@ -10277,23 +10342,30 @@ class RootWidget(BoxLayout):
         #      信息:           中性蓝 `COL_BTN`(它不是测试, 不占两个测试系的颜色)
         #    ⚠️ **顺序也按系**: 模拟的两个在前 2 名(玩家 2026-09-15:「把开始测试和查看历史
         #       按钮放在一起, 都是在前 2 名」), SOC 的两个跟在后面。
+        # ⚠️⚠️ **一行一个颜色 —— 右边的按钮用左边那个的颜色**(玩家 2026-09-15:
+        #    「这几个按钮的颜色好乱啊。要不这样，右边的按钮用左边按钮的颜色？」「这样就3种颜色了」)。
+        #    改之前是 6 个按钮 6 种颜色(行动亮 / 历史暗两两配对) ⇒ 玩家读成"颜色好乱"。
+        #    现在**同一行同色**:  模拟系`COL_FIRE` / SOC 系`COL_SOC` / 信息系`COL_BTN`。
+        #    ⚠️ 代价是**同一行里分不出"行动"和"历史"** —— 这是玩家明确选的取舍, 别自作主张改回去。
+        #    ⚠️ `COL_DARKRED` / `COL_SOC_DIM` / `COL_BTN_OFF` 在本文件别处仍在用(其它弹窗的
+        #       取消/返回/关闭), **不要因为它们在这里不用了就删掉**。
         start_btn = Button(text='开始模拟测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
         hist_btn = Button(text='查看模拟历史', font_size='17sp', bold=True,
-                          background_normal='', background_color=hex_rgb(COL_DARKRED) + (1,),
+                          background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                           size_hint_y=None, height=dp(52))
         hp_btn = Button(text='SOC高压测试', font_size='17sp', bold=True,
                         background_normal='', background_color=hex_rgb(COL_SOC) + (1,),
                         size_hint_y=None, height=dp(52))
         hph_btn = Button(text='高压测试历史', font_size='17sp', bold=True,
-                         background_normal='', background_color=hex_rgb(COL_SOC_DIM) + (1,),
+                         background_normal='', background_color=hex_rgb(COL_SOC) + (1,),
                          size_hint_y=None, height=dp(52))
         info_btn = Button(text='启动信息', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
         cap_btn = Button(text='帧率上限设定', font_size='17sp', bold=True,
-                         background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                         background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                          size_hint_y=None, height=dp(52))
         # 0.84 -> 0.88: 加宽之后 400dp 机器上说明的每一句都**刚好一行**(实测最长那句
         # 「全程约 25 秒(含完整的中奖装杯演出)。」259px < 可用 296px), 折行整个消失。
@@ -11034,6 +11106,10 @@ class RootWidget(BoxLayout):
             out["cpufreq_n"] = len(_fr_)
             out["cpufreq_cap"] = float(_CPUFRQ.get("cap", 0.0) or 0.0)
             out["cpufreq_p50"] = _fr_[len(_fr_) // 2] if _fr_ else 0.0
+            # 平均 —— 玩家 2026-09-15:「cpu频率不能用中位数」「所有"代表值"都改平均」。
+            # ⚠️ 这一段是**渲染窗口**采的, 应用大部分时间在等 vsync ⇒ 均值天生偏低,
+            #    打印端**必须注明它是渲染窗口**(否则会被读成"跑分时只有这么点")。
+            out["cpufreq_mean"] = (sum(_fr_) / len(_fr_)) if _fr_ else 0.0
             out["cpufreq_min"] = min(_fr_) if _fr_ else 0.0
             out["cpufreq_max"] = max(_fr_) if _fr_ else 0.0
             # 低于"上限 50%"的采样占比 —— 直接回答"是不是全程在低频跑"。
@@ -11200,6 +11276,11 @@ class RootWidget(BoxLayout):
         self._phys_freq_n = len(_f1)
         self._phys_freq_min = _f1[0] if _f1 else 0
         self._phys_freq_max = _f1[-1] if _f1 else 0
+        # ⚠️ **平均频率** —— 玩家 2026-09-15:「cpu频率不能用中位数」「必须用**跑分时**的平均
+        #    频率(空闲的时候可以不计)」。所以: ①这一格是**均值不是中位**; ②采到的样本已经
+        #    由 `_FREQ_GATE` 把**样本之间的 sleep 段**滤掉了(那几秒 CPU 闲, 会把均值拖低)。
+        # ⚠️ `_phys_freq_p50/min/max/n` **一个都不删** —— JSON 里留着, 只是不再当"代表值"显示。
+        self._phys_freq_mean = int(sum(_f1) / len(_f1)) if _f1 else 0
         # ⚠️ **主测试不再跑高压段**(2026-09-15 玩家定案: 高压拆成独立按钮)。
         #    这里必须**主动清空**, 否则上一次高压测试的 `_sust_fps` 会残留在内存里,
         #    面板和日志就会把**旧的高压结果**当成这一次的印出来 —— 那是"印假数", 比没有更糟。
@@ -11328,6 +11409,8 @@ class RootWidget(BoxLayout):
             "min": int(getattr(self, "_phys_freq_min", 0) or 0),
             "max": int(getattr(self, "_phys_freq_max", 0) or 0),
             "n": int(getattr(self, "_phys_freq_n", 0) or 0),
+            # 平均 —— 玩家 2026-09-15 定案「cpu频率不能用中位数」; 上面那个 p50 留着做分布。
+            "mean": int(getattr(self, "_phys_freq_mean", 0) or 0),
         }
         self._bench_phys_now = int(phys_fps)   # 给 `_bench_frame_log` 印那一行用
         # 存历史(最近100次)
@@ -11345,7 +11428,11 @@ class RootWidget(BoxLayout):
             "phys_spread": round(phys_spread, 1),
             "phys_cpu_seconds": round(sum(cpu_secs or []), 3),
             # ⚠️ 跑分**那一段**自己的 CPU 频率(见 `_run_benchmark`)。留着它才能事后回答
-            #    "两次跑分差这么多, 是不是频率不同" —— 历史面板不印, 但 JSON 里有。
+            #    "两次跑分差这么多, 是不是频率不同"。
+            # ⚠️ `phys_freq_mean` 是**代表值**(玩家 2026-09-15:「cpu频率不能用中位数」),
+            #    而且是**跑分时**的平均(采样间隙已被 `_FREQ_GATE` 滤掉);
+            #    `phys_freq_p50` 一并留着 —— 它只是**频率分布的一项**, 不再当代表值印。
+            "phys_freq_mean": int(getattr(self, "_phys_freq_mean", 0) or 0),
             "phys_freq_p50": int(getattr(self, "_phys_freq_p50", 0) or 0),
             # 波 2(高压) —— 面板只印一行, JSON 里把逐窗值和它那段的频率全留着。
             "sust_sec": int(SOC_SUSTAIN_WALL_SEC),
@@ -11537,12 +11624,15 @@ class RootWidget(BoxLayout):
             _pf = getattr(self, "_bench_phys_freq", None)
             _pm = int(getattr(self, "_bench_phys_now", 0) or 0)
             if _pm > 0:
-                if _pf and _pf.get("p50"):
-                    _lines.append("# 物理跑分(中位 %d 步/秒) · **跑分那段的 CPU 频率**: 中位 %dMHz "
-                                  "(最低 %d / 最高 %d, %d 个采样)"
-                                  % (_pm, _pf["p50"], _pf["min"], _pf["max"], _pf["n"]))
+                # ⚠️ **代表值用平均, 不用中位**(玩家 2026-09-15:「cpu频率不能用中位数」)。
+                #    而且这个平均是**跑分时**的 —— 样本之间的 sleep 段已被 `_FREQ_GATE` 滤掉。
+                _pfm = int((_pf or {}).get("mean", 0) or 0) or int((_pf or {}).get("p50", 0) or 0)
+                if _pf and _pfm:
+                    _lines.append("# 物理跑分(中位 %d 步/秒) · **跑分那段的 CPU 平均频率**: %dMHz "
+                                  "(最低 %d / 最高 %d, %d 个采样; 采样间隙已剔除)"
+                                  % (_pm, _pfm, _pf["min"], _pf["max"], _pf["n"]))
                 else:
-                    _lines.append("# 物理跑分(中位 %d 步/秒) · 跑分那段的 CPU 频率: **没采到**"
+                    _lines.append("# 物理跑分(中位 %d 步/秒) · 跑分那段的 CPU 平均频率: **没采到**"
                                   "(非安卓 / 读不到 sysfs)" % _pm)
             # ⚠️ **波 2(高压)那两行** —— 与波 1 相邻印,
             #    两波的频率**必须分开看**(它们是不同的两段时间)。
@@ -12017,9 +12107,18 @@ class RootWidget(BoxLayout):
                 _fx = float(d.get("cpufreq_max", 0.0) or 0.0)
                 _fc = float(d.get("cpufreq_cap", 0.0) or 0.0)
                 _lp = float(d.get("cpufreq_low_pct", -1.0))
-                _lines.append("# CPU 频率(采样期): 中位 %.0fMHz · 最低 %.0f · 最高 %.0f · 上限 %.0fMHz%s"
-                              % (_fp, _fm, _fx, _fc,
+                # ⚠️ **代表值用平均**(玩家 2026-09-15:「cpu频率不能用中位数」)。中位仍印在括号里
+                #    —— 它是**分布的一项**, 与最低/最高并列, 不再冒充代表值。
+                # ⚠️ **平均取不到就印「没采到」, 绝不拿中位数顶**(那正是"印假数")。
+                _fmn = float(d.get("cpufreq_mean", 0.0) or 0.0)
+                _fm_txt = ("**平均 %.0fMHz**" % _fmn) if _fmn > 0 else "平均 **没采到**"
+                _lines.append("# CPU 频率(**渲染窗口**那一段, 不是跑分段): %s · "
+                              "最低 %.0f · 最高 %.0f · 上限 %.0fMHz · (中位 %.0f)%s"
+                              % (_fm_txt, _fm, _fx, _fc, _fp,
                                  ("  ·  **低于上限一半的采样占 %.0f%%**" % _lp) if _lp >= 0 else ""))
+                _lines.append("#   ⚠️ 这一段天生偏低: 渲染窗口里应用大部分时间在**等 vsync**,"
+                              " 调频器据此判它很闲。要看「跑分时跑到多少」请看上面那行"
+                              "「跑分那段的 CPU 平均频率」。")
                 # ⚠️ 判据: 中位远低于上限 ⇒ 采样期全程低频, 那 `主线程ms` 是**被主频放大过的**,
                 #    不能拿去和其他跑分比, 也不能当作"应用真的这么重"; 反过来, 砍掉同样的工作量
                 #    在低频下**省下的墙钟更多** —— 所以低频并不是"优化没用", 是"优化更值"。
@@ -12854,44 +12953,26 @@ class RootWidget(BoxLayout):
             #    —— **零余量**。原来是「平均/1%Low」(70px) 有 12px 余量, v0.7.28 按要求加上
             #    「帧」之后把余量吃光了, 任何一点取整/字体缩放都会把它顶成两行。
             #    94 恢复成原来那 12px 余量。第三列拿的是剩余宽度, 实测它的表头只要 83px, 够。
-            time_w, fps_w = dp(118), dp(94)
-            columns = BoxLayout(size_hint_y=None, height=dp(22))
-            for text, width in (("时间", time_w), ("平均/1%Low帧", fps_w), ("中位跑分 / 波动", None)):
-                head = Label(text=text, halign='center', valign='middle',
-                             color=hex_rgb(COL_SUB) + (1,),
-                             size_hint_x=None if width else 1)
-                if width:
-                    head.width = width
-                # ⚠️ **必须走 `_fit_line`(自动缩字号), 不能只绑 `text_size = size`**(2026-09-15)。
-                #    原来那一行绑的是 `text_size = w.size` —— **两维都给** ⇒ 宽度不够就**折行**,
-                #    而这一排只有 dp(22) 高, 折出来的第二行直接被顶出格子(玩家截图就是这个)。
-                #    而真机上还有第二个放大器: `12sp` 跟着**系统字体缩放**(config.fontScale)走,
-                #    `dp(94)` 不跟 ⇒ fontScale > 1 的机器上光靠加宽永远救不回来, 必须能缩。
-                #    全 app 的单行文字早就统一走 `_fit_line`/`_fit1` 了(见 `_install_fit` 的说明:
-                #    "挂在 text 上而不是在 20 个赋值点各调一次 —— 那样迟早漏掉一个, 而漏掉的
-                #    表现就是某个状态又折行了, 只有截图才看得见")—— **这一排表头就是漏掉的那个。**
-                #    代价: 第一次开这个弹窗会多付一次冷字号(真机约 40 毫秒), 之后走缓存。
-                # ⚠️ **基准字号 12 -> 14**(2026-09-14, 玩家:「这个时间 平均/1%low帧什么的
-                #    标题字体的大小增加」)。原来表头 12sp **比下面的数据行(15sp)还小一档**,
-                #    看着不像表头。提到 14sp 之后:
-                #      · 宽屏(平板)上就是满 14sp;
-                #      · 窄屏上「平均/1%Low帧」在 14sp 要 ~96px, 超过 `fps_w=dp(94)` ⇒
-                #        `_fit_line` 自动缩到约 13.7sp —— **仍然比原来的 12 大, 且保证一行**。
-                #    ⚠️ **别为了"字够大"去加宽 `fps_w`**: 第三列拿的是**剩余宽度**,
-                #       加宽它就是把「中位跑分 / 波动」挤小(实测窄屏上会缩到 ~10.7sp, 更糟)。
-                #       表头这一排的总宽是固定的, 三个列头在抢同一块地。
-                #    ⚠️ `_fit_line` 在这里的两个作用都不能省: 自动缩字号(防折行) +
-                #       `_fit1(head)` 让"真的变了文字"时重挑一次。原来绑 `text_size=w.size`
-                #       两维都给 ⇒ 宽度不够就折行, 而这一排只有 dp(22) 高, 第二行被顶出格子。
-                #    代价: 第一次开这个弹窗会多付一次冷字号(真机约 40 毫秒), 之后走缓存。
-                self._fit_line(head, 14)
-                self._fit1(head)
-                columns.add_widget(head)
-            content.add_widget(columns)
+            # ⚠️⚠️ **不做固定列宽了**(玩家 2026-09-15:「数据用空格分割, 不强制要求对齐了」)。
+            #    实测(`temp/hist_colwidth_probe.py`): 四列按各自最宽的那串算要 **333px**,
+            #    而 360dp 的内容区(0.92 宽)只有 299.2px ⇒ 硬排就得把字号缩到 ~11.7sp。
+            #    改成**整行一串空格分隔**之后, 同一行只要 **272px** —— **满 14sp 就放得下**。
+            #    省下来的正是"每列各自的余量付四遍"。
+            #    ⚠️ 代价是**上下不对齐**(比例字体, 列宽随内容浮动) —— 这是玩家明确接受的。
+            head = Label(text=_HIST_HEAD, halign='center', valign='middle',
+                         color=hex_rgb(COL_SUB) + (1,),
+                         size_hint_y=None, height=dp(22))
+            head.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+            # ⚠️ **必须走 `_fit_line`(自动缩字号)** —— 表头比数据行长得多(315px vs 272px),
+            #    窄屏上得靠它缩。⚠️ 绑的必须是 `(w.width, None)` **不是** `w.size`:
+            #    两维都给 ⇒ 宽度不够就**折行**, 而这一排只有 dp(22) 高, 第二行直接被顶出格子。
+            self._fit_line(head, 14)
+            self._fit1(head)
+            content.add_widget(head)
             scroll = ScrollView(size_hint=(1, 1))
             inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
             inner.bind(minimum_height=inner.setter('height'))
-            time_rows, fps_rows, soc_rows = [], [], []
+            rows = []
             for r in reversed(self.bench_history[-100:]):
                 # "2026-09-11 19:22    每秒 10971 步" 要 266px, 360dp 机器上只有 253px ⇒
                 # 原来折成两行而格子只有 30px 高, 第二行直接被裁掉(玩家看到半行字)。
@@ -12900,38 +12981,43 @@ class RootWidget(BoxLayout):
                 #    而它是个要塞很多行的滚动列表。统一到 15sp(Body 档) + 26dp 行高:
                 #    同一个滚动框里能多放约两行(玩家: 「这个设计的目的是放更多内容的」)。
                 render, low = r.get('render_fps'), r.get('render_1low')
-                stamp = str(r.get('time', '--'))
+                stamp = _hist_stamp(r.get('time'))
                 if render is None or low is None:
                     fps_text = '—'
                 else:
                     fps_text = '%.1f/%.1f' % (float(render), float(low))
+                # ⚠️ **CPU 平均频率**(玩家 2026-09-15 要的那一列, 排在**第三位**)。
+                #    · 取的是**跑分时**的平均(采样间隙已被 `_FREQ_GATE` 滤掉), **不是中位数**
+                #      —— 玩家原话「cpu频率不能用中位数」。
+                #    · **旧记录**里从来没存过平均(那之前只存了 `phys_freq_p50`) ⇒ 显示 `—`。
+                #      **不拿中位数回落** —— 玩家明说不能用中位数, 拿别的数顶就是印假数。
+                #    · 单位写 `Mhz`(玩家两次都这么写), 不写成 `MHz`。
+                _fmean = r.get('phys_freq_mean')
+                freq_text = ('%dMhz' % int(_fmean)) if _fmean else '—'
                 spread = r.get('phys_spread')
                 if spread is None:
                     soc_text = '%d/—' % r.get('phys_fps', 0)
                 else:
                     soc_text = '%d/%.1f%%' % (
                         r.get('phys_fps', 0), float(spread))
-                row = BoxLayout(size_hint_y=None, height=dp(26))
-                labels = []
-                for text, width in ((stamp, time_w), (fps_text, fps_w), (soc_text, None)):
-                    lbl = Label(text=text, font_size='14sp', halign='center', valign='middle',
-                                color=hex_rgb(COL_TEXT) + (1,),
-                                size_hint_x=None if width else 1)
-                    if width:
-                        lbl.width = width
-                    lbl.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
-                    row.add_widget(lbl)
-                    labels.append(lbl)
-                time_rows.append(labels[0])
-                fps_rows.append(labels[1])
-                soc_rows.append(labels[2])
+                # ⚠️ 整行**一串空格分隔**, 不做列对齐(玩家 2026-09-15:「数据用空格分割,
+                #    不强制要求对齐了」)。字段顺序就是 `_HIST_COLS` 那个顺序 ——
+                #    表头与数据行 `join` 的是**同一个** `_HIST_SEP`。
+                row = Label(text=_HIST_SEP.join((stamp, fps_text, freq_text, soc_text)),
+                            halign='center', valign='middle',
+                            color=hex_rgb(COL_TEXT) + (1,),
+                            size_hint_y=None, height=dp(26))
+                # ⚠️ 绑 `(w.width, None)` 而**不是** `w.size`: 两维都给 ⇒ 宽度不够就折行,
+                #    这是本工程 2026-09-15 踩过的那个坑(表头就是这么折的)。
+                row.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+                rows.append(row)
                 inner.add_widget(row)
             # ⚠️ 必须 `sp(17)` 而不是 `17.0` —— 这个形参是**绝对字号(px)**, 不是 sp 档位。
             #    传裸 17.0 在 density=2 的机器上就只有一半大(实测被探针的数字逮住:
             #    同一批行 17.0 而别的 17sp 行是 34.0)。
-            self._fit_uniform(time_rows, sp(14))
-            self._fit_uniform(fps_rows, sp(14))
-            self._fit_uniform(soc_rows, sp(14))
+            # ⚠️ **只一条** —— 现在整行是**一个 Label**, 所以一组就是全表。
+            #    这正是 `_fit_uniform` 存在的理由(整表同一个字号, 不许参差)。
+            self._fit_uniform(rows, sp(14))
             scroll.add_widget(inner)
             content.add_widget(scroll)
             # 底部口径说明(2026-09-14, 玩家要的)。⚠️ **两个「中位」不是同一个东西**:
@@ -12960,17 +13046,88 @@ class RootWidget(BoxLayout):
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
             self._auto_h(foot, dp(44))
             content.add_widget(foot)
-        close_btn = Button(text='关闭', font_size='16sp', bold=True,
-                           background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
-                           size_hint_y=None, height=dp(46))
-        content.add_widget(close_btn)
+        # ⚠️ 「清空历史」只在**有记录**时才放出来 —— 空列表上摆一个"清空"是没意义的热区,
+        #    而且它离「关闭」只有 dp(8), 误触代价是**不可逆**的。
+        if self.bench_history:
+            _acts = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+            clear_btn = Button(text='清空历史', font_size='16sp', bold=True,
+                               background_normal='',
+                               background_color=hex_rgb(COL_DARKRED) + (1,))
+            close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                               background_normal='',
+                               background_color=hex_rgb(COL_BTN_OFF) + (1,))
+            _acts.add_widget(clear_btn)
+            _acts.add_widget(close_btn)
+            content.add_widget(_acts)
+        else:
+            close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                               background_normal='',
+                               background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                               size_hint_y=None, height=dp(46))
+            content.add_widget(close_btn)
         # 宽高同 _popup(): 必须吃等效竖屏窗口, 不能用 size_hint(见 _popup 的说明)
+        # ⚠️ 宽 **0.86 -> 0.92**(2026-09-15 加第四列时改): 见上面列宽那段实测 ——
+        #    360dp 上四列要多 55px, 加宽这一档拿回 21.6px, 其余靠缩字号。
         _vw, _vh = self._veq()
         popup = RotPopup(title='', content=content, size_hint=(None, None),
-                         width=0.86 * _vw, height=0.7 * _vh,
+                         width=0.92 * _vw, height=0.7 * _vh,
                          auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
+        if self.bench_history:
+            # ⚠️ 清空之后**当场把面板重开一次** —— 玩家要立刻看到空态, 而不是盯着
+            #    一份已经删掉的旧表格。(旧面板先 dismiss, 否则会叠两层。)
+            def _ask_clear(*_):
+                popup.dismiss()
+                self._clear_bench_history()
+            clear_btn.bind(on_release=_ask_clear)
         popup.open()
+
+    def _clear_bench_history(self):
+        """清空「模拟测试历史」——**不可逆, 所以必须先过一道确认**。
+
+        ⚠️ 玩家 2026-09-15 定案要二次确认(见 `_show_fps_cap_settings` 的 `取消/确定` 同款写法)。
+        ⚠️ **只清这一张表**(`plinko_bench_history.json`)。SOC 高压历史是**另一张**
+           (`plinko_hp_history.json`) —— 两张表分开是玩家 2026-09-15 定过的案, 别一起清。
+        ⚠️ 确认框里**必须写清条数**, 让玩家知道要删掉多少东西(「不可恢复」这四个字不能省)。
+        """
+        _n = len(self.bench_history)
+        if _n <= 0:
+            return
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(10))
+        ttl = self._fit_line(Label(text='清空模拟测试历史', bold=True, halign='center',
+                                   color=hex_rgb(COL_TEXT) + (1,),
+                                   size_hint_y=None, height=dp(28)), 19)
+        content.add_widget(ttl)
+        # ⚠️⚠️ **正文里绝不能出现 markdown 星号** —— Kivy 的 Label 不认 markdown,
+        #    `**3**` 会在屏幕上**原样显示成 `**3**`**(`fx_probe` 有一条专门钉这个)。
+        msg = Label(text='将删除全部 %d 条模拟测试历史，\n不可恢复。\n\n'
+                         '（SOC 高压测试历史不受影响）' % _n,
+                    font_size='15sp', halign='center', valign='middle',
+                    color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
+        self._auto_h(msg, dp(90), dp(6))
+        content.add_widget(msg)
+        acts = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        cancel = Button(text='取消', font_size='16sp', bold=True, background_normal='',
+                        background_color=hex_rgb(COL_BTN_OFF) + (1,))
+        ok = Button(text='确定清空', font_size='16sp', bold=True, background_normal='',
+                    background_color=hex_rgb(COL_DARKRED) + (1,))
+        acts.add_widget(cancel)
+        acts.add_widget(ok)
+        content.add_widget(acts)
+        popup = self._popup(0.86, 260, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
+
+        def _confirm(*_):
+            self.bench_history = []
+            self._save_bench_history()          # 盘上也要清, 否则重启又回来了
+            popup.dismiss()
+            _set_label_text(self.status_lbl, '模拟测试历史已清空')
+            self._show_bench_history()          # 当场重开 → 看到空态
+
+        cancel.bind(on_release=popup.dismiss)
+        ok.bind(on_release=_confirm)
+        popup.open()
+        self._popup_fit_content(popup, content)
 
     # 声音两态循环: 音效已开(含语音) -> 音效已关。原来是三态, 中间的"音效已开(不播语音)"
     # 档没有存在价值 —— 要语音的选开、不要的直接关掉, 中间那档只会让人纠结(用户定稿)。
