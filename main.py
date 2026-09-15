@@ -14422,9 +14422,19 @@ class RootWidget(BoxLayout):
         i = self.SOUND_MODES.index(self.sound_mode)
         self.sound_mode = self.SOUND_MODES[(i + 1) % len(self.SOUND_MODES)]
         if self.sound_mode == "off":
-            # "关闭声音"(0.84s)必须在静音前播; 延迟真正关闭, 让播报收尾后再停输出
-            self.sfx.play("voice_mode_off")
-            Clock.schedule_once(self._apply_sound_off, 1.0)
+            # ⚠️⚠️ 2026-09-16 玩家: 「删掉关闭声音的这个音效, 也不加载」。
+            #    **动机很具体**(玩家原话): 「刚才在办公室, 我不想人听见, 我点了这个声音,
+            #    结果声音贼大」—— 他想静音, 按下去之后它**先大声念了一句**「音效已关」,
+            #    在需要安静的场合反而更吵。一个"关声音"的按钮不该先制造声音。
+            #    原来这里还配了 `Clock.schedule_once(self._apply_sound_off, 1.0)`, 延迟 1 秒
+            #    才真正静音(留给播报收尾, 顺带成了"切回来就取消关闭"的反悔窗口)。
+            #    语音删掉之后这个延迟**失去了理由**: 留着会变成"我明明点了关, 声音还在
+            #    响一秒"(界面已显示「音效已关」, 输出却没停)。所以改成**立即静音**,
+            #    `_apply_sound_off` 与它的 1 秒延迟一并删除。
+            #    ⚠️ 连带: `voice/voice_mode_off.wav` **已从仓库删除** —— 语音是按目录
+            #       (`os.listdir`)全量加载的, 文件不在就**不会加载**(玩家要的"也不加载")。
+            #       别把那个 wav 加回来: 加回来它会被加载, 但没有任何地方会播它。
+            self.sfx.set_enabled(False)
         else:
             self.sfx.set_enabled(True)
             # 开启提示写死 voice_mode_sfx(「开启中奖音效」): 与按钮上的"音效已开"一致。
@@ -14432,10 +14442,6 @@ class RootWidget(BoxLayout):
             self.sfx.play("voice_mode_sfx")
         self._refresh_mute_btn()
         self._save_config()
-
-    def _apply_sound_off(self, dt):
-        if self.sound_mode == "off":      # 延迟窗口内玩家又切回 on 则取消关闭
-            self.sfx.set_enabled(False)
 
     def _refresh_mute_btn(self):
         # 开=绿底深字 / 关=深底亮灰字, 两态一眼可辨
