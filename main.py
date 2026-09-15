@@ -3588,6 +3588,15 @@ def _request_android_high_hz():
         if system_cap <= 0.0:
             system_cap = screen_cap
         target = min(screen_cap, system_cap, float(_fps_user_cap()))
+        # ⚠️⚠️ **跑分/高压期间也要把"对系统的请求"按下去**(2026-09-15 真机抓到的 bug)。
+        #    只压 `Clock._max_fps` 而**不压这里**是**错的**: app 会一边告诉系统"我要 120Hz"、
+        #    一边只画 60 —— 那正是 ② 那次"**设备整个塌一次**"的同款不一致状态。
+        #    真机实测(游戏120+OS120, 只压 Kivy): 实际渲染 **70.5fps, 没按住**;
+        #    而同一版里游戏60+OS60(请求本来就是 60)就按住了(57.0)。
+        #    ⚠️ `setFrameRate` 是**请求**, 系统可以拒绝(省电/温控/用户强制) —— 所以日志里
+        #    那一行「实际渲染」永远是最终判据, 不能拿这一行当"已经按住了"。
+        if _BENCH_FPS_LOCK[0] > 0:
+            target = min(target, float(_BENCH_FPS_FORCE))
         at_or_below = [m for m in candidates if hz(m) <= target + 0.5]
         # 优先不超过三者共同上限的最高同分辨率模式；没有精确档位时宁可保守降档，
         # 不绕过 Android 系统的峰值刷新率设定。
