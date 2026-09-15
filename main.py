@@ -2325,25 +2325,27 @@ def _set_label_text(label, text):
 
 
 def _hist_stamp(raw):
-    """把记录里的 `2026-09-15 14:07` 缩成**日期**: 本年 `09-15`, 非本年 `25-09-15`。
+    """把记录里的时间戳**归一化**成 `2026-09-15 14:07`(年月日 + 时间)。
 
-    玩家 2026-09-15:「把时间精简为日期, 只有月日 2 个数值, 比如 09-14, 代表 9 月 14 日」。
+    玩家 2026-09-15 两次定案: 先要「只有月日 2 个数值」, 看过实际排版之后又改回
+    「**日期改为年月日时间**(看起来宽度足够)」—— 连**时间**一起要。所以这里不再是
+    "缩短", 而是"归一化": 认得出就按 `%Y-%m-%d %H:%M` 重排, 认不出就原样返回。
 
-    ⚠️ **只改显示** —— 盘上照旧存完整时间戳(`%Y-%m-%d %H:%M`), 所以旧记录一条都不用动,
-       别处要完整时间也还拿得到。
-    ⚠️ **跨年必须带年份**: 光看 `09-14` 分不出是今年还是去年, 而历史最多留 100 条、
-       天天跑的话跨年是迟早的事。**只有非本年才多印两位年** —— 一年以内的记录仍是玩家
-       要的那个短样子。(列宽也按 `25-09-15` 的 8 个字符留的。)
-    ⚠️ 认不出来的格式**原样返回**, 绝不吞掉信息、也不抛。
+    ⚠️ **只改显示** —— 盘上本来存的就是 `%Y-%m-%d %H:%M`, 所以旧记录一条都不用动。
+    ⚠️ 宽度账(**实测**, `temp/benchhist_probe.py` 的 F 判据直接量建好的 Label):
+       这一串 16 字符约 120px, 整行约 **364px**。360dp 上弹窗内容区只有 **275.2px**
+       ⇒ `_fit_uniform` 把字号缩到 **11.48sp**(540dp 上是 **14.00sp**, 不缩)。
+       **仍然一行、不折、不裁** —— 但 360dp 上确实比"只有月日"那版小了一档多
+       (那版约 272px ⇒ 满 14sp)。这是玩家看过排版之后自己选的取舍。
+       ⚠️ 11.48sp 已经压到 Android 正文建议下限(12sp)之下, 再往这一格加字就要重算。
+    ⚠️ 认不出来**原样返回**, 绝不吞信息、也不抛。
     """
-    _s = str(raw if raw is not None else '--')
+    _s = str(raw if raw is not None else '')
     try:
         _d = time.strptime(_s[:16], "%Y-%m-%d %H:%M")
-        if _d.tm_year == time.localtime().tm_year:
-            return "%02d-%02d" % (_d.tm_mon, _d.tm_mday)
-        return "%02d-%02d-%02d" % (_d.tm_year % 100, _d.tm_mon, _d.tm_mday)
+        return time.strftime("%Y-%m-%d %H:%M", _d)
     except Exception:
-        return _s
+        return _s or '--'
 
 
 # ---- 「模拟测试历史」那张表的四个字段(2026-09-15) ---------------------------
@@ -2363,6 +2365,97 @@ def _hist_stamp(raw):
 _HIST_COLS = ('时间', '平均/1%Low帧', 'CPU平均频率', '中位跑分 / 波动')
 _HIST_SEP = ' '
 _HIST_HEAD = _HIST_SEP.join(_HIST_COLS)
+
+
+# ---- 字体"钉子"(2026-09-15, 对抗性评审 top 3 之一) ---------------------------
+# Kivy 的 `_text_sdl2.pyx` 里有两个模块级容器:
+#     cdef dict sdl2_cache = {}          # fontid -> _TTFContainer(持有 TTF_Font*)
+#     cdef list sdl2_cache_order = []    # 插入序; 超过 64 就 `pop(0)` + `del cache[popid]`
+# **命中只读 dict、不碰 order; 淘汰只从 order 队头取。** 于是有一条 Kivy 没打算给、
+# 但结构上成立的用法: **把某个 fontid 从 order 里 `remove` 掉且不 append** ⇒ 它永远
+# 排不进淘汰队列 ⇒ **dict 里那份永远不会被 `del`, 那个 fontid 再也不会被冷开**。
+#
+# ⚠️ 为什么需要它: 真机日志「预热时量过=**是** 却仍冷」= 预热真的烘过它, 但被后来的
+#    字号挤掉了。`fs=45.1875 [累计1投1中(100]` 一次冷开 **47.0ms**(第 1、4 轮的帧724)。
+# ⚠️ **为什么不钉静态名单**(评审 A 的版本): 实测每轮开过 **86~93 个**不同字号,
+#    全钉上去按 0.88MB/个 ≈ **+49~104MB RSS**; 而真正"复冷"的只有 **22 个**(桌面普查)。
+#    ⇒ 改成**复冷时才钉**: 一个 (字号,bold) 第二次被冷开, 就说明它刚被驱逐过 —— 那一刻
+#      把它摘出 order。钉的正是受害的那几个, 数量自限, 且**不需要任何预设名单**。
+# ⚠️ 硬上限 `_PIN_MAX`: 每个 fontid 实测约 **0.88MB**(NotoSansSC, psutil 两次复现),
+#    24 个 ≈ +21MB —— 这是"按 RSS 预算倒推"的上限, 不是"能钉多少钉多少"。
+# ⚠️ **绝不 append**: order 里出现重复项时, 淘汰那句 `del sdl2_cache[popid]` 会 KeyError
+#    崩在渲染路径上(评审 B 本机复现过)。所以只准 `remove`, 且钉之前断言 order 无重复。
+# ⚠️ **找它只能在启动期做一次**: `gc.get_objects()` 要建 5.4 万个引用的列表, 在采样窗口里
+#    调它本身就是一次长帧。
+_PIN_ORDER = [None]      # [那个 list]; None = 还没找过
+_PIN_DONE = [None]       # set(); None = 还没建(省一个模块级 set)
+_PIN_MAX = 24
+_PIN_STAT = [0, 0, 0]    # [钉成功, 钉失败, 复冷次数] —— **必须印进日志, 不许静默**
+_PIN_WHERE = ["还没找"]   # 定位结果的一句话说明(日志里印)
+_PIN_CAND = [0]          # 那次扫描里"形状对得上"的 list **一共有几个**(见 `_PIN_WHERE`)
+
+
+def _find_sdl2_order():
+    """在 CPython 对象图里找出 Kivy 的 `sdl2_cache_order`。找不到返回 None。
+
+    ⚠️ `getattr(_text_sdl2, "sdl2_cache_order")` **拿不到** —— 它是 `.pyx` 里的 `cdef`，
+       不进模块 dict(评审两位都核过)。但它是货真价实的 **list 对象**，被 GC 跟踪，
+       `gc.get_objects()` 能扫到。
+    判据: 元素**全是** `'<字号>|<字体全路径>|<bold>|<italic>|<underline>|<strikethrough>'`
+       形状的字符串(6 段、5 个竖线) —— 这个形状在本进程里是**唯一**的。
+    ⚠️ **"唯一"是判据的一部分, 所以要把命中数记下来**(`_PIN_CAND`) —— 万一命中 2 个以上,
+       这里返回的是**先扫到的那个**, 可能是错的, 而错的后果同样是**静默不生效**。
+       记下来, 日志里就能一眼看出"是没找到"还是"找到好几个、可能认错了"。
+    ⚠️ 认不出来就**如实返回 None**(日志里印"没找到"), 绝不猜。
+    """
+    _n = 0
+    _first = None
+    try:
+        import gc as _gc
+        for o in _gc.get_objects():
+            if type(o) is list and 8 <= len(o) <= 64:
+                for x in o:
+                    if not (isinstance(x, str) and x.count("|") == 5):
+                        break
+                else:
+                    _n += 1
+                    if _first is None:
+                        _first = o
+    except Exception:
+        pass
+    _PIN_CAND[0] = _n
+    return _first
+
+
+def _pin_fontid(fid):
+    """把一个 fontid 从淘汰队列里摘掉(只 remove, 绝不 append)。返回是否成功。
+
+    ⚠️ 三条硬约束(评审给的, 每条都有实测支撑):
+      ① **绝不 append** —— order 里出现重复项 ⇒ 淘汰时 `del cache[popid]` KeyError, 崩在
+         渲染路径上;
+      ② 钉之前断言 `len(order) == len(set(order))` —— 不成立就整条停用(失败要计数上报);
+      ③ 超过 `_PIN_MAX` 就**不再钉**(RSS 预算)。
+    """
+    if _PIN_ORDER[0] is None:
+        return False
+    if _PIN_DONE[0] is None:
+        _PIN_DONE[0] = set()
+    if fid in _PIN_DONE[0] or len(_PIN_DONE[0]) >= _PIN_MAX:
+        return False
+    _o = _PIN_ORDER[0]
+    try:
+        if len(_o) != len(set(_o)):        # 约束②
+            _PIN_STAT[1] += 1
+            return False
+        if fid not in _o:
+            return False
+        _o.remove(fid)                     # 约束①(只删不加)
+        _PIN_DONE[0].add(fid)
+        _PIN_STAT[0] += 1
+        return True
+    except Exception:
+        _PIN_STAT[1] += 1
+        return False
 
 
 def _bench_menu_desc():
@@ -6863,6 +6956,25 @@ class WinPileFX(Widget):
         #    照常被跟踪、照常回收 —— 冻结不会让它们泄漏。
         # ⚠️ 冻结之后 gen-0/gen-1 也变便宜了(要扫的年轻对象没变, 但老的不用再被反复提升)。
         #    阈值**不动**(= CPython 默认 700/10/10) —— 没有实测证据就别改它。
+        # ⚠️⚠️ **必须在 `gc.freeze()` 之前定位**(2026-09-15 实测踩到)。
+        #    `gc.freeze()` 把当时活着的所有对象移进"永久代", 而 **`gc.get_objects()`
+        #    不返回永久代里的东西** —— 实测冻结之后 `len(gc.get_objects())` 只剩 **11 个**
+        #    (整进程 5.4 万个都被冻住了) ⇒ `sdl2_cache_order` **根本扫不到**, 钉子静默失效。
+        #    挪到 freeze 之前就正常了(那时预热表 52 项已烘完, 队列里有货、判据认得出)。
+        #    ⚠️ 这一条是评审 A 明确警告过的("必须在主线程、且在 `gc.freeze()` **之前**做"),
+        #       我第一版放到了 freeze 之后 —— **桌面探针当场测出来**, 没等真机。
+        try:
+            _PIN_ORDER[0] = _find_sdl2_order()
+            _PIN_WHERE[0] = ("找到了(队列长 %d, 形状命中的 list 共 **%d** 个)"
+                             % (len(_PIN_ORDER[0]), _PIN_CAND[0])
+                             if _PIN_ORDER[0] is not None
+                             else "**没找到**(形状命中的 list 共 %d 个; 钉子不生效)"
+                                  % _PIN_CAND[0])
+            if _PIN_ORDER[0] is not None:
+                _PIN_DONE[0] = set()
+        except Exception as _e:
+            _PIN_ORDER[0] = None
+            _PIN_WHERE[0] = "**定位抛异常** %r" % (_e,)
         try:
             import gc as _gc
             _gc.collect()                 # 先把垃圾收干净, 免得把垃圾也一起冻结
@@ -7035,6 +7147,9 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
         #    一帧能叠到十几回, 见 `_FRAME_FIT` 处的说明)。它和「重建了几次」是两笔账 ——
         #    `text_px` 从不产生纹理, 只量宽度。
         _FRAME_FIT[1] += 1
+        # ⚠️ **记账之前**先问一句"这个字号以前开过吗" —— 用来判"复冷"(见 `_pin_fontid`)。
+        #    必须取记账**前**的状态: 记账之后它当然就在集合里了。
+        _was_open = (round(float(fs), 4), bool(bold)) in _FS_OPEN_SET
         # ⚠️ 这一句就是"开了一个 fontid"的那一刻 —— 记账在这儿, 不在别处(见 `_FS_OPEN`)。
         # ⚠️ **静音窗口内不记账**(见 `_FS_MUTE_UNTIL`): 报告 UI 自己的标签不算被测对象。
         #    跳过的那几次**单独计数**, 并且必须印进日志 —— 不许静默。
@@ -7061,6 +7176,17 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
             _cl = CoreLabel(text=text, font_size=fs, bold=bold, text_size=(None, None))
             _cl.refresh()
             got = _cl.texture.size[0]
+            # ⚠️ **复冷 ⇒ 立刻钉住**(见 `_pin_fontid`): 同一个字号**第二次**被冷开, 说明它
+            #    刚被淘汰队列挤出去过。此刻 `refresh()` 刚把它重新插回 order 尾部, 正是
+            #    摘掉它的最佳时机 —— 摘掉之后 dict 里那份再也不会被 `del`, 它不再复冷。
+            #    `_get_font_id()` 是 Kivy 自己拼的那个 6 段键 —— **必须用它**, 手拼会错
+            #    (字体路径是运行期解析出来的, 手工拼不出来)。
+            if _was_open:
+                _PIN_STAT[2] += 1
+                try:
+                    _pin_fontid(_cl._get_font_id())
+                except Exception:
+                    pass
         except Exception:
             got = len(text) * fs * 0.55          # 量不出来按汉字宽粗估, 绝不抛
         # ⚠️ 冷测量的**单价**要单独记下来(见 `_COLD_FS` 处说明): 只留最慢的 5 次,
@@ -11832,6 +11958,24 @@ class RootWidget(BoxLayout):
                                            for k, v in _top))
             else:
                 _lines.append("# 冷开次数普查: **一次冷开都没有**(全部命中预热表)")
+            # ---- 字体"钉子"(见 `_pin_fontid`) ----------------------------------
+            # ⚠️ **必须印** —— 钉子是"静默失效"的重灾区: 定位失败 / 断言不通过 / 超上限,
+            #    三种情况下它都只是**不生效**, 而日志一片安静, 看起来和"钉住了所以没问题"
+            #    一模一样。这里把"定没定到、钉了几个、失败几次、复冷几次"全摊开。
+            _ps = _PIN_STAT
+            _lines.append("# 字体钉子: 队列定位=%s · 钉住 **%d** 个(上限 %d) · "
+                          "失败 %d 次 · 触发(复冷) %d 次"
+                          % (_PIN_WHERE[0], _ps[0], _PIN_MAX, _ps[1], _ps[2]))
+            if _PIN_ORDER[0] is None:
+                _lines.append("#   ⚠️ **钉子没生效** —— 没在对象图里认出 Kivy 的淘汰队列"
+                              "(`sdl2_cache_order`)。冷字号会照旧被驱逐, 这是**已知的失效**,"
+                              " 不是「没问题」。")
+            elif _PIN_CAND[0] > 1:
+                _lines.append("#   ⚠️ 形状命中的 list 有 **%d 个** —— 认的是先扫到的那个, **可能认错**。"
+                              " 若同时看到「钉住 0 个」, 那就是认错了(不是「本轮没有复冷」)。"
+                              % _PIN_CAND[0])
+            elif _ps[0] == 0 and _ps[2] == 0:
+                _lines.append("#   本轮**一次复冷都没有** ⇒ 没有可钉的对象(这是好事, 不是失效)。")
             # 「本帧冷开几次」的分布 —— 回答"一帧到底会不会开十几个"。
             # ⚠️ 这是 `(N次/M测)` 的**普查版**: 那一栏只在「字号」挤进该帧最大两个子步骤时
             #    才印(21059 帧里只印过 2 帧), 拿它当普查是采样当普查 —— 对抗评审抓到过。
@@ -12989,11 +13133,13 @@ class RootWidget(BoxLayout):
                 # ⚠️ **CPU 平均频率**(玩家 2026-09-15 要的那一列, 排在**第三位**)。
                 #    · 取的是**跑分时**的平均(采样间隙已被 `_FREQ_GATE` 滤掉), **不是中位数**
                 #      —— 玩家原话「cpu频率不能用中位数」。
-                #    · **旧记录**里从来没存过平均(那之前只存了 `phys_freq_p50`) ⇒ 显示 `—`。
-                #      **不拿中位数回落** —— 玩家明说不能用中位数, 拿别的数顶就是印假数。
+                #    · **旧记录**里从来没存过平均(那之前只存了 `phys_freq_p50`) ⇒ 显示
+                #      「无数据」。**不拿中位数回落** —— 玩家明说不能用中位数, 拿别的数顶就是印假数。
+                #    · ⚠️ 玩家 2026-09-15:「如果无/读不到频率 改为 **无数据** 而不是一个 `-`」
+                #      —— 破折号会被读成"这一格坏了", 「无数据」才是"没采到"的正常态。
                 #    · 单位写 `Mhz`(玩家两次都这么写), 不写成 `MHz`。
                 _fmean = r.get('phys_freq_mean')
-                freq_text = ('%dMhz' % int(_fmean)) if _fmean else '—'
+                freq_text = ('%dMhz' % int(_fmean)) if _fmean else '无数据'
                 spread = r.get('phys_spread')
                 if spread is None:
                     soc_text = '%d/—' % r.get('phys_fps', 0)
