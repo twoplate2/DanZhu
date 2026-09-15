@@ -882,7 +882,8 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
 
 
 def benchmark_sustained(total_cpu_sec=SOC_SUSTAIN_SEC,
-                        window_cpu_sec=SOC_SUSTAIN_WINDOW_SEC):
+                        window_cpu_sec=SOC_SUSTAIN_WINDOW_SEC,
+                        on_window=None):
     """**波 2 —— 测高压(衰减)**: 窗口之间**一秒都不停**, 整整压 `total_cpu_sec` 秒 CPU 时间。
 
     与波 1 的区别就一个 —— **没有间隔**。问的问题也不同:
@@ -926,6 +927,13 @@ def benchmark_sustained(total_cpu_sec=SOC_SUSTAIN_SEC,
         cpu_seconds_list.append(used)
         total_flights += flights
         total_frames += frames
+        # ⚠️ 回调跑在**工作线程**上: 只能写普通属性, **绝不许碰界面**。
+        #    报的是**真正跑完的 CPU 秒数** —— 这才是"进度"的真正含义。
+        if on_window is not None:
+            try:
+                on_window(min(cpu_clock() - t_all, total_cpu_sec), total_cpu_sec)
+            except Exception:
+                pass
     return total_flights, total_frames, fps_list, cpu_seconds_list
 
 
@@ -9831,10 +9839,12 @@ class RootWidget(BoxLayout):
     def _prog_text(self):
         """当前该显示的进度文案; 没有测试在跑就返回 None。"""
         if getattr(self, "_hp_running", False):
-            _t0 = float(getattr(self, "_hp_t0", 0.0) or 0.0)
-            _el = int(time.time() - _t0) if _t0 > 0 else 0
-            _el = max(0, min(_el, int(SOC_SUSTAIN_SEC)))
-            return "SOC高压测试 %d/%d秒" % (_el, int(SOC_SUSTAIN_SEC))
+            # ⚠⚠ **用工作线程自己报的 CPU 秒数, 不能用墙钟**。
+            #    实测: 单独跑 20 秒 CPU 只要 20.24 秒墙钟(1:1), 但在 app 里跑同一条链
+            #    **70 秒都没跑完** —— 工作线程挤不到 GIL。用墙钟报的话
+            #    进度早上到 300/300 而活儿还在干 ⇒ 玩家看到的"跑完了却很久不弹窗"。
+            _el, _tot = getattr(self, "_hp_prog", None) or (0.0, float(SOC_SUSTAIN_SEC))
+            return "SOC高压测试 %d/%d秒" % (int(_el), int(_tot))
         if getattr(self, "_bench_running", False):
             # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15:「那 25 秒测试帧率的不
             #    显示任何进度消息, 后面全力测试 SOC 的时候才显示」)。
@@ -9905,8 +9915,14 @@ class RootWidget(BoxLayout):
     def _run_hp_test(self):
         # ⚠️ 工作线程: 只写属性, **不碰界面**(界面只能在 Clock 回调里动)。
         _frq, _stop = _freq_sampler_start()
-        _fl, _fr, _fps, _cpu = benchmark_sustained()
+        self._hp_prog = (0.0, float(SOC_SUSTAIN_SEC))
+
+        def _on_window(_el, _tot):
+            self._hp_prog = (float(_el), float(_tot))
+
+        _fl, _fr, _fps, _cpu = benchmark_sustained(on_window=_on_window)
         _stop[0] = True
+        self._hp_prog = (float(SOC_SUSTAIN_SEC), float(SOC_SUSTAIN_SEC))
         _frq.sort()
         self._hp_fps = list(_fps or [])
         self._hp_cpu = list(_cpu or [])
