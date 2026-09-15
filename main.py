@@ -2933,8 +2933,7 @@ def _bench_menu_desc():
     return ('模拟测试约 67 秒（含落珠动画）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n'
             '2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n'
             '物理引擎是纯 Python 写的。\n'
-            'SOC高压测试：连压 %d 分钟，看持续性能衰减。'
-            % (int(SOC_SUSTAIN_WALL_SEC) // 60))
+            'SOC高压测试：考验调度和散热能力。')
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
 #    真机面板上那三帧的账**对不上** —— 40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
@@ -13957,14 +13956,28 @@ class RootWidget(BoxLayout):
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
+        # ⚠️ 行数**只由屏幕决定**(下限 10), 与"有没有记录"无关 —— 空态和有记录时同一个高度。
+        #    玩家 2026-09-16: 「我**的意思是窗口的高度是固定的** 你这难道是自适应的」
+        #    「如果你是自适应的 **刚开始最起码支持 6 条吧**」。
+        #    ⇒ 面板高度不随记录数变(否则"有没有记录"会改变面板大小、读数时跳来跳去);
+        #      下限 10 已经超过他要的 6 条, 记录不足就**下面留白**, 记录超了才滚动。
+        #    ⚠️ `200` 这个固定预留是按 360dp 手机量的(脚注 40 + 标题 28 + 表头 22 +
+        #       关闭 46 + padding 32 + spacing 32 + Popup 外壳 44)。上一版写 240 是常数,
+        #       而平板横屏可用高只有 400dp 上下, 减掉就只剩 160dp ⇒ **只出得来 4 行**。
+        _vn = max(10, int((self._veq()[1] * 0.96 - dp(200)) // dp(30)))
         if not self.hp_history:
-            content.add_widget(Widget(size_hint_y=1))
+            # ⚠️ 空态**也要占满同样的高度**(就是上面 `_vn` 那么多行) —— 否则空的时候面板缩成
+            #    一小条、有记录时又长高, 正是"窗口高度不固定"的形状。
+            _ph = BoxLayout(orientation='vertical', size_hint_y=None,
+                            height=dp(30 * _vn + 10))
+            _ph.add_widget(Widget(size_hint_y=1))
             empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连压 %d 秒即可产生一条' % int(SOC_SUSTAIN_WALL_SEC),
                           font_size='16sp', halign='center',
                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
             empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
-            content.add_widget(empty)
-            content.add_widget(Widget(size_hint_y=1))
+            _ph.add_widget(empty)
+            _ph.add_widget(Widget(size_hint_y=1))
+            content.add_widget(_ph)
         else:
             # ⚠️ 列宽 2026-09-15 调过: 原先是 5 列(时间/中位数/波动/归一化/详情), 加「归一化」
             #    那一次把「详情」挤成过 25px(截图里表头黏在一起、按钮成细条) —— 教训是**加列
@@ -13978,16 +13991,38 @@ class RootWidget(BoxLayout):
             #    旧值 84/46/74 + 详情吃剩余 ⇒ 详情拿到 ~86dp(俩字只要 ~30dp), 而时间列
             #    只有 84dp 却要放 14sp 下宽 113px 的完整时间戳 ⇒ 时间列字号被压到 10.4sp,
             #    与另外两列的 14sp **不齐** —— 玩家报的就是这个"字体不均衡"。
-            #    现在固定 46/72/46 = 164dp, 剩下全给时间列(360dp 机上约 126dp, **+50%**)。
-            mid_w, mad_w, det_w = dp(46), dp(72), dp(46)
-            columns = BoxLayout(size_hint_y=None, height=dp(22))
-            for text, width in (('时间', None), ('中位数', mid_w),
+            #    第一步先把三列固定成 46/72/46 = 164dp, 剩下全给时间列。
+            # ⚠️⚠️ 2026-09-16 玩家在 Y700(2560x1600 平板, **竖屏**)上又报: 「**布局偏右 没有居中**」。
+            #    根因: 第一步把**时间列改成"吃剩余"**(`size_hint_x=1`), 而整张表**没有任何居中设定**。
+            #    手机上刚好(360dp 屏时间列约 126dp), 但在 8.8" 平板上弹窗宽 0.92*1600 ≈ 1472px,
+            #    时间列会吃掉约 1080px、剩下三列全挤在**右边缘** ⇒ 看着就是"整张表偏右"。
+            #    对照: 隔壁「测试历史（渲染 / SoC）」(`_show_bench_history`)一直是**固定列宽 +
+            #    `pos_hint={'center_x': 0.5}`**, 本来就居中 —— 两张表一个居中一个不居中,
+            #    玩家一眼就看出来了。
+            #    ⇒ 改成与它**同一套写法**(同一文件、同一个模式, 别另发明):
+            #      固定列宽 + `size_hint_x=None` + `width=_table_w` + `pos_hint={'center_x': 0.5}`,
+            #      表头与每一行**共用同一个 `_table_w`**(否则两边各对一套栅格, 永远对不齐)。
+            # ⚠️ 列宽是**量出来的**(`text_px(文本, sp(14))`, 桌面密度 1 ⇒ px == dp):
+            #    时间 `2026-09-15 14:07` **113** · `中位数`(表头 3 字, 比数据 40 宽) **42** ·
+            #    `平均差系数`(**表头 5 字是最长项** 70, 数据 `1.23%` 只要 41) · `详情` 按钮文字 28。
+            #    ⚠️ **表头不许被单独缩字号**: 表头与数据行共用同一套宽度 ⇒ 「平均差系数」必须
+            #       在 14sp 下放得下, 否则 `_fit_line` 只缩它一个、又变回"字体不均衡"。
+            #    留余量后 116/46/76/46 = **284dp**(360dp 机上内容区 299dp, 放得下)。
+            # ⚠️ 窄屏要**按比例收**: `size_hint_x=None` 的子控件宽度不够时**不会自己缩**,
+            #    会直接**溢出弹窗**(就是"字飘在游戏画面上"那一类)。`_tw_max` 是内容区宽度。
+            _hw = (dp(116), dp(46), dp(76), dp(46))
+            _tw_max = self._veq()[0] * 0.92 - dp(38)      # 弹窗宽 0.92*vw - content 的 padding 16*2 - 余量 6
+            _k = min(1.0, _tw_max / sum(_hw))
+            t_w = _hw[0] * _k
+            mid_w, mad_w, det_w = _hw[1] * _k, _hw[2] * _k, _hw[3] * _k
+            _table_w = t_w + mid_w + mad_w + det_w
+            columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
+                                height=dp(22), pos_hint={'center_x': 0.5})
+            for text, width in (('时间', t_w), ('中位数', mid_w),
                                 ('平均差系数', mad_w), ('详情', det_w)):
                 head = Label(text=text, halign='center', valign='middle',
                              color=hex_rgb(COL_SUB) + (1,),
-                             size_hint_x=None if width else 1)
-                if width:
-                    head.width = width
+                             size_hint_x=None, width=width)
                 self._fit_line(head, 14)
                 self._fit1(head)
                 columns.add_widget(head)
@@ -13997,14 +14032,26 @@ class RootWidget(BoxLayout):
             #    读到 0, 弹窗只按"标题+表头+脚注+按钮"收 ⇒ **滚动区被压成 0,
             #    一行数据都显示不出来**(截图为证: 表头在、下面空的)。
             #    按行数算死高度就不依赖 Kivy 的布局时序了。
-            # ⚠️ 2026-09-16 玩家: 「需要把高度大幅提高, 同 1 页显示更多历史数据」。
-            #    行数不再写死 8, 改成**按视口算**: 弹窗上限 0.96*_vh, 减去固定部分
-            #    (标题/表头/脚注/关闭/spacing/padding/Popup 外壳, 实测约 240dp),
-            #    余下的全给行(每行 28+2dp)。360x660 上约 13 行, 320x560 上约 9 行。
-            #    ⚠️ **必须留这个自适应**: 写死一个大数字会在小屏上把内容顶出弹窗外
-            #       (见 `_popup_fit_content` 里"字飘在游戏画面上"那一段)。
-            _vn = max(3, min(len(self.hp_history),
-                             int((self._veq()[1] * 0.96 - dp(240)) // dp(30))))
+            # ⚠️ 2026-09-16 玩家: 「**最起码得支持 8~10 条 log 吧**」。
+            #    改法: 下限从 3 抬到 **10**, 预留 240 -> **200**(脚注那 40dp 实测两行 12sp
+            #    只要 ~34dp, 有富余)。
+            # ⚠️⚠️ **不要把"上一版只显示 4 行"记成这个公式的锅** —— 算不出来。
+            #    `_veq()` 是**排过序的**(`return (w, h) if w <= h else (h, w)`, 见 `_veq`)⇒
+            #    横竖都返回「短边 × 长边」, 所以 Y700(2560x1600)上 `_veq()[1]` **恒为 2560px**
+            #    (≈1280dp @ density 2), 这个公式给的是 **30 行上下, 横拿竖拿一模一样**。
+            #    2560x1600 的平板上, 无论 240 还是 200 都算不出 4 行来。
+            #    ⇒ 当时只显示 4 条的**真实原因更可能是记录本来就只有 4 条**
+            #      (存储上限是 **100**, 见 `_load_hp_history`/`_save_hp_history`)。
+            #      以后见到"条数不对"先数记录, 别先改公式。
+            # ⚠️ 曾经在这里写过第 ③ 条"滚动区高度参与压缩(见 `_auto_sync` 那段)",
+            #    **那段并不存在** —— 引用悬空, 已删。真要做压缩得另写, 别照那句去找。
+            # ⚠️⚠️ 2026-09-16 玩家澄清: 「**我的意思是窗口的高度是固定的 你这难道是自适应的**」。
+            #    —— 面板高度**不能跟着记录数变**(那会让"有没有记录"改变面板大小、读数时跳来跳去),
+            #    这正是玩家当初给「测试历史」定的那条规矩。所以**去掉 `min(len(...))`**:
+            #    行数只由屏幕决定(下限 10, 兑现"最起码 8~10 条"), 记录不足就**下面留白**,
+            #    记录超了才滚动。
+            #    ⚠️ `_vn` **已在上面(空态分支之前)算好**, 这里不要再算一遍 ——
+            #       重复定义会让"空态用哪个高度"和"列表用哪个高度"两处各算各的, 迟早分叉。
             # ⚠️ **每行按 30dp 算, 不是 28**(2026-09-16 实测截图): 行高 `dp(28)` 之外
             #    还有 `inner` 的 `spacing=dp(2)`, n 行的真实内容高 = 28n + 2(n-1)。
             #    原来写 `28*_vn+10` ⇒ 12 行时容器 346px 而内容 358px, **最后一行被裁一半**。
@@ -14022,14 +14069,13 @@ class RootWidget(BoxLayout):
                 #    ⚠️ **旧记录没有这个字段** ⇒ 印「—」, **绝不拿别的字段回填**(印假数)。
                 _mad = r.get('mad')
                 mad_text = ('%.2f%%' % float(_mad)) if _mad is not None else '—'
-                row = BoxLayout(size_hint_y=None, height=dp(28))
+                row = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
+                                height=dp(28), pos_hint={'center_x': 0.5})
                 labs = []
-                for text, width in ((stamp, None), (mid_text, mid_w), (mad_text, mad_w)):
+                for text, width in ((stamp, t_w), (mid_text, mid_w), (mad_text, mad_w)):
                     lbl = Label(text=text, font_size='14sp', halign='center',
                                 valign='middle', color=hex_rgb(COL_TEXT) + (1,),
-                                size_hint_x=None if width else 1)
-                    if width:
-                        lbl.width = width
+                                size_hint_x=None, width=width)
                     lbl.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
                     row.add_widget(lbl)
                     labs.append(lbl)
@@ -14091,20 +14137,30 @@ class RootWidget(BoxLayout):
         else:
             _ft, _fd = '没采到', '非安卓 / 读不到 sysfs'
         _mad = r.get('mad')
+        # ⚠️ 2026-09-16 玩家定稿: **分三块**(成绩 / 频率 / 过程) + 组内缩进两格。
+        #    玩家原话是「一堆看不懂的东西」—— 病根**不是字太多, 是没有分组**:
+        #    读者不知道哪块是什么, 一屏并列的数字就成了浆糊。所以**内容一条不删**,
+        #    只加三个小标题 + 缩进。(代价: 仍是**一个 Label** ⇒ 小标题无法单独上色;
+        #    要上色就得拆成多个 `_auto_h` 标签, 那会动"自动撑高"那条路, 现在不值当。)
         _txt = (_n + str(r.get('device', '?')) + '  ' + str(r.get('version', '')) + _n
-                + str(r.get('time', '--')) + '   高压 %d 秒（背靠背不停）'
+                + str(r.get('time', '--')) + '   高压 %d 秒'
                 % int(r.get('sec', 0) or 0) + _n + _n
-                + '中位 %d 步/秒' % int(r.get('median', 0) or 0)
-                # ⚠️ 2026-09-15 玩家定稿: 「波动」换成**平均差系数**(= 平均差 ÷ 均值)。
-                #    旧记录没有 `mad` 字段 ⇒ 整段不印(**不回填、不印假数**)。
-                + (('（平均差系数 %.2f%%）' % float(_mad)) if _mad is not None else '') + _n
-                + '首 %d → 末 %d 步/秒（降 %.1f%%）' 
+                + '成绩' + _n
+                + '  中位 %d / 最低 %d 步/秒'
+                % (int(r.get('median', 0) or 0), int(r.get('min', 0) or 0)) + _n
+                + '  首 %d → 末 %d（降 %.1f%%）'
                 % (int(r.get('first', 0) or 0), int(r.get('last', 0) or 0),
                    float(r.get('decay', 0) or 0)) + _n
-                + '最低 %d 步/秒' % int(r.get('min', 0) or 0) + _n + _n
-                + 'SOC 平均频率：' + _ft + _n
-                + '频率分布：' + _fd + _n + _n
-                + '每段采样：' + _curve)
+                # ⚠️ 2026-09-15 玩家定稿: 「波动」换成**平均差系数**(= 平均差 ÷ 均值)。
+                #    旧记录没有 `mad` 字段 ⇒ 整行不印(**不回填、不印假数**)。
+                + ((('  平均差系数 %.2f%%（越小越稳）' % float(_mad)) + _n)
+                   if _mad is not None else '')
+                + _n
+                + '频率' + _n
+                + '  平均 ' + _ft + _n
+                + '  ' + _fd + _n + _n
+                + '过程' + _n
+                + '  每段采样：' + _curve)
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='SOC高压测试详情', bold=True,
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
