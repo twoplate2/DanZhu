@@ -2764,6 +2764,32 @@ def _set_label_text(label, text):
         return False
 
 
+def _hp_score(r):
+    """一条 SOC 高压记录该显示的**跑分** = **平均数**(不是中位数)。
+
+    玩家 2026-09-16: 「soc高压测试历史记录中显示的跑分 **从中位数改为平均数**」。
+    ⚠️ 这是**玩家自己在同一块面板上先立过的规矩**的延伸: `_hp_freq_line` 里那段注释写着
+       频率采样是**双峰**的(大部分时间在等 vsync / 满窗口才冲睿频), 「**中位数必然落在
+       其中一个峰上**」, 报出来要么像全程低频、要么像全程满血 —— 所以那里早就取了平均。
+       每秒窗口的步/秒是同一类样本(空转窗口 + 满窗口), 中位数同样只代表一个峰。
+    ⚠️ **三处口径必须同步**(列头 `_HP_COLS` / 脚注 / 详情正文), 只改一处就会出现
+       "表头写平均数、正文写中位"这种自相矛盾 —— 这个坑在参照面板那张表上踩过。
+    ⚠️ **新记录读 `mean`; 旧记录没有这个字段就**拿 `windows` 现算** —— 两者本来就是
+       同一次测试的同一批逐秒样本, 算得出来就该算, **不要印「—」**(那不是"没有数据",
+       是我们当年没存, 而原始样本还在)。真的一条窗口都没有才返回 None。
+    """
+    _m = r.get('mean')
+    if _m is not None:
+        try:
+            return int(_m)
+        except Exception:
+            pass
+    _w = [x for x in (r.get('windows') or []) if x > 0]
+    if not _w:
+        return None
+    return int(round(sum(_w) / float(len(_w))))
+
+
 def _hist_stamp(raw):
     """把记录里的时间戳**归一化**成 `2026-09-15 14:07`(年月日 + 时间)。
 
@@ -4334,9 +4360,20 @@ class Sfx:
                 #    真静音时上面那行「音频后端　静音」已经把话说清了。
                 # ⚠️ `_voice_files()` 是**带缓存**的(见它的注释), 每次开面板调它不会去 listdir。
                 if self.bank:
-                    _nv = len(_voice_files())
-                    rows.append("音效加载　%d 个" % max(0, len(self.bank) - _nv))
-                    rows.append("语音加载　%d 个" % _nv)
+                    # ⚠️ 格式 **`x / y`** = 已加载 / 满编(玩家 2026-09-16 定稿:
+                    #    「音效加载和语音加载的格式应该是 ：x/y  大概是已经加载几个 累计几个」)。
+                    #    ⚠️ 与安卓那边的「音效就绪 N / M」「语音就绪：X / Y」**同一个语义**,
+                    #       只是这边叫「加载」(PC 没有"按名字就绪"那套, 整库一次进来)。
+                    #    · 语音满编 = `_voice_files()` 的条数; 已加载 = 其中真的进了 bank 的
+                    #      (读 wav 失败的那几个会被 `continue` 掉, 所以两者**可能不等** ——
+                    #       这正是这个数存在的意义)。
+                    #    · 音效满编 = `self._n_bank`(见 `_bake_pcm`); 已加载 = bank 里
+                    #      **不是语音**的那些(语音也在同一个 bank 字典里)。
+                    _vf = _voice_files()
+                    _nv_load = sum(1 for _n in _vf if _n in self.bank)
+                    _nb_load = max(0, len(self.bank) - _nv_load)
+                    rows.append("音效加载　%d / %d" % (_nb_load, self._n_bank or _nb_load))
+                    rows.append("语音加载　%d / %d" % (_nv_load, len(_vf)))
                 if n_rc:
                     rows.append("后端重建　%d 次" % n_rc)
                 return rows
@@ -4412,7 +4449,17 @@ class Sfx:
 
     def _bake_pcm(self):
         self.bank = bake_bank()             # 整体赋值(引用切换), 读侧只会看到空或全量
-        for name, path in _voice_files().items():   # 预录语音并入 bank, winmm 同路径可播
+        # ⚠️ 2026-09-16: **在 PC 这条路上也记下满编数**。以前只有 named 那条
+        #    (`_bake_named`)记 `_n_bank`/`_expected`, 而 PC 这条**一个都没记** ⇒ 「启动信息」
+        #    在 PC 上根本印不出音效/语音的加载数(玩家 2026-09-16 报「之前有…你怎么给删了」,
+        #    核实是**从来没写过**, 见 `audio_detail` 里那段查证)。
+        #    ⚠️ 必须在**语音并入之前**取 `len(self.bank)` —— 那才是"合成音满编";
+        #       并入之后这个数就变成 合成音+语音 了。口径与 `_bake_named` 对齐:
+        #       满编 = 合成音 + 语音(两个都是数据源)。
+        _vf = _voice_files()
+        self._n_bank = len(self.bank)
+        self._expected = self._n_bank + len(_vf)
+        for name, path in _vf.items():      # 预录语音并入 bank, winmm 同路径可播
             try:
                 self.bank[name] = _read_wav_pcm(path)
             except Exception:
@@ -9963,6 +10010,21 @@ def _startup_title():
         v = ""
     return ("跳跳的弹珠机 %s" % v) if v else "跳跳的弹珠机"
 
+
+def _soc_result_title():
+    """SOC 高压**结果弹窗**的标题。
+
+    玩家 2026-09-16: 「把版本号**放入标题**中吧 加个空格, **这个地方就不要版本号了**」
+    (他指的是正文第一行末尾那个 `… / Python 3.11.4 / v0.7.91`)。
+    ⇒ 与「启动信息」**同一套做法**(见 `_startup_title`): 名字与版本号之间留一个空格,
+      版本号只出现在标题里, 正文不再重复。拿不到版本时退化成纯名字, 不留一个孤零零的 "v"。
+    """
+    try:
+        v = _app_version()
+    except Exception:
+        v = ""
+    return ("SOC高压测试 %s" % v) if v else "SOC高压测试"
+
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
 
@@ -11087,24 +11149,49 @@ class RootWidget(BoxLayout):
         return "没采到（非安卓 / 读不到 sysfs）"
 
     def _hp_cpu_pin_line(self):
-        """高压结果中如实显示性能核锁定状态。"""
+        """高压结果中如实显示**跑分只在哪几个核上跑**。
+
+        ⚠️ 2026-09-16 玩家(不是这一块的专家): 「你看看怎么写得可以让人看懂」。
+           ⇒ 面板上**先说人话**; 原始数字/核号留在括号里 —— 它们是"系统到底答没答应"
+              的唯一硬证据(当初就是为了查"为什么分核后跑分反而不稳"才加的), 删了就没法诊断。
+        """
+        # ⚠️ 2026-09-16 玩家(看结果弹窗): 「这句话是什么意思」。
+        #    PC 上永远是「未锁定（非安卓）」—— 那是**恒定值**, 而这块面板的
+        #    成文规则是"有唯一预期值的, 只在偏离时才有信息"(同 `audio_detail`
+        #    里"不适用的行直接不出现"; 玩家 2026-09-11 就说过「这几个不适用
+        #    听起来有点奇怪」)。⇒ **非安卓返回空串**, 由 `_hp_summary_text` 过滤掉。
+        #    ⚠️ 安卓上一字不改: 它是"锁没锁上"的唯一证据(当初就是为了查
+        #       "为什么分核后跑分反而不稳"才加的)。
+        if platform != "android":
+            return ""
         _pin = getattr(self, "_hp_cpu_pin", None) or {}
         if _pin.get("pinned"):
             _cpus = _pin.get("actual", _pin.get("target", [])) or []
-            return "性能核：已锁定 " + ",".join("cpu%d" % int(_cpu) for _cpu in _cpus)
-        return "性能核：未锁定（%s）" % (_pin.get("reason", "未执行") or "未知原因")
+            # 先说人话, 核号跟括号里(诊断要看的就是它)。
+            return ("跑分只跑这几个核：" + "、".join("cpu%d" % int(_cpu) for _cpu in _cpus))
+        return "跑分没有固定用哪几个核（%s）" % (_pin.get("reason", "未执行") or "未知原因")
 
     def _hp_tid_prio_line(self):
         """如实显示跑分线程的**调度优先级**是否真的被系统接受（读回验证，不印假成功）。
 
         `_BENCH_TID_PRIO` 由 `_bench_raise_thread_priority` 填: 只有当
         `getThreadPriority(0)` 读回**负数**时才算生效 —— 系统可以静默拒绝。
+
+        ⚠️ 2026-09-16 玩家(不是这一块的专家): 「**已提升 -4 → -8** —— 你看看怎么写得
+           可以让人看懂」。原样印 `-4 → -8` 只有懂安卓线程优先级的人看得懂(那是
+           `Process.setThreadPriority` 的编号: -4 = 跟画面渲染同级, -8 = 比它更高)。
+           ⇒ **先说人话**("比画面渲染更优先"), 数字留在括号里 —— 它是"系统到底答没答应"
+              的唯一硬证据, 不能删。
         """
+        # ⚠️ 非安卓返回空串, 理由同 `_hp_cpu_pin_line` 上面那段。
+        if platform != "android":
+            return ""
         _pr = getattr(self, "_hp_tid_prio", None) or {}
         if _pr.get("raised"):
-            return "跑分线程优先级：已提升 %d → %d" % (int(_pr.get("before", 0)),
-                                                 int(_pr.get("after", 0)))
-        return "跑分线程优先级：未提升（%s）" % (_pr.get("reason", "未执行") or "未知原因")
+            return "跑分线程已提权：比画面渲染更优先（%d → %d）" % (
+                int(_pr.get("before", 0)), int(_pr.get("after", 0)))
+        return "跑分线程没提权：可能被画面抢 CPU（%s）" % (
+            _pr.get("reason", "未执行") or "未知原因")
 
     def _hp_summary_text(self):
         """弹窗里那几行(短)。没数据返回空串 —— **不印假数**。"""
@@ -11112,27 +11199,43 @@ class RootWidget(BoxLayout):
         if st is None:
             return ""
         _f, _l, _lo, _mid, _d = st
-        _dev = self._device_info()
-        try:
-            _ver = str(_app_version() or "")
-        except Exception:
-            _ver = ""
-        _dv = (_dev + " / " + _ver) if _ver and _ver not in _dev else _dev
+        # ⚠️ 2026-09-16 玩家: 「把版本号**放入标题**中吧…**这个地方就不要版本号了**」。
+        #    ⇒ 正文这行**只留设备/系统/Python**, 版本号挪进标题(见 `_soc_result_title`),
+        #      与「启动信息」同一套做法 —— 那边也是标题带版本、正文只留制作时刻。
+        #    ⚠️ 设备/系统/Python **不能一起删**: 它们不是标题能表达的东西, 而且跨机器比成绩
+        #       时(平板 vs 手机、Windows vs 安卓)靠的就是这一段。
+        #    ⚠️ **历史详情弹窗里那行 `设备 版本` 照旧保留** —— 那是**记录诞生时**的版本,
+        #       是不同的历史数据(同一条记录可能来自旧版本), 删了就丢了。
+        _dv = self._device_info()
         v = [x for x in self._hp_fps if x > 0]
+        # ⚠️ 跑分口径 = **平均数**(2026-09-16 玩家定案:「跑分从中位数改为平均数」)。
+        #    论证与 `_hp_freq_line` 里那条**同款**: 每秒窗口的步/秒是**双峰**样本
+        #    (空转窗口 + 满窗口), 中位数必然落在其中一个峰上 ⇒ 要么像"全程很慢"、
+        #    要么像"全程满血", 两个都不代表这一段。**历史面板同一口径**(见 `_hp_score`)。
+        _avg = int(round(sum(v) / float(len(v)))) if v else 0
+        # ⚠️ 这一串是**按时间顺序、等间隔抽出来的十来个点**, 不是全部窗口、也不是随机取。
+        #    玩家 2026-09-16 盯着它问:「这个是随机的 还是按照时间顺序的 **需要说出来**」——
+        #    面板上一个字都没交代, 只能靠问。⇒ 前缀里直接把三件事写清:
+        #    ① 按时间顺序 ② 左起最早 ③ 等间隔抽了几个点(点数按实际算, 不写死 12)。
         _step = max(1, len(v) // 12)
-        _curve = " / ".join("%d" % v[_i] for _i in range(0, len(v), _step))
+        _idx = list(range(0, len(v), _step))
+        _curve = " / ".join("%d" % v[_i] for _i in _idx)
         # ⚠️ 2026-09-15 玩家定稿: 高压这里**删掉「归一化」、删掉「波动」, 新增平均差系数**
         #    (= 平均差 ÷ 均值, 见 `_mad_coef`)。旧「波动」是 (max-min)/中位, 只看两个极端点。
+        # ⚠️ 锁核/提优先级这两行**只在安卓上出现**(PC 上它们永远是恒定值)。
+        _opt = [_x for _x in (self._hp_cpu_pin_line(), self._hp_tid_prio_line()) if _x]
         _mc = _mad_coef(v)
         return (_dv + chr(10)
-                + "高压 %.0f 秒（背靠背不停）" % SOC_SUSTAIN_WALL_SEC + chr(10)
-                + self._hp_cpu_pin_line() + chr(10)
-                + self._hp_tid_prio_line() + chr(10)
+                + "高压 %.0f 秒" % SOC_SUSTAIN_WALL_SEC + chr(10)
+                + "".join(_x + chr(10) for _x in _opt)
                 + "首 %d → 末 %d 步/秒（降 %.0f%%）" % (_f, _l, _d) + chr(10)
-                + "最低 %d · 中位 %d 步/秒" % (_lo, _mid) + chr(10)
+                # ⚠️ 2026-09-16 玩家:「跑分**从中位数改为平均数**」。**历史面板与这个结果
+                #    弹窗必须同一口径** —— 频率那边就是因为两处不一样被玩家逮到过(见
+                #    `_hp_freq_line` 的注释), 别再犯同一个错。
+                + "最低 %d · 平均 %d 步/秒" % (_lo, _avg) + chr(10)
                 + ("平均差系数 %.2f%%" % _mc if _mc is not None else "平均差系数 无数据")
                 + chr(10) + chr(10)
-                + "每段采样：" + _curve + chr(10)
+                + "每段采样（按时间顺序，左起最早，等间隔取 %d 点）：" % len(_idx) + _curve + chr(10)
                 + "CPU 频率：" + self._hp_freq_line())
 
     def _hp_done(self):
@@ -11160,6 +11263,11 @@ class RootWidget(BoxLayout):
                 _w2 = sorted(x for x in (getattr(self, "_hp_fps", None) or []) if x > 0)
                 self.hp_history.append({
                     "time": time.strftime("%Y-%m-%d %H:%M"),
+                    # ⚠️ **跑分口径 2026-09-16 玩家定案: 平均数**(原来是中位数)。
+                    #    显示一律走 `_hp_score()` —— 新记录读这里, 旧记录拿 `windows` 现算。
+                    #    ⚠️ `median` **照旧存着**(老记录要能读、以后要复盘), 只是**不再显示**。
+                    #       **别顺手把它从记录里删掉。**
+                    "mean": (int(round(sum(_w2) / float(len(_w2)))) if _w2 else None),
                     "median": int(_mid2),
                     "spread": (round(100.0 * (_w2[-1] - _w2[0]) / _mid2, 1)
                                if (_w2 and _mid2 > 0) else None),
@@ -11197,7 +11305,9 @@ class RootWidget(BoxLayout):
         except Exception:
             _txt = ""
         content = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
-        title_lbl = self._fit_line(Label(text="SOC高压测试", bold=True, halign="center",
+        # ⚠️ 2026-09-16 玩家: 「把版本号**放入标题**中吧 加个空格, 这个地方就不要版本号了」
+        #    ⇒ 标题改成 `SOC高压测试 v0.x.x`(见 `_soc_result_title`), 正文那行不再带版本。
+        title_lbl = self._fit_line(Label(text=_soc_result_title(), bold=True, halign="center",
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
@@ -13993,7 +14103,9 @@ class RootWidget(BoxLayout):
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
-        _HP_COLS = ('时间', '中位数', '平均差系数')
+        # ⚠️ 2026-09-16 玩家: 「跑分**从中位数改为平均数**」⇒ 列头跟着改。
+        #    三处口径必须同步: 这里 / 脚注 / 详情正文(见 `_hp_score` 的说明)。
+        _HP_COLS = ('时间', '平均值', '平均差系数')
         if not self.hp_history:
             # ⚠️ 空态**靠两根弹簧竖向居中**, 面板高度**不变**(与隔壁那张表逐字同款)。
             #    玩家 2026-09-15 给「测试历史」定的规矩: 「高度不变, 因为以后要 tmd 放数据啊」
@@ -14054,8 +14166,9 @@ class RootWidget(BoxLayout):
             rows = [[], [], []]          # 逐列一组, 只为下面"全表统一字号"取最长内容
             for r in reversed(self.hp_history[-100:]):
                 stamp = _hist_stamp(r.get('time'))
-                mid = r.get('median')
-                mid_text = '%d' % int(mid) if mid is not None else '—'
+                # ⚠️ 跑分 = **平均数**(见 `_hp_score`), 旧记录拿 windows 现算, 不印「—」。
+                _avg = _hp_score(r)
+                avg_text = '%d' % _avg if _avg is not None else '—'
                 # ⚠️ **平均差系数**(2026-09-15 玩家定稿): 取代原来的「波动」与「归一化」两列。
                 #    = 平均差 ÷ 均值(见 `_mad_coef`); 旧「波动」是 (max-min)/中位, 只看两端点。
                 #    ⚠️ **旧记录没有这个字段** ⇒ 印「—」, **绝不拿别的字段回填**(印假数)。
@@ -14063,7 +14176,7 @@ class RootWidget(BoxLayout):
                 mad_text = ('%.2f%%' % float(_mad)) if _mad is not None else '—'
                 row = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
                                 height=dp(26), pos_hint={'center_x': 0.5})
-                for _i, _t in enumerate((stamp, mid_text, mad_text)):
+                for _i, _t in enumerate((stamp, avg_text, mad_text)):
                     lbl = Label(text=_t, halign='center', valign='middle',
                                 color=hex_rgb(COL_TEXT) + (1,), size_hint_x=None)
                     lbl.width = _HW[_i]
@@ -14100,14 +14213,22 @@ class RootWidget(BoxLayout):
                     _c.font_size = _fs_all
             scroll.add_widget(inner)
             content.add_widget(scroll)
+                        # ⚠️ 2026-09-16 玩家(看了截图)：「高压那段各个 1 秒窗口速度的平均值
+            #    **这个描述不妥**」。
+            #    病根: 它描述的是**实现细节**(「各个 1 秒窗口」是采样方式, 玩家从来看不到),
+            #    而没说这个数**是什么**; 且三个名词硬叠(窗口/速度/的平均值)。
+            #    ⇒ 对齐成**隔壁那张表的句式**(它是好形状): 先给名字, 再说它是什么 ——
+            #      「中位分: 物理引擎每秒模拟步数的中位数」。
+            #    ⚠️ 「每秒模拟步数」已把**单位(步/秒)**说清了(面板那一列是裸数字,
+            #       没有单位), 所以不用再加括号标单位。
             # 脚注: 只回答"这一列是什么"。口径沿革属于代码注释(`_mad_coef` /
             # `_show_bench_history` 两处都有), 面板上不写。
             # ⚠️ 2026-09-16 玩家定稿: 「最简单的改进方案是, 把括号内的字都删了」——
             #    括号里那个「群」字**不在字体子集里**(真机上显示成方块) ⇒ 删掉整段即根治。
             # ⚠️ `h0` 40 -> **44**: 与隔壁那张表**同一个值**(两张表脚注都是两行 12sp, 实测约 34px)。
             foot = Label(
-                text=('  中位数：高压那段各个 1 秒窗口速度的中位数\n'
-                      '  平均差系数：平均差 ÷ 均值，越小越稳'),
+                text=('  平均值：物理引擎每秒模拟步数的平均值\n'
+                      '  平均差系数：平均差 ÷ 平均值，越小越稳'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
             self._auto_h(foot, dp(44))
@@ -14201,7 +14322,9 @@ class RootWidget(BoxLayout):
         _n = chr(10)
         _w = [x for x in (r.get('windows') or []) if x > 0]
         _step = max(1, len(_w) // 12) if _w else 1
-        _curve = ' / '.join('%d' % _w[i] for i in range(0, len(_w), _step)) if _w else '—'
+        # ⚠️ 与结果弹窗**同一口径**: 按时间顺序、左起最早、等间隔抽点(理由见 `_hp_summary_text`)。
+        _idx = list(range(0, len(_w), _step)) if _w else []
+        _curve = ' / '.join('%d' % _w[i] for i in _idx) if _idx else '—'
         _fm = int(r.get('freq_mean', 0) or 0)
         _fp = int(r.get('freq_p50', 0) or 0)
         _fn = int(r.get('freq_n', 0) or 0)
@@ -14221,7 +14344,7 @@ class RootWidget(BoxLayout):
                 + str(r.get('time', '--')) + '   高压 %d 秒'
                 % int(r.get('sec', 0) or 0) + _n + _n
                 + '成绩' + _n
-                + '  中位 %d / 最低 %d 步/秒'
+                + '  平均 %d / 最低 %d 步/秒'
                 % (int(r.get('median', 0) or 0), int(r.get('min', 0) or 0)) + _n
                 + '  首 %d → 末 %d（降 %.1f%%）'
                 % (int(r.get('first', 0) or 0), int(r.get('last', 0) or 0),
@@ -14235,7 +14358,7 @@ class RootWidget(BoxLayout):
                 + '  平均 ' + _ft + _n
                 + '  ' + _fd + _n + _n
                 + '过程' + _n
-                + '  每段采样：' + _curve)
+                + '  每段采样（按时间顺序，左起最早，等间隔取 %d 点）：' % len(_idx) + _curve)
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='SOC高压测试详情', bold=True,
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
@@ -14457,7 +14580,7 @@ class RootWidget(BoxLayout):
                 #    已被 `_mad_coef` 取代), 换成新口径的说明。表头里出现了「平均差系数」,
                 #    脚注就得解释它 —— 否则玩家只看到一个没见过的词。
                 text=('  中位分：物理引擎每秒模拟步数的中位数\n'
-                      '  平均差系数：平均差 ÷ 均值，越小越稳'),
+                      '  平均差系数：平均差 ÷ 平均值，越小越稳'),
                 font_size='12sp', halign='left', valign='top',
                 color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
             self._auto_h(foot, dp(44))
