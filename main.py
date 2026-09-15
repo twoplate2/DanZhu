@@ -872,6 +872,8 @@ _BENCH_AFF = []          # 波 1 每一轮采一次 `os.sched_getaffinity(0)`; �
 # 跑分线程的锁核结果。只用于日志：`sched_getaffinity` 只能说明"允许跑在哪些核"，
 # 不能证明实际没有在快/慢簇之间迁移；这里把可控的迁移变量去掉，并把成败如实记下。
 _BENCH_CPU_PIN = {}
+# 测试期间主渲染线程的亲和性状态；主线程与跑分工作线程分开占用核心簇。
+_BENCH_UI_AFF = {}
 # 只影响物理跑分工作线程；正常游戏、渲染线程和高压测试都不改亲和性。
 _BENCH_PIN_FAST_CORES = True
 # 波 1 每一轮的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 它在 `_run_once` **之外**跑,
@@ -977,6 +979,72 @@ def _bench_restore_cpu_affinity(previous):
         _BENCH_CPU_PIN["restore_error"] = type(_exc).__name__
 
 
+def _bench_reserve_ui_cpus():
+    """把当前(主渲染)线程放到性能簇之外，返回供结束时恢复的原集合。
+
+    这是减少测试线程和 Kivy 主线程争用物理核心的调度优化；它不保证 GIL 并行，
+    所以计算循环仍需配合 `_bench_gil_yield`。设备拓扑读不出或没有剩余核心时安全降级。
+    """
+    _BENCH_UI_AFF.clear()
+    if not _BENCH_PIN_FAST_CORES or platform != "android":
+        _BENCH_UI_AFF["reason"] = "非安卓或已关闭"
+        return None
+    try:
+        _allowed = set(os.sched_getaffinity(0))
+    except Exception:
+        _BENCH_UI_AFF["reason"] = "sched_getaffinity 不可用"
+        return None
+    _BENCH_UI_AFF["before"] = sorted(_allowed)
+    _caps = {int(_cpu): _bench_cpu_max_khz(_cpu) for _cpu in _allowed}
+    _caps = {int(_cpu): int(_khz) for _cpu, _khz in _caps.items() if _khz > 0}
+    if len(_caps) < 2:
+        _BENCH_UI_AFF["reason"] = "读不到足够的 CPU 最高频率"
+        return None
+    _top = max(_caps.values())
+    if _top <= min(_caps.values()) * 1.02:
+        _BENCH_UI_AFF["reason"] = "可用 CPU 为同一性能簇"
+        return None
+    _fast = {int(_cpu) for _cpu, _khz in _caps.items() if _khz >= _top * 0.98}
+    _ui = _allowed - _fast
+    if not _fast or not _ui:
+        _BENCH_UI_AFF["reason"] = "没有可用的中核集合"
+        return None
+    try:
+        os.sched_setaffinity(0, _ui)
+        _actual = set(os.sched_getaffinity(0))
+        if not _actual or not _actual.issubset(_ui):
+            _BENCH_UI_AFF["reason"] = "系统未接受主线程中核亲和性"
+            try:
+                os.sched_setaffinity(0, _allowed)
+            except Exception:
+                pass
+            return None
+        _BENCH_UI_AFF["reserved"] = True
+        _BENCH_UI_AFF["actual"] = sorted(_actual)
+        _BENCH_UI_AFF["fast"] = sorted(_fast)
+        return _allowed
+    except Exception as _exc:
+        _BENCH_UI_AFF["reason"] = "sched_setaffinity 失败: %s" % type(_exc).__name__
+        return None
+
+
+def _bench_restore_ui_affinity(previous):
+    """恢复主渲染线程在测试前的 CPU 允许集合。"""
+    if not previous:
+        return
+    try:
+        os.sched_setaffinity(0, previous)
+        _BENCH_UI_AFF["restored"] = sorted(os.sched_getaffinity(0))
+    except Exception as _exc:
+        _BENCH_UI_AFF["restore_error"] = type(_exc).__name__
+
+
+def _bench_gil_yield(counter, every=128):
+    """按固定批次短暂让出 GIL，避免测试线程把 Kivy 主线程饿到低帧率。"""
+    if counter % every == 0:
+        time.sleep(0)
+
+
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
                            runs=SOC_SAMPLE_RUNS,
@@ -1012,6 +1080,7 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
             for _ in range(4000):
                 landed = advance_flight(b, geo)
                 frames += 1
+                _bench_gil_yield(frames)
                 if landed is not None:
                     flights += 1
                     break
@@ -1123,10 +1192,11 @@ def benchmark_sustained(total_wall_sec=SOC_SUSTAIN_WALL_SEC,
         while cpu_clock() - t0 < cpu_seconds:
             power = rng.uniform(MISFIRE_POWER, 1.0)
             b = launch_ball(power, rng=rng)
-            for _ in range(4000):
-                landed = advance_flight(b, geo)
-                frames += 1
-                if landed is not None:
+        for _ in range(4000):
+            landed = advance_flight(b, geo)
+            frames += 1
+            _bench_gil_yield(frames)
+            if landed is not None:
                     flights += 1
                     break
         used = max(0.000001, cpu_clock() - t0)
@@ -10704,6 +10774,7 @@ class RootWidget(BoxLayout):
     def _wait_idle_then_hp(self, dt=0):
         """等球落地(主线程空闲)再起 —— 与 `_wait_idle_then_bench` 同一个理由: 别抢 CPU。"""
         if self.state == "ready":
+            self._hp_ui_aff_before = _bench_reserve_ui_cpus()
             threading.Thread(target=self._run_hp_test, daemon=True).start()
         else:
             Clock.schedule_once(self._wait_idle_then_hp, 0.5)
@@ -10783,6 +10854,13 @@ class RootWidget(BoxLayout):
             return "性能核：已锁定 " + ",".join("cpu%d" % int(_cpu) for _cpu in _cpus)
         return "性能核：未锁定（%s）" % (_pin.get("reason", "未执行") or "未知原因")
 
+    def _hp_ui_aff_line(self):
+        _aff = getattr(self, "_hp_ui_aff", None) or {}
+        if _aff.get("reserved"):
+            _cpus = _aff.get("actual", []) or []
+            return "主线程：保留中核 " + ",".join("cpu%d" % int(_cpu) for _cpu in _cpus)
+        return "主线程：未保留中核（%s）" % (_aff.get("reason", "未执行") or "未知原因")
+
     def _hp_summary_text(self):
         """弹窗里那几行(短)。没数据返回空串 —— **不印假数**。"""
         st = self._hp_stats()
@@ -10801,6 +10879,7 @@ class RootWidget(BoxLayout):
         return (_dv + chr(10)
                 + "高压 %.0f 秒（背靠背不停）" % SOC_SUSTAIN_WALL_SEC + chr(10)
                 + self._hp_cpu_pin_line() + chr(10)
+                + self._hp_ui_aff_line() + chr(10)
                 + "首 %d → 末 %d 步/秒（降 %.0f%%）" % (_f, _l, _d) + chr(10)
                 + "最低 %d · 中位 %d 步/秒" % (_lo, _mid) + chr(10) + chr(10)
                 + "每段采样：" + _curve + chr(10)
@@ -10808,6 +10887,10 @@ class RootWidget(BoxLayout):
 
     def _hp_done(self):
         """高压测试结束: 弹结果弹窗。"""
+        _hp_ui_before = getattr(self, "_hp_ui_aff_before", None)
+        self._hp_ui_aff_before = None
+        _bench_restore_ui_affinity(_hp_ui_before)
+        self._hp_ui_aff = dict(_BENCH_UI_AFF)
         self._prog_stop()
         self._set_controls_enabled(True)
         _set_label_text(self.status_lbl,
@@ -11823,6 +11906,7 @@ class RootWidget(BoxLayout):
     def _wait_idle_then_bench(self, dt=0):
         """等球落地(主线程空闲)再启动物理 benchmark, 避免抢 CPU 干扰结果。"""
         if self.state == "ready":
+            self._bench_ui_aff_before = _bench_reserve_ui_cpus()
             threading.Thread(target=self._run_benchmark, daemon=True).start()
         else:
             Clock.schedule_once(self._wait_idle_then_bench, 0.5)
@@ -11995,6 +12079,10 @@ class RootWidget(BoxLayout):
         return ' · '.join(parts)
 
     def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
+        _bench_ui_before = getattr(self, "_bench_ui_aff_before", None)
+        self._bench_ui_aff_before = None
+        _bench_restore_ui_affinity(_bench_ui_before)
+        self._bench_ui_aff = dict(_BENCH_UI_AFF)
         self.game_area.hide_bench_badge()
         self._hide_bench_dim()   # 兼容旧路径：当前跑分不再置灰
         _phys_sorted = sorted(fps_list)
@@ -12375,6 +12463,16 @@ class RootWidget(BoxLayout):
             else:
                 _lines.append("# 帧率采样主线程性能核锁定: **未锁定**(%s)"
                               % (_rpin.get("reason", "未执行") or "未知原因"))
+            _u_aff = getattr(self, "_bench_ui_aff", None) or {}
+            if _u_aff.get("reserved"):
+                _u_cpus = _u_aff.get("actual", []) or []
+                _u_restored = ",".join(str(_cpu) for _cpu in (_u_aff.get("restored", []) or []))
+                _lines.append("# 物理跑分期间主渲染线程: **保留中核** %s · 恢复 %s"
+                              % (",".join("cpu%d" % int(_cpu) for _cpu in _u_cpus),
+                                 _u_restored or "失败"))
+            else:
+                _lines.append("# 物理跑分期间主渲染线程: **未保留中核**(%s)"
+                              % (_u_aff.get("reason", "未执行") or "未知原因"))
             # `sched_getaffinity` 的全核集合只表示"允许调度"。这里额外写明本轮是否真的把
             # benchmark 工作线程锁在最高性能簇，避免把优化请求误读成已经生效。
             _pin = getattr(self, "_phys_cpu_pin", None) or {}
@@ -13786,7 +13884,11 @@ class RootWidget(BoxLayout):
             #    ⇒ 按比例配成 110/92/88, **全表共用一个字号**(实测落 13.16sp)。
             #    ⚠️ 表头与数据行**共用同一个宽度元组** —— 否则两边各对一套栅格、永远对不齐。
             _HW = (dp(110), dp(92), dp(88))
-            columns = BoxLayout(size_hint_y=None, height=dp(22))
+            _table_w = sum(_HW)
+            # 固定列宽表格不能默认贴在父容器左边；宽屏设备上这会明显偏左，
+            # 窄屏设备上也会造成标题/数据与面板中心不一致。表头和每一行共用同一整体宽度。
+            columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
+                                height=dp(22), pos_hint={'center_x': 0.5})
             _heads = []
             for _t, _w in zip(_HIST_COLS, _HW):
                 h = Label(text=_t, halign='center', valign='middle',
@@ -13840,7 +13942,8 @@ class RootWidget(BoxLayout):
                 #       只是**不再显示**。**别顺手把它从记录里删掉。**
                 # ⚠️ **整行改成一排固定列宽的 Label**(2026-09-15 玩家:「排版回归准表格,
                 #    不要用空格来分割」)。列宽与表头**共用 `_HW`**。
-                row = BoxLayout(size_hint_y=None, height=dp(26))
+                row = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
+                                height=dp(26), pos_hint={'center_x': 0.5})
                 for _i, (_t, _w) in enumerate(zip((stamp, fps_text, soc_text), _HW)):
                     lbl = Label(text=_t, halign='center', valign='middle',
                                 color=hex_rgb(COL_TEXT) + (1,), size_hint_x=None)
