@@ -359,6 +359,11 @@ COL_DARKRED = "#8f3a2e"        # 暗砖红(安卓隐藏档弹窗的"确定"按�
 COL_GREEN = "#39d98a"
 COL_GRAY = "#5a6a8c"
 COL_METER = "#f0b000"
+# SOC 高压测试那一系的按钮色(2026-09-15)。⚠️ **不复用 `COL_METER`**: 那个 #f0b000 太亮,
+# 白字压在上面读不清; 这两个是**同色相、够深**的一对(行动亮 / 历史暗), 白字都够清,
+# 而且与"模拟系"的红明显分开 —— 玩家要的"同 1 类是一个色系、不同类分开"就靠这一对。
+COL_SOC = "#c07a10"            # SOC 系: 行动(SOC高压测试)
+COL_SOC_DIM = "#7a4e0a"        # SOC 系: 历史(SOC测试历史)
 COL_x = {2: "#1e8a5a", 3: "#3d8bfd", 5: "#e0533b", 10: "#9e1f30", 20: "#a335ee", 50: "#c88800", 100: "#ff8c00"}
 # 槽位倍率色(WoW 品质色调整版): x2绿 x3蓝 x5红 x10深红 x20紫 x50深金 x100深橙。
 # 同时是中奖大字/灯带的取色依据。x10深红、x20紫偏暗 → 白字; 其余亮底 → 黑字。
@@ -808,12 +813,15 @@ SOC_SAMPLE_GAP_SEC = 2.0
 #       它的时长/参数一个字不动(渲染 25s + 波 1 14.5s)。高压单独一键, 要跑多久跑多久。
 SOC_SUSTAIN_SEC = 300.0
 SOC_SUSTAIN_WINDOW_SEC = 1.0
+# 渲染采样窗口自动发几颗球(原来是 `self._target_launches = 5` 写死在跑分函数里, 提成常量)。
+BENCH_TARGET_LAUNCHES = 5
 
 
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
                            sample_cpu_sec=SOC_SAMPLE_CPU_SEC,
                            runs=SOC_SAMPLE_RUNS,
-                           gap_sec=SOC_SAMPLE_GAP_SEC):
+                           gap_sec=SOC_SAMPLE_GAP_SEC,
+                           on_sample=None):
     """**波 1 —— 测性能(峰值)**: 1.5 秒 CPU 时间预热 + `runs` x 1 秒样本, 取中位数。
 
     用工作线程自身的 ``thread_time`` 作时间基准，排除等待 GIL、渲染和系统调度的墙钟空档；
@@ -863,6 +871,13 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
         cpu_seconds_list.append(used)
         total_flights += flights
         total_frames += frames
+        # ⚠️ 回调跑在**工作线程**上: 只能写普通属性, **绝不许碰界面**
+        #    (界面只能在主线程的 Clock 回调里动)。进度条由主线程按 0.25 秒轮询这个值。
+        if on_sample is not None:
+            try:
+                on_sample(len(fps_list), runs)
+            except Exception:
+                pass
     return total_flights, total_frames, fps_list, cpu_seconds_list
 
 
@@ -2526,6 +2541,9 @@ def _build_texwarm(rw, bet=None):
         out.extend(_bigtext_warm_items(rw))
     except Exception:
         pass
+    # ⚠️ **进度串不预烘**(2026-09-15 玩家定案): 进度只在**物理段/SOC 高压段**显示,
+    #    那时屏幕采样**已经停了** ⇒ 写标签不进成绩, 没必要预烘。
+    #    (曾给“渲染窗口的进度”预烘过, 随“渲染窗口不显示进度”一起撤了。)
     # ---- 飘字(`center_toast`): 同样是**每次现建 Label**, 同一个病, 同样只有全局缓存能救 ----
     try:
         out.extend(_toast_warm_items(rw))
@@ -8969,8 +8987,13 @@ class RootWidget(BoxLayout):
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
         self.bench_history = []        # 性能测试历史(最近100次)
+        # SOC 高压测试的独立历史(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」)。
+        # ⚠️ **与性能测试分开存**: 两者的量纲不同(一个是峰值、一个是衰减),
+        #    挤同一张表只会互相污染(一半格子是 0/—)。
+        self.hp_history = []
         self._load_history()           # 从磁盘恢复(跨启动持久化)
         self._load_bench_history()
+        self._load_hp_history()
         self._auto_reset_on_start = False
         self._load_config()            # 恢复上次的游戏设定
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
@@ -9799,6 +9822,59 @@ class RootWidget(BoxLayout):
             self._rtp_hold_fired = True
             self._ask_unlock_rtp()    # 长按 RTP_UNLOCK_HOLD 秒: 四选一档位弹窗
 
+    # ---------------------------------------------------------------- 进度显示
+    # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15 定案): 那段正在测 1%Low,
+    #   在里面写标签就是往被测帧上加活儿。**只有后面全力跑 SOC 时才显示**:
+    #     · 物理段    -> `物理跑分 d/3`
+    #     · SOC 高压段 -> `SOC高压测试 d/300秒`
+    #   那两个阶段 `_finish_render_sample` 已经跑过(屏幕采样停了) ⇒ 写标签不进成绩。
+    def _prog_text(self):
+        """当前该显示的进度文案; 没有测试在跑就返回 None。"""
+        if getattr(self, "_hp_running", False):
+            _t0 = float(getattr(self, "_hp_t0", 0.0) or 0.0)
+            _el = int(time.time() - _t0) if _t0 > 0 else 0
+            _el = max(0, min(_el, int(SOC_SUSTAIN_SEC)))
+            return "SOC高压测试 %d/%d秒" % (_el, int(SOC_SUSTAIN_SEC))
+        if getattr(self, "_bench_running", False):
+            # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15:「那 25 秒测试帧率的不
+            #    显示任何进度消息, 后面全力测试 SOC 的时候才显示」)。
+            #    不写标签 ⇒ 不会在测 1%Low 的窗口里造出一次文字重建,
+            #    也就**不需要为它预烘**(原设计预烘了 `性能测试 d/5` 那 6 条, 已撤)。
+            if not getattr(self, "_phys_started", False):
+                return None
+            return "物理跑分 %d/%d" % (int(getattr(self, "_phys_done", 0) or 0),
+                                      SOC_SAMPLE_RUNS)
+        return None
+
+    def _prog_tick(self, dt=0):
+        """主线程轮询进度。**只在文案真变了才写标签** —— 每写一次都是一次文字重排。"""
+        try:
+            _t = self._prog_text()
+        except Exception:
+            _t = None
+        if not _t or _t == getattr(self, "_prog_last", None):
+            return
+        self._prog_last = _t
+        try:
+            _set_label_text(self.status_lbl, _t)
+        except Exception:
+            pass
+
+    def _prog_start(self):
+        self._prog_last = None
+        try:
+            self._prog_ev = Clock.schedule_interval(self._prog_tick, 0.25)
+        except Exception:
+            self._prog_ev = None
+
+    def _prog_stop(self):
+        try:
+            if getattr(self, "_prog_ev", None) is not None:
+                self._prog_ev.cancel()
+        except Exception:
+            pass
+        self._prog_ev = None
+
     # ---------------------------------------------------------------- 高压测试
     # ⚠️ **与"性能测试"分开的独立入口**(玩家 2026-09-15:「新增高压测试按钮, 原有测试是原有时间」)。
     #   两者问的问题不同, 时长也差一个量级:
@@ -9811,7 +9887,11 @@ class RootWidget(BoxLayout):
         self._hp_running = True
         # ⚠️ 状态栏要先存一份再改, 跑完还回去 —— 与 `_bench_saved_status` 同一个写法。
         self._hp_saved_status = self.status_lbl.text
-        _set_label_text(self.status_lbl, "高压测试中…")
+        # ⚠️ 墙钟起点: 进度按**已过秒数**算(它本来就是按 CPU 时间跑的, 两者略有出入,
+        #    但进度条只要"大概走到哪"就够, 不必精确 —— 精确值在结果弹窗里)。
+        self._hp_t0 = time.time()
+        self._prog_start()
+        _set_label_text(self.status_lbl, "SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_SEC))
         self._set_controls_enabled(False)
         self._wait_idle_then_hp()
 
@@ -9832,7 +9912,9 @@ class RootWidget(BoxLayout):
         self._hp_cpu = list(_cpu or [])
         self._hp_freq = {"p50": _frq[len(_frq) // 2] if _frq else 0,
                          "min": _frq[0] if _frq else 0,
-                         "max": _frq[-1] if _frq else 0, "n": len(_frq)}
+                         "max": _frq[-1] if _frq else 0, "n": len(_frq),
+                         # 平均频率 —— 历史里那一列要的就是它(玩家:「SOC 平均频率」)。
+                         "mean": int(sum(_frq) / len(_frq)) if _frq else 0}
         Clock.schedule_once(lambda dt: self._hp_done(), 0)
 
     def _hp_stats(self):
@@ -9873,48 +9955,50 @@ class RootWidget(BoxLayout):
                 + "每段采样：" + _curve + chr(10)
                 + "CPU 频率：" + self._hp_freq_line())
 
-    def _hp_log_text(self):
-        """存成 txt 的那份 —— **逐窗全部列出来**, 不像弹窗那样抽稀。"""
-        st = self._hp_stats()
-        _out = ["# 跳跳的弹珠机 高压测试日志",
-                "# " + self._device_info() + "  " + str(_app_version() or ""),
-                "# 高压 %.0f 秒(背靠背不停, 窗口之间一秒都不停)" % SOC_SUSTAIN_SEC,
-                "# 口径: 与性能测试的波 1 **逐字相同**(同一条确定性输入序列、`thread_time` 当分母、",
-                "#       用实际消耗的 CPU 秒做除法) —— 否则两边的数没法放在一起比。",
-                "# CPU 频率(高压那段): " + self._hp_freq_line()]
-        if st is None:
-            _out.append("# **没采到数据**")
-            return chr(10).join(_out)
-        _f, _l, _lo, _mid, _d = st
-        _out.append("# 首 %d → 末 %d 步/秒 (降 %.0f%%) · 最低 %d · 中位 %d"
-                    % (_f, _l, _d, _lo, _mid))
-        _out.append("# 下面每行一个 1 秒窗口(步/秒), 按时间先后:")
-        for _x in self._hp_fps:
-            _out.append("%6.0f" % _x)
-        return chr(10).join(_out)
-
-    def _hp_save(self):
-        try:
-            ok, msg = self._bench_save_log(self._hp_log_text(), prefix="plinko_hp")
-        except Exception as e:
-            ok, msg = False, "保存失败: %r" % (e,)
-        try:
-            _set_label_text(self.status_lbl, msg)
-        except Exception:
-            pass
-
     def _hp_done(self):
         """高压测试结束: 弹结果弹窗。"""
+        self._prog_stop()
         self._set_controls_enabled(True)
         _set_label_text(self.status_lbl,
                         getattr(self, "_hp_saved_status", "按住蓄力发射"))
         self._hp_running = False
+        # ⚠️ **落一条历史**(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」)。
+        #    存的东西要够"详细成绩 + SOC 平均频率"看 —— 逐窗曲线也存下
+        #    (详情弹窗要画它)。存不成也不能影响结果弹窗, 所以整段 try 包着。
+        try:
+            _st2 = self._hp_stats()
+            if _st2 is not None:
+                _f2, _l2, _lo2, _mid2, _d2 = _st2
+                _fr2 = getattr(self, "_hp_freq", None) or {}
+                _w2 = sorted(x for x in (getattr(self, "_hp_fps", None) or []) if x > 0)
+                self.hp_history.append({
+                    "time": time.strftime("%Y-%m-%d %H:%M"),
+                    "median": int(_mid2),
+                    "spread": (round(100.0 * (_w2[-1] - _w2[0]) / _mid2, 1)
+                               if (_w2 and _mid2 > 0) else None),
+                    "first": int(_f2), "last": int(_l2), "min": int(_lo2),
+                    "decay": round(_d2, 1),
+                    "freq_mean": int(_fr2.get("mean", 0) or 0),
+                    "freq_p50": int(_fr2.get("p50", 0) or 0),
+                    "freq_min": int(_fr2.get("min", 0) or 0),
+                    "freq_max": int(_fr2.get("max", 0) or 0),
+                    "freq_n": int(_fr2.get("n", 0) or 0),
+                    "sec": int(SOC_SUSTAIN_SEC),
+                    "version": _app_version(),
+                    "device": self._device_info(),
+                    "windows": [int(x) for x in self._hp_fps],
+                })
+                if len(self.hp_history) > 100:
+                    self.hp_history.pop(0)
+                self._save_hp_history()
+        except Exception:
+            pass
         try:
             _txt = self._hp_summary_text()
         except Exception:
             _txt = ""
         content = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
-        title_lbl = self._fit_line(Label(text="高压测试", bold=True, halign="center",
+        title_lbl = self._fit_line(Label(text="SOC高压测试", bold=True, halign="center",
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
@@ -9922,31 +10006,27 @@ class RootWidget(BoxLayout):
                      valign="top", color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None)
         self._auto_h(body, dp(160), dp(6))
         content.add_widget(body)
-        save_btn = Button(text="保存日志", font_size="16sp", bold=True,
-                          background_normal="", background_color=hex_rgb(COL_BTN) + (1,))
+        # ⚠️ **没有「保存日志」按钮**(玩家 2026-09-15:「删掉高压测试的写入文件功能」)。
+        #    历史记录照旧落盘(JSON), 只是不再导出 txt。
         close_btn = Button(text="关闭", font_size="16sp", bold=True,
-                           background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,))
-        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10),
-                        orientation="horizontal")
-        row.add_widget(save_btn)
-        row.add_widget(close_btn)
-        content.add_widget(row)
+                           background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                           size_hint_y=None, height=dp(46))
+        content.add_widget(close_btn)
         popup = self._popup(0.90, 460, title="", content=content,
                             auto_dismiss=True, separator_height=0)
-        save_btn.bind(on_release=lambda *_: self._hp_save())
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
     def _show_bench_menu(self):
-        """弹珠发射性能测试菜单弹窗: 开始测试 / 查看历史。"""
+        """弹珠发射模拟测试菜单弹窗: 开始模拟测试 / 查看模拟历史 / SOC高压测试 / SOC测试历史 / 启动信息。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
         _ver = _app_version()
-        _title = ('弹珠发射性能测试 ' + _ver) if _ver else '弹珠发射性能测试'
+        _title = ('弹珠发射模拟测试 ' + _ver) if _ver else '弹珠发射模拟测试'
         title_lbl = self._fit_line(Label(text=_title, bold=True, halign='center',
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(30)), 20)
         content.add_widget(title_lbl)
-        desc_lbl = Label(text='性能测试约 34 秒（含落珠动画）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。\n高压测试：连压 5 分钟，看持续性能衰减。',
+        desc_lbl = Label(text='模拟测试约 34 秒（含落珠动画）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n物理引擎是纯 Python 写的。\nSOC高压测试：连压 5 分钟，看持续性能衰减。',
                          font_size='15sp', halign='left', valign='middle',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(170))
         # 说明是**多行正文** —— 只能用"高度跟着排版走"(缩字号会把整段一起缩小)。
@@ -9964,21 +10044,28 @@ class RootWidget(BoxLayout):
         content.add_widget(desc_lbl)
         # ⚠️ 版本/制作日期 与 音频体检**不在这里** —— 它们搬去「启动信息」独立弹窗了。
         #    用户 2026-09-11 定稿: 这里是跑分菜单, 那两样是启动信息, 不该混在一起。
-        start_btn = Button(text='开始测试', font_size='17sp', bold=True,
+        # ⚠️ **按系配色 + 按系排序**(2026-09-15 玩家:「这几个按钮的颜色你看看怎么改下,
+        #    分几个系？同 1 类的是一个色系？」) —— **3 系, 同类同色系, 行动亮 / 历史暗**:
+        #      模拟(性能测试): 红系   `COL_FIRE` / `COL_DARKRED`
+        #      SOC 高压:        琥珀系 `COL_SOC` / `COL_SOC_DIM`
+        #      信息:           中性蓝 `COL_BTN`(它不是测试, 不占两个测试系的颜色)
+        #    ⚠️ **顺序也按系**: 模拟的两个在前 2 名(玩家 2026-09-15:「把开始测试和查看历史
+        #       按钮放在一起, 都是在前 2 名」), SOC 的两个跟在后面。
+        start_btn = Button(text='开始模拟测试', font_size='17sp', bold=True,
                            background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                            size_hint_y=None, height=dp(52))
-        hist_btn = Button(text='查看历史', font_size='17sp', bold=True,
-                          background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+        hist_btn = Button(text='查看模拟历史', font_size='17sp', bold=True,
+                          background_normal='', background_color=hex_rgb(COL_DARKRED) + (1,),
                           size_hint_y=None, height=dp(52))
+        hp_btn = Button(text='SOC高压测试', font_size='17sp', bold=True,
+                        background_normal='', background_color=hex_rgb(COL_SOC) + (1,),
+                        size_hint_y=None, height=dp(52))
+        hph_btn = Button(text='SOC测试历史', font_size='17sp', bold=True,
+                         background_normal='', background_color=hex_rgb(COL_SOC_DIM) + (1,),
+                         size_hint_y=None, height=dp(52))
         info_btn = Button(text='启动信息', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
-        # ⚠️ 高压测试单独一个按钮(2026-09-15 玩家: 「新增高压测试按钮」)。
-        #    它与“开始测试”**不同类**: 那个测峰值(短, 可比), 这个测衰减(长, 120 秒)。
-        #    放在同一个菜单里, 但颜色用普通按钮色(不抢“开始测试”那个红色主操作)。
-        hp_btn = Button(text='高压测试', font_size='17sp', bold=True,
-                        background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
-                        size_hint_y=None, height=dp(52))
         # 0.84 -> 0.88: 加宽之后 400dp 机器上说明的每一句都**刚好一行**(实测最长那句
         # 「全程约 25 秒(含完整的中奖装杯演出)。」259px < 可用 296px), 折行整个消失。
         # ⚠️ 最后那句「纯Python执行，反映设备跑弹珠的实际流畅度。」(291px) 在 360dp 上
@@ -9991,15 +10078,17 @@ class RootWidget(BoxLayout):
         #    行末孤零零一个逗号 + 右边一大片空洞, 玩家一眼就问"为什么逗号和后面的字不在同一行"。
         #    现在断在「设备」后: 171 / 150 两段, 既都塞得下, 又不把断点落在「的」上
         #    (断在「弹珠」后能到 216/105 更饱满, 但下一行会以「的」开头 —— 中文避头尾不许)。
-        popup = self._popup(0.88, 534, title='', content=content,
+        popup = self._popup(0.88, 598, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
         info_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_startup_info()))
         hp_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_hp_test()))
+        hph_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_hp_history()))
         content.add_widget(start_btn)
-        content.add_widget(hp_btn)
         content.add_widget(hist_btn)
+        content.add_widget(hp_btn)
+        content.add_widget(hph_btn)
         content.add_widget(info_btn)
         popup.open()
         self._popup_fit_content(popup, content)
@@ -10248,6 +10337,9 @@ class RootWidget(BoxLayout):
             self._bench_rng_state = None
             self._bench_pile_rng = None
         self._bench_saved_status = self.status_lbl.text
+        self._phys_started = False
+        self._phys_done = 0
+        self._prog_start()
         # ⚠️⚠️ **盘面也要存**(2026-09-15 玩家报的 bug, 与 `_bench_saved_status` 同一个理由)。
         #    跑分期间 `_auto_launch_tick` 每一发都把 9 个槽**全钉成 `BENCH_BOARD[i]` 那一个值**
         #    (第 5 发是 `100`), 而且**写回了缓存** `self._boards[self.rtp_target]`。
@@ -10255,7 +10347,7 @@ class RootWidget(BoxLayout):
         #    (玩家原话:「都是*100 这个明显不合理」), 一直挂到下一次发射才自愈。
         self._bench_save_board()
         ver = _app_version()
-        _set_label_text(self.status_lbl, ("性能测试中 " + ver) if ver else "性能测试中…")
+        _set_label_text(self.status_lbl, ("模拟测试中 " + ver) if ver else "模拟测试中…")
         self._set_controls_enabled(False)
         # 渲染跑分不额外叠加中央红字或飘字：被测画面只保留正常游戏 HUD，
         # 这样 1% Low 与玩家实际发射时看到的负载完全一致。
@@ -10363,7 +10455,7 @@ class RootWidget(BoxLayout):
             pass
         Window.bind(on_flip=self._on_flip)
         self._launch_count = 0
-        self._target_launches = 5
+        self._target_launches = BENCH_TARGET_LAUNCHES
         # 只在跑分期间轮询；0.1 秒把每局结束到下一发的空档从最多 0.5 秒缩到最多 0.1 秒。
         # 回调只读状态，发射后立即离开 ready，不会重复触发或改变游戏物理。
         self._auto_evt = Clock.schedule_interval(self._auto_launch_tick, 0.1)
@@ -10862,7 +10954,12 @@ class RootWidget(BoxLayout):
         """
         # ---- 波 1: 测性能(峰值) ----
         _f1, _s1 = _freq_sampler_start()
-        flights, frames, fps_list, cpu_secs = benchmark_trajectories()
+        self._phys_started = True
+
+        def _on_sample(_i, _n):
+            self._phys_done = _i
+
+        flights, frames, fps_list, cpu_secs = benchmark_trajectories(on_sample=_on_sample)
         _s1[0] = True
         _f1.sort()
         self._phys_freq_p50 = _f1[len(_f1) // 2] if _f1 else 0
@@ -11123,6 +11220,7 @@ class RootWidget(BoxLayout):
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
+        self._prog_stop()
         _set_label_text(self.status_lbl, getattr(self, '_bench_saved_status', '按住蓄力发射'))
         self._set_controls_enabled(True)
         # ⚠️ **盘面必须和随机数一起还**(2026-09-15 玩家报的 bug, 见 `_bench_restore_board`)。
@@ -11739,13 +11837,8 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(lambda _d: setattr(btn, 'text', '复制逐帧日志'), 2.0)
         return True
 
-    def _bench_save_log(self, text=None, prefix="plinko_fps"):
-        """把日志**存成 txt 文件**(玩家 2026-09-15: 「复制改为下载 txt, 这样就不缺少东西」)。
-
-        ⚠️ `text` / `prefix` 是给**高压测试**复用的(2026-09-15): 那套"四级降级落盘"
-           (MediaStore → 外部私有目录 → 应用内部目录 → 剪贴板)**一个字都不重写** ——
-           复制一份必然漂移, 而这个功能的全部承诺就是"去 Download 拿得到完整文件"。
-           `text=None` 时行为与改之前**逐字相同**(默认取逐帧日志、前缀 plinko_fps)。
+    def _bench_save_log(self):
+        """把逐帧日志**存成 txt 文件**(玩家 2026-09-15: 「复制改为下载 txt, 这样就不缺少东西」)。
 
         ⚠️ 为什么不能只存 `user_data_dir`: 那是**应用内部目录**(`/data/data/<pkg>/files`),
         文件管理器看不见 —— 存那儿等于没存。剪贴板那条路在真机实测**会被截断**
@@ -11759,20 +11852,20 @@ class RootWidget(BoxLayout):
         返回 (成功?, 给玩家看的说明)。
         """
         try:
-            txt = text if text is not None else self._bench_frame_log()
+            txt = self._bench_frame_log()
         except Exception:
             txt = ""
         if not txt:
             return False, "没有可保存的数据"
         try:
-            name = "%s_%s.txt" % (prefix, time.strftime("%Y%m%d_%H%M%S"))
+            name = "plinko_fps_%s.txt" % time.strftime("%Y%m%d_%H%M%S")
         except Exception:
-            name = "%s.txt" % prefix
+            name = "plinko_fps.txt"
 
         if platform != "android":
             # 桌面: 写到一个明确的地方(这样桌面也能验证"文件真的写出来了、内容完整")
             try:
-                d = os.path.join(tempfile.gettempdir(), prefix)
+                d = os.path.join(tempfile.gettempdir(), "plinko_fps")
                 os.makedirs(d, exist_ok=True)
                 p = os.path.join(d, name)
                 with open(p, "wb") as f:
@@ -12264,6 +12357,152 @@ class RootWidget(BoxLayout):
         except Exception:
             return ''
 
+    def _show_hp_history(self):
+        """SOC 高压测试历史: **4 列**(时间 / 中位数 / 波动 / 详情)。
+
+        玩家 2026-09-15: 「高压测试也专门搞个log记录。有4列，时间、中位数、波动、按钮。
+        点击按钮可以看到详细成绩和SOC平均频率。」
+        ⚠️ 与「测试历史」是**两张表**: 那一张是性能测试(峰值/帧率),
+           这一张是 SOC 高压(衰减/频率)。挤一张只会互相污染。
+        """
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
+        title_lbl = self._fit_line(Label(text='SOC高压测试历史', bold=True,
+                                         halign='center', color=hex_rgb(COL_BALL) + (1,),
+                                         size_hint_y=None, height=dp(28)), 19)
+        content.add_widget(title_lbl)
+        if not self.hp_history:
+            content.add_widget(Widget(size_hint_y=1))
+            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连压 %d 秒即可产生一条' % int(SOC_SUSTAIN_SEC),
+                          font_size='16sp', halign='center',
+                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
+            empty.bind(size=lambda w, _: setattr(w, 'text_size', w.size))
+            content.add_widget(empty)
+            content.add_widget(Widget(size_hint_y=1))
+        else:
+            time_w, mid_w, spr_w = dp(112), dp(76), dp(66)
+            columns = BoxLayout(size_hint_y=None, height=dp(22))
+            for text, width in (('时间', time_w), ('中位数', mid_w),
+                                ('波动', spr_w), ('详情', None)):
+                head = Label(text=text, halign='center', valign='middle',
+                             color=hex_rgb(COL_SUB) + (1,),
+                             size_hint_x=None if width else 1)
+                if width:
+                    head.width = width
+                self._fit_line(head, 14)
+                self._fit1(head)
+                columns.add_widget(head)
+            content.add_widget(columns)
+            # ⚠⚠ **必须给显式高度**(2026-09-15 实测): `ScrollView` 不是带
+            #    `minimum_height` 的 Layout ⇒ `_popup_fit_content` 算内容最小高度时
+            #    读到 0, 弹窗只按"标题+表头+脚注+按钮"收 ⇒ **滚动区被压成 0,
+            #    一行数据都显示不出来**(截图为证: 表头在、下面空的)。
+            #    按行数算死高度就不依赖 Kivy 的布局时序了。
+            _vn = max(1, min(len(self.hp_history), 8))
+            scroll = ScrollView(size_hint_y=None, height=dp(28 * _vn + 10))
+            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
+            inner.bind(minimum_height=inner.setter('height'))
+            t_rows, m_rows, s_rows = [], [], []
+            for r in reversed(self.hp_history[-100:]):
+                stamp = str(r.get('time', '--'))
+                mid = r.get('median')
+                spr = r.get('spread')
+                mid_text = '%d' % int(mid) if mid is not None else '—'
+                spr_text = '%.1f%%' % float(spr) if spr is not None else '—'
+                row = BoxLayout(size_hint_y=None, height=dp(28))
+                labs = []
+                for text, width in ((stamp, time_w), (mid_text, mid_w), (spr_text, spr_w)):
+                    lbl = Label(text=text, font_size='14sp', halign='center',
+                                valign='middle', color=hex_rgb(COL_TEXT) + (1,),
+                                size_hint_x=None if width else 1)
+                    if width:
+                        lbl.width = width
+                    lbl.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+                    row.add_widget(lbl)
+                    labs.append(lbl)
+                # ⚠️ 第四列是**按钮**(唯一一个), 不进 `_fit_uniform` —— 它不是文字行。
+                btn = Button(text='详情', font_size='14sp', bold=True,
+                             background_normal='',
+                             background_color=hex_rgb(COL_BTN) + (1,))
+                btn.bind(on_release=lambda _b, rr=r: self._show_hp_detail(rr))
+                row.add_widget(btn)
+                t_rows.append(labs[0])
+                m_rows.append(labs[1])
+                s_rows.append(labs[2])
+                inner.add_widget(row)
+            self._fit_uniform(t_rows, sp(14))
+            self._fit_uniform(m_rows, sp(14))
+            self._fit_uniform(s_rows, sp(14))
+            scroll.add_widget(inner)
+            content.add_widget(scroll)
+            foot = Label(
+                text=('  中位数：高压那段各个 1 秒窗口速度的中位数\n'
+                      '  波动：(最大-最小)/中位数，越大越不稳'),
+                font_size='12sp', halign='left', valign='top',
+                color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
+            self._auto_h(foot, dp(44))
+            content.add_widget(foot)
+        close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                           background_normal='',
+                           background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                           size_hint_y=None, height=dp(46))
+        content.add_widget(close_btn)
+        _vw, _vh = self._veq()
+        popup = RotPopup(title='', content=content, size_hint=(None, None),
+                         width=0.86 * _vw, height=0.7 * _vh,
+                         auto_dismiss=True, separator_height=0)
+        close_btn.bind(on_release=popup.dismiss)
+        popup.open()
+        self._popup_fit_content(popup, content)
+
+    def _show_hp_detail(self, r):
+        """某一条 SOC 高压记录的**详细成绩 + SOC 平均频率**。"""
+        _n = chr(10)
+        _w = [x for x in (r.get('windows') or []) if x > 0]
+        _step = max(1, len(_w) // 12) if _w else 1
+        _curve = ' / '.join('%d' % _w[i] for i in range(0, len(_w), _step)) if _w else '—'
+        _fm = int(r.get('freq_mean', 0) or 0)
+        _fp = int(r.get('freq_p50', 0) or 0)
+        _fn = int(r.get('freq_n', 0) or 0)
+        if _fm > 0:
+            _ft = ('%d MHz' % _fm)
+            _fd = ('中位 %d / 最低 %d / 最高 %d（%d 个采样）'
+                   % (_fp, int(r.get('freq_min', 0) or 0), int(r.get('freq_max', 0) or 0), _fn))
+        else:
+            _ft, _fd = '没采到', '非安卓 / 读不到 sysfs'
+        _spr = r.get('spread')
+        _txt = (_n + str(r.get('device', '?')) + '  ' + str(r.get('version', '')) + _n
+                + str(r.get('time', '--')) + '   高压 %d 秒（背靠背不停）'
+                % int(r.get('sec', 0) or 0) + _n + _n
+                + '中位 %d 步/秒' % int(r.get('median', 0) or 0)
+                + ('（波动 %.1f%%）' % float(_spr) if _spr is not None else '') + _n
+                + '首 %d → 末 %d 步/秒（降 %.1f%%）' 
+                % (int(r.get('first', 0) or 0), int(r.get('last', 0) or 0),
+                   float(r.get('decay', 0) or 0)) + _n
+                + '最低 %d 步/秒' % int(r.get('min', 0) or 0) + _n + _n
+                + 'SOC 平均频率：' + _ft + _n
+                + '频率分布：' + _fd + _n + _n
+                + '每段采样：' + _curve)
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
+        title_lbl = self._fit_line(Label(text='SOC高压测试详情', bold=True,
+                                         halign='center', color=hex_rgb(COL_BALL) + (1,),
+                                         size_hint_y=None, height=dp(28)), 19)
+        content.add_widget(title_lbl)
+        body = Label(text=_txt, font_size='14sp', halign='left', valign='top',
+                     color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None)
+        self._auto_h(body, dp(220), dp(6))
+        content.add_widget(body)
+        close_btn = Button(text='关闭', font_size='16sp', bold=True,
+                           background_normal='',
+                           background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                           size_hint_y=None, height=dp(46))
+        content.add_widget(close_btn)
+        _vw, _vh = self._veq()
+        popup = RotPopup(title='', content=content, size_hint=(None, None),
+                         width=0.88 * _vw, height=0.62 * _vh,
+                         auto_dismiss=True, separator_height=0)
+        close_btn.bind(on_release=popup.dismiss)
+        popup.open()
+        self._popup_fit_content(popup, content)
     def _show_bench_history(self):
         """性能测试历史：每次完整测试严格一行，保留时间、帧率与 SoC 波动。
 
@@ -13166,6 +13405,36 @@ class RootWidget(BoxLayout):
         try:
             with open(self._bench_history_path(), "w") as f:
                 json.dump(self.bench_history[-100:], f)
+        except Exception:
+            pass
+
+    # ---- SOC 高压测试的独立历史(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」) ----
+    # ⚠️ 与性能测试历史**同一套存取路子**(同目录、同 JSON 套路), 只是另一个文件。
+    #    分开存是因为量纲不同(峰值 vs 衰减), 挤一张表只会互相污染。
+    def _hp_history_path(self):
+        """SOC 高压测试历史 JSON 路径(与性能测试历史同目录)。"""
+        if platform == "android":
+            try:
+                base = App.get_running_app().user_data_dir
+            except Exception:
+                base = tempfile.gettempdir()
+        else:
+            base = tempfile.gettempdir()
+        return os.path.join(base, "plinko_hp_history.json")
+
+    def _load_hp_history(self):
+        try:
+            with open(self._hp_history_path(), "r") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                self.hp_history = data[-100:]
+        except Exception:
+            pass
+
+    def _save_hp_history(self):
+        try:
+            with open(self._hp_history_path(), "w") as f:
+                json.dump(self.hp_history[-100:], f)
         except Exception:
             pass
 
