@@ -1308,7 +1308,26 @@ def _freq_core_stats():
     return out
 
 
-def _speed_probe(cpu_seconds=0.05):
+# 探针的**分块数**(2026-09-15)。见 `_speed_probe` 里那段血证: 50ms 单点会被瞬时干扰
+# 放大成"核心速度塌 34%"的假象, 改成切块后**取最快的那一段**。
+#
+# ⚠️ **这个值不是从"哪个块数最稳"的排名里挑的** —— 实测过两轮(`temp/_probe_blocks.py`,
+#    每档 30 次), **两轮的排名完全相反**(第一次 6 块最好/8 块最差, 第二次 8 块最好/6 块最差
+#    15.41%), 说明桌面环境根本分辨不出块数优劣。**那条路是死路, 别再照着排名调。**
+#
+# 两次都复现的只有一件事: **中位随块数单调上升**(58.7M → 63.9M, +6~9%) —— 分块取最大
+# 确实抓到了更高的峰值, **机制生效**。
+#
+# ⇒ 取值改用**机制约束**, 而不是噪声排名:
+#   · **下界 2**: 一块脏了还有别的块 ⇒ 抗瞬时干扰的前提(干扰是短促的 —— 真机 221654 那次
+#     探针崩 34% 而同期步/秒只崩 2.3%, 正说明干扰没持续满整个计分段)。
+#   · **上界 ~5**: 内循环一轮约 18us, 每块至少要 ~500 轮计数才稳 ⇒ 每块 >= 10ms
+#     ⇒ 50ms 最多切 5 块。再切细就是拿计数噪声换抗干扰, 不划算。
+#   · **取 4**(每块 12.5ms ≈ 700 轮) —— 落在区间内、且每块样本留有余量。
+_PROBE_BLOCKS = 4
+
+
+def _speed_probe(cpu_seconds=0.05, blocks=_PROBE_BLOCKS):
     """**纯算术**负载的吞吐(每秒做了几轮) —— 只碰寄存器, 不碰内存。
 
     ⚠️⚠️ 为什么要它(2026-09-15, 真机第三轮): 物理步/秒**不是纯核心速度**。`advance_flight`
@@ -1320,19 +1339,38 @@ def _speed_probe(cpu_seconds=0.05):
        真机三次(同一台 K90, 只改帧率设定)跑分 18450 / 13596 / 21585(**差 59%**),
        而逐核频率只差 6%、亲和性三次相同、`thread_time` 实测**确实**排除了 GIL 等待
        (桌面实测满 GIL 压力只掉 1.3%) ⇒ **三个假设都排除了, 剩下这两种必须靠它分开**。
+
+    ⚠️⚠️ **分块取最大**(2026-09-15; 之前是"跑一整段 50ms 取一个数")。
+       血证: 真机 `plinko_fps_20260915_221654` 的**第 2 轮探针报 19.47M**, 其余四轮
+       28.0~31.6M(**-34%**); 可**同一轮**的实际步/秒只比中位低 **2.3%**。同样一次瞬时干扰,
+       摊进 **50ms** 里占 100%、摊进计分段的 **4000ms** 里只占 1.25% ⇒ 那个 -34% 是
+       **尺子自己被干扰了, 不是核心真的慢**。
+       做法: 切成 `blocks` 段, 每段 `cpu_seconds/blocks`, **返回最快那一段**。
+       ⚠️ **取最大不是取平均** —— "这颗 CPU 最快能到多少"本来就是个**上界量**, 而干扰
+          **只会让测量变慢、不会让它变快**(单向) ⇒ 上界量该用最大值估计
+          (Cinebench 的 best-of-N、3DMark 的 best loop 都是这个道理)。
+       ⚠️ **总成本不变**(还是 `cpu_seconds` 秒), 只是切细了。
+       ⚠️ 副作用: 报出来的值会**系统性偏高** ⇒ **归一化跑分会跟着变小**; 跨版本比归一化
+          时要记得这件事(它是一次口径切换, 不是设备变快了)。
+    ⚠️ `blocks` 见 `_PROBE_BLOCKS` 处的取值依据。
     ⚠️ 工作量固定, 用**本线程 CPU 时间**计时, 所以"每秒几轮"就是有效核心速度。
     """
-    _t0 = time.thread_time()
-    _n = 0
-    while time.thread_time() - _t0 < cpu_seconds:
-        _x = 0
-        for _i in range(600):
-            _x += _i
-        _n += 600
-    _u = max(1e-6, time.thread_time() - _t0)
-    return _n / _u
-
-
+    _nb = max(1, int(blocks))
+    _per = max(0.005, float(cpu_seconds) / _nb)
+    _best = 0.0
+    for _b in range(_nb):
+        _t0 = time.thread_time()
+        _n = 0
+        while time.thread_time() - _t0 < _per:
+            _x = 0
+            for _i in range(600):
+                _x += _i
+            _n += 600
+        _u = max(1e-6, time.thread_time() - _t0)
+        _v = _n / _u
+        if _v > _best:
+            _best = _v
+    return _best
 
 
 class _ProbeObj(object):
@@ -1340,7 +1378,7 @@ class _ProbeObj(object):
     __slots__ = ("a", "b", "c", "d")
 
 
-def _alloc_probe(cpu_seconds=0.05):
+def _alloc_probe(cpu_seconds=0.05, blocks=_PROBE_BLOCKS):
     """**对象分配**负载的吞吐(每秒几轮) —— 走 CPython 分配器 + 属性写读, **碰内存**。
 
     ⚠️⚠️ 为什么要它(2026-09-15, 真机第四轮): `_speed_probe`(纯寄存器) 和它**配成一对**,
@@ -1354,21 +1392,30 @@ def _alloc_probe(cpu_seconds=0.05):
     ⚠️ 和 `_speed_probe` 一样: 工作量固定、用**本线程 CPU 时间**计时, 在 `_run_once`
        **之外**跑(不占"步/秒"的分母)。
     """
-    _t0 = time.thread_time()
-    _n = 0
-    while time.thread_time() - _t0 < cpu_seconds:
-        _keep = []
-        for _i in range(200):
-            _o = _ProbeObj()                 # 分配(走分配器)
-            _o.a = _i * 0.5
-            _o.b = _o.a + 1.0
-            _o.c = _o.b * 0.25
-            _o.d = _o.c - _o.a
-            _keep.append(_o.d)
-        _n += 200
-        del _keep                            # 再回收(和游戏里一样是"分配-丢弃"的节奏)
-    _u = max(1e-6, time.thread_time() - _t0)
-    return _n / _u
+    # ⚠️ 与 `_speed_probe` **同构**: 分块取最大(理由与血证见那边, 别只改一个)。
+    #    两个探针必须用同一套采样口径, 否则"两个一起掉 / 只有一个掉"这个判读就不成立。
+    _nb = max(1, int(blocks))
+    _per = max(0.005, float(cpu_seconds) / _nb)
+    _best = 0.0
+    for _b in range(_nb):
+        _t0 = time.thread_time()
+        _n = 0
+        while time.thread_time() - _t0 < _per:
+            _keep = []
+            for _i in range(200):
+                _o = _ProbeObj()             # 分配(走分配器)
+                _o.a = _i * 0.5
+                _o.b = _o.a + 1.0
+                _o.c = _o.b * 0.25
+                _o.d = _o.c - _o.a
+                _keep.append(_o.d)
+            _n += 200
+            del _keep                        # 再回收(和游戏里一样是"分配-丢弃"的节奏)
+        _u = max(1e-6, time.thread_time() - _t0)
+        _v = _n / _u
+        if _v > _best:
+            _best = _v
+    return _best
 
 
 def _freq_sampler_start():
@@ -3820,7 +3867,7 @@ def _request_android_high_hz():
         #    ⚠️ `setFrameRate` 是**请求**, 系统可以拒绝(省电/温控/用户强制) —— 所以日志里
         #    那一行「实际渲染」永远是最终判据, 不能拿这一行当"已经按住了"。
         if _BENCH_FPS_LOCK[0] > 0:
-            target = min(target, float(_BENCH_FPS_FORCE))
+            target = min(target, float(_bench_fps_force_now()))
         at_or_below = [m for m in candidates if hz(m) <= target + 0.5]
         # 优先不超过三者共同上限的最高同分辨率模式；没有精确档位时宁可保守降档，
         # 不绕过 Android 系统的峰值刷新率设定。
@@ -3870,28 +3917,63 @@ def _refresh_screen_hz(*_):
 #    差 **13.9%**, 而两次的**纯算术探针只差 1.1%**(核心速度一样) ⇒ 那 14% 是渲染在抢内存/缓存。
 #    ⚠️ **归一化(步/秒÷探针)也抓不干净**: ①③ 的探针只差 1.1%, 而归一化值 535 vs 603 差 **12.7%**
 #    ⇒ 归一化之外**还有一块是它抓不住的**。把渲染本身压住, 才是直接治那一块。
-#    ⚠️ **为什么是 60 而不是更低**: 60 是**正常状态**(app 自己的档位里就有它), 系统不会把
-#    "1fps"读成"这个 app 卡死了"而去降频/限后台; UI 也还活着(进度条照常刷)。
+#    ⚠️ **为什么高压那档是 60 而不是更低**: 60 是**正常状态**(app 自己的档位里就有它),
+#    不会被系统当成异常状态。⚠️ 这里原来写的是「"1fps"会被读成"app 卡死了"而去降频/限后台」
+#    —— **那句不准确, 2026-09-15 查证后改掉**: Android 判"卡死"(ANR)的判据**只有时间** ——
+#    主线程 **5 秒**内没处理掉一个输入事件才触发(`InputDispatcher` 给每个事件算 timeoutTime),
+#    **判据里根本没有帧率这一项**。所以低帧率本身不触发 ANR。
+#    ⚠️ 但它**能间接引发**: 单帧渲染太重 ⇒ 主线程忙于画帧 ⇒ 来不及消费输入 ⇒ 攒够 5 秒就 ANR
+#    —— 根因是"主线程被占住", 不是"帧率低"。**降帧率恰恰是往"不 ANR"的方向走**(少干活)。
+#    真正要守的是**用户可感知的卡顿线**: 每帧 100~200ms(5~10fps)。所以波 1 那档取 10fps
+#    (见 `_BENCH_FPS_FORCE_PHYS`), 而且跑分期间屏幕是黑屏+一行白字, 没有动画可卡。
 #    ⚠️ **"请求 60"不等于"拿到 60"**: 真机 ③ 请求 60、系统 120, 实测渲染出来是 **80.4fps**。
 #    所以日志里必须**同时印出那一段实际渲染了多少帧/秒** —— 否则没法知道按没按住。
 #    ⚠️ **渲染窗口那一档不受影响**(它测的就是渲染帧率, 压它就没意义了) —— 闸门只在
 #    波 1(物理跑分)和波 2(SOC 高压)期间开。
-_BENCH_FPS_FORCE = 60
-_BENCH_FPS_LOCK = [0]    # >0 = 正在跑分/高压; `_apply_fps_cap` 会把上限按到 `_BENCH_FPS_FORCE`
+#
+# ⚠️⚠️ **波 1 另有一个更低的档**(2026-09-15 玩家选定「简化画面(保留信息、去掉动作)」)。
+#    起因: 玩家要「中位数跑分」这一项也涨上去, 而在**不改弹珠逻辑**的前提下, 唯一剩下的
+#    手段就是减少主线程抢走的 CPU/内存带宽。
+#    为什么落地成"降帧率"而不是别的: 跑分是从 `state == "ready"` 起的(特意等球落地),
+#    所以**跑分期间本来就没有球、也没有装杯演出** —— "去掉动作"这一半现状已经满足,
+#    剩下的负载全在**每帧的 GL 合成**上(板面 canvas 指令多, 手机驱动对每条都贵;
+#    真机日志里 `板面` 单帧尖峰 7.4ms 就是这个)。所以能省的就是合成次数。
+#    20fps 的依据: 跑分期间要看的"信息"只有一行白字 —— 它是主线程按 **0.25 秒**轮询更新的
+#    (`_prog_tick` 的调度间隔), 所以 **4fps 就足以让每次更新都画出来**。
+#    ⚠️ 2026-09-15 玩家:「其实帧率可以更低」⇒ 再砍到 **10fps**(离 4fps 的需求还留 2.5 倍余量)。
+#    **别再往下压**: ①更低不会有额外收益(GL 负载的边际收益递减); ②**用户可感知的卡顿线**
+#    是每帧 100~200ms(5~10fps), 10fps 正好踩在线的下沿 —— 而跑分期间是黑屏无动画, 所以
+#    这条实际不成立, 但没必要再往下试探。(ANR 那条**不适用**: 它的判据是输入 5 秒无响应,
+#    与帧率无关 —— 详见上面 `_BENCH_FPS_FORCE` 那段 2026-09-15 的更正。)
+#    ⚠️ 波 2(高压)与渲染测量**不动**, 仍按 `_BENCH_FPS_FORCE` —— 玩家 2026-09-15:
+#       「压力测试不用改, 这个看的是散热能力, 最朴实无华, 一直要求全力跑单核心」。
+_BENCH_FPS_FORCE = 60        # 高压 / 渲染测量的上限
+_BENCH_FPS_FORCE_PHYS = 10   # 波 1(物理跑分)专用上限 —— 见上面那段
+_BENCH_FPS_LOCK = [0]        # >0 = 正在跑分/高压
+_BENCH_FPS_PHYS = [0]        # >0 = **波 1** 正在跑(它用更低的那档)
 
 
-def _bench_fps_lock_on():
-    """按住帧率上限(可重入)。跑分/高压开始时调。"""
+def _bench_fps_force_now():
+    """当前该按到多少: 波 1 用 `_BENCH_FPS_FORCE_PHYS`, 其余用 `_BENCH_FPS_FORCE`。"""
+    return _BENCH_FPS_FORCE_PHYS if _BENCH_FPS_PHYS[0] > 0 else _BENCH_FPS_FORCE
+
+
+def _bench_fps_lock_on(phys=False):
+    """按住帧率上限(可重入)。跑分/高压开始时调。`phys=True` 表示这是**波 1**。"""
     _BENCH_FPS_LOCK[0] += 1
+    if phys:
+        _BENCH_FPS_PHYS[0] += 1
     try:
         _apply_fps_cap()
     except Exception:
         pass
 
 
-def _bench_fps_lock_off():
+def _bench_fps_lock_off(phys=False):
     """松手(计数归零才真的恢复)。跑分/高压结束**必须**在 `finally` 里调。"""
     _BENCH_FPS_LOCK[0] = max(0, _BENCH_FPS_LOCK[0] - 1)
+    if phys:
+        _BENCH_FPS_PHYS[0] = max(0, _BENCH_FPS_PHYS[0] - 1)
     if _BENCH_FPS_LOCK[0] == 0:
         try:
             _apply_fps_cap()
@@ -3915,7 +3997,7 @@ def _apply_fps_cap():
     #    `_apply_fps_cap`(弹窗关闭 / 切回前台)都会把上限**悄悄恢复**, 而日志上看不出来。
     if _BENCH_FPS_LOCK[0] > 0:
         try:
-            cap = min(float(cap), float(_BENCH_FPS_FORCE))
+            cap = min(float(cap), float(_bench_fps_force_now()))
         except Exception:
             pass
         _FPS_INFO[1] = cap
@@ -9961,6 +10043,19 @@ class RootWidget(BoxLayout):
         with self.canvas.after:
             self._bench_dim_col = Color(0.05, 0.06, 0.09, 0.0)
             self._bench_dim_rect = Rectangle(pos=(0, 0), size=(0, 0))
+            # ⚠️⚠️ **黑屏上的白字层**(2026-09-15 玩家: 「你直接黑屏就行, 上面写几个字就可以」)。
+            #    它**必须画在矩形之后** —— 同一个 `canvas.after` 里, **顺序即层序**。
+            #    为什么不能用盘面里那个现成的 `_bench_badge` 标签: `RootWidget.canvas.after`
+            #    盖住**整棵子树**, 也包括 GameArea 里的 badge ⇒ 黑屏会把那行红字一起盖掉。
+            #    所以白字只能自己在这里画一层(CoreLabel 的纹理, 不挂控件)。
+            #    ⚠️ 重烘只在**文字真变了**时做(见 `_set_bench_msg`): 一次 refresh 要重排文字,
+            #       而跑分进度一共才变 5 次。
+            self._bench_msg_col = Color(1, 1, 1, 0.0)
+            self._bench_msg_lbl = CoreLabel(text="", font_size=sp(26), bold=True,
+                                            font_name=_GLYPH_FONT)
+            self._bench_msg_lbl.refresh()
+            self._bench_msg_rect = Rectangle(texture=self._bench_msg_lbl.texture,
+                                             pos=(0, 0), size=(0, 0))
         self.bind(size=self._relayout_bench_dim, pos=self._relayout_bench_dim)
         Clock.schedule_interval(self._frame_timed, FRAME_TICK_DT)
         # 中奖杯的球纹理/球堆预热: 分帧摊在启动后做, 别等中奖那一刻现算(低端机单档
@@ -10714,20 +10809,55 @@ class RootWidget(BoxLayout):
 
     def _show_bench_dim(self):
         self._bench_dim_shown = True
-        self._bench_dim_col.rgba = (0.05, 0.06, 0.09, 0.72)
+        # ⚠️ 2026-09-15: 0.72 → **1.0**(玩家: 「你直接黑屏就行」)。原来 0.72 是为了"盖住但
+        #    还看得见板面", 现在要的是**纯黑** —— 跑分期间没什么可看的, 少画就是少抢 CPU。
+        self._bench_dim_col.rgba = (0.05, 0.06, 0.09, 1.0)
+        self._relayout_bench_dim()
+
+    def _set_bench_msg(self, text):
+        """黑屏上的白字(进度)。文字没变就整个跳过 —— 一次 refresh 要重排文字。"""
+        _t = str(text or "")
+        if getattr(self, "_bench_msg_last", None) == _t:
+            return
+        self._bench_msg_last = _t
+        try:
+            self._bench_msg_lbl.text = _t
+            self._bench_msg_lbl.refresh()
+            self._bench_msg_rect.texture = self._bench_msg_lbl.texture
+            self._bench_msg_col.a = 1.0 if _t else 0.0
+        except Exception:
+            pass
         self._relayout_bench_dim()
 
     def _relayout_bench_dim(self, *_):
         if getattr(self, "_bench_dim_shown", False):
             # 盖满等效竖屏窗口(RootWidget 在 anchor 居中, self.size 只是内容列);
             # 矩形画在 RootWidget.canvas.after, 随 LandLayer 一起旋转
+            _vp = self._veq()
             self._bench_dim_rect.pos = (-self.x, -self.y)
-            self._bench_dim_rect.size = self._veq()
+            self._bench_dim_rect.size = _vp
+            # 白字摆在**视口中心**(不是在 self 的坐标系里) —— 与黑屏矩形同一套算法。
+            # ⚠️ 居中靠 `texture_size / 2`, 不能用固定尺寸: 文字长度会变(`物理跑分 3/5`)。
+            try:
+                _ts = self._bench_msg_lbl.texture.size
+                _mx = -self.x + (_vp[0] - _ts[0]) / 2.0
+                _my = -self.y + (_vp[1] - _ts[1]) / 2.0
+                self._bench_msg_rect.pos = (_mx, _my)
+                self._bench_msg_rect.size = _ts
+            except Exception:
+                pass
 
     def _hide_bench_dim(self):
         self._bench_dim_shown = False
         self._bench_dim_col.rgba = (0, 0, 0, 0)
         self._bench_dim_rect.size = (0, 0)
+        # ⚠️ 白字必须一起撤 —— 否则跑分结束后那行字会**留在黑屏位置**(黑屏没了、字还在)。
+        try:
+            self._bench_msg_col.a = 0.0
+            self._bench_msg_rect.size = (0, 0)
+            self._bench_msg_last = None
+        except Exception:
+            pass
 
     def _check_title_hold(self):
         t = getattr(self, "_bench_start", 0)
@@ -10794,6 +10924,15 @@ class RootWidget(BoxLayout):
             _set_label_text(self.status_lbl, _t)
         except Exception:
             pass
+        # ⚠️ **同步刷黑屏上的白字**(2026-09-15 玩家: 「黑屏, 白字, 白字过一会更新一次进度」)。
+        #    它是画在 `RootWidget.canvas.after` 里的 **CoreLabel 纹理, 不是控件** ——
+        #    黑屏挂在同一层且盖住整棵子树, 所以白字只能自己画一层(见 `_set_bench_msg`)。
+        #    ⚠️ 波 1 与波 2 **共用这一个 tick**(它们的进度都走 `_prog_text`), 所以两边的
+        #       白字是同一处接上的 —— 别在各自的分支里再抄一份。
+        try:
+            self._set_bench_msg(_t)
+        except Exception:
+            pass
 
     def _prog_start(self):
         self._prog_last = None
@@ -10828,6 +10967,11 @@ class RootWidget(BoxLayout):
         #    (旧版这里是个 `_hp_t0` 字段 —— 自 v0.7.52 起**没有任何读取方**, 本轮已删。)
         self._hp_wall0 = 0.0
         self._prog_start()
+        # ⚠️ **黑屏 + 白字**(2026-09-15 玩家: 「如果顺利的话, 压力测试也使用这个画面
+        #    (黑屏, 白字, 白字过一会更新一次进度)」)。白字由 `_prog_tick` 每 0.25 秒
+        #    跟着进度刷 —— 与波 1 同一套(`_show_bench_dim` / `_set_bench_msg`)。
+        self._show_bench_dim()
+        self._set_bench_msg("SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
         _set_label_text(self.status_lbl, "SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
         self._set_controls_enabled(False)
         self._wait_idle_then_hp()
@@ -11370,6 +11514,12 @@ class RootWidget(BoxLayout):
         self._phys_started = False
         self._phys_done = 0
         self._prog_start()
+        # ⚠️ **黑屏 + 白字**(2026-09-15 玩家: 「你直接黑屏就行, 上面写几个字就可以」)。
+        #    跑分期间没什么可看的(而且是从 `state==ready` 起的, 本来就没球没演出),
+        #    少画就是少抢 CPU/内存带宽 —— 这是"不改弹珠逻辑"前提下唯一还能抬高跑分的路。
+        #    白字由 `_prog_tick` 每 0.25 秒跟着进度刷。
+        self._show_bench_dim()
+        self._set_bench_msg("物理跑分 0/%d" % SOC_SAMPLE_RUNS)
         # ⚠️⚠️ **盘面也要存**(2026-09-15 玩家报的 bug, 与 `_bench_saved_status` 同一个理由)。
         #    跑分期间 `_auto_launch_tick` 每一发都把 9 个槽**全钉成 `BENCH_BOARD[i]` 那一个值**
         #    (第 5 发是 `100`), 而且**写回了缓存** `self._boards[self.rtp_target]`。
@@ -12011,17 +12161,22 @@ class RootWidget(BoxLayout):
         def _on_sample(_i, _n):
             self._phys_done = _i
 
-        # ⚠️⚠️ **波 1 全程把帧率按到 `_BENCH_FPS_FORCE`**(见那段说明)。
-        #    `finally` 是硬的: 跑分中途抛异常也必须把帧率还回去, 否则玩家会一直卡在 60fps。
-        _bench_fps_lock_on()
+        # ⚠️⚠️ **波 1 全程把帧率按到 `_BENCH_FPS_FORCE_PHYS`**(见那段说明; 比高压那档更低,
+        #    因为波 1 期间屏幕已经换成黑屏+白字, 20fps 刷新一行进度绰绰有余)。
+        #    `finally` 是硬的: 跑分中途抛异常也必须把帧率还回去, 否则玩家会一直卡在低帧率。
+        _bench_fps_lock_on(phys=True)
         # 只收窄当前跑分工作线程；正常游戏和渲染线程的调度不受影响。
         _bench_aff_before = _bench_pin_fast_cpus()
         # 调度优先级: 亲和性管"允许跑哪些核", 这里管"抢不抢得到"。**只改这颗线程**, 不碰物理。
         _bench_prio_before = _bench_raise_thread_priority()
         try:
             flights, frames, fps_list, cpu_secs = benchmark_trajectories(on_sample=_on_sample)
+        # ⚠️ **`finally` 的第一行必须是还原动作** —— 门禁 L6 是照"finally 首行"查配对的,
+        #    所以下面那句警告写在 `finally:` **之前**, 不插在它和还原语句中间。
+        #    ⚠️ `_bench_fps_lock_off` **必须带 `phys=True`**, 与上面的 `lock_on(phys=True)`
+        #       配对 —— 少一个 `_BENCH_FPS_PHYS` 就只增不减 ⇒ 跑完一次跑分后帧率**再也回不去**。
         finally:
-            _bench_fps_lock_off()
+            _bench_fps_lock_off(phys=True)
             _bench_restore_thread_priority(_bench_prio_before)
             _bench_restore_cpu_affinity(_bench_aff_before)
         _s1[0] = True
