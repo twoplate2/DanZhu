@@ -878,6 +878,9 @@ _BENCH_ALLOC = []
 # 波 2(高压)每一窗的**纯算术探针**吞吐(见 `_speed_probe`)。⚠️ 和波 1 分开存 ——
 # 两波是**不同的两段时间**(波 1 有间隔、波 2 一秒不停), 混在一起就分不出是哪一段的。
 _SUST_SPEED = []
+# 波 1 每一轮**实际渲染出来**多少帧/秒(用 `_FRAME_CALLS` 的增量 ÷ 墙钟)。
+# ⚠️ **必须有这个数**: "请求 60" 不等于 "拿到 60" —— 真机实测过请求 60 而拿到 80.4fps。
+_BENCH_RENDER_FPS = []
 
 
 def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
@@ -943,6 +946,7 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     _BENCH_AFF.clear()
     _BENCH_SPEED.clear()
     _BENCH_ALLOC.clear()
+    _BENCH_RENDER_FPS.clear()
     fps_list = []
     cpu_seconds_list = []
     total_flights = 0
@@ -952,6 +956,8 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
             _BENCH_AFF.append(sorted(os.sched_getaffinity(0)))
         except Exception:
             _BENCH_AFF.append(None)
+        if _i == 0:
+            _prev_fc, _prev_wt = _FRAME_CALLS[0], time.time()
         if _i > 0 and gap_sec > 0:
             _FREQ_GATE[0] = False      # 关门 → 这几秒的频率不进平均
             try:
@@ -961,6 +967,14 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
         flights, frames, used = _run_once(sample_cpu_sec, 12345)
         fps_list.append(frames / used)
         cpu_seconds_list.append(used)
+        # ⚠️ **这一轮实际渲染了多少帧/秒**(见 `_BENCH_RENDER_FPS`): `_FRAME_CALLS` 是
+        #    `_frame` 的调用计数, 增量 ÷ 墙钟就是**真实渲染帧率**。用来回答"帧率到底按住了没有"
+        #    —— 真机实测过"请求 60 却拿到 80.4"。
+        try:
+            _BENCH_RENDER_FPS.append((_FRAME_CALLS[0] - _prev_fc) / max(1e-6, time.time() - _prev_wt))
+        except Exception:
+            _BENCH_RENDER_FPS.append(0.0)
+        _prev_fc, _prev_wt = _FRAME_CALLS[0], time.time()
         # ⚠️ **纯算术探针紧跟在这一轮后面**(见 `_speed_probe`): 同样的热状态、同样的
         #    调度处境。它**不占**上面那个分母(自己计时), 只是给"这一轮的机器到底有多快"
         #    留一个**与内存无关**的参照。
@@ -3615,6 +3629,43 @@ def _refresh_screen_hz(*_):
         _FPS_INFO[0] = float(hz)
 
 
+# ⚠️⚠️ **跑分/高压期间把帧率按到 60**(2026-09-15 玩家定案:
+#    「跑分/压力测试/测物理性能的时候, 强制把游戏刷新率下降到 60FPS, 岂不是最准的?」)。
+#
+#    **为什么需要**: 物理跑分跑在工作线程上、分母是它自己的 `thread_time`, 按构造与刷新率无关
+#    —— 但**实测不是**: 真机同一台 K90, ①(渲染 120.3fps) 步/秒 18943, ③(渲染 80.4fps) 21580,
+#    差 **13.9%**, 而两次的**纯算术探针只差 1.1%**(核心速度一样) ⇒ 那 14% 是渲染在抢内存/缓存。
+#    ⚠️ **归一化(步/秒÷探针)也抓不干净**: ①③ 的探针只差 1.1%, 而归一化值 535 vs 603 差 **12.7%**
+#    ⇒ 归一化之外**还有一块是它抓不住的**。把渲染本身压住, 才是直接治那一块。
+#    ⚠️ **为什么是 60 而不是更低**: 60 是**正常状态**(app 自己的档位里就有它), 系统不会把
+#    "1fps"读成"这个 app 卡死了"而去降频/限后台; UI 也还活着(进度条照常刷)。
+#    ⚠️ **"请求 60"不等于"拿到 60"**: 真机 ③ 请求 60、系统 120, 实测渲染出来是 **80.4fps**。
+#    所以日志里必须**同时印出那一段实际渲染了多少帧/秒** —— 否则没法知道按没按住。
+#    ⚠️ **渲染窗口那一档不受影响**(它测的就是渲染帧率, 压它就没意义了) —— 闸门只在
+#    波 1(物理跑分)和波 2(SOC 高压)期间开。
+_BENCH_FPS_FORCE = 60
+_BENCH_FPS_LOCK = [0]    # >0 = 正在跑分/高压; `_apply_fps_cap` 会把上限按到 `_BENCH_FPS_FORCE`
+
+
+def _bench_fps_lock_on():
+    """按住帧率上限(可重入)。跑分/高压开始时调。"""
+    _BENCH_FPS_LOCK[0] += 1
+    try:
+        _apply_fps_cap()
+    except Exception:
+        pass
+
+
+def _bench_fps_lock_off():
+    """松手(计数归零才真的恢复)。跑分/高压结束**必须**在 `finally` 里调。"""
+    _BENCH_FPS_LOCK[0] = max(0, _BENCH_FPS_LOCK[0] - 1)
+    if _BENCH_FPS_LOCK[0] == 0:
+        try:
+            _apply_fps_cap()
+        except Exception:
+            pass
+
+
 def _apply_fps_cap():
     """重申实际帧率上限 = min(屏幕支持, Android系统上限, 用户设定)。"""
     hz = _screen_hz()               # 只用于面板显示
@@ -3626,6 +3677,15 @@ def _apply_fps_cap():
     _FPS_INFO[0] = float(hz or 0.0)
     _FPS_INFO[1] = cap
     _FPS_INFO[2] = requested_hz
+    # ⚠️⚠️ **跑分/高压期间按到 `_BENCH_FPS_FORCE`**(见那段说明)。闸门**必须挂在这儿**
+    #    —— 这是"帧率上限"唯一的生效点。散在各调用点的话, 跑分途中任何一次
+    #    `_apply_fps_cap`(弹窗关闭 / 切回前台)都会把上限**悄悄恢复**, 而日志上看不出来。
+    if _BENCH_FPS_LOCK[0] > 0:
+        try:
+            cap = min(float(cap), float(_BENCH_FPS_FORCE))
+        except Exception:
+            pass
+        _FPS_INFO[1] = cap
     try:
         Config.set("graphics", "maxfps", str(int(cap)))
         # 窗口创建前已设过；这里保留运行期状态供诊断，并防止配置被其他代码改回去。
@@ -10553,7 +10613,16 @@ class RootWidget(BoxLayout):
         #    盖在前面会把等待也算成测试时间。紧挨着 `benchmark_sustained` 之前盖,
         #    量的就正好是测试本身。
         self._hp_wall0 = time.time()
-        _fl, _fr, _fps, _cpu = benchmark_sustained()
+        # ⚠️⚠️ **波 2 全程把帧率按到 `_BENCH_FPS_FORCE`**(与波 1 同一条规矩)。
+        _hp_render_fps = 0.0          # ⚠️ 先给初值: 下面抛异常时 finally 之后那一行不能 NameError
+        _bench_fps_lock_on()
+        try:
+            _fc0, _wt0 = _FRAME_CALLS[0], time.time()
+            _fl, _fr, _fps, _cpu = benchmark_sustained()
+            _hp_render_fps = (_FRAME_CALLS[0] - _fc0) / max(1e-6, time.time() - _wt0)
+        finally:
+            _bench_fps_lock_off()
+        self._hp_render_fps = _hp_render_fps
         _stop[0] = True
         _frq.sort()
         self._hp_fps = list(_fps or [])
@@ -11662,7 +11731,13 @@ class RootWidget(BoxLayout):
         def _on_sample(_i, _n):
             self._phys_done = _i
 
-        flights, frames, fps_list, cpu_secs = benchmark_trajectories(on_sample=_on_sample)
+        # ⚠️⚠️ **波 1 全程把帧率按到 `_BENCH_FPS_FORCE`**(见那段说明)。
+        #    `finally` 是硬的: 跑分中途抛异常也必须把帧率还回去, 否则玩家会一直卡在 60fps。
+        _bench_fps_lock_on()
+        try:
+            flights, frames, fps_list, cpu_secs = benchmark_trajectories(on_sample=_on_sample)
+        finally:
+            _bench_fps_lock_off()
         _s1[0] = True
         _f1.sort()
         self._phys_freq_p50 = _f1[len(_f1) // 2] if _f1 else 0
@@ -11681,6 +11756,7 @@ class RootWidget(BoxLayout):
         self._phys_cores = _freq_core_stats()
         self._phys_aff = list(_BENCH_AFF)
         self._phys_speed = [round(float(x), 1) for x in _BENCH_SPEED]
+        self._phys_render_fps = [round(float(x), 2) for x in _BENCH_RENDER_FPS]
         self._phys_alloc = [round(float(x), 1) for x in _BENCH_ALLOC]
         # ⚠️ **归一化跑分** = 中位步/秒 ÷ 中位纯算术探针 × 1e6。
         #    为什么要有它(2026-09-15 真机三轮定案): "中位步/秒"**会被渲染帧率污染** ——
@@ -12067,6 +12143,21 @@ class RootWidget(BoxLayout):
             #    · **逐核**: `平均频率` 那一格是**各核最大值** —— 大核 2.8G 的时候, 跑分线程
             #      完全可能正在一个 1.5G 的中核上。逐核才看得出这种"大核空转"。
             #    · **亲和性**: 唯一能从应用侧读到"这条线程被限在哪几个核"的口子。
+            # ⚠️⚠️ **"按住了没有"的读数**(2026-09-15): 跑分期间帧率被强制按到 60,
+            #    但**"请求 60"不等于"拿到 60"** —— 真机实测过请求 60 却渲染出 80.4fps。
+            #    所以必须印**实际**渲染帧率, 否则没法知道这次跑分到底是在什么环境下测的。
+            _rf = getattr(self, "_phys_render_fps", None) or []
+            _rf = [x for x in _rf if x > 0]
+            if _rf:
+                _mid = sorted(_rf)[len(_rf) // 2]
+                _lines.append("# 物理跑分**强制帧率上限 %d** · 那一段**实际渲染**: %s fps (中位 %.1f)%s"
+                              % (_BENCH_FPS_FORCE, " · ".join("%.1f" % x for x in _rf), _mid,
+                                 ("   ← 实际**高于** %d ⇒ **没按住**, 环境里还混着玩家的设定"
+                                  % _BENCH_FPS_FORCE) if _mid > _BENCH_FPS_FORCE * 1.15
+                                 else "   ← 按住了(实际 ≤ 强制值)"))
+            else:
+                _lines.append("# 物理跑分**强制帧率上限 %d** · 实际渲染: **没采到**"
+                              % _BENCH_FPS_FORCE)
             _pr = getattr(self, "_phys_fps_runs", None) or []
             if _pr:
                 _lines.append("# 物理跑分**逐轮**步/秒: %s  (共 %d 轮, 中位 %d, 波动 %.1f%%)"
@@ -12184,6 +12275,13 @@ class RootWidget(BoxLayout):
                                   "慢了; 它跟着掉 ⇒ 渲染/内存那一侧变了")
                 else:
                     _lines.append("#   高压纯算术探针: **没采到**")
+                # ⚠️ **"按住了没有"的读数**(2026-09-15): 与波 1 同一条规矩 ——
+                #    "请求 60"不等于"拿到 60"。整段一个数就够(高压期间渲染负载基本恒定)。
+                _lines.append("# 高压**强制帧率上限 %d** · 整段**实际渲染**: %.1f fps   ← 明显高于 %d "
+                              "⇒ **没按住**, 环境仍受玩家设定影响"
+                              % (_BENCH_FPS_FORCE,
+                                 float(getattr(self, "_hp_render_fps", 0.0) or 0.0),
+                                 _BENCH_FPS_FORCE))
         except Exception:
             pass
         # ---- ★ 这一轮到底能不能和上一轮比(2026-09-14 加) ----
