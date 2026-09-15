@@ -10896,17 +10896,17 @@ class RootWidget(BoxLayout):
             _w0 = getattr(self, "_hp_wall0", 0.0)
             _el = (time.time() - _w0) if _w0 else 0.0
             _cap = int(SOC_SUSTAIN_WALL_SEC)
-            if _el >= _cap:
-                # 过点(玩家 2026-09-15:「如果时间超过 6 分钟, 如果还没有弹出窗口, text 上写
-                #   『成绩核算中：x秒』, 这个 x 代表进度」)。
-                # ⚠️ 这是**保险丝**, 不是常态: 桌面实测"核算 + 建弹窗"只要 **51 毫秒**
-                #    (写历史 JSON 1ms + 拼摘要 2ms + 建弹窗 50ms, 见 `temp/hp_tail_probe.py`),
-                #    而本轮询每 0.25 秒才刷一次 ⇒ **多数情况下这段文案一帧都不会被画出来**。
-                #    真会看到它的场合是"核算真慢了"或"主线程被卡住" —— 那时玩家看到的是一个
-                #    **在跳动的计数**, 而不是不动的 360/360(后者读起来就是死机)。
-                #    判据只认墙钟一条, **不需要额外的标志位**, 也就没有跨线程状态要同步。
-                return "成绩核算中：%d秒" % max(1, int(_el - _cap) + 1)
-            return "SOC高压测试 %d/%d秒" % (int(_el), _cap)
+            # ⚠️ **「成绩核算中：x秒」那个分支已删**(2026-09-15 玩家: 「如果...这个显示机制
+            #    没有用, 是一切的错误根源, 你就把他给删掉」)。
+            #    · **它不是那次卡死的根源** —— 根源是 `_hp_done` 漏了撤黑屏(见那边的说明)。
+            #      它只是"黑屏留在屏幕上时, 白字停在最后那句文案"里的**那句文案**。
+            #    · **但它确实没用**: 核算实测只要 51 毫秒(写 JSON 1ms + 拼摘要 2ms + 建弹窗
+            #      50ms, 见 `temp/hp_tail_probe.py`), 而轮询 0.25 秒才一次 ⇒ 这段文案
+            #      **多数情况下连一帧都画不出来**。删掉零损失。
+            #    · 现在超点就**封顶**显示 360/360, 不再造一个会跳动的第二文案
+            #      (删掉"跳动"也顺带消掉了一个误导源: 它看起来像"还在干活", 实际可能已经
+            #       卡住 —— 而这正是玩家把它当成病根的原因)。
+            return "SOC高压测试 %d/%d秒" % (min(int(_el), _cap), _cap)
         if getattr(self, "_bench_running", False):
             # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15:「那 25 秒测试帧率的不
             #    显示任何进度消息, 后面全力测试 SOC 的时候才显示」)。
@@ -11010,6 +11010,12 @@ class RootWidget(BoxLayout):
             _hp_render_fps = (_FRAME_CALLS[0] - _fc0) / max(1e-6, time.time() - _wt0)
         finally:
             _bench_fps_lock_off()
+            # ⚠️ **兜底撤黑屏**: 上面任何一步抛异常, `_hp_done` 就**永远不会被调度**
+            #    (那行的 `Clock.schedule_once` 在异常路径上根本走不到) ⇒ 黑屏会永久留在屏幕上。
+            #    `_hide_bench_dim` 幂等, 正常路径下 `_hp_done` 再调一次无害。
+            #    ⚠️ 它**不能放 finally 的第一行** —— 门禁 L6 是照"finally 首行"查
+            #       `_bench_fps_lock_off(` 配对的(与波 1 同一条规矩)。
+            Clock.schedule_once(lambda dt: self._hide_bench_dim(), 0)
             _bench_restore_thread_priority(_hp_prio_before)
             _bench_restore_cpu_affinity(_hp_aff_before)
         self._hp_cpu_pin = dict(_BENCH_CPU_PIN)
@@ -11114,6 +11120,13 @@ class RootWidget(BoxLayout):
 
     def _hp_done(self):
         """高压测试结束: 弹结果弹窗。"""
+        # ⚠️⚠️ **必须撤黑屏**(2026-09-15 玩家报的 bug:「soc高压测试结束后, 会卡在
+        #    『成绩核算中：1秒』处, 不会回到主界面」)。
+        #    根因: 黑屏(置灰层+白字)是 v0.7.82 才启用的, 而 `_hide_bench_dim()` 当时**只加在了
+        #    `_bench_done`(波 1)里**, 波 2 这条路径整个漏了 ⇒ 高压跑完黑屏留在屏幕上,
+        #    那行白字停在最后一次进度("成绩核算中：n秒"), 看起来就是卡死。
+        #    ⚠️ 它是**幂等**的, 正常路径与 finally 兜底重复调无害。
+        self._hide_bench_dim()
         self._prog_stop()
         self._set_controls_enabled(True)
         _set_label_text(self.status_lbl,
@@ -12189,6 +12202,10 @@ class RootWidget(BoxLayout):
         #       配对 —— 少一个 `_BENCH_FPS_PHYS` 就只增不减 ⇒ 跑完一次跑分后帧率**再也回不去**。
         finally:
             _bench_fps_lock_off(phys=True)
+            # ⚠️ **兜底撤黑屏**(异常路径) —— 与波 2 同一条规矩, 理由见 `_hp_done` 的说明:
+            #    正常路径由 `_bench_done` 撤, 这里管"跑分中途抛异常"那条 —— 没有它黑屏会
+            #    永久留在屏幕上。`_hide_bench_dim` 幂等, 重复调无害。
+            Clock.schedule_once(lambda dt: self._hide_bench_dim(), 0)
             _bench_restore_thread_priority(_bench_prio_before)
             _bench_restore_cpu_affinity(_bench_aff_before)
         _s1[0] = True
@@ -12325,7 +12342,10 @@ class RootWidget(BoxLayout):
 
     def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
         self.game_area.hide_bench_badge()
-        self._hide_bench_dim()   # 兼容旧路径：当前跑分不再置灰
+        # ⚠️ 撤黑屏。**注释 2026-09-15 更正过**: 旧版这里写的是"兼容旧路径: 当前跑分不再置灰"
+        #    —— 那句话在 v0.7.82 之后就**过期了**(黑屏+白字是那一版重新启用的)。
+        #    别照旧注释以为这里可有可无: 少了它, 波 1 跑完黑屏会一直挂在屏幕上。
+        self._hide_bench_dim()
         _phys_sorted = sorted(fps_list)
         phys_fps = _phys_sorted[len(_phys_sorted) // 2]   # 物理吞吐中位数
         phys_min = _phys_sorted[0] if _phys_sorted else 0.0
