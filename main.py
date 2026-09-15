@@ -2405,6 +2405,17 @@ _PIN_MAX = 24
 #    它们身上, 代价只是各自多冷开一次。
 # ⚠️ **别再往下调回 2**: 那是"名额不够 + 分错人", 不是"更早保护"。
 _PIN_AFTER = 3
+# ⚠️⚠️ **弹窗开着的时候不钉**(2026-09-15, 玩家点出来的)。理由是一份桌面实测:
+#    把 main.py 里**全部 13 个弹窗**开一遍, 会新开出 **42 个**游戏里根本不会出现的字号
+#    (彩蛋 12 / 隐藏返还率 7 / 模拟历史表头 7 / SOC高压历史 6 / 帧率上限设定 6 / …),
+#    其中 **19 个当场就够到了钉子门槛(3 次)** —— 而 `_PIN_MAX` 一共只有 24 个名额。
+#    ⇒ **点一遍设置界面, 79% 的钉子预算就废了**, 钉的全是玩家打游戏时永远看不到的字号。
+#    ⚠️ 它们**没有被预热**(预热表 52 项里一个都没有, 实测判据 B 通过) —— 所以问题不在
+#       "白烘了", 而在"白钉了": 钉子名额是**游戏 HUD 的救命资源**。
+#    ⚠️ 顺带: 弹窗字号每次访问都要冷开 3~5 遍(`_fit1` 绑在 `width` 上, 布局每变一次重跑
+#       一遍阶梯), 开一次菜单就是几十次冷开 —— 不入账而已。
+_POPUP_N = [0]           # 现在开着几个弹窗(RotPopup.open/dismiss 维护)
+_PIN_POPUP_SKIP = [0]    # 因为"弹窗开着"而跳过的钉子次数(**必须印进日志, 不许静默**)
 _PIN_STAT = [0, 0, 0]    # [钉成功, 钉失败, 复冷次数] —— **必须印进日志, 不许静默**
 _PIN_WHERE = ["还没找"]   # 定位结果的一句话说明(日志里印)
 _PIN_CAND = [0]          # 那次扫描里"形状对得上"的 list **一共有几个**(见 `_PIN_WHERE`)
@@ -7205,11 +7216,16 @@ def text_px(text, fs, bold=False, base=None, ctx=None, force=False):
             #    `_get_font_id()` 是 Kivy 自己拼的那个 6 段键 —— **必须用它**, 手拼会错
             #    (字体路径是运行期解析出来的, 手工拼不出来)。
             if _prev_n >= _PIN_AFTER - 1:
-                _PIN_STAT[2] += 1
-                try:
-                    _pin_fontid(_cl._get_font_id())
-                except Exception:
-                    pass
+                if _POPUP_N[0] > 0:
+                    # ⚠️ **弹窗开着 ⇒ 不钉**(见 `_POPUP_N` 那段): 设置界面开出来的字号
+                    #    玩家打游戏时永远看不到, 不该占那 24 个名额。**计数上报, 不许静默。**
+                    _PIN_POPUP_SKIP[0] += 1
+                else:
+                    _PIN_STAT[2] += 1
+                    try:
+                        _pin_fontid(_cl._get_font_id())
+                    except Exception:
+                        pass
         except Exception:
             got = len(text) * fs * 0.55          # 量不出来按汉字宽粗估, 绝不抛
         # ⚠️ 冷测量的**单价**要单独记下来(见 `_COLD_FS` 处说明): 只留最慢的 5 次,
@@ -8272,7 +8288,24 @@ class RotPopup(Popup):
             self._high_refresh_bound = True
             self.bind(on_dismiss=self._reassert_high_refresh)
 
+    def _popup_gate(self, delta):
+        """维护「现在有几个弹窗开着」(`_POPUP_N`) —— 给字体钉子用, 见那段说明。
+
+        ⚠️ 用**每个实例一个开关**去重, 而不是直接加减: `open()` 有几条早退分支
+        (已经开着 / 竖屏回落), 直接加减会重复计数, 而计数偏了钉子就会**静默**地
+        要么全禁要么全放。dismiss 也不是每次都配得上一次 open(转屏、被动移除)。
+        """
+        try:
+            _on = delta > 0
+            if bool(getattr(self, "_gate_on", False)) == _on:
+                return
+            self._gate_on = _on
+            _POPUP_N[0] = max(0, _POPUP_N[0] + (1 if _on else -1))
+        except Exception:
+            pass
+
     def open(self, *_args, **kwargs):
+        self._popup_gate(1)
         self._arm_high_refresh()
         layer = _land_layer()
         if layer is None or layer.angle == 0:
@@ -8305,6 +8338,14 @@ class RotPopup(Popup):
                             on_keyboard=self._handle_keyboard)
         self._is_open = False
         self._window = None
+
+    def dismiss(self, *_args, **kwargs):
+        # ⚠️ 闸门计数在这里落回 —— `ModalView.dismiss` 不是每次都走 `_real_remove_widget`
+        #    (转屏/被动移除那条路绕开它), 所以**不能**挂在那上面, 否则计数会永远不归零,
+        #    钉子就被**永久静默禁用**了。挂在自己的 dismiss 上 + `_popup_gate` 的去重开关,
+        #    是"宁可少数几次"的那一侧 —— 数偏小只会少钉几个, 数偏大才是灾难。
+        self._popup_gate(-1)
+        return super().dismiss(*_args, **kwargs)
 
 
 # 阶段条: 每一帧"游戏在干什么"的取色与图例顺序。
@@ -11987,8 +12028,10 @@ class RootWidget(BoxLayout):
             #    一模一样。这里把"定没定到、钉了几个、失败几次、复冷几次"全摊开。
             _ps = _PIN_STAT
             _lines.append("# 字体钉子: 队列定位=%s · 钉住 **%d** 个(上限 %d) · "
-                          "失败 %d 次 · 达到门槛(冷开满 %d 次)的有 %d 个"
-                          % (_PIN_WHERE[0], _ps[0], _PIN_MAX, _ps[1], _PIN_AFTER, _ps[2]))
+                          "失败 %d 次 · 达到门槛(冷开满 %d 次)的有 %d 个 · "
+                          "**因弹窗开着而跳过 %d 次**"
+                          % (_PIN_WHERE[0], _ps[0], _PIN_MAX, _ps[1], _PIN_AFTER, _ps[2],
+                             _PIN_POPUP_SKIP[0]))
             if _PIN_ORDER[0] is None:
                 _lines.append("#   ⚠️ **钉子没生效** —— 没在对象图里认出 Kivy 的淘汰队列"
                               "(`sdl2_cache_order`)。冷字号会照旧被驱逐, 这是**已知的失效**,"
