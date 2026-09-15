@@ -14869,18 +14869,25 @@ class RootWidget(BoxLayout):
             tick.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
             ticks.add_widget(tick)
         content.add_widget(ticks)
-        # ⚠️ 文案**砍到一行 + 字号放大**(2026-09-15 修, 玩家报"你这个字这么小"):
-        #    原来是一整句 34 字(实测 427dp), 而弹窗可用宽只有 419dp(540 桌面)/290dp(393 真机)
-        #    ⇒ 必然自动折行, 折点还落在「…当前设定 / 的上限）」上 —— 真机上那行只剩
-        #    「的上限）」三个字的孤行就是它。
-        #    现在: 文案 11 字(13sp 下 156dp), 字号 13sp -> 17sp ⇒ 实测 **205dp**。
-        #    余量: 393dp 屏可用 290dp / 360dp 屏 261dp / 320dp 老屏 226dp —— 三种都放得下。
-        #    ⚠️ 代价是**不再列举是哪三者**。弹窗标题已写明「帧率上限设定」、上面那根滑条
-        #       就是"当前设定", 上下文够; 想保留列举的话宽度会翻到 245dp, 字号就只能停在
-        #       13sp(== 玩家嫌小的那个)。
-        hint = Label(text='实际帧率上限 = 三者取最小',
-                     font_size='17sp', halign='center', valign='middle',
-                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(30))
+        # ⚠️ 文案**保一行 + 缩字号**(2026-09-15 第二轮, 玩家两次修正措辞后定稿:
+        #    「实际帧率上限=min(屏幕支持，系统全局设定，本窗口设定）。如果你觉得放不下,
+        #     就缩小字体」):
+        #    上一版砍成「三者取最小」(17sp) 一行放得下, 但**没说是哪三者** —— 当场被退回。
+        #    ⚠️ 列全三者之后一行放不下: 玩家写法实测 **356dp**(全角标点), 而弹窗可用宽只有
+        #       261dp(360dp 屏, 0.88 弹窗) / 290dp(393dp 屏)。
+        #    按玩家指示**缩字号**, 三条措施并用:
+        #      · 弹窗 0.88 -> 0.96(可用宽: 360dp 屏 290dp / 393dp 屏 321dp);
+        #      · 标点统一半角(`,` `()` 而非 `，` `（）`): 356dp -> **322dp**@13sp。
+        #        (项目里 `_apply_fps_cap` 的 docstring 本来就是 `min(屏幕支持, Android系统上限,
+        #        用户设定)` 这种半角写法, 风格一致。)
+        #      · 字号 13sp -> **11sp**: 实测 **271dp**。
+        #    ⇒ 360dp 屏(可用290) 与 393dp 屏(可用321) 都一行放得下。
+        #      320dp 老屏(可用251)会折 —— 但那是 2016 年前的老设备, 且折行后每行仍完整。
+        #    ⚠️ 代价说清楚: 11sp **比最早那版 13sp 还小** —— 这是"三者要列全"和"必须一行"
+        #       两头挤出来的结果。两行版能到 15sp, 玩家已否, 不再试。
+        hint = Label(text='实际帧率上限=min(屏幕支持,系统全局设定,本窗口设定)',
+                     font_size='11sp', halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(24))
         hint.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
         content.add_widget(hint)
         actions = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
@@ -14891,7 +14898,9 @@ class RootWidget(BoxLayout):
         actions.add_widget(cancel)
         actions.add_widget(confirm)
         content.add_widget(actions)
-        popup = self._popup(0.88, 310, title='', content=content,
+        # ⚠️ 0.88 -> 0.96 (2026-09-15): 配合上面那行文案 —— 11sp 下要 271dp, 而 0.88 的
+        #    可用宽只有 261dp(360dp 屏), 0.92 也只到 275dp(余量 4dp 太薄), 0.96 给到 290dp。
+        popup = self._popup(0.96, 310, title='', content=content,
                             auto_dismiss=True, separator_height=0)
 
         def _pick(_slider, value):
