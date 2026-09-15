@@ -16,7 +16,7 @@ os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown Landscape Landscap
 # 绕过桌面合成器，实测反而把 60Hz 显示器从稳定 60fps 拖成约 50fps。高刷显示器开启 vsync
 # 会自然按其刷新率呈现；Android 则由下面的 Window/显示模式请求优先提升到 165Hz。
 from kivy.config import Config
-Config.set("graphics", "maxfps", "165")
+Config.set("graphics", "maxfps", "120")
 Config.set("graphics", "vsync", "1")
 
 import math
@@ -143,9 +143,9 @@ E_VREF = 700.0               # 过渡参考速度(px/s, 法向)
 WALL_E = 0.5
 VMAX = 2400.0                # 限速(需 >= 最大发射速度, 防穿透)
 FIXED_DT = 1.0 / 60.0
-# 呈现/界面逻辑按 165Hz 调度；物理仍固定在 60Hz，累加器决定何时推进物理。
-# 低刷屏由 vsync 合并 tick，高刷屏则能获得真正的 165 次画面更新。
-FRAME_TICK_HZ = 165
+# 呈现/界面逻辑按可选档位最高的 185Hz 调度；物理仍固定在 60Hz，累加器决定何时推进物理。
+# 低刷屏由 vsync 合并 tick，高刷屏可获得与设定档位一致的画面更新。
+FRAME_TICK_HZ = 185
 FRAME_TICK_DT = 1.0 / FRAME_TICK_HZ
 # 一帧最多补几个物理步(超出的积压**丢掉**, 不往下攒)。见 `_clamp_accum` 的说明。
 MAX_STEPS_PER_FRAME = 4
@@ -3127,11 +3127,35 @@ def _cpufreq_stop():
 # ---- 高刷新率呈现策略 -----------------------------------------------------
 # `maxfps` 只是 Kivy Clock 的调度上限，不能要求 Android 切换显示模式；反过来，仅请求
 # Android 的高刷模式也无法解除 Kivy 自己的 60fps 睡眠。因此两层必须同时设置。
-# 物理仍用 FIXED_DT=1/60：这是模拟精度，不是呈现上限；165fps 时也由累加器决定推进。
-FPS_CAP_MAX = 165
-FPS_CAP_FALLBACK = 165
+# 物理仍用 FIXED_DT=1/60：这是模拟精度，不是呈现上限；高刷新率下也由累加器决定推进。
+FPS_CAP_OPTIONS = (60, 90, 120, 144, 165, 185)
+FPS_CAP_DEFAULT = 120
+FPS_CAP_MAX = max(FPS_CAP_OPTIONS)
+FPS_CAP_FALLBACK = FPS_CAP_DEFAULT
 FPS_CAP_PC = 120
-_FPS_INFO = [0.0, 0.0, 0.0]  # [当前屏幕Hz, Kivy上限, Android请求的模式Hz]
+_FPS_USER_CAP = [FPS_CAP_DEFAULT]
+_FPS_INFO = [0.0, 0.0, 0.0]  # [当前屏幕Hz, 实际目标上限, Android请求的模式Hz]
+
+
+def _fps_user_cap():
+    """当前用户选择的上限；异常值永远回到 120，避免坏存档把循环设成 0。"""
+    try:
+        cap = int(_FPS_USER_CAP[0])
+        return cap if cap in FPS_CAP_OPTIONS else FPS_CAP_DEFAULT
+    except Exception:
+        return FPS_CAP_DEFAULT
+
+
+def _android_system_fps_cap(activity):
+    """读取 Android 用户/系统设置的峰值刷新率上限；读不到返回 0 表示未知。"""
+    try:
+        from jnius import autoclass
+        settings = autoclass("android.provider.Settings$System")
+        key = settings.PEAK_REFRESH_RATE
+        cap = float(settings.getFloat(activity.getContentResolver(), key, 0.0))
+        return cap if cap > 1.0 else 0.0
+    except Exception:
+        return 0.0
 
 
 def _screen_hz():
@@ -3155,15 +3179,14 @@ def _screen_hz():
 
 
 def _request_android_high_hz():
-    """请求 Android 以设备支持的最高、且不高于 165Hz 的同分辨率模式运行。
+    """按“屏幕支持、Android 系统上限、用户档位”三者最小值请求显示模式。
 
-    `Window.setFrameRate(165)`（API 30+）告诉系统此窗口的期望节拍；
+    `Window.setFrameRate(target)`（API 30+）告诉系统此窗口的期望节拍；
     `preferredDisplayModeId`（API 23+）则兼容旧系统，并在自适应刷新率机器上给出明确的
     高刷模式偏好。两者都是系统可拒绝的请求：省电模式、温控或用户强制 60Hz 时不能绕过系统。
     """
     if platform != "android":
-        return 0.0
-    target = float(FPS_CAP_MAX)
+        return (0.0, float(min(FPS_CAP_PC, _fps_user_cap())))
     try:
         from jnius import autoclass
         activity = autoclass("org.kivy.android.PythonActivity").mActivity
@@ -3179,13 +3202,20 @@ def _request_android_high_hz():
         def hz(mode):
             return float(mode.getRefreshRate())
 
+        screen_cap = max((hz(m) for m in candidates), default=0.0)
+        system_cap = _android_system_fps_cap(activity)
+        # 读不到系统设置时不能凭空把它当 60Hz；让系统最终拒绝/降档，并由“屏幕 Hz”回读真值。
+        if system_cap <= 0.0:
+            system_cap = screen_cap
+        target = min(screen_cap, system_cap, float(_fps_user_cap()))
         at_or_below = [m for m in candidates if hz(m) <= target + 0.5]
-        # 165Hz 设备取 165；144/120Hz 设备自然退到自己的最高档，不因请求 165 误跳到
-        # 设备的 240Hz 模式后又被应用 165fps 上限截断。
+        # 优先不超过三者共同上限的最高同分辨率模式；没有精确档位时宁可保守降档，
+        # 不绕过 Android 系统的峰值刷新率设定。
         chosen = (max(at_or_below, key=hz) if at_or_below else
                   min(candidates, key=hz) if candidates else None)
         mode_id = int(chosen.getModeId()) if chosen is not None else 0
         mode_hz = hz(chosen) if chosen is not None else 0.0
+        target = min(target, mode_hz) if mode_hz > 0.0 else target
         sdk = int(autoclass("android.os.Build$VERSION").SDK_INT)
 
         from android.runnable import run_on_ui_thread
@@ -3195,7 +3225,7 @@ def _request_android_high_hz():
             # Window API 从 Android 11 起可用；即使没有列出 mode，也保留高刷窗口请求。
             if api_level >= 30:
                 try:
-                    win.setFrameRate(float(FPS_CAP_MAX))
+                    win.setFrameRate(float(requested_hz))
                 except Exception:
                     pass
             if requested_mode_id:
@@ -3207,9 +3237,9 @@ def _request_android_high_hz():
                     pass
 
         apply_request(window, mode_id, mode_hz, sdk)
-        return mode_hz
+        return (mode_hz, target)
     except Exception:
-        return 0.0
+        return (0.0, float(_fps_user_cap()))
 
 
 def _refresh_screen_hz(*_):
@@ -3220,11 +3250,11 @@ def _refresh_screen_hz(*_):
 
 
 def _apply_fps_cap():
-    """在启动/回前台重申 Android 165Hz / PC 120fps 的 Kivy 与平台配置。"""
+    """重申实际帧率上限 = min(屏幕支持, Android系统上限, 用户设定)。"""
     hz = _screen_hz()               # 只用于面板显示
-    requested_hz = _request_android_high_hz()
+    requested_hz, cap = _request_android_high_hz()
     try:
-        cap = float(FPS_CAP_MAX if platform == "android" else FPS_CAP_PC)
+        cap = float(cap)
     except Exception:
         cap = float(FPS_CAP_FALLBACK)
     _FPS_INFO[0] = float(hz or 0.0)
@@ -9137,6 +9167,8 @@ class RootWidget(BoxLayout):
         # 声音两态: on(音效已开, 含语音播报, 默认) | off(音效已关)。
         # **不持久化** —— 不进配置文件, 每次启动都是 on(用户定稿)。
         self.sound_mode = "on"
+        # 用户档位会与屏幕/系统允许的刷新率共同决定实际目标上限。
+        self.fps_cap_setting = FPS_CAP_DEFAULT
         self.max_plays = 50            # 每轮次数上限
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
@@ -9150,6 +9182,7 @@ class RootWidget(BoxLayout):
         self._load_hp_history()
         self._auto_reset_on_start = False
         self._load_config()            # 恢复上次的游戏设定
+        _FPS_USER_CAP[0] = self.fps_cap_setting
         self._round_end_shown = False  # 本轮结束弹窗是否已弹出
         self._landing_primed = False   # landing首帧标记(防每帧重置vy)
         self._settle_slot = 0          # 本发物理落格槽(结算延迟到回弹落定后)
@@ -10208,7 +10241,7 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
     def _show_bench_menu(self):
-        """弹珠发射模拟测试菜单弹窗: 开始模拟测试 / 查看模拟历史 / SOC高压测试 / 高压测试历史 / 启动信息。"""
+        """弹珠发射模拟测试菜单：三行两列，测试、历史、信息与帧率设定各自成对。"""
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
         _ver = _app_version()
         _title = ('弹珠发射模拟测试 ' + _ver) if _ver else '弹珠发射模拟测试'
@@ -10259,6 +10292,9 @@ class RootWidget(BoxLayout):
         info_btn = Button(text='启动信息', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
+        cap_btn = Button(text='帧率上限设定', font_size='17sp', bold=True,
+                         background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                         size_hint_y=None, height=dp(52))
         # 0.84 -> 0.88: 加宽之后 400dp 机器上说明的每一句都**刚好一行**(实测最长那句
         # 「全程约 25 秒(含完整的中奖装杯演出)。」259px < 可用 296px), 折行整个消失。
         # ⚠️ 最后那句「纯Python执行，反映设备跑弹珠的实际流畅度。」(291px) 在 360dp 上
@@ -10271,18 +10307,19 @@ class RootWidget(BoxLayout):
         #    行末孤零零一个逗号 + 右边一大片空洞, 玩家一眼就问"为什么逗号和后面的字不在同一行"。
         #    现在断在「设备」后: 171 / 150 两段, 既都塞得下, 又不把断点落在「的」上
         #    (断在「弹珠」后能到 216/105 更饱满, 但下一行会以「的」开头 —— 中文避头尾不许)。
-        popup = self._popup(0.88, 598, title='', content=content,
+        popup = self._popup(0.88, 520, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         start_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_bench_test()))
         hist_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_bench_history()))
         info_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_startup_info()))
         hp_btn.bind(on_release=lambda *_: (popup.dismiss(), self._start_hp_test()))
         hph_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_hp_history()))
-        content.add_widget(start_btn)
-        content.add_widget(hist_btn)
-        content.add_widget(hp_btn)
-        content.add_widget(hph_btn)
-        content.add_widget(info_btn)
+        cap_btn.bind(on_release=lambda *_: (popup.dismiss(), self._show_fps_cap_settings()))
+        for left, right in ((start_btn, hist_btn), (hp_btn, hph_btn), (info_btn, cap_btn)):
+            row = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(8))
+            row.add_widget(left)
+            row.add_widget(right)
+            content.add_widget(row)
         popup.open()
         self._popup_fit_content(popup, content)
 
@@ -12246,7 +12283,7 @@ class RootWidget(BoxLayout):
                                      color=hex_rgb(COL_TEXT) + (1,),
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
-        cap = float(_FPS_INFO[1] or FPS_CAP_MAX)
+        cap = float(_FPS_INFO[1] or _fps_user_cap())
         curve = FpsCurve(gaps, cap_fps=cap, tags=tags,
                          size_hint_y=None, height=dp(276))
         content.add_widget(curve)
@@ -12450,7 +12487,7 @@ class RootWidget(BoxLayout):
             _hz, _cap, _mode_hz = _FPS_INFO[0], _FPS_INFO[1], _FPS_INFO[2]
             _platform_rate = (' · Android模式请求 %s' %
                               (('%.0fHz' % _mode_hz) if _mode_hz else
-                               ('%.0fHz（模式未知）' % FPS_CAP_MAX))
+                               ('%.0fHz（模式未知）' % _fps_user_cap()))
                               if platform == "android" else ' · 桌面vsync跟随屏幕刷新率')
             parts.append('节拍： 屏幕 %s · 帧率上限 %s · vsync=%s%s'
                          ' · `_frame` %d 次 / 采样 %d 帧（比值 %.2f）'
@@ -13749,6 +13786,9 @@ class RootWidget(BoxLayout):
                     self.plays = cfg["plays"]
                 if isinstance(cfg.get("hits"), int) and cfg["hits"] >= 0:
                     self.hits = cfg["hits"]
+                if (isinstance(cfg.get("fps_cap_setting"), int)
+                        and cfg["fps_cap_setting"] in FPS_CAP_OPTIONS):
+                    self.fps_cap_setting = cfg["fps_cap_setting"]
         except Exception:
             pass
         # (原来这里按读回的 sound_mode 决定是否 set_enabled(False); 现在不读档, 恒为 on, 删)
@@ -13766,6 +13806,7 @@ class RootWidget(BoxLayout):
                 "round_plays": self.round_plays,
                 "plays": self.plays,
                 "hits": self.hits,
+                "fps_cap_setting": int(self.fps_cap_setting),
             }
             path = self._config_path()          # 路径在主线程算好(App 不能从工作线程问)
             if _cfg_post(cfg, path):
@@ -13774,6 +13815,82 @@ class RootWidget(BoxLayout):
                 json.dump(cfg, f)
         except Exception:
             pass
+
+    def _set_fps_cap_setting(self, cap):
+        """写入用户帧率档位，并立即按三重上限重算实际目标。"""
+        try:
+            cap = int(cap)
+        except (TypeError, ValueError):
+            return False
+        if cap not in FPS_CAP_OPTIONS:
+            return False
+        self.fps_cap_setting = cap
+        _FPS_USER_CAP[0] = cap
+        try:
+            _apply_fps_cap()
+        except Exception:
+            pass
+        self._save_config()
+        return True
+
+    def _show_fps_cap_settings(self):
+        """帧率上限设定：拖动滑条选档，确认后持久化并立即重申 Android 高刷请求。"""
+        from kivy.uix.slider import Slider
+
+        values = FPS_CAP_OPTIONS
+        current = self.fps_cap_setting if self.fps_cap_setting in values else FPS_CAP_DEFAULT
+        picked = [current]
+        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
+        title = self._fit_line(Label(text='帧率上限设定', bold=True, halign='center',
+                                     color=hex_rgb(COL_TEXT) + (1,),
+                                     size_hint_y=None, height=dp(30)), 20)
+        content.add_widget(title)
+        value_lbl = Label(text='当前设定：%d Hz' % current, font_size='20sp', bold=True,
+                          halign='center', valign='middle', color=hex_rgb(COL_FIRE) + (1,),
+                          size_hint_y=None, height=dp(34))
+        value_lbl.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+        content.add_widget(value_lbl)
+        slider = Slider(min=0, max=len(values) - 1, step=1,
+                        value=values.index(current), size_hint_y=None, height=dp(42))
+        content.add_widget(slider)
+        ticks = BoxLayout(size_hint_y=None, height=dp(20))
+        for hz in values:
+            tick = Label(text=str(hz), font_size='12sp', halign='center', valign='middle',
+                         color=hex_rgb(COL_SUB) + (1,))
+            tick.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+            ticks.add_widget(tick)
+        content.add_widget(ticks)
+        hint = Label(text='实际帧率上限 = min（屏幕支持，安卓系统设定的上限，当前设定的上限）',
+                     font_size='13sp', halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(42))
+        hint.bind(size=lambda w, *_: setattr(w, 'text_size', w.size))
+        content.add_widget(hint)
+        actions = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        cancel = Button(text='取消', font_size='16sp', bold=True, background_normal='',
+                        background_color=hex_rgb(COL_BTN_OFF) + (1,))
+        confirm = Button(text='确定', font_size='16sp', bold=True, background_normal='',
+                         background_color=hex_rgb(COL_BTN) + (1,))
+        actions.add_widget(cancel)
+        actions.add_widget(confirm)
+        content.add_widget(actions)
+        popup = self._popup(0.88, 310, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
+
+        def _pick(_slider, value):
+            picked[0] = values[int(round(value))]
+            value_lbl.text = '当前设定：%d Hz' % picked[0]
+
+        def _confirm(*_):
+            if self._set_fps_cap_setting(picked[0]):
+                self.game_area.center_toast('帧率上限已设为 %d Hz' % picked[0],
+                                            hexcolor=COL_GREEN, size=20, life=1.3)
+            popup.dismiss()
+
+        slider.bind(value=_pick)
+        cancel.bind(on_release=popup.dismiss)
+        confirm.bind(on_release=_confirm)
+        popup.open()
+        self._popup_fit_content(popup, content)
 
     def _voice_duration(self, name):
         """查语音片段时长(秒), 用于队列播放的调度间隔。"""

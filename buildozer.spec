@@ -2881,7 +2881,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe 336 条(+6: 持久指令表四条 + 面板两档两条; 另更新了几条被取代的旧断言)。
 #   验证: --selftest OK · fx_probe 336 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
-version = 0.7.54
+version = 0.7.55
 
 
 
