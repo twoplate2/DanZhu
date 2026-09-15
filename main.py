@@ -12603,7 +12603,10 @@ class RootWidget(BoxLayout):
         #    系统版本的一部分。改成 `/` 分隔, 三段并列: `机器 / 安卓 / 游戏版本`。
         _dev_ver = (dev + " / " + _ver) if _ver and _ver not in dev else dev
         # ⚠️ 高压那行**没有数据就整行不印**(不印假数) —— 与窗口/门槛那两处的规矩一致。
-        _s_txt = (('高压 %d 秒：首 %d → 末 %d 步/秒（降 %.0f%%）· 最低 %d\n'
+        # ⚠️ 2026-09-16 玩家把高压的口径统一成「连续高压测试 N 秒」(原来是「连压 N 秒」/
+        #    「高压 N 秒」三种说法并存) ⇒ 这里跟着走同一个说法。
+        #    本行是 `_auto_h` 撑高的多行标签, 长一点只是换个行, 不会被裁。
+        _s_txt = (('连续高压测试 %d 秒：首 %d → 末 %d 步/秒（降 %.0f%%）· 最低 %d\n'
                    % (int(SOC_SUSTAIN_WALL_SEC), int(_s_first), int(_s_last),
                       int(_s_decay), int(_s_min)))
                   if _sv else '')
@@ -14112,7 +14115,7 @@ class RootWidget(BoxLayout):
             #    —— 不能因为"有没有记录"让面板忽大忽小。真有问题也只是"空的时候字堆在底下",
             #    而那该用**居中去解决, 不是改高度**。
             content.add_widget(Widget(size_hint_y=1))          # 上弹簧
-            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连压 %d 秒即可产生一条'
+            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连续高压测试 %d 秒即可产生一条'
                                % int(SOC_SUSTAIN_WALL_SEC),
                           font_size='16sp', halign='center',
                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
@@ -14341,7 +14344,11 @@ class RootWidget(BoxLayout):
         #    只加三个小标题 + 缩进。(代价: 仍是**一个 Label** ⇒ 小标题无法单独上色;
         #    要上色就得拆成多个 `_auto_h` 标签, 那会动"自动撑高"那条路, 现在不值当。)
         _txt = (_n + str(r.get('device', '?')) + '  ' + str(r.get('version', '')) + _n
-                + str(r.get('time', '--')) + '   高压 %d 秒'
+                # ⚠️ 2026-09-16 玩家: 「连续高压测试 360 秒」(原来是「高压 360 秒」)。
+                #    与空态那句「连续高压测试 N 秒即可产生一条」**用同一个说法**。
+                #    ⚠️ 这行会因此**折成两行**(整句约 300px > 手机上的内容区 ~285px) ——
+                #       可以接受: 正文是 `_auto_h` 撑高的多行标签, 折行只是长高, 不会被裁。
+                + str(r.get('time', '--')) + '   连续高压测试 %d 秒'
                 % int(r.get('sec', 0) or 0) + _n + _n
                 + '成绩' + _n
                 + '  平均 %d / 最低 %d 步/秒'
