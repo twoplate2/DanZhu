@@ -3025,8 +3025,12 @@ def _bench_menu_desc():
        `python temp/check_desc.py` 顺手复核排版(它同时会量每行宽度)。
     """
     return ('模拟测试约 67 秒（含落珠动画）。\n测试两项设备性能：\n1. 累计发射 5 颗弹珠，测屏幕渲染帧率\n'
-            '2. 通过后台跑物理引擎测试 CPU 性能\n第 2 项主要吃 CPU 单核浮点算力。\n'
-            '物理引擎是纯 Python 写的。\n'
+            '2. 通过后台跑物理引擎测试 CPU 性能\n'
+            # ⚠️ 2026-09-16 玩家: 「**整合为** 物理引擎用 python 写的，吃单核浮点算力。」
+            #    —— 原来那两行(「第 2 项主要吃 CPU 单核浮点算力。」/「物理引擎是纯 Python
+            #    写的。」)并成一行, 菜单从 7 行变 6 行。
+            #    ⚠️ 改完**必须重跑 `temp/check_desc.py`**(它逐行量宽, 窄屏会折行)。
+            '物理引擎是用 Python 写的，吃单核浮点算力。\n'
             'SOC高压测试：考验调度和散热能力。')
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
@@ -10094,6 +10098,21 @@ def _soc_result_title():
     return ("SOC高压测试 %s" % v) if v else "SOC高压测试"
 
 
+def _bench_result_title():
+    """跑分**成绩面板**的标题。
+
+    玩家 2026-09-16: 「把版本号**放在性能测试后面** 中间有一个空格」。
+    ⇒ 与 SOC 结果弹窗(`_soc_result_title`)、启动信息(`_startup_title`)**同一套做法**:
+      名字与版本号之间留一个空格; 拿不到版本时退化成纯名字, 不留一个孤零零的 "v"。
+    ⚠️ 正文里**不再印版本号**(玩家同一次说的「之前界面中不要加版本号」)。
+    """
+    try:
+        v = _app_version()
+    except Exception:
+        v = ""
+    return ("性能测试 %s" % v) if v else "性能测试"
+
+
 def _bench_score_text(d):
     """成绩块正文 —— **现场那个弹窗与历史「详情」共用这一份**。
 
@@ -10111,7 +10130,12 @@ def _bench_score_text(d):
 
     _ver = str(_g('version', '') or '')
     _dev = str(_g('device', '') or '')
-    _dv = (_dev + " / " + _ver) if (_ver and _ver not in _dev) else _dev
+    # ⚠️ 2026-09-16 玩家: 「把版本号**放在性能测试后面** 中间有一个空格」+「**之前界面中
+    #    不要加版本号**」⇒ 正文这一行**只留设备/系统/Python**, 版本号挪进标题
+    #    (见 `_bench_result_title`), 与 SOC 结果弹窗**同一套做法**。
+    #    ⚠️ 设备/系统/Python **不能一起删**: 跨机器比成绩靠的就是这一段。
+    #    ⚠️ `_ver` 仍然读出来 —— 万一以后要在别处印, 别再从记录里翻。
+    _dv = _dev
     # 帧率块: 六个值 vs 三个值 —— 老记录没有 10%Low / p99 / p90 ⇒ 退回三值版。
     _l10, _p99, _p90 = _g('render_10low'), _g('render_p99'), _g('render_p90')
     if _l10 is not None and _p99 is not None and _p90 is not None:
@@ -10143,28 +10167,19 @@ def _bench_score_text(d):
             '运算速度：%d 轮中位每秒 %d 步模拟\n'
             '稳定性：%d～%d 步/秒 · 平均差系数 %s\n'
             '%s'
-            '每次发射：需 %.0f 步模拟\n'
-            '　　计算用时 %s　飞行用时 %s　富余 %s\n'
-            # ⚠️ 2026-09-16 玩家: 「**额外显示** 每次飞行平均需 x 步运算, 每次飞行平均需 x 秒,
-            #    每次飞行时间内可以完成 x 次飞行模拟。**这里面的数值用的还是这五次飞行的
-            #    平均值, 可以取一位小数点**」。
-            #    ⇒ 三条**整句**(不用术语、带单位), 与上面那行是**同一批数**的两种说法 ——
-            #      玩家明确选了"叠加"(见 2026-09-16 的问答), 不是替换。
-            #    ① 步运算 = 每发平均步数(一位小数); ② 秒 = 飞行用时 ÷ 1000;
-            #    ③ 次 = 那个倍率(飞行÷计算) —— 换句话说就是"这一趟的时间里够算几趟"。
-            #    ⚠️ 任一取不到一律印「—」, **绝不回填**。
-            '每次飞行平均需 %s 步运算\n'
-            '每次飞行平均需 %s 秒\n'
-            '每次飞行时间内可以完成 %s 次飞行模拟\n'
+            # ⚠️ 2026-09-16 玩家(看了截图): 「**去掉前面的文字, 保留后面的**, 后面的文字
+            #    **放 1 行**」⇒ 删掉「每次发射 / 计算用时·飞行用时·富余」那两行(它们与下面
+            #    三条是**同一批数**的两种说法), 三条并成**一行**。
+            #    措辞按玩家给的改: 「飞行**平均持续** x.x 秒」+「飞行**期间可完成**」。
+            #    ⚠️ 那三个数仍取自同一次测试: ① 每发平均步数 ② 飞行用时÷1000 ③ 倍率。
+            '每次飞行平均需 %s 步运算，'
+            '飞行平均持续 %s 秒，'
+            '飞行期间可完成 %s 次飞行模拟\n'
             '%s') % (
         _dv, int(_g('phys_runs', 0) or 0), int(_g('phys_fps', 0) or 0),
         int(_g('phys_min', 0) or 0), int(_g('phys_max', 0) or 0),
         (('%.2f%%' % float(_mad)) if _mad is not None else '无数据'),
         _s_txt, float(_g('avg_frames', 0) or 0),
-        ('%.1f ms' % float(_g('cost_ms'))) if _g('cost_ms') else '—',
-        ('%.1f ms' % float(_g('flight_ms'))) if _g('flight_ms') else '—',
-        ('%.1f 倍' % float(_g('margin'))) if _g('margin') else '—',
-        ('%.1f' % float(_g('avg_frames'))) if _g('avg_frames') else '—',
         ('%.1f' % (float(_g('flight_ms')) / 1000.0)) if _g('flight_ms') else '—',
         ('%.1f' % float(_g('margin'))) if _g('margin') else '—',
         _low_txt)
@@ -12793,7 +12808,9 @@ class RootWidget(BoxLayout):
             self.bench_history.pop(0)
         self._save_bench_history()
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
-        title_lbl = self._fit_line(Label(text='性能测试', bold=True,
+        # ⚠️ 2026-09-16 玩家: 「把版本号**放在性能测试后面** 中间有一个空格」
+        #    ⇒ 标题改成 `性能测试 v0.x.x`(见 `_bench_result_title`), 正文那行不再带版本。
+        title_lbl = self._fit_line(Label(text=_bench_result_title(), bold=True,
                                          halign='center', color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
