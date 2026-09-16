@@ -10102,6 +10102,54 @@ def _soc_result_title():
     return ("SOC高压测试 %s" % v) if v else "SOC高压测试"
 
 
+class SpeedCurve(Widget):
+    """SOC 高压那 **300 多个逐秒样本**的走势图。
+
+    玩家 2026-09-16: 「soc高压测试可以**搞个图**吗, 也就 300 个数据作用, **点击额外的按钮**
+    显示, 类似之前的帧曲线」。
+
+    ⚠️ 与 `FpsCurve` **分开写是故意的**: 那张图的纵轴是**帧率**(由帧间隔换算)且带一条
+       帧率上限参考线; 这张的纵轴是**步/秒**, 语义完全不同 —— 硬套的话得把值取倒数,
+       纵轴就"越快越靠下", 读图的人会理解反。
+    ⚠️ 只画**折线 + 中位参考线**, 不做交互、不画阶段色带(高压没有"阶段"这回事)。
+       这是个"一眼看出有没有掉下去"的图, 不是分析工具。
+    ⚠️ 点数可能上千(理论上 360), 用 `Line` 一次画完 —— Kivy 的 `Line` 是单条指令,
+       与点数无关地便宜; 别按点建 `Rectangle`。
+    """
+
+    def __init__(self, vals, **kw):
+        super().__init__(**kw)
+        self._v = [float(x) for x in (vals or []) if x]
+        self.bind(pos=self._draw, size=self._draw)
+        Clock.schedule_once(self._draw, 0)
+
+    def _draw(self, *_):
+        self.canvas.clear()
+        if len(self._v) < 2 or self.width <= 2 or self.height <= 2:
+            return
+        _lo, _hi = min(self._v), max(self._v)
+        _sp = max(1.0, _hi - _lo)
+        _n = len(self._v)
+        _pad = 2.0
+        _h = self.height - 2 * _pad
+        _pts = []
+        for _i, _y in enumerate(self._v):
+            _pts.append(self.x + self.width * (_i / float(_n - 1)))
+            _pts.append(self.y + _pad + _h * ((_y - _lo) / _sp))
+        with self.canvas:
+            # 底: 一个深色矩形(与面板其它区域分开, 否则曲线浮在弹窗底色上看不清)
+            Color(*hex_rgb(COL_BTN_OFF), 0.55)
+            Rectangle(pos=self.pos, size=self.size)
+            # 中位参考线(先画, 免得压住曲线)
+            _med = sorted(self._v)[len(self._v) // 2]
+            Color(*hex_rgb(COL_SUB), 0.8)
+            Line(points=[self.x, self.y + _pad + _h * ((_med - _lo) / _sp),
+                         self.x + self.width, self.y + _pad + _h * ((_med - _lo) / _sp)],
+                 width=1.0)
+            Color(*hex_rgb(COL_BALL))
+            Line(points=_pts, width=1.2)
+
+
 def _bench_result_title():
     """跑分**成绩面板**的标题。
 
@@ -11517,10 +11565,21 @@ class RootWidget(BoxLayout):
         content.add_widget(body)
         # ⚠️ **没有「保存日志」按钮**(玩家 2026-09-15:「删掉高压测试的写入文件功能」)。
         #    历史记录照旧落盘(JSON), 只是不再导出 txt。
+        # ⚠️ 2026-09-16 玩家: 「点击额外的按钮显示」⇒ 加一个「走势图」。
+        #    数据取**内存里这一轮**的 `self._hp_fps`(与下面那串采样同源)。
+        _btnrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10),
+                            orientation="horizontal")
+        _cw = [x for x in (getattr(self, "_hp_fps", None) or []) if x > 0]
+        if len(_cw) >= 2:
+            curve_btn = Button(text="走势图", font_size="16sp", bold=True,
+                               background_normal="", background_color=hex_rgb(COL_BTN) + (1,))
+            curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
+            _btnrow.add_widget(curve_btn)
         close_btn = Button(text="关闭", font_size="16sp", bold=True,
                            background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
-        content.add_widget(close_btn)
+        _btnrow.add_widget(close_btn)
+        content.add_widget(_btnrow)
         popup = self._popup(0.90, 460, title="", content=content,
                             auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
@@ -12828,6 +12887,12 @@ class RootWidget(BoxLayout):
             "sust_min": int(_s_min), "sust_decay_pct": round(_s_decay, 1),
             "sust_freq_p50": int(getattr(self, "_sust_freq_p50", 0) or 0),
             "sust_fps_windows": [int(x) for x in _sv],
+            # ⚠️ 2026-09-16: 存下**诊断块**的原始数据 —— 玩家报「普通测试的详情里漏了
+            #    一块灰色字(采样窗口/卡顿帧/慢帧分布/最慢一帧)」。
+            #    体积约 1~3KB/条(与 SOC 那张表每条存 360 个窗口同一量级),
+            #    而且它本来就是 JSON 友好的(`_bench_collect_diag` 的输出)。
+            #    ⚠️ 老记录没有 ⇒ 详情里那一块**整块不出现**(不印空壳)。
+            "diag": (getattr(self, "_bench_diag", None) or None),
             "version": _app_version(),
             "device": dev,
         }
@@ -14244,9 +14309,15 @@ class RootWidget(BoxLayout):
         except Exception:
             return ''
 
-    def _bench_low_summary_text(self):
-        """成绩页默认只显示能指导 1% Low 优化的简短证据。"""
-        d = getattr(self, "_bench_diag", None) or {}
+    def _bench_low_summary_text(self, d=None):
+        """成绩页默认只显示能指导 1% Low 优化的简短证据。
+
+        ⚠️ 2026-09-16 加了可选入参 `d` —— 玩家报「普通测试的详情里**漏了一块
+        下面的灰色字**」: 那块就是本函数的输出, 而它原来**只读 `self._bench_diag`**
+        ⇒ 历史记录里没存就印不出来。现在可以把**记录里那份**传进来。
+        ⚠️ 不传就读 `self._bench_diag`(现场那条路**一个字不用改**)。
+        """
+        d = d if d else (getattr(self, "_bench_diag", None) or {})
         if not d:
             return ''
         try:
@@ -14614,6 +14685,48 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
 
+    def _show_hp_curve(self, windows, sec=None):
+        """SOC 高压**逐秒样本的走势图**(结果弹窗 / 历史详情上的「走势图」按钮)。
+
+        玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
+        点击额外的按钮显示, 类似之前的帧曲线」。
+
+        ⚠️ 数据就是记录里的 `windows`(逐秒一个, 实测 321 个)。
+        ⚠️ 没数据(或只有 1 个点)就**不开弹窗** —— 一条直线没信息, 不如不给。
+        """
+        _w = [x for x in (windows or []) if x > 0]
+        if len(_w) < 2:
+            return
+        content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
+        title = self._fit_line(Label(text='高压走势', bold=True, halign='center',
+                                     color=hex_rgb(COL_TEXT) + (1,),
+                                     size_hint_y=None, height=dp(26)), 19)
+        content.add_widget(title)
+        curve = SpeedCurve(_w, size_hint_y=None, height=dp(240))
+        content.add_widget(curve)
+        _srt = sorted(_w)
+        note = Label(text='逐秒步/秒　首 %d　末 %d　中位 %d　最低 %d　最高 %d'
+                          % (_w[0], _w[-1], _srt[len(_srt) // 2], _srt[0], _srt[-1]),
+                     font_size='13sp', halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
+        note.bind(width=lambda _w2, *_: setattr(_w2, 'text_size', (_w2.width, None)))
+        content.add_widget(note)
+        _n2 = Label(text='横轴 = 按时间顺序的 %d 个窗口　竖轴 = 步/秒　（横线 = 中位）'
+                      % len(_w),
+                     font_size='12sp', halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
+        _n2.bind(width=lambda _w2, *_: setattr(_w2, 'text_size', (_w2.width, None)))
+        content.add_widget(_n2)
+        close_btn = Button(text='返回', font_size='16sp', bold=True, background_normal='',
+                           background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                           size_hint_y=None, height=dp(46))
+        content.add_widget(close_btn)
+        popup = self._popup(0.92, 400, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
+        close_btn.bind(on_release=popup.dismiss)
+        popup.open()
+        self._popup_fit_content(popup, content)
+
     def _show_hp_detail(self, r):
         """某一条 SOC 高压记录的**详细成绩 + SOC 平均频率**。"""
         _n = chr(10)
@@ -14670,11 +14783,23 @@ class RootWidget(BoxLayout):
                      color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None)
         self._auto_h(body, dp(220), dp(6))
         content.add_widget(body)
+        # ⚠️ 2026-09-16 玩家: 「点击额外的按钮显示」⇒ 历史详情也加一个「走势图」。
+        #    数据用**记录里那份** `windows`(逐秒一个, 实测 321 个)。
+        #    ⚠️ 不够 2 个点就**不建**按钮(`_show_hp_curve` 自己也会拒)。
+        _btnrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10),
+                            orientation='horizontal')
+        _cw = [x for x in (r.get('windows') or []) if x > 0]
+        if len(_cw) >= 2:
+            curve_btn = Button(text='走势图', font_size='16sp', bold=True,
+                               background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
+            curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
+            _btnrow.add_widget(curve_btn)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='',
                            background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
-        content.add_widget(close_btn)
+        _btnrow.add_widget(close_btn)
+        content.add_widget(_btnrow)
         _vw, _vh = self._veq()
         popup = RotPopup(title='', content=content, size_hint=(None, None),
                          width=0.88 * _vw, height=0.62 * _vh,
@@ -14702,6 +14827,19 @@ class RootWidget(BoxLayout):
                      valign='top', color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None)
         self._auto_h(body, dp(190), dp(6))
         content.add_widget(body)
+        # ⚠️⚠️ 2026-09-16 玩家: 「普通测试的那个**是不是漏了一块内容啊, 下面的灰色字体的**」
+        #    那正是**诊断块**(采样窗口 / 卡顿帧 / 慢帧 / 慢帧分布 / 最慢一帧) —— 它原来
+        #    **只在跑完那一刻的面板上**(现场是**独立的一个灰标签**, 见 `_bench_done`),
+        #    而记录里没存 ⇒ 详情弹窗就缺了。
+        #    ⇒ 现在记录里存了 `diag`, 这里**照现场同样的样式**再加一个灰标签。
+        #    ⚠️ 老记录没有 `diag` ⇒ 这段是空串 ⇒ **那个标签整个不 add**
+        #       (不印一个空壳, 也不留一块空白)。
+        _diag_txt = self._bench_low_summary_text(r.get('diag'))
+        if _diag_txt:
+            diag_lbl = Label(text=_diag_txt, font_size='15sp', halign='left', valign='top',
+                             color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
+            self._auto_h(diag_lbl, dp(0), dp(0))
+            content.add_widget(diag_lbl)
         # ⚠️ 2026-09-16 玩家: 「我已经放弃在历史记录中显示帧率曲线了 … **只有当前跑的
         #    那次**有这个帧率曲线」+ 「**如果能找到数据就[有], 否则没有**」。
         #    ⇒ **不存任何逐帧数据**(省掉 100 条 × 数千个数): 原始采样
