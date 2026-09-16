@@ -3036,7 +3036,7 @@ def _bench_menu_desc():
        `SOC_SAMPLE_CPU_SEC` + 间隔)。改了那几个参数要回来改这个数 —— 可用
        `python temp/check_desc.py` 顺手复核排版(它同时会量每行宽度)。
     """
-    return ('模拟测试约 67 秒（含落珠动画）。\n测试两项设备性能：\n1. 累计发射 5 颗弹珠，测屏幕渲染帧率\n'
+    return ('模拟测试约 67 秒（含落珠动画）\n测试两项设备性能：\n1. 累计发射 5 颗弹珠，测屏幕渲染帧率\n'
             '2. 通过后台跑物理引擎测试 CPU 性能\n'
             # ⚠️ 2026-09-16 玩家: 「**整合为** 物理引擎用 python 写的，吃单核浮点算力。」
             #    —— 原来那两行(「第 2 项主要吃 CPU 单核浮点算力。」/「物理引擎是纯 Python
@@ -3046,12 +3046,17 @@ def _bench_menu_desc():
             #       **故意手写拆开**的(见 tools 源里的注释), 合并本身就有折行对价。
             #       ⇒ 玩家定稿改用更短的说法: 「Python 写的引擎，吃单核浮点算力。」
             #    ⚠️ 改完**必须重跑 `temp/check_desc.py`**(它逐行量宽)。
-            # ⚠️ 2026-09-16 玩家再改一个字: 「把**吃**改为**衡量**」——
-            #    「吃单核浮点算力」-> 「**衡量**单核浮点算力」(同一行, 只多 1 个字)。
-            # ⚠️⚠️ **实测 264px, 而 360dp 只有 261px ⇒ 窄屏上折行, 差 3px**(check_desc 量的)。
-            #    这几个字**不能随便砍**(玩家逐字定过), 所以先把事实摆出来, 等玩家定夺。
-            'Python 写的引擎，衡量单核浮点算力。\n'
-            'CPU高压测试：考验调度和散热能力。')
+            # ⚠️ 2026-09-16 玩家连着改了三次: 「吃」-> 「**考验**」-> 「**衡量**」-> 「**消耗**」
+            #    (最后一句原话: 「这个**衡量不妥当**, 改为**消耗**」) ⇒ 现在是下面这个。
+            # ⚠️⚠️ **实测 264px, 而 360dp 只有 261px ⇒ 窄屏上折行, 差 3px**(check_desc 量的),
+            #    末尾「算力。」会被孤零零甩到下一行。三个候选已量给玩家(去句号 249px /
+            #    去「写的」234px / 「Python 引擎消耗…」219px), **玩家尚未定夺 ⇒ 保持原样**。
+            #    ⚠️ 两次改词都是两个字, 宽度**一模一样** —— 换词救不了这 3px。
+            # ⚠️ 2026-09-16 玩家(看了截图): 「**去掉这个界面的所有的句号**」——
+            #    6 行里带句号的是第 1 / 5 / 6 行(第 2 行结尾是「：」, 3/4 行本来就没有),
+            #    三处**全部去掉**。⇒ 顺带**把那个 3px 折行也解决了**(第 5 行 264→249px)。
+            'Python 写的引擎，消耗单核浮点算力\n'
+            'CPU高压测试：考验调度和散热能力')
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
 #    真机面板上那三帧的账**对不上** —— 40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
@@ -8160,6 +8165,23 @@ _VIB_STAT = [0.0, 0.0, ""]       # [累计秒, 单次最慢秒, 最慢那次的�
 # ⚠️ 桌面量不到(`platform != "android"` 直接 return), 只能靠真机跑分面板读那一行。
 _JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0, 0.0]
 
+# ⚠️⚠️ **系统栏模式** —— `[False]` = **非沉浸**(顶部状态栏可见, 就是我们一个标志都不设);
+#    `[True]` = **真全屏**(状态栏 + 导航栏都藏, 玩家从边缘滑入可临时呼出)。
+#
+# 玩家 2026-09-16 定案(分两次说完):
+#   ① 「打开游戏后会全屏, 需改为**不全屏**(我记得之前的版本都是, 能显示顶部的状态栏)」
+#      +「我要**非沉浸式全屏**, 能看到状态栏的」
+#   ② 「做物理验算的时候**全黑屏**的时候, 这个时候需要**真全屏**(高压和不高压都算)」
+# ⇒ 所以现在是**两档**, 由黑屏的开/关切换(挂在 `_show_bench_dim` / `_hide_bench_dim` 上):
+#      平时(玩游戏/看面板)      = 非沉浸, 状态栏在
+#      跑分黑屏期间(波1 + 波2)  = 真全屏
+#    ⚠️ 这是**有据可依**的"回到老做法": `git show 8d5af0b~1:main.py | grep -c SYSTEM_UI_FLAG`
+#       = **0** —— v0.5.1(`8d5af0b`) 之前**根本不碰系统栏**, 那正是玩家记得的样子。
+#       而"老版本能看见状态栏"其实还叠着另一个 bug 的症状, 见 `BUILD_APK.md` §3.22
+#       (竖屏启动时沉浸没生效、转屏才自愈 —— v0.5.4 `9873ab0` 才修好)。
+#    ⚠️ 别再把它写成常量: 两档都是玩家点名的需求。
+_SYSUI_MODE = [False]
+
 # 上一帧 `_frame` **自己**在**本线程**上花了多少毫秒(由 `_frame_timed` 写)。
 # ⚠️ 为什么必须单独有这一格: 面板那栏"每帧实算"读的是 `time.process_time()`, 那是
 #    **整个进程**的 CPU —— 含发声/震动两条工作线程、以及安卓那一堆 Java 线程。
@@ -8521,6 +8543,30 @@ def _guard_orient_now():
             act.setRequestedOrientation(10)
     else:
         act.setRequestedOrientation(7)
+
+
+def _set_system_ui(immersive):
+    """**切系统栏档位**(玩家 2026-09-16 要的两档, 见 `_SYSUI_MODE` 那段说明)。
+
+    `immersive=True`  ⇒ **真全屏**(状态栏 + 导航栏都藏) —— 跑分黑屏期间用;
+    `immersive=False` ⇒ **非沉浸**(两栏都在) —— 平时用, 就是一个标志都不设。
+
+    ⚠️ **切档必须"立刻生效一次"**, 不能只改标志位等下一个 2.5 秒的周期重申 ——
+       否则从真全屏切回非沉浸时, 系统栏会**继续藏着**最多 2.5 秒(黑屏都撤了还全屏着)。
+       所以这里直接投一次任务; 周期重申由 `_enter_immersive` 兜(它现在只重申沉浸档)。
+    ⚠️ 走 `_guard_post` 那条**工作线程队列**而不是自己起线程: 与方向守卫同一套机制,
+       队列满就丢这一次 —— 幂等, 丢一次毫无影响(真要紧了 2.5 秒后还有一次)。
+    ⚠️ 非安卓直接只改标志位(桌面没有系统栏可切), 与 `_enter_immersive` 的分支一致。
+    """
+    _SYSUI_MODE[0] = bool(immersive)
+    if platform != "android":
+        return
+    try:
+        ok = _guard_post("immerse")
+        if not ok:
+            _guard_immersive_now()
+    except Exception:
+        pass
 
 
 def _guard_immersive_now():
@@ -10354,13 +10400,18 @@ def _bench_score_text(d):
     #      ⇒ 删掉原来那行「稳定性：A～B 步/秒，样本是：…」—— 极值从逐轮分数**一看就有**,
     #        没必要再单列; 「平均差系数」留在上一行(那是玩家上一轮点名要的)。
     #    · 「N 轮」的 N **按实际算**(不写死 5): 常规是 5 轮, 但探针/改口径时会变。
+    # ⚠️ 2026-09-16 玩家再改: 「把 **5 轮**分数依次为： 改为 **分数依次为：**」——
+    #    ⇒ 「N 轮」这个前缀**整个去掉**(N 不再上屏; 想要轮数的人可以从那一串数几个)。
+    #    ⚠️ 这一改**顺带把实参也删了一个**(下面 `% (` 那串里原来是
+    #       `len(_runs) if _runs else int(_g('phys_runs', 0) or 0)`), 别只改格式串 ——
+    #       少一个 `%d` 却留着那个实参, 后面的数会**整体错位一格**(且不报错)。
     #    · 逐轮分数**按时间顺序**、逗号分隔; 取前 20 个(玩家: "至少 20 次, 只能采集 5 个就用 5 个")。
     #    · ⚠️ 拿不到 `phys_fps_runs`(老记录) ⇒ 印「—」, **不拿别的数回填**。
     _runs = [int(x) for x in (_g('phys_fps_runs') or [])][:20]
     _samples = ','.join('%d' % x for x in _runs) if _runs else '—'
     return ('%s\n'
             '平均每轮 %d 步模拟，平均差系数 %s\n'
-            '%d 轮分数依次为：%s\n'
+            '分数依次为：%s\n'
             '%s'
             # ⚠️ 2026-09-16 玩家(看了截图): 「**去掉前面的文字, 保留后面的**, 后面的文字
             #    **放 1 行**」⇒ 删掉「每次发射 / 计算用时·飞行用时·富余」那两行(它们与下面
@@ -10389,10 +10440,11 @@ def _bench_score_text(d):
             '%s') % (
         _dv, int(_g('phys_fps', 0) or 0),
         (('%.2f%%' % float(_mad)) if _mad is not None else '无数据'),
-        # ⚠️ 第二轮玩家: 删掉了「稳定性：A～B 步/秒」那行 ⇒
-        #    `phys_min`/`phys_max` **不再参与面板渲染**(仍然照旧存进记录与日志,
-        #    复盘时还能用; 极值从下面那串逐轮分数一看就有)。
-        len(_runs) if _runs else int(_g('phys_runs', 0) or 0), _samples,
+        # ⚠️ 2026-09-16: 「N 轮」前缀删了 ⇒ **这里原本那项实参
+        #    `len(_runs) if _runs else int(_g('phys_runs', 0) or 0)` 也必须一起删** ——
+        #    格式串少一个 `%d` 而实参多一个, 后面的数会**整体前移一格**且**不报错**
+        #    (`%s` 什么都吃得下)。删掉之后紧跟的就是逐轮分数那串。
+        _samples,
         _s_txt, float(_g('avg_frames', 0) or 0),
         # ⚠️ 2026-09-16 玩家: 「持续时间的单位从 x.x 秒改为 **x.xx 秒**」
         #    ⇒ 秒那一项**两位小数**(步运算与次数仍为一位)。
@@ -11274,6 +11326,13 @@ class RootWidget(BoxLayout):
         #    还看得见板面", 现在要的是**纯黑** —— 跑分期间没什么可看的, 少画就是少抢 CPU。
         self._bench_dim_col.rgba = (0.05, 0.06, 0.09, 1.0)
         self._relayout_bench_dim()
+        # ⚠️⚠️ **黑屏期间切"真全屏"**(玩家 2026-09-16: 「做物理验算的时候**全黑屏**的时候,
+        #    这个时候需要**真全屏**(高压和不高压都算)」)。
+        #    ⇒ 挂在黑屏的开/关上, 波 1(物理演算)与波 2(CPU高压) **共用这一对** ——
+        #      两波都是先 `_show_bench_dim()` 再跑, 所以"都算"是自动满足的, 不用各写一份。
+        #    ⚠️ 放在 `_relayout_bench_dim()` **之后**: 切档会让窗口 inset 变一次(重新布局),
+        #       先让黑屏铺满再切, 那一瞬间的重排就落在黑屏底下、看不见。
+        _set_system_ui(True)
 
     def _set_bench_msg(self, text):
         """黑屏上的白字(进度)。文字没变就整个跳过 —— 一次 refresh 要重排文字。"""
@@ -11312,6 +11371,10 @@ class RootWidget(BoxLayout):
         self._bench_dim_shown = False
         self._bench_dim_col.rgba = (0, 0, 0, 0)
         self._bench_dim_rect.size = (0, 0)
+        # ⚠️⚠️ **黑屏撤掉 ⇒ 系统栏切回"非沉浸"**(与 `_show_bench_dim` 那一对, 见那边说明)。
+        #    ⚠️ 必须**主动切**: 这一档的样子是"系统默认值", 不主动清标志就会一直全屏着
+        #       (黑屏没了、屏还是全屏的)。`_set_system_ui` 是立即生效的, 不等周期重申。
+        _set_system_ui(False)
         # ⚠️ 白字必须一起撤 —— 否则跑分结束后那行字会**留在黑屏位置**(黑屏没了、字还在)。
         try:
             self._bench_msg_col.a = 0.0
@@ -11679,7 +11742,11 @@ class RootWidget(BoxLayout):
                 + "最低 %s，平均 %s 步/秒" % (
                     '—' if _mn is None else int(_mn), '—' if _avg is None else _avg) + _n
                 + ("平均差系数 %.2f%%" % _mc if _mc is not None else "平均差系数 无数据")
-                + _n + _n
+                # ⚠️ 2026-09-16 玩家(看了截图): 「**这里不需要换行, 这里有一个空的换行**」
+                #    ⇒ 原来这里是 `_n + _n`(空一行再印采样成绩), 现在**只留一个换行**。
+                #    (那个空行是 v0.7.109「历史详情改用结果弹窗那套」时从旧版式带过来的,
+                #     当时详情里是"成绩 / 频率 / 过程"三块, 块间空行有意义; 合并之后就是多余的了。)
+                + _n
                 # ⚠️ 2026-09-16 玩家: 「每段采样（括号内很多字）改为**等间隔连续采样成绩：**xxx」,
                 #    随后再改: 「**每10秒**连续采样成绩」(与上面那个抽点间隔**同一个常量**,
                 #    别再手抄一个 10 进来 —— 那种写法迟早和抽点逻辑脱钩)。
@@ -13253,7 +13320,18 @@ class RootWidget(BoxLayout):
         #    ⚠️ 传进去的就是**刚刚存进历史的那个 dict** ⇒ 两边同源, 连"老记录缺字段"的处理
         #       都只有一份。
         score = _bench_score_text(_rec)
-        score_lbl = Label(text=score, font_size='17sp', halign='left', valign='top',
+        # ⚠️⚠️ **字号必须与历史「详情」一致**(玩家 2026-09-16:
+        #    「在历史记录看到的这个**还不错**, 用这个**代替**之前的那个测试后的数据
+        #     （这个**字体稍微减少一些** 就可以**不用换行**了）」)。
+        #    历史那条路(`_show_bench_detail`)一直是 15sp, 而这里原来是 **17sp**
+        #    ⇒ 同一个 `_bench_score_text` 渲染出来, 一个不怎么折行、一个"各种乱换行"
+        #      (K90 那张截图为证)。
+        #    ⚠️ 随后玩家再定: 「统一成 15sp: 这个应该改为 **14sp** 吧」⇒ 两处正文
+        #       **连同下面那块灰字一起**落到 **14sp**(四个 Label 一个尺寸, 见
+        #       `_show_bench_detail` 里同款的两处) —— 正文只有一份, 字号也只有一份。
+        #    ⚠️ 改这里要连带看 `_auto_h` 的**基准高度**: 字号小了内容也矮, 基准还留着
+        #       老的大数就会多出一块空白(两个面板的基准高度本来就不同, 见下)。
+        score_lbl = Label(text=score, font_size='14sp', halign='left', valign='top',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
         self._auto_h(score_lbl, dp(130), dp(6))
         content.add_widget(score_lbl)
@@ -13281,7 +13359,7 @@ class RootWidget(BoxLayout):
                   size=lambda w, *_: setattr(w._line, "size", w.size))
         content.add_widget(_sep)
 
-        diag_lbl = Label(text=self._bench_low_summary_text(), font_size='15sp',
+        diag_lbl = Label(text=self._bench_low_summary_text(), font_size='14sp',
                          halign='left', valign='top',
                          color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
         self._auto_h(diag_lbl, dp(0), dp(0))
@@ -14666,7 +14744,9 @@ class RootWidget(BoxLayout):
                 _rw.sort(key=lambda r: -r[0])
                 _rt = [('%s %d/%d' % (r[1], r[2], r[3])) if r[3] > 0
                        else ('%s %d帧' % (r[1], r[2])) for r in _rw]
-                return (label + '：' + ' · '.join(_rt)) if _rt else ''
+                # ⚠️ 2026-09-16 玩家: 「中文圆点用**半角空格**代替」⇒ ` · ` -> 两个半角空格。
+                #    与上面「采样窗口」那行**同一处改动**, 两行必须长得一样。
+                return (label + '：' + '  '.join(_rt)) if _rt else ''
 
             _dist_line = _dist_line_of(d.get("jank_groups"), "jank_n", '卡顿帧分布')
             # 慢帧分布(玩家 2026-09-14:「额外新增一个慢帧分布」)。
@@ -14723,7 +14803,13 @@ class RootWidget(BoxLayout):
             _win_ms = float(d.get("win_ms", 0.0) or 0.0)
             _p50 = float(d.get("p50", 0.0) or 0.0)
             if _n > 0 and _win_ms > 0.0 and _p50 > 0.0:
-                parts.append('采样窗口：%.1f 秒 · %d 帧 · 中位 %.0f 帧/秒'
+                # ⚠️ 2026-09-16 玩家(看了 K90 的截图): 「这里的**中文圆点用半角空格来代替**」
+                #    ⇒ 原来那句里的 ` · `(空格+中点+空格) 换成**两个半角空格**。
+                #    用两个而不是一个: 一个的话「秒 帧」会读成同一个词的一部分, 分不出这是
+                #    分隔符; 两个半角空格的间隙刚好是原来 ` · ` 的观感, 又不再多一个字形。
+                #    ⚠️ 句子那一串 `' · '.join(...)` 见 `_dist_line_of`, **两处一起改**
+                #       (半角/全角混排一次改干净, 否则同一个面板里两种分隔符并存)。
+                parts.append('采样窗口：%.1f 秒  %d 帧  中位 %.0f 帧/秒'
                              % (_win_ms / 1000.0, _n, 1000.0 / _p50))
                 parts.append('卡顿帧（低于 %.0f 帧/秒）：%d 帧（%.2f%%）'
                              % (1000.0 * JANK_RATE / _p50, _jn, 100.0 * _jn / _n))
@@ -15104,7 +15190,7 @@ class RootWidget(BoxLayout):
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
-        body = Label(text=_bench_score_text(r), font_size='15sp', halign='left',
+        body = Label(text=_bench_score_text(r), font_size='14sp', halign='left',
                      valign='top', color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None)
         self._auto_h(body, dp(190), dp(6))
         content.add_widget(body)
@@ -15117,7 +15203,7 @@ class RootWidget(BoxLayout):
         #       (不印一个空壳, 也不留一块空白)。
         _diag_txt = self._bench_low_summary_text(r.get('diag'))
         if _diag_txt:
-            diag_lbl = Label(text=_diag_txt, font_size='15sp', halign='left', valign='top',
+            diag_lbl = Label(text=_diag_txt, font_size='14sp', halign='left', valign='top',
                              color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
             self._auto_h(diag_lbl, dp(0), dp(0))
             content.add_widget(diag_lbl)
@@ -17555,13 +17641,24 @@ class PlinkoApp(App):
                         #    开销**(pyjnius 的 autoclass 在毫秒级), 不是 `setSystemUiVisibility`
                         #    的代价 —— 那一格一直在测自己。(压测段 2 号专家指出。)
                         _t0 = time.perf_counter()
-                        act.getWindow().getDecorView().setSystemUiVisibility(
-                            View.SYSTEM_UI_FLAG_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                        # ⚠️⚠️ **按当前档位选标志位**(玩家 2026-09-16 要"两档"):
+                        #    非沉浸 ⇒ **0**(一个标志都不设 = 系统栏全在, 就是 v0.5.1 之前
+                        #              的老做法); 真全屏 ⇒ 原来那 6 位。
+                        #    ⚠️ 管**顶部状态栏**的是 `FULLSCREEN` / `LAYOUT_FULLSCREEN`
+                        #       这两位; 管底部导航栏的是 `HIDE_NAVIGATION` /
+                        #       `LAYOUT_HIDE_NAVIGATION`。两档都靠这一处区分, 别在别处再抄一份。
+                        if _SYSUI_MODE[0]:
+                            act.getWindow().getDecorView().setSystemUiVisibility(
+                                View.SYSTEM_UI_FLAG_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+                        else:
+                            # 0 = 清掉全部标志 ⇒ 状态栏与导航栏都恢复默认(可见)。
+                            # ⚠️ 这一句是**必须的**: 从真全屏切回来时, 不主动清就会一直全屏。
+                            act.getWindow().getDecorView().setSystemUiVisibility(0)
                     except Exception:
                         pass
                     try:
@@ -17578,12 +17675,22 @@ class PlinkoApp(App):
 
     @staticmethod
     def _enter_immersive(*_):
-        """沉浸式全屏: 隐藏状态栏/导航栏, 玩家从屏幕边缘滑入可临时呼出(几秒后自动隐藏)。
+        """**按当前档位重申系统栏**(每 2.5 秒的周期重申走这条路)。
+
+        两档由 `_SYSUI_MODE` 决定(玩家 2026-09-16 定):
+          · 非沉浸(默认, 玩游戏时) —— 状态栏 + 导航栏**都在**, 就是一个标志都不设;
+          · 真全屏(跑分黑屏期间)   —— 两栏都藏, 边缘滑入可临时呼出。
+        ⚠️ 名字里的 "immersive" 是**历史名**(v0.5.1 起一直是全屏沉浸), 现在它只是
+        "重申一次当前档位", 两档共用。**要改档位请用 `_set_system_ui()`**, 别在这里改常量。
+        ⚠️ **非沉浸档直接 return**: 那一档"该有的样子"就是系统默认值, 没有任何东西需要
+        重申 —— 硬去调一次只会白花 UI 线程的开销(那笔开销是有历史的, 见下面调度处的注释)。
         setSystemUiVisibility 在 API30+ 已弃用但未移除, targetSdk 33 下仍生效。
         ⚠️ 形参 *_ 必须保留: schedule_interval 回调会塞 dt 进来, 零参签名在真机上
         启动 0.7s 即 TypeError 闪退(2026-08-26 logcat 实锤, 桌面测试测不出)。
         ⚠️ 必须 runOnUiThread: 线程不对时静默失败(病根见 _immersive_task 注释)。"""
         if platform != "android":
+            return
+        if not _SYSUI_MODE[0]:
             return
         _t0 = time.perf_counter()
         ok = _guard_post("immerse")
