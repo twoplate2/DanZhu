@@ -10109,16 +10109,26 @@ def _bench_score_text(d):
                   int(_g('sust_last', 0) or 0), float(_g('sust_decay_pct', 0.0) or 0.0),
                   int(_g('sust_min', 0) or 0))) if _sv else '')
     _mad = _g('phys_mad')
+    # ⚠️ 2026-09-16 玩家定稿: 「每次发射」那行**拆成两行** —— 三个数挤一行会糊成一团。
+    #    「富余」= **飞行用时 ÷ 计算用时**: >1 是有余量、=1 是刚好、<1 是**算不过来**
+    #    (现象是掉帧/球变慢, **不会崩**)。
+    #    ⚠️ 不叫「溢出倍率」: 数值 >1 表示有余量, 而"溢出"字面上像出事了。
+    #    ⚠️ 任一项拿不到就印「—」, **绝不拿别的数回填**(老记录没有 flight_ms/margin)。
     return ('%s\n'
             '运算速度：%d 轮中位每秒 %d 步模拟\n'
             '稳定性：%d～%d 步/秒 · 平均差系数 %s\n'
             '%s'
-            '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
+            '每次发射：需 %.0f 步模拟\n'
+            '　　计算用时 %s　飞行用时 %s　富余 %s\n'
             '%s') % (
         _dv, int(_g('phys_runs', 0) or 0), int(_g('phys_fps', 0) or 0),
         int(_g('phys_min', 0) or 0), int(_g('phys_max', 0) or 0),
         (('%.2f%%' % float(_mad)) if _mad is not None else '无数据'),
-        _s_txt, float(_g('avg_frames', 0) or 0), float(_g('cost_ms', 0) or 0), _low_txt)
+        _s_txt, float(_g('avg_frames', 0) or 0),
+        ('%.1f ms' % float(_g('cost_ms'))) if _g('cost_ms') else '—',
+        ('%.1f ms' % float(_g('flight_ms'))) if _g('flight_ms') else '—',
+        ('%.1f 倍' % float(_g('margin'))) if _g('margin') else '—',
+        _low_txt)
 
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
@@ -12065,6 +12075,28 @@ class RootWidget(BoxLayout):
         if len(flips) >= 2:
             gaps = [flips[i + 1] - flips[i] for i in range(len(flips) - 1)]
             self._render_gaps_ms = [gap * 1000.0 for gap in gaps]
+            # ⚠️ **每发球的实测飞行时长**(2026-09-16 玩家: 「飞行那个是
+            #    **五次平均用时**」)。**不新埋点** —— 用 `_bench_frames` 里那对
+            #    现成的逐帧数据切段: [0] = 本帧间隔(ms), [8] = `_SINCE_LAUNCH`
+            #    (该帧距本发发射过了几帧, **发射那帧为 0**)。
+            #    每次归零就是新的一发 ⇒ 按它切段、段内帧间隔求和。
+            #    ⚠️ 不能拿"两次 launch 的间隔"代替: 那个里面还包含下一发的
+            #       蓄力延时(0.1 秒)与 tick 节拍(0.1 秒), 会系统性地多算 ~0.15 秒。
+            _fl_ms = []
+            _seg = None
+            for _f in (getattr(self, "_bench_frames", None) or []):
+                if len(_f) < 9:
+                    continue
+                if _f[8] == 0:                 # 这一帧就是某一发的发射帧
+                    if _seg is not None:
+                        _fl_ms.append(_seg)
+                    _seg = 0.0
+                if _seg is not None:
+                    _seg += float(_f[0] or 0.0)
+            if _seg is not None:
+                _fl_ms.append(_seg)
+            self._render_flight_ms = [x for x in _fl_ms if x > 0]
+
             s = sorted(gaps)
             # 真平均 = 总帧数 / 总耗时；旧版误把中位数标成“平均”，外部工具无法对照。
             self._render_fps = len(gaps) / sum(gaps) if sum(gaps) > 0 else 0.0
@@ -12608,6 +12640,14 @@ class RootWidget(BoxLayout):
             _s_first = _s_last = _s_min = _s_decay = 0.0
         avg_frames = frames / max(1, flights)
         cost_ms = avg_frames / phys_fps * 1000.0 if phys_fps > 0 else 0.0  # 每发纯物理耗时
+        # ⚠️ 2026-09-16 玩家: 「每次发射的后续文字调整 计算用时 x.x ms,
+        #    **飞行用时** x.x」+ 「倍率是**飞行除以计算**」+ 「飞行那个是
+        #    **五次平均用时**」。飞行用时取**渲染采样那 5 发**的实测均值
+        #    (见 `_finish_render_sample`)。富余 = 飞行 ÷ 计算: >1 是有余量, <1 是算不过来。
+        _fl = [x for x in (getattr(self, "_render_flight_ms", None) or []) if x > 0]
+        flight_ms = round(sum(_fl) / len(_fl), 1) if _fl else None
+        margin = (round(flight_ms / cost_ms, 1)
+                  if (flight_ms is not None and cost_ms > 0) else None)
         render_fps = getattr(self, "_render_fps", 0.0)
         render_median = getattr(self, "_render_median_fps", 0.0)
         render_1low = getattr(self, "_render_1low", 0.0)
@@ -12629,6 +12669,10 @@ class RootWidget(BoxLayout):
             "phys_fps": int(phys_fps),
             "avg_frames": int(avg_frames),
             "cost_ms": round(cost_ms, 1),
+            # 每发的**飞行用时**(ms, 渲染采样 5 发的实测均值) 与**富余倍数**(飞行÷计算)。
+            # ⚠️ 老记录没有 ⇒ 详情那行印「—」, **不回填**。
+            "flight_ms": flight_ms,
+            "margin": margin,
             "render_fps": round(render_fps, 1),
             "render_median": round(render_median, 1),
             "render_1low": round(render_1low, 1),
