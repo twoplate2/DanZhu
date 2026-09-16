@@ -9349,7 +9349,7 @@ class FpsCurve(Widget):
     # ⚠️ x 按**累计真实时间**定位(不是按点数均分)—— 所以一个 200 毫秒的长卡顿在横轴上
     #    占的宽度是真实的, 不会被压扁。
 
-    def __init__(self, gaps_ms, cap_fps=120.0, tags=None, **kw):
+    def __init__(self, gaps_ms, cap_fps=120.0, tags=None, on_zoom=None, **kw):
         super().__init__(**kw)
         self._gaps = [max(0.01, float(x)) for x in (gaps_ms or [])]
         # 每一帧的场景标签(飞行/装杯/…), 与 `_gaps` **同序等长** —— 两个都来自同一批
@@ -9358,8 +9358,19 @@ class FpsCurve(Widget):
         _tg = list(tags or [])
         self._tags = _tg if len(_tg) == len(self._gaps) else []
         self._cap = max(1.0, float(cap_fps or 120.0))
+        # 点一下 = 放大成可左右拖的长条图(玩家 2026-09-17)。回调由调用方给 ——
+        # 本控件是个纯绘制件, 不认识弹窗那套东西(`_popup` 长在 RootWidget 上)。
+        self._on_zoom = on_zoom
         self.bind(pos=self._draw, size=self._draw)
         Clock.schedule_once(self._draw, 0)
+
+    def on_touch_down(self, touch):
+        """点本体 = 放大。⚠️ **必须在 `collide_point` 之后再吃下事件** ——
+        否则会连弹窗里别处的触摸一起吞掉(它是 Window 级观察者链上的一环)。"""
+        if self._on_zoom is not None and self.collide_point(*touch.pos):
+            self._on_zoom(self)
+            return True
+        return super().on_touch_down(touch)
 
     def _legend_rows(self, pw):
         """图例按可用宽度折行(360dp 上六个阶段一行放不下)。
@@ -14769,6 +14780,60 @@ class RootWidget(BoxLayout):
             pass
         return False, "保存失败(落盘与剪贴板都不可用): %s" % _err1
 
+    def _fps_curve_zoom(self, curve):
+        """点一下小图 = 放大成一张**可以左右拖的长条图**(玩家 2026-09-17 提的)。
+
+        ⚠️ **不用超采样、不建离屏纹理** —— 本控件的"每个点合并几帧"本来就是
+           `ceil(总帧数 ÷ 横轴像素数)` 算出来的 ⇒ **把控件拉宽, 合并的帧数自动变小**:
+           小图横轴约 880 像素 ⇒ 每 6 帧一个点; 长条图拉到下面那个宽度 ⇒ **每 2 帧一个点**。
+           同一套绘制代码, 一行都没动。
+        ⚠️⚠️ **但"每帧一个点"是做不到的, 会糊回一块实心**(实测扫过五档, 见
+           `temp/scan_x*.png`): 逐帧时**相邻两点的 y 差就是数据本身的逐帧抖动量** ——
+           那台 165Hz 实测在 150~165 之间跳, 相邻线段一正一反交替, 直接把整个区间填满
+           (跟 0.8.6 要修的病根是同一个东西)。**糊不糊由"每组几帧"决定, 不由放大倍数决定**:
+           实测 `_grp=1` 糊、`_grp=2` 清楚、`_grp=3` 更清楚。
+           ⇒ 所以放大图的目标是 **`_grp ≈ 2`**(比小图的 6 细 3 倍), 不是逐帧。
+        ⚠️ 宽度按**帧数**算, 不按屏幕定死 —— 所以跑得久的一轮(60 秒 x 165Hz 约 9900 帧)
+           就是滚得久一点, **每一轮都能看到同一档细节**, 不会因为跑得久就被压扁。
+        ⚠️ 放大图**不带 `on_zoom`** —— 免得点一下又套一层弹窗。阶段条照画(它本来就是
+           "按连续同标签合并成段", 在宽图上段更长, 反而更容易看出卡顿发生在演什么)。
+        """
+        gaps = list(getattr(curve, "_gaps", None) or [])
+        if len(gaps) < 2:
+            return
+        # 宽度取到"每组正好 2 帧"为止: 横轴 ≥ ceil(总帧数 / 2) ⇒ `_grp` 落到 2。
+        # ⚠️ 必须用 `ceil` 反推, **不能写 `len(gaps) / 2.0`** —— 5263 帧时后者给 2631.5,
+        #    拿它当宽度会差 1 像素, `_grp` 当场从 2 掉到 3(实测踩到过: `ceil(5263/2631)=3`)。
+        _w = max(dp(600), math.ceil(len(gaps) / 2.0) + dp(40))
+        # ⚠️ 文案里的"每 N 帧一个点"**要算出来**, 别写死 —— 它随宽度变(≥1), 写死必错。
+        _grp = max(1, int(math.ceil(len(gaps) / max(1.0, _w - dp(40)))))
+        content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
+        title = self._fit_line(Label(text='帧率曲线 · 放大', bold=True, halign='center',
+                                     color=hex_rgb(COL_TEXT) + (1,),
+                                     size_hint_y=None, height=dp(26)), 19)
+        content.add_widget(title)
+        sv = ScrollView(size_hint=(1, None), height=dp(292), do_scroll_y=False,
+                        bar_width=dp(5))
+        sv.add_widget(FpsCurve(gaps, cap_fps=getattr(curve, "_cap", 120.0),
+                               tags=list(getattr(curve, "_tags", []) or []),
+                               size_hint=(None, 1), width=_w))
+        content.add_widget(sv)
+        note = Label(text='左右拖动查看 · 每 %d 帧一个点' % _grp, font_size='12sp',
+                     halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,),
+                     size_hint_y=None, height=dp(20))
+        note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+        content.add_widget(note)
+        close = Button(text='返回', font_size='16sp', bold=True, background_normal='',
+                       background_color=hex_rgb(COL_BTN_OFF) + (1,),
+                       size_hint_y=None, height=dp(46))
+        content.add_widget(close)
+        popup = self._popup(0.96, 430, title='', content=content,
+                            auto_dismiss=True, separator_height=0)
+        close.bind(on_release=popup.dismiss)
+        popup.open()
+        self._popup_fit_content(popup, content)
+
     def _show_fps_curve(self, gaps=None, tags=None, cap=None,
                         avg=None, med=None, low=None, allow_save=True):
         """展示帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。
@@ -14809,6 +14874,7 @@ class RootWidget(BoxLayout):
         if cap is None:
             cap = float(_FPS_INFO[1] or _fps_user_cap())
         curve = FpsCurve(gaps, cap_fps=cap, tags=tags,
+                         on_zoom=self._fps_curve_zoom,
                          size_hint_y=None, height=dp(276))
         content.add_widget(curve)
         if avg is None:
