@@ -359,11 +359,11 @@ COL_DARKRED = "#8f3a2e"        # 暗砖红(安卓隐藏档弹窗的"确定"按�
 COL_GREEN = "#39d98a"
 COL_GRAY = "#5a6a8c"
 COL_METER = "#f0b000"
-# SOC 高压测试那一系的按钮色(2026-09-15)。⚠️ **不复用 `COL_METER`**: 那个 #f0b000 太亮,
+# CPU 高压测试那一系的按钮色(2026-09-15)。⚠️ **不复用 `COL_METER`**: 那个 #f0b000 太亮,
 # 白字压在上面读不清; 这两个是**同色相、够深**的一对(行动亮 / 历史暗), 白字都够清,
 # 而且与"模拟系"的红明显分开 —— 玩家要的"同 1 类是一个色系、不同类分开"就靠这一对。
-COL_SOC = "#c07a10"            # SOC 系: 行动(SOC高压测试)
-COL_SOC_DIM = "#7a4e0a"        # SOC 系: 历史(高压测试历史)
+COL_SOC = "#c07a10"            # 高压测试系: 行动(菜单上的「CPU高压测试」)
+COL_SOC_DIM = "#7a4e0a"        # 高压测试系: 历史(高压测试历史)
 COL_x = {2: "#1e8a5a", 3: "#3d8bfd", 5: "#e0533b", 10: "#9e1f30", 20: "#a335ee", 50: "#c88800", 100: "#ff8c00"}
 # 槽位倍率色(WoW 品质色调整版): x2绿 x3蓝 x5红 x10深红 x20紫 x50深金 x100深橙。
 # 同时是中奖大字/灯带的取色依据。x10深红、x20紫偏暗 → 白字; 其余亮底 → 黑字。
@@ -800,6 +800,12 @@ def advance_flight(b, geo):
     _ARC_FRAME += 1                # 弧面缓动帧计数
     return physics_step(b, geo, FIXED_DT)
 
+# ⚠️⚠️ **`SOC_` 这个前缀是历史名**(2026-09-16 玩家定案: 「把这里所有的 SOC 都替换为 CPU
+#    —— 实际上跑的就是 cpu, 这个更合理」)。**屏幕上玩家看得到的字已经全改成 `CPU`**
+#    (菜单按钮 / 结果弹窗 / 历史面板 / 黑屏进度 / 说明文字)。
+#    这些**标识符一行没改**: 改它们要动上百处, 还会把 `tools/`(与 main.py 已分叉)
+#    和 `temp/` 下的探针一起带偏 —— 而那几个名字玩家一个都看不到。看到 `SOC_` 就当
+#    「CPU 高压」读。**别再照这个前缀起新名字**(新的一律用 `HP_` / `CPU_`)。
 SOC_WARMUP_CPU_SEC = 1.5
 # ⚠️ **样本时长 / 轮数 / 间隔 —— 2026-09-15 按玩家要求整套调大**
 #    (玩家:「跑分测试那个 34 秒太短了, 你改为 geekbench6.1 的标准吧」「主要是担心 pc 和手机不一样」;
@@ -855,13 +861,19 @@ SOC_SAMPLE_GAP_SEC = 5.0
 #      `..._WINDOW_CPU_SEC` = 采样窗口, 仍是 **CPU 秒**, 决定**每份样本多长**("步/秒"的分母)。
 SOC_SUSTAIN_WALL_SEC = 360.0
 SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
+# ⚠️ **面板上"连续采样成绩"那一行的抽点间隔(秒)** —— 玩家 2026-09-16 定: 「**每10秒**
+#    连续采样成绩（采样的数据数量也会增加）」。⇒ 文案里的那个数字与**抽点步长**共用这一个
+#    常量(两边各写一个 10 迟早会脱钩)。360 秒的局 ⇒ 36 个采样点(原来固定 20 个)。
+# ⚠️ 名字用 `HP_` 前缀: 本文件里 `SOC_` 是**历史名**(屏幕上早已全叫 CPU, 见 `SOC_WARMUP_CPU_SEC`
+#    上面那段说明), 新加的常量一律别再挂 `SOC_`。
+HP_SAMPLE_SEC = 10.0
 # 渲染采样窗口自动发几颗球(原来是 `self._target_launches = 5` 写死在跑分函数里, 提成常量)。
 BENCH_TARGET_LAUNCHES = 5
 
 
 # 「频率采样门」(2026-09-15)。**唯一的写者是 `benchmark_trajectories`**(样本之间的
 # `sleep(gap_sec)` 期间关门); 唯一的读者是 `_freq_sampler_start` 起的那个采样线程。
-# 默认 True = 一直采 —— 所以 `benchmark_sustained`(波 2 / SOC 高压, **没有间隙**)不受影响。
+# 默认 True = 一直采 —— 所以 `benchmark_sustained`(波 2 / CPU 高压, **没有间隙**)不受影响。
 # ⚠️ 为什么必须是**进程级**而不是参数: 采样线程与 benchmark 是两个线程、两个调用栈,
 #    它们之间只有模块级状态这一条路。
 _FREQ_GATE = [True]
@@ -872,8 +884,8 @@ _FREQ_GATE = [True]
 # ⚠️ 走**模块级**是因为发布者是 `benchmark_trajectories`(工作线程里的纯函数),
 #    它够不着 RootWidget —— 与 `_FREQ_GATE` 同一条路。
 # ⚠️ 分母/分子的尺子必须是**同一根**: 波 1 的循环条件是 **CPU 秒**,
-#    所以进度也用 CPU 秒(`SOC高压测试` 那边用墙钟是因为它的循环条件就是墙钟)。
-#    拿墙钟当分子会重演 SOC 那次的 bug —— 面板顶到顶了活儿还没干完。
+#    所以进度也用 CPU 秒(`CPU高压测试` 那边用墙钟是因为它的循环条件就是墙钟)。
+#    拿墙钟当分子会重演 CPU 高压那次的 bug —— 面板顶到顶了活儿还没干完。
 # ⚠️ 样本之间有 `gap_sec`(5 秒 × 4 次)不烧 CPU ⇒ 那几秒数字**不动**, 那是事实不是卡住。
 _PHYS_PROG = [0.0]        # 已跑掉的 CPU 秒(工作线程写, 主线程读)
 _PHYS_TOTAL_SEC = [0.0]   # 这次一共要跑多少 CPU 秒(每次开跑时按实参算好)
@@ -1194,7 +1206,7 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     #    频率是低频 —— 不关门的话"平均频率"会被这 20 秒拖下水, 报出来的是
     #    "跑分 + 休息"的平均, 不是"跑分时"的平均。
     # ⚠️ 进门先开门: 预热那一段也算"在跑"(它同样满载)。
-    # ⚠️ `benchmark_sustained`(波 2 / SOC 高压)**没有间隙**, 门对它恒真 —— 默认就是 True,
+    # ⚠️ `benchmark_sustained`(波 2 / CPU 高压)**没有间隙**, 门对它恒真 —— 默认就是 True,
     #    只有本函数会去翻, 互不干扰。
     _FREQ_GATE[0] = True
     # ---- 按秒进度的基准(2026-09-16) ------------------------------------------
@@ -2827,7 +2839,7 @@ def _set_label_text(label, text):
 
 
 def _hp_score(r):
-    """一条 SOC 高压记录该显示的**跑分** = **平均数**(不是中位数)。
+    """一条 CPU 高压记录该显示的**跑分** = **平均数**(不是中位数)。
 
     玩家 2026-09-16: 「soc高压测试历史记录中显示的跑分 **从中位数改为平均数**」。
     ⚠️ 这是**玩家自己在同一块面板上先立过的规矩**的延伸: `_hp_freq_line` 里那段注释写着
@@ -2931,7 +2943,7 @@ _PIN_MAX = 24
 _PIN_AFTER = 3
 # ⚠️⚠️ **弹窗开着的时候不钉**(2026-09-15, 玩家点出来的)。理由是一份桌面实测:
 #    把 main.py 里**全部 13 个弹窗**开一遍, 会新开出 **42 个**游戏里根本不会出现的字号
-#    (彩蛋 12 / 隐藏返还率 7 / 模拟历史表头 7 / SOC高压历史 6 / 帧率上限设定 6 / …),
+#    (彩蛋 12 / 隐藏返还率 7 / 模拟历史表头 7 / CPU高压历史 6 / 帧率上限设定 6 / …),
 #    其中 **19 个当场就够到了钉子门槛(3 次)** —— 而 `_PIN_MAX` 一共只有 24 个名额。
 #    ⇒ **点一遍设置界面, 79% 的钉子预算就废了**, 钉的全是玩家打游戏时永远看不到的字号。
 #    ⚠️ 它们**没有被预热**(预热表 52 项里一个都没有, 实测判据 B 通过) —— 所以问题不在
@@ -3035,7 +3047,7 @@ def _bench_menu_desc():
             #       ⇒ 玩家定稿改用更短的说法: 「Python 写的引擎，吃单核浮点算力。」
             #    ⚠️ 改完**必须重跑 `temp/check_desc.py`**(它逐行量宽)。
             'Python 写的引擎，吃单核浮点算力。\n'
-            'SOC高压测试：考验调度和散热能力。')
+            'CPU高压测试：考验调度和散热能力。')
 
 # ⚠️ 为什么必须单独有"主线程 CPU"这一格(2026-09-14, 玩家质疑"9 毫秒是不是小头"之后补):
 #    真机面板上那三帧的账**对不上** —— 40毫秒(待机·实算29.0·自算8.1) 还有约 19 毫秒没人认领;
@@ -3325,7 +3337,7 @@ def _build_texwarm(rw, bet=None):
         out.extend(_bigtext_warm_items(rw))
     except Exception:
         pass
-    # ⚠️ **进度串不预烘**(2026-09-15 玩家定案): 进度只在**物理段/SOC 高压段**显示,
+    # ⚠️ **进度串不预烘**(2026-09-15 玩家定案): 进度只在**物理段/CPU 高压段**显示,
     #    那时屏幕采样**已经停了** ⇒ 写标签不进成绩, 没必要预烘。
     #    (曾给“渲染窗口的进度”预烘过, 随“渲染窗口不显示进度”一起撤了。)
     # ---- 飘字(`center_toast`): 同样是**每次现建 Label**, 同一个病, 同样只有全局缓存能救 ----
@@ -4030,7 +4042,7 @@ def _refresh_screen_hz(*_):
 #    ⚠️ **"请求 60"不等于"拿到 60"**: 真机 ③ 请求 60、系统 120, 实测渲染出来是 **80.4fps**。
 #    所以日志里必须**同时印出那一段实际渲染了多少帧/秒** —— 否则没法知道按没按住。
 #    ⚠️ **渲染窗口那一档不受影响**(它测的就是渲染帧率, 压它就没意义了) —— 闸门只在
-#    波 1(物理跑分)和波 2(SOC 高压)期间开。
+#    波 1(物理跑分)和波 2(CPU 高压)期间开。
 #
 # ⚠️⚠️ **波 1 另有一个更低的档**(2026-09-15 玩家选定「简化画面(保留信息、去掉动作)」)。
 #    起因: 玩家要「中位数跑分」这一项也涨上去, 而在**不改弹珠逻辑**的前提下, 唯一剩下的
@@ -4041,12 +4053,14 @@ def _refresh_screen_hz(*_):
 #    真机日志里 `板面` 单帧尖峰 7.4ms 就是这个)。所以能省的就是合成次数。
 #    20fps 的依据: 跑分期间要看的"信息"只有一行白字 —— 它是主线程按 **0.25 秒**轮询更新的
 #    (`_prog_tick` 的调度间隔), 所以 **4fps 就足以让每次更新都画出来**。
+#    ⚠️ 2026-09-16: 文案本身改成**整秒一格**了(`物理演算第x/45秒`) ⇒ 内容率降到 **1Hz**,
+#       余量比当初算的还大(标签只在文字真变时才重写, 见 `_prog_tick`)。
 #    ⚠️ 2026-09-15 玩家:「其实帧率可以更低」⇒ 再砍到 **10fps**(离 4fps 的需求还留 2.5 倍余量)。
 #    **别再往下压**: ①更低不会有额外收益(GL 负载的边际收益递减); ②**用户可感知的卡顿线**
 #    是每帧 100~200ms(5~10fps), 10fps 正好踩在线的下沿 —— 而跑分期间是黑屏无动画, 所以
 #    这条实际不成立, 但没必要再往下试探。(ANR 那条**不适用**: 它的判据是输入 5 秒无响应,
 #    与帧率无关 —— 详见上面 `_BENCH_FPS_FORCE` 那段 2026-09-15 的更正。)
-#    ⚠️⚠️ **两波现在同档**(2026-09-15 玩家澄清: 「我这里是 360 秒的高压测试 SOC高压测试
+#    ⚠️⚠️ **两波现在同档**(2026-09-15 玩家澄清: 「我这里是 360 秒的高压测试 CPU高压测试
 #       fps 你不是说改为 10fps 吗 怎么是 42fps」)。
 #       我原来只把**波 1** 改成 10fps, 波 2 留 60(依据是玩家更早那句「压力测试不用改」);
 #       但玩家说的"这个画面"是**包含帧率**的 —— 黑屏 + 白字 + 低帧率是一整套, 两波都该用。
@@ -10088,7 +10102,7 @@ def _startup_title():
 
 
 def _soc_result_title():
-    """SOC 高压**结果弹窗**的标题。
+    """CPU 高压**结果弹窗**的标题。
 
     玩家 2026-09-16: 「把版本号**放入标题**中吧 加个空格, **这个地方就不要版本号了**」
     (他指的是正文第一行末尾那个 `… / Python 3.11.4 / v0.7.91`)。
@@ -10099,11 +10113,28 @@ def _soc_result_title():
         v = _app_version()
     except Exception:
         v = ""
-    return ("SOC高压测试 %s" % v) if v else "SOC高压测试"
+    return ("CPU高压测试 %s" % v) if v else "CPU高压测试"
+
+
+def _axis_nice_step(x):
+    """把"想要的步长"抬到**友好数**(1/2/5 × 10^k)。
+
+    ⚠️ 只服务于 `SpeedCurve` 那一步"把轴的两端**向外**取整"(见那边的注释)。
+    ⚠️ 名字带 `_axis_` 前缀是刻意的: 本文件是**生成器拼出来的**, 同名模块级变量
+       会**静默互相覆盖**(踩过一次), 所以新名字一律加前缀。
+    """
+    if x <= 0:
+        return 1.0
+    _e = math.floor(math.log10(x))
+    _f = x / (10.0 ** _e)
+    for _m in (1.0, 2.0, 5.0):
+        if _f <= _m:
+            return _m * (10.0 ** _e)
+    return 10.0 * (10.0 ** _e)
 
 
 class SpeedCurve(Widget):
-    """SOC 高压那 **300 多个逐秒样本**的成绩曲线。
+    """CPU 高压那 **300 多个逐秒样本**的成绩曲线。
 
     玩家 2026-09-16: 「soc高压测试可以**搞个图**吗, 也就 300 个数据作用, **点击额外的按钮**
     显示, 类似之前的帧曲线」+ 后续四条(标题/纵轴刻度/横轴刻度/线宽)。
@@ -10115,7 +10146,20 @@ class SpeedCurve(Widget):
        「这个曲线是不是**太粗**了, 你看看之前的那个帧率曲线用哪个粗细, 这个也那个粗细」。
     ⚠️ 点数可能上千, 用 `Line` 一次画完 —— `Line` 是单条指令, 与点数无关地便宜;
        别按点建 `Rectangle`。
+
+    ⚠️⚠️ **纵轴不再是"数据最小~最大"了**(2026-09-16 玩家定的规则, 见 `_draw` 里那段):
+       现在**上下各留白 + 向外取整到友好刻度** —— 为的是"低分段不贴着底边"。
+       ⇒ 纵轴刻度数字 = **轴的上界/中点/下界**, 与图下那行「最低/最高」**不再是同一个数**
+         (那行印的仍是**真实数据**的极值, 两者相差一个留白, 这是有意的)。
     """
+
+    # 纵轴留白 / 取整的四条系数(玩家 2026-09-16 亲口给的规则, 逐字实现, **别随手调**)
+    Y_PAD_FRAC = 0.05          # 上下各留 **跨度** 的 5%
+    Y_PAD_VAL_MIN = 0.02       # ...且不少于该端**数值**的 2%(窄幅大值数据靠它)
+    Y_FLAT_FRAC = 0.05         # 常数数据(跨度为 0): 上下各留 **值** 的 5%
+    Y_FLAT_MIN_RANGE = 2000.0  # 常数数据的最小展示范围(步/秒) —— 值很小时兜底
+    Y_TICK_FRAC = 0.01         # 友好刻度的粒度 ≈ **轴量级**的 1%(照玩家那个例子反推的)
+    Y_MIN_GAP_FRAC = 0.05      # 兜底: 最低点离底**至少**这么多(占轴高), 见 `_draw` 里的不等式
 
     def __init__(self, vals, **kw):
         super().__init__(**kw)
@@ -10147,7 +10191,55 @@ class SpeedCurve(Widget):
         pw = max(1.0, self.width - pad_l - pad_r)
         ph = max(1.0, self.height - pad_b - pad_t)
         x0, y0 = self.x + pad_l, self.y + pad_b
-        _lo, _hi = min(self._v), max(self._v)
+        # ---- 纵轴范围: "留白 + 有效差异"(玩家 2026-09-16 亲自定的规则) --------------
+        # 玩家原话: 「**不建议把 Y 轴最低点机械地设为"成绩最低点"**。这样虽然数据不被截断,
+        #   但**曲线会贴着底边**, 尤其像图中大量低分段, 会显得拥挤、跳变更刺眼。」
+        #   ⇒ 规则(逐字照搬):
+        #     · 常规: 下限 = 数据最小值 − max(跨度×5%, 最小值×2%)
+        #             上限 = 数据最大值 + max(跨度×5%, 最大值×2%)
+        #     · 常数(跨度为 0): 上下各留 max(值×5%, 最小展示范围/2)
+        #     · 最后**向外取整到友好刻度**; 最低点不贴底(约留 5% 图高)
+        #   ⚠️ **向外**取整(下界 floor、上界 ceil)是硬要求 —— 向内会把真实极值切出画外,
+        #      那就从"不好看"变成"画错了"。
+        #   ⚠️ 两个 `max(...)` 的分工: 跨度那一项管"波动大的图", 数值那一项管"跨度很小
+        #      但绝对值很大的图"(否则窄幅波动会被放大成满屏锯齿)。
+        _lo_d, _hi_d = min(self._v), max(self._v)
+        _span_d = _hi_d - _lo_d
+        if _span_d > 0:
+            _p_lo = max(_span_d * self.Y_PAD_FRAC, abs(_lo_d) * self.Y_PAD_VAL_MIN)
+            _p_hi = max(_span_d * self.Y_PAD_FRAC, abs(_hi_d) * self.Y_PAD_VAL_MIN)
+        else:
+            _p_lo = _p_hi = max(abs(_lo_d) * self.Y_FLAT_FRAC,
+                                self.Y_FLAT_MIN_RANGE / 2.0)
+        # 友好刻度: 粒度 = **留白后轴量级**的 1%, 抬到 1/2/5×10^k。
+        # ⚠️ 粒度玩家没定("向外取整到友好刻度"只说了方向), **这一档是照他给的例子反推的** ——
+        #    13280~35173 必须正好收成 **12000 ~ 36500**, 那个例子只有粒度 500 能做到。
+        # ⚠️ 试过"跨度 × 2%"那种更直觉的取法: 例子同样对得上, 但遇到**窄幅大值**数据
+        #    (例: 30000~30200)会退化成粒度 **5** ⇒ 刻度印出 30805/30102 这种脏数字。
+        #    按"轴量级 × 1%"两处都给 500, 刻度全是整百。
+        _lo_p, _hi_p = _lo_d - _p_lo, _hi_d + _p_hi
+        _step = _axis_nice_step(max(abs(_lo_p), abs(_hi_p)) * self.Y_TICK_FRAC)
+        _lo = math.floor(_lo_p / _step) * _step
+        if _lo_d >= 0.0:
+            _lo = max(0.0, _lo)   # 本指标是"步/秒", 不可能为负 ⇒ 轴不必画到 0 以下
+        _hi = math.ceil(_hi_p / _step) * _step
+        # 玩家还要求「**最低点不应贴底**, 默认至少保留约 5% 图高的视觉空间」——
+        # 而"上下各留 5% 跨度"在**取整之后**未必够(实测低端机口径 5000~9000 会落到 4.5%,
+        # 因为上界向上取整把分母抬大了)。⇒ 直接解那条不等式, 差多少就**再往外退一格**
+        # (仍退在粒度整数倍上 ⇒ 还是友好刻度)。
+        #   (lo_d − lo) ≥ g·(hi − lo)  ⟺  lo ≤ (lo_d − g·hi) / (1 − g)
+        # ⚠️ 解不出来时(值很小、上界很高 ⇒ 需要负的下界)就放弃这条, 由上面那个 `max(0.0, ...)`
+        #    兜住 —— **不为了凑 5% 把轴画到 0 以下**。
+        if _lo_d >= 0.0:
+            _g = self.Y_MIN_GAP_FRAC
+            _lo_max = (_lo_d - _g * _hi) / (1.0 - _g)
+            if _lo > _lo_max:
+                _lo = max(0.0, math.floor(_lo_max / _step) * _step)
+        if _hi - _lo < 1.0:       # 兜底: 极端退化时别造出零高度(会除零)
+            _hi = _lo + 1.0
+        # ⚠️ 把**最终真正画上去**的那组轴范围记在控件上 —— 探针要断言的是"真画出来的这一组",
+        #    而不是在探针里把算法重抄一遍(本仓库的规矩: 复制品只会测它自己)。
+        self._ax = (_lo, _hi)
         _mid = (_hi + _lo) / 2.0
         _sp = max(1.0, _hi - _lo)
         _n = len(self._v)
@@ -10162,7 +10254,7 @@ class SpeedCurve(Widget):
         with self.canvas:
             Color(*hex_rgb(COL_BTN_OFF), 0.55)
             Rectangle(pos=self.pos, size=self.size)
-            # 纵轴三条刻度线(最高 / 中 / 最低)
+            # 纵轴三条刻度线(轴的上界 / 中点 / 下界)
             for _val in (_hi, _mid, _lo):
                 Color(*hex_rgb(COL_SUB), 0.30)
                 Line(points=[x0, _yy(_val), x0 + pw, _yy(_val)], width=1)
@@ -10187,7 +10279,7 @@ def _bench_result_title():
     """跑分**成绩面板**的标题。
 
     玩家 2026-09-16: 「把版本号**放在性能测试后面** 中间有一个空格」。
-    ⇒ 与 SOC 结果弹窗(`_soc_result_title`)、启动信息(`_startup_title`)**同一套做法**:
+    ⇒ 与 CPU高压结果弹窗(`_soc_result_title`)、启动信息(`_startup_title`)**同一套做法**:
       名字与版本号之间留一个空格; 拿不到版本时退化成纯名字, 不留一个孤零零的 "v"。
     ⚠️ 正文里**不再印版本号**(玩家同一次说的「之前界面中不要加版本号」)。
     ⚠️⚠️ 本函数曾经被**整段替换误删过一次**(2026-09-16 重写 `SpeedCurve` 时) ——
@@ -10220,7 +10312,7 @@ def _bench_score_text(d):
     _dev = str(_g('device', '') or '')
     # ⚠️ 2026-09-16 玩家: 「把版本号**放在性能测试后面** 中间有一个空格」+「**之前界面中
     #    不要加版本号**」⇒ 正文这一行**只留设备/系统/Python**, 版本号挪进标题
-    #    (见 `_bench_result_title`), 与 SOC 结果弹窗**同一套做法**。
+    #    (见 `_bench_result_title`), 与 CPU高压结果弹窗**同一套做法**。
     #    ⚠️ 设备/系统/Python **不能一起删**: 跨机器比成绩靠的就是这一段。
     #    ⚠️ `_ver` 仍然读出来 —— 万一以后要在别处印, 别再从记录里翻。
     _dv = _dev
@@ -10253,8 +10345,8 @@ def _bench_score_text(d):
     #    ⚠️ 任一项拿不到就印「—」, **绝不拿别的数回填**(老记录没有 flight_ms/margin)。
     # ⚠️ 2026-09-16 玩家定稿版式(**改过两轮**):
     #       平均每轮 x 步模拟，平均差系数 x.xx%
-    #       N 轮分数分别为：xxx,xxx,xxx
-    #    · 第二轮玩家: 「**稳定性这一块可以删了**, 改为 5 轮分数分别为:」
+    #       N 轮分数依次为：xxx,xxx,xxx
+    #    · 第二轮玩家: 「**稳定性这一块可以删了**, 改为 5 轮分数依次为:」
     #      ⇒ 删掉原来那行「稳定性：A～B 步/秒，样本是：…」—— 极值从逐轮分数**一看就有**,
     #        没必要再单列; 「平均差系数」留在上一行(那是玩家上一轮点名要的)。
     #    · 「N 轮」的 N **按实际算**(不写死 5): 常规是 5 轮, 但探针/改口径时会变。
@@ -10264,15 +10356,24 @@ def _bench_score_text(d):
     _samples = ','.join('%d' % x for x in _runs) if _runs else '—'
     return ('%s\n'
             '平均每轮 %d 步模拟，平均差系数 %s\n'
-            '%d 轮分数分别为：%s\n'
+            '%d 轮分数依次为：%s\n'
             '%s'
             # ⚠️ 2026-09-16 玩家(看了截图): 「**去掉前面的文字, 保留后面的**, 后面的文字
             #    **放 1 行**」⇒ 删掉「每次发射 / 计算用时·飞行用时·富余」那两行(它们与下面
             #    三条是**同一批数**的两种说法), 三条并成**一行**。
             #    措辞按玩家给的改: 「飞行**平均持续** x.x 秒」+「飞行**期间可完成**」。
+            #    ⚠️ 2026-09-16 再改(玩家二次): 「**分别**为 → **依次**为」+「**飞行**平均持续
+            #       → 平均持续」——后一条玩家只说了「**少 2 个字**」, 没有别的理由。
+            #       («每次飞行平均…，平均持续…»读起来仍通: 主语是"飞行", 不必重复。)
+            #    ⚠️ 实测(2026-09-16): 少这 2 个字省 **30px**(549→518, sp(15)), 但那一行
+            #       **仍然折行** —— 见下面那段"要不要再砍"的实测记录。
             #    ⚠️ 那三个数仍取自同一次测试: ① 每发平均步数 ② 飞行用时÷1000 ③ 倍率。
             '每次飞行平均 %s 步运算，'
-            '飞行平均持续 %s 秒，'
+            # ⚠️ 2026-09-16 玩家第三次: 「**飞行期间可完成 xxxx 和前面的不在同一行**。
+            #    **平均持续 x.xx 秒。后接回车**」⇒ 不再靠自动折行(它会在空格处断, 断在哪
+            #    由宽度决定、不可控), 改成**硬回车**: 第一行以「秒。」收尾, 第二行整句在后。
+            #    ⚠️ 原来是逗号, 玩家点名要**句号**。
+            '平均持续 %s 秒。' + chr(10) +
             '飞行期间可完成 %s 次飞行模拟\n'
             '%s') % (
         _dv, int(_g('phys_fps', 0) or 0),
@@ -10334,7 +10435,7 @@ class RootWidget(BoxLayout):
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
         self.bench_history = []        # 性能测试历史(最近100次)
-        # SOC 高压测试的独立历史(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」)。
+        # CPU 高压测试的独立历史(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」)。
         # ⚠️ **与性能测试分开存**: 两者的量纲不同(一个是峰值、一个是衰减),
         #    挤同一张表只会互相污染(一半格子是 0/—)。
         self.hp_history = []
@@ -11220,10 +11321,11 @@ class RootWidget(BoxLayout):
 
     # ---------------------------------------------------------------- 进度显示
     # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15 定案): 那段正在测 1%Low,
-    #   在里面写标签就是往被测帧上加活儿。**只有后面全力跑 SOC 时才显示**:
-    #     · 物理段    -> `物理跑分 d/d秒`(2026-09-16 由"第几轮/共 5 轮"改成**按秒**;
-    #                     分母 = warmup + (runs+1)*head + runs*sample 的 CPU 秒总数)
-    #     · SOC 高压段 -> `SOC高压测试 d/360秒`(走 `SOC_SUSTAIN_WALL_SEC`, 别手抄数字)
+    #   在里面写标签就是往被测帧上加活儿。**只有后面全力跑 CPU 高压时才显示**:
+    #     · 物理段    -> `物理演算第d/d秒`(2026-09-16 由"第几轮/共 5 轮"改成**按秒**;
+    #                     分母 = ceil(warmup + (runs+1)*head + runs*sample + (runs-1)*gap),
+    #                     实测 **45**; 分子从 **1** 起、每秒 +1)
+    #     · CPU 高压段 -> `CPU高压测试第d/d秒`(分子从 **1** 起、每秒 +1)(走 `SOC_SUSTAIN_WALL_SEC`, 别手抄数字)
     #   那两个阶段 `_finish_render_sample` 已经跑过(屏幕采样停了) ⇒ 写标签不进成绩。
     def _prog_text(self):
         """当前该显示的进度文案; 没有测试在跑就返回 None。"""
@@ -11249,7 +11351,7 @@ class RootWidget(BoxLayout):
             #    · 现在超点就**封顶**显示 360/360, 不再造一个会跳动的第二文案
             #      (删掉"跳动"也顺带消掉了一个误导源: 它看起来像"还在干活", 实际可能已经
             #       卡住 —— 而这正是玩家把它当成病根的原因)。
-            return "SOC高压测试 %d/%d秒" % (min(int(_el), _cap), _cap)
+            return "CPU高压测试第%d/%d秒" % (min(int(_el) + 1, _cap), _cap)
         if getattr(self, "_bench_running", False):
             # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15:「那 25 秒测试帧率的不
             #    显示任何进度消息, 后面全力测试 SOC 的时候才显示」)。
@@ -11259,15 +11361,15 @@ class RootWidget(BoxLayout):
                 return None
             # ⚠️ 2026-09-16 玩家: 「后续物理跑分的时候**只有五个颗粒度**, 能不能改成
             #    **秒为颗粒度或进度**」⇒ 由"第几轮 / 共 5 轮"改成**按 CPU 秒**。
-            #    颗粒度实测约 **每秒动一次**(文本 0.25 秒轮询一次 + 整秒才变) —— 从 5 次
-            #    变成 20 多次。
-            #    ⚠️ 为什么是 CPU 秒而不是墙钟: 与本函数上面 SOC 那段**同一条规矩** ——
+            #    颗粒度实测 **每秒动一次**(文本 0.25 秒轮询一次 + 整秒才变) —— 从 5 次
+            #    变成 **40 多次**(现为 x/45, 见下面那段)。
+            #    ⚠️ 为什么是 CPU 秒而不是墙钟: 与本函数上面 CPU 高压那段**同一条规矩** ——
             #       "关键不在用不用墙钟, 在**和循环条件是不是同一根尺子**"。波 1 的循环
             #       条件(`warmup_cpu_sec` / `sample_cpu_sec`)就是 CPU 秒; 拿墙钟当分子会
             #       重演那次 bug: 面板顶到顶了, 活儿还剩两成没干完。
             #    ⚠️ 代价: 样本之间的 `gap_sec`(5 秒 × 4 次)不烧 CPU ⇒ 那几秒数字**不动**。
             #       那是**事实**(那几秒确实没在算), 不是卡住。
-            #    ⚠️ 超了就**封顶**, 不造第二句会跳动的文案(同 SOC 那段)。
+            #    ⚠️ 超了就**封顶**, 不造第二句会跳动的文案(同 CPU 高压那段)。
             _dt = float(_PHYS_TOTAL_SEC[0]) or 1.0
             # ⚠️ 分子 = CPU 秒 + **实际睡掉的秒** —— 等待那几秒也是玩家在等,
             #    不算就会"每秒不更新"(玩家 2026-09-16 报的)。
@@ -11276,28 +11378,31 @@ class RootWidget(BoxLayout):
             _w0 = float(_PHYS_WAIT_T0[0])
             _wait = max(0.0, time.time() - _w0) if _w0 > 0 else 0.0
             _dd = float(_PHYS_PROG[0]) + float(_PHYS_SLEPT[0]) + _wait
-            # ⚠️⚠️ 2026-09-16 玩家: 「物理验算的 x/44 改为 **x/88**, **每 0.5 秒更新一次进度**,
-            #    主要是 44 太难听了, 反正你是 0.25s 更新一次」。
-            #    ⇒ **单位换成"半秒一格"**: 分子分母同时 ×2 ⇒ 数字**每 0.5 秒跳一次**
-            #      (0.25 秒轮询照样够用)。
-            #    ⚠️ 分母取 `int(秒数) * 2`: 总秒数是 **44.5** ⇒ `int(44.5)*2 = **88**`
-            #       (正好落在 88 上, 不是凑的)。若直接写 `int(44.5*2)` 会得 **89**。
-            #    ⚠️ 分子仍要**封顶**(实际会跑到 89 个半秒)。
-            _cap2 = max(2, int(_dt) * 2)
-            _d2 = min(int(_dd * 2), _cap2)
+            # ⚠️⚠️ 2026-09-16 玩家(定稿): 「物理验算进度从 x/88 改为 **x/45**,
+            #    **初始数值是 1**, **每 1 秒增加一次**, 这样岂不是更完美」。
+            #    ⇒ 又回到**整秒一格**(半秒那版已废), 但**起点挪到 1**(读数 = 1, 2, … 45)。
+            #    ⚠️ 分母取 `ceil(总秒数)`: 总秒数是 **44.5** ⇒ `ceil` = **45**(正是玩家要的数)。
+            #       `int()` 会给 44 —— 那正是"显示 44/44 却还剩半秒"的由来。
+            #    ⚠️ 分子 = `int(已过秒数) + 1` 且**封顶**: 最后那 0.5 秒停在 45/45,
+            #       不另造一句会跳动的文案(与 CPU 高压那段同一条规矩)。
+            #    ⚠️ 变量名用 `_pcap`/`_pv`(不叫 `_cap`): 上面 CPU 高压分支里已有一个 `_cap`,
+            #       同名会在读代码时误导 —— 两处是**两把不同的尺子**。
+            _pcap = max(1, int(math.ceil(_dt)))
+            _pv = min(int(_dd) + 1, _pcap)
             # ⚠️ 2026-09-16 玩家: 「这个**物理跑分太粗俗了**, 能不能换个**文雅点的名字**」
             #    ⇒ `物理跑分` -> **`物理演算`**(玩家从候选里选的;「演算」比「跑分」雅,
-            #      而两个字把「物理」保留了, 与旁边那行「SOC高压测试」并列也齐)。
+            #      而两个字把「物理」保留了, 与旁边那行「CPU高压测试」并列也齐)。
             #    ⚠️ 日志里那些「物理跑分…」**不改** —— 那是给人看的诊断行,
             #       精确比雅致重要(且旧日志里已经是这个词)。
-            # ⚠️ 后面那个"秒"字保留 —— 玩家只要求改**数字**与**节拍**,
-            #    没要求把单位写成"半秒"(那反而不好读)。
             # ⚠️ 2026-09-16 玩家(看了截图): 「这个**不是** 物理验算 x/88秒,
-            #    **而是** 物理验算**进度** x/88」
-            #    ⇒ 加上「进度」两字、**去掉「秒」**。
-            #    ⚠️ 去掉秒字后, "半秒一格"就不再在字面上了 —— 那正是玩家要的
-            #       (他要的是"进度条", 不是"秒表")。
-            return "物理演算进度 %d/%d" % (_d2, _cap2)
+            #    **而是** 物理验算**进度** x/88」 ⇒ 加上了「进度」两字。
+            # ⚠️ 紧接着玩家又要**把「秒」加回来**(「后面需要恢复秒字」), 最后定稿:
+            #    「`物理演算 d/d秒` 改为 **`物理演算第x/45秒`**」
+            #    ⇒ 「进度」换成 **「第」**, 现在是 `物理演算第1/45秒`。
+            #    ⚠️ **不带空格**: 与黑屏上另一行 `CPU高压测试 d/360秒` **对齐**
+            #       (玩家在聊天里给占位符打的那些空格是断词用的; 他真想要空格时会明说
+            #        「中间有一个空格」—— v0.7.104 给版本号提要求那次就是这么写的。)
+            return "物理演算第%d/%d秒" % (_pv, _pcap)
         return None
 
     def _prog_tick(self, dt=0):
@@ -11358,7 +11463,7 @@ class RootWidget(BoxLayout):
         self._prog_start()
         # ⚠️ **黑屏与白字不在这里建** —— 本函数跑在**工作线程**上, 而它们要碰 Kivy 的
         #    canvas / CoreLabel。**在调用方 `_wait_idle_then_hp`(主线程)那里建。**
-        _set_label_text(self.status_lbl, "SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
+        _set_label_text(self.status_lbl, "CPU高压测试第1/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
         self._set_controls_enabled(False)
         self._wait_idle_then_hp()
 
@@ -11369,7 +11474,7 @@ class RootWidget(BoxLayout):
             #    `_run_hp_test` 是工作线程, 而这两个碰 Kivy 的 canvas / CoreLabel
             #    —— 跨线程做会卡死。
             self._show_bench_dim()
-            self._set_bench_msg("SOC高压测试 0/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
+            self._set_bench_msg("CPU高压测试第1/%d秒" % int(SOC_SUSTAIN_WALL_SEC))
             threading.Thread(target=self._run_hp_test, daemon=True).start()
         else:
             Clock.schedule_once(self._wait_idle_then_hp, 0.5)
@@ -11419,7 +11524,7 @@ class RootWidget(BoxLayout):
         self._hp_freq = {"p50": _frq[len(_frq) // 2] if _frq else 0,
                          "min": _frq[0] if _frq else 0,
                          "max": _frq[-1] if _frq else 0, "n": len(_frq),
-                         # 平均频率 —— 历史里那一列要的就是它(玩家:「SOC 平均频率」)。
+                         # 平均频率 —— 历史里那一列要的就是它(玩家:「CPU 平均频率」)。
                          "mean": int(sum(_frq) / len(_frq)) if _frq else 0}
         Clock.schedule_once(lambda dt: self._hp_done(), 0)
 
@@ -11497,7 +11602,7 @@ class RootWidget(BoxLayout):
             _pr.get("reason", "未执行") or "未知原因")
 
     def _hp_result_text(self, d, opt_lines=()):
-        """SOC 高压的**成绩正文** —— 结果弹窗与历史「详情」**共用这一份**。
+        """CPU 高压的**成绩正文** —— 结果弹窗与历史「详情」**共用这一份**。
 
         玩家 2026-09-16: 「这个**历史详情打开后, 应该用之前的那个格式**, 而不是再新作一个
         用这个的修改版本」—— 详情原来有自己的「成绩 / 频率 / 过程」三段版式 ✗, 与结果弹窗
@@ -11516,10 +11621,30 @@ class RootWidget(BoxLayout):
         _decay = float(d.get('decay') or 0.0)
         _avg = int(round(sum(_w) / float(len(_w)))) if _w else None
         _mc = _mad_coef(_w)
-        # ⚠️ 等间隔抽 **20** 个点(玩家 2026-09-16: 「高压测试的样本之前只显示 10 个,
-        #    现在也提高到 20 个」)。点数按实际算, 不写死。
-        _step = max(1, len(_w) // 20)
-        _idx = list(range(0, len(_w), _step))
+        # ⚠️ 抽点间隔 = **每 `HP_SAMPLE_SEC` 秒一个**(玩家 2026-09-16:
+        #    「等间隔连续采样成绩 改为 **每10秒连续采样成绩**（采样的数据数量也会增加）」)。
+        #    ⇒ 由"固定抽 20 个"改成**按时间**抽: 一局 360 秒 ⇒ 36 个点(原来只 20 个, 确实变多)。
+        # ⚠️⚠️ 取的是每段的**中点**, 不是段首(玩家第二次点名):
+        #    「这个应该是**第5秒、第15秒** 一共36个的数值才合理吧? **第0秒和第360秒**
+        #      我总感觉不用采纳」。
+        #    ⇒ 10 秒一段、共 36 段, 每段取它的正中那一刻(5, 15, …, 355)。
+        #      这样头一个数代表的是"第 1~10 秒那一段", 而不是开局的**一瞬** ——
+        #      段首取值会让第一个数落在 t=0(实测偏 +1.6%), 而中点是无偏的。
+        #    ⚠️ 窗口**不是**整 1 秒一个(实测 321~331 个窗口摊在 360 秒上 ≈ 1.1 秒/窗) ⇒
+        #       不能拿"每 10 个窗口"当 10 秒, 必须按 `秒数 × 窗口数 / 总秒数` 折算。
+        #       这也是这条能从"20 个"变成"36 个"的原因 —— 它量的是**时间**, 不是点数。
+        #    ⚠️ `_sec` 取记录里的(老记录可能是 300 秒口径), 别拿当前常量硬套。
+        # ⚠️⚠️ `_w` 可能是**空的**(老记录根本没存 `windows`) ⇒ 那种情况必须让 `_idx` 保持空、
+        #    由下面印「—」。**别把 `_nseg` 写成 `max(1, ...)` 了事** —— 段数封底 1 之后,
+        #    循环仍会跑一次, 而 `min(len(_w)-1, ...) = -1`、`max(0, -1) = 0` ⇒ `_w[0]`
+        #    直接 IndexError(2026-09-16 被 `temp/_hpcurve.py` 的 C5 抓到)。
+        _idx = []
+        if _w:
+            _nseg = max(1, int(_sec // HP_SAMPLE_SEC))
+            for _k in range(_nseg):
+                _tk = (_k + 0.5) * HP_SAMPLE_SEC             # 段中点: 5, 15, …, 355
+                _i = int(round(_tk * len(_w) / max(1.0, _sec)))
+                _idx.append(max(0, min(len(_w) - 1, _i)))
         _samples = " / ".join("%d" % _w[_i] for _i in _idx) if _idx else '—'
         # 频率行: 口径取**平均**(与 `_hp_freq_line` 一致 —— 那段的论证是"频率采样是双峰的,
         # 中位数必然落在其中一个峰上", 见 `_hp_freq_line` 的注释)。
@@ -11544,8 +11669,10 @@ class RootWidget(BoxLayout):
                     '—' if _mn is None else int(_mn), '—' if _avg is None else _avg) + _n
                 + ("平均差系数 %.2f%%" % _mc if _mc is not None else "平均差系数 无数据")
                 + _n + _n
-                # ⚠️ 2026-09-16 玩家: 「每段采样（括号内很多字）改为**等间隔连续采样成绩：**xxx」。
-                + "等间隔连续采样成绩：" + _samples + _n
+                # ⚠️ 2026-09-16 玩家: 「每段采样（括号内很多字）改为**等间隔连续采样成绩：**xxx」,
+                #    随后再改: 「**每10秒**连续采样成绩」(与上面那个抽点间隔**同一个常量**,
+                #    别再手抄一个 10 进来 —— 那种写法迟早和抽点逻辑脱钩)。
+                + "每%d秒连续采样成绩：" % int(HP_SAMPLE_SEC) + _samples + _n
                 + "CPU 频率：" + _freq)
 
     def _hp_summary_text(self):
@@ -11587,7 +11714,7 @@ class RootWidget(BoxLayout):
                         getattr(self, "_hp_saved_status", "按住蓄力发射"))
         self._hp_running = False
         # ⚠️ **落一条历史**(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」)。
-        #    存的东西要够"详细成绩 + SOC 平均频率"看 —— 逐窗曲线也存下
+        #    存的东西要够"详细成绩 + CPU 平均频率"看 —— 逐窗曲线也存下
         #    (详情弹窗要画它)。存不成也不能影响结果弹窗, 所以整段 try 包着。
         try:
             _st2 = self._hp_stats()
@@ -11640,7 +11767,7 @@ class RootWidget(BoxLayout):
             _txt = ""
         content = BoxLayout(orientation="vertical", padding=dp(16), spacing=dp(10))
         # ⚠️ 2026-09-16 玩家: 「把版本号**放入标题**中吧 加个空格, 这个地方就不要版本号了」
-        #    ⇒ 标题改成 `SOC高压测试 v0.x.x`(见 `_soc_result_title`), 正文那行不再带版本。
+        #    ⇒ 标题改成 `CPU高压测试 v0.x.x`(见 `_soc_result_title`), 正文那行不再带版本。
         title_lbl = self._fit_line(Label(text=_soc_result_title(), bold=True, halign="center",
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 20)
@@ -11704,14 +11831,14 @@ class RootWidget(BoxLayout):
         # ⚠️ **按系配色 + 按系排序**(2026-09-15 玩家:「这几个按钮的颜色你看看怎么改下,
         #    分几个系？同 1 类的是一个色系？」) —— **3 系, 同类同色系, 行动亮 / 历史暗**:
         #      模拟(性能测试): 红系   `COL_FIRE` / `COL_DARKRED`
-        #      SOC 高压:        琥珀系 `COL_SOC` / `COL_SOC_DIM`
+        #      CPU 高压:        琥珀系 `COL_SOC` / `COL_SOC_DIM`
         #      信息:           中性蓝 `COL_BTN`(它不是测试, 不占两个测试系的颜色)
         #    ⚠️ **顺序也按系**: 模拟的两个在前 2 名(玩家 2026-09-15:「把开始测试和查看历史
-        #       按钮放在一起, 都是在前 2 名」), SOC 的两个跟在后面。
+        #       按钮放在一起, 都是在前 2 名」), 高压系的两个跟在后面。
         # ⚠️⚠️ **一行一个颜色 —— 右边的按钮用左边那个的颜色**(玩家 2026-09-15:
         #    「这几个按钮的颜色好乱啊。要不这样，右边的按钮用左边按钮的颜色？」「这样就3种颜色了」)。
         #    改之前是 6 个按钮 6 种颜色(行动亮 / 历史暗两两配对) ⇒ 玩家读成"颜色好乱"。
-        #    现在**同一行同色**:  模拟系`COL_FIRE` / SOC 系`COL_SOC` / 信息系`COL_BTN`。
+        #    现在**同一行同色**:  模拟系`COL_FIRE` / 高压系`COL_SOC` / 信息系`COL_BTN`。
         #    ⚠️ 代价是**同一行里分不出"行动"和"历史"** —— 这是玩家明确选的取舍, 别自作主张改回去。
         #    ⚠️ `COL_DARKRED` / `COL_SOC_DIM` / `COL_BTN_OFF` 在本文件别处仍在用(其它弹窗的
         #       取消/返回/关闭), **不要因为它们在这里不用了就删掉**。
@@ -11721,7 +11848,7 @@ class RootWidget(BoxLayout):
         hist_btn = Button(text='查看模拟历史', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_FIRE) + (1,),
                           size_hint_y=None, height=dp(52))
-        hp_btn = Button(text='SOC高压测试', font_size='17sp', bold=True,
+        hp_btn = Button(text='CPU高压测试', font_size='17sp', bold=True,
                         background_normal='', background_color=hex_rgb(COL_SOC) + (1,),
                         size_hint_y=None, height=dp(52))
         hph_btn = Button(text='高压测试历史', font_size='17sp', bold=True,
@@ -12942,7 +13069,7 @@ class RootWidget(BoxLayout):
         self._hide_bench_dim()
         _phys_sorted = sorted(fps_list)
         # ⚠️⚠️ 2026-09-16 玩家: 「这个**运算速度取平均值**」(原来是中位数)。
-        #    与 SOC 高压那边**同一条口径**(那边同期也从"中位数"改成了"平均数")。
+        #    与 CPU 高压那边**同一条口径**(那边同期也从"中位数"改成了"平均数")。
         #    ⚠️ 这**一个数牵连很广** —— 成绩面板那行 / 历史表第三列 / `cost_ms`(每发计算用时)
         #       / `phys_norm`(归一化) **全从它来**。改它是**换口径**, 不只是换显示:
         #       老记录里存的是当年的中位数 ⇒ 跨版本比成绩时**别把两者混着看**。
@@ -13050,7 +13177,7 @@ class RootWidget(BoxLayout):
             "sust_fps_windows": [int(x) for x in _sv],
             # ⚠️ 2026-09-16: 存下**诊断块**的原始数据 —— 玩家报「普通测试的详情里漏了
             #    一块灰色字(采样窗口/卡顿帧/慢帧分布/最慢一帧)」。
-            #    体积约 1~3KB/条(与 SOC 那张表每条存 360 个窗口同一量级),
+            #    体积约 1~3KB/条(与 CPU 高压那张表每条存 360 个窗口同一量级),
             #    而且它本来就是 JSON 友好的(`_bench_collect_diag` 的输出)。
             #    ⚠️ 老记录没有 ⇒ 详情里那一块**整块不出现**(不印空壳)。
             "diag": (getattr(self, "_bench_diag", None) or None),
@@ -14605,16 +14732,16 @@ class RootWidget(BoxLayout):
             return ''
 
     def _show_hp_history(self):
-        """SOC 高压测试历史: **4 列**(时间 / 中位数 / 平均差系数 / 详情按钮)。
+        """CPU 高压测试历史: **4 列**(时间 / 中位数 / 平均差系数 / 详情按钮)。
 
         玩家 2026-09-15: 「高压测试也专门搞个log记录。有4列，时间、中位数、波动、按钮。
-        点击按钮可以看到详细成绩和SOC平均频率。」
+        点击按钮可以看到详细成绩和CPU平均频率。」
         ⚠️ 与「测试历史」是**两张表**: 那一张是性能测试(峰值/帧率),
-           这一张是 SOC 高压(衰减/频率)。挤一张只会互相污染。
+           这一张是 CPU 高压(衰减/频率)。挤一张只会互相污染。
 
         ⚠️⚠️ 2026-09-16 玩家看了真机截图: 「这个界面肯定不行吧, 你**直接把另外一个跑分的
            历史log给抄袭过来**吧, 顺便带一个 log 清空功能」。
-           ⇒ 本函数整体按 `_show_bench_history`(「测试历史（渲染 / SoC）」)**逐项照搬**。
+           ⇒ 本函数整体按 `_show_bench_history`(「测试历史（渲染 / CPU）」)**逐项照搬**。
            以前这里每一条都和它不一样, 那正是"两张表看着不像一套东西"的原因:
              ① **不做行数推算, 也不调 `_popup_fit_content`** —— 列表用
                 `ScrollView(size_hint=(1, 1))` 吃掉剩余高度, 面板高度由弹窗固定给(`0.7 * _vh`)。
@@ -14628,7 +14755,7 @@ class RootWidget(BoxLayout):
              ③ 行高 `dp(26)`、脚注 `_auto_h(foot, dp(44))`、底部**两个按钮**(清空历史 + 关闭)。
         """
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
-        title_lbl = self._fit_line(Label(text='SOC高压测试历史', bold=True,
+        title_lbl = self._fit_line(Label(text='CPU高压测试历史', bold=True,
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
@@ -14641,7 +14768,7 @@ class RootWidget(BoxLayout):
             #    —— 不能因为"有没有记录"让面板忽大忽小。真有问题也只是"空的时候字堆在底下",
             #    而那该用**居中去解决, 不是改高度**。
             content.add_widget(Widget(size_hint_y=1))          # 上弹簧
-            empty = Label(text='暂无 SOC 高压测试记录\n\n性能测试菜单里选「SOC高压测试」\n连续高压测试 %d 秒即可产生一条'
+            empty = Label(text='暂无 CPU 高压测试记录\n\n性能测试菜单里选「CPU高压测试」\n连续高压测试 %d 秒即可产生一条'
                                % int(SOC_SUSTAIN_WALL_SEC),
                           font_size='16sp', halign='center',
                           color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(110))
@@ -14800,7 +14927,7 @@ class RootWidget(BoxLayout):
         popup.open()
 
     def _clear_hp_history(self):
-        """清空「SOC 高压测试历史」——**不可逆, 所以必须先过一道确认**。
+        """清空「CPU 高压测试历史」——**不可逆, 所以必须先过一道确认**。
 
         ⚠️ 与 `_clear_bench_history` **同款**(玩家 2026-09-16: 「顺便带一个 log 清空功能」)。
         ⚠️ **只清这一张表**(`plinko_hp_history.json`)。「模拟测试历史」是**另一张**
@@ -14811,13 +14938,13 @@ class RootWidget(BoxLayout):
         if _n <= 0:
             return
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(10))
-        ttl = self._fit_line(Label(text='清空 SOC 高压测试历史', bold=True, halign='center',
+        ttl = self._fit_line(Label(text='清空 CPU 高压测试历史', bold=True, halign='center',
                                    color=hex_rgb(COL_TEXT) + (1,),
                                    size_hint_y=None, height=dp(28)), 19)
         content.add_widget(ttl)
         # ⚠️⚠️ **正文里绝不能出现 markdown 星号** —— Kivy 的 Label 不认 markdown,
         #    `**3**` 会在屏幕上**原样显示成 `**3**`**(`fx_probe` 有一条专门钉这个)。
-        msg = Label(text='将删除全部 %d 条 SOC 高压测试历史，\n不可恢复。\n\n'
+        msg = Label(text='将删除全部 %d 条 CPU 高压测试历史，\n不可恢复。\n\n'
                          '（模拟测试历史不受影响）' % _n,
                     font_size='15sp', halign='center', valign='middle',
                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
@@ -14838,7 +14965,7 @@ class RootWidget(BoxLayout):
             self.hp_history = []
             self._save_hp_history()          # 盘上也要清, 否则重启又回来了
             popup.dismiss()
-            _set_label_text(self.status_lbl, 'SOC 高压测试历史已清空')
+            _set_label_text(self.status_lbl, 'CPU 高压测试历史已清空')
             self._show_hp_history()          # 当场重开 → 看到空态
 
         cancel.bind(on_release=popup.dismiss)
@@ -14847,7 +14974,7 @@ class RootWidget(BoxLayout):
         self._popup_fit_content(popup, content)
 
     def _show_hp_curve(self, windows, sec=None):
-        """SOC 高压**逐秒样本的走势图**(结果弹窗 / 历史详情上的「走势图」按钮)。
+        """CPU 高压**逐秒样本的走势图**(结果弹窗 / 历史详情上的「走势图」按钮)。
 
         玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
         点击额外的按钮显示, 类似之前的帧曲线」。
@@ -14859,7 +14986,7 @@ class RootWidget(BoxLayout):
         if len(_w) < 2:
             return
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
-        title = self._fit_line(Label(text='高压SOC测试的成绩曲线', bold=True, halign='center',
+        title = self._fit_line(Label(text='高压CPU测试的成绩曲线', bold=True, halign='center',
                                      color=hex_rgb(COL_TEXT) + (1,),
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
@@ -14872,7 +14999,14 @@ class RootWidget(BoxLayout):
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
         note.bind(width=lambda _w2, *_: setattr(_w2, 'text_size', (_w2.width, None)))
         content.add_widget(note)
-        _n2 = Label(text='横轴 = 按时间顺序的 %d 个窗口　竖轴 = 步/秒　（横线 = 中位）'
+        # ⚠️ 这里原来写的是「（横线 = **中位**）」—— **那是一句假话**: 三条横线画的是
+        #    轴的上界/中点/下界(改留白之前是"数据最大/中程/最小"), 而**中程**不是中位:
+        #    本局中程 24226、真中位 14847, 而真中位就印在上面那一行里 ⇒ 同屏自相矛盾。
+        #    2026-09-16 纵轴改成"留白 + 友好刻度"之后, 这三条线连数据统计量都不是了,
+        #    只是**纵轴刻度**。所以改成如实描述。
+        #    ⚠️ 玩家当时说过这件事"先停止" ⇒ 这是我在做纵轴改动时**顺手改掉的唯一一处**
+        #       文案(理由: 不改的话它就是我自己刚弄得更假的一句); 不想要就一句话撤掉。
+        _n2 = Label(text='横轴 = 按时间顺序的 %d 个窗口　竖轴 = 步/秒　（横线 = 纵轴刻度）'
                       % len(_w),
                      font_size='12sp', halign='center', valign='middle',
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
@@ -14889,7 +15023,7 @@ class RootWidget(BoxLayout):
         self._popup_fit_content(popup, content)
 
     def _show_hp_detail(self, r):
-        """某一条 SOC 高压记录的**详细成绩 + SOC 平均频率**。"""
+        """某一条 CPU 高压记录的**详细成绩 + CPU 平均频率**。"""
         # ⚠⚠ 2026-09-16 玩家: 「这个**历史详情打开后, 应该用之前的那个格式**,
         #    而不是再新作一个」⇒ 正文改走**与结果弹窗共用的**
         #    `_hp_result_text` —— 原来那套「成绩/频率/过程」三段版式**已删**
@@ -14911,7 +15045,7 @@ class RootWidget(BoxLayout):
             'freq_n': r.get('freq_n', 0),
         })
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
-        title_lbl = self._fit_line(Label(text='SOC高压测试详情', bold=True,
+        title_lbl = self._fit_line(Label(text='CPU高压测试详情', bold=True,
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
@@ -14944,7 +15078,7 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
     def _show_bench_detail(self, r):
-        """「测试历史（渲染 / SoC）」某一条的**详情** —— 点开的就是跑完那一刻的成绩面板。
+        """「测试历史（渲染 / CPU）」某一条的**详情** —— 点开的就是跑完那一刻的成绩面板。
 
         玩家 2026-09-16: 「右侧新增一个详情按钮, 点击打开的就是**跑分后的弹窗**,
         包含**帧率曲线**什么的。和高压测试那个类似」。
@@ -15005,7 +15139,7 @@ class RootWidget(BoxLayout):
         self._popup_fit_content(popup, content)
 
     def _show_bench_history(self):
-        """性能测试历史：每次完整测试严格一行，保留时间、帧率与 SoC 波动。
+        """性能测试历史：每次完整测试严格一行，保留时间、帧率与 CPU 波动。
 
         ⚠️ 第三列表头是「**中位跑分** / 波动」(2026-09-14 从「步数」改的): 那一格是
            `phys_fps`, 来源是 `_bench_done` 里的 **平均值**(2026-09-16 从中位数改的;
@@ -15024,7 +15158,7 @@ class RootWidget(BoxLayout):
         #    ⚠️ 这是**有意反转** 11389-11394 那条旧决定(那里写"解释文字换成金色"), 不是漂移,
         #       别照着旧注释改回去。金色 `COL_BALL` 仍是本作「主数字」的颜色, 只是现在
         #       挂在标题上, 不再挂在备注上。
-        title_lbl = self._fit_line(Label(text='测试历史（渲染 / SoC）', bold=True,
+        title_lbl = self._fit_line(Label(text='测试历史（渲染 / CPU）', bold=True,
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
                                          size_hint_y=None, height=dp(28)), 19)
         content.add_widget(title_lbl)
@@ -15162,7 +15296,7 @@ class RootWidget(BoxLayout):
                     row.add_widget(lbl)
                     rows[_i].append(lbl)
                 # ⚠️ 第四列是**按钮**(唯一一个), **不进"全表统一字号"** —— 它不是数据格。
-                #    (SOC 那张表同款; 按钮的文字由它自己的 font_size 管。)
+                #    (CPU 高压那张表同款; 按钮的文字由它自己的 font_size 管。)
                 btn = Button(text='详情', font_size='14sp', bold=True,
                              background_normal='', size_hint_x=None, width=_HW[3],
                              background_color=hex_rgb(COL_BTN) + (1,))
@@ -15271,7 +15405,7 @@ class RootWidget(BoxLayout):
         """清空「模拟测试历史」——**不可逆, 所以必须先过一道确认**。
 
         ⚠️ 玩家 2026-09-15 定案要二次确认(见 `_show_fps_cap_settings` 的 `取消/确定` 同款写法)。
-        ⚠️ **只清这一张表**(`plinko_bench_history.json`)。SOC 高压历史是**另一张**
+        ⚠️ **只清这一张表**(`plinko_bench_history.json`)。CPU 高压历史是**另一张**
            (`plinko_hp_history.json`) —— 两张表分开是玩家 2026-09-15 定过的案, 别一起清。
         ⚠️ 确认框里**必须写清条数**, 让玩家知道要删掉多少东西(「不可恢复」这四个字不能省)。
         """
@@ -15286,7 +15420,7 @@ class RootWidget(BoxLayout):
         # ⚠️⚠️ **正文里绝不能出现 markdown 星号** —— Kivy 的 Label 不认 markdown,
         #    `**3**` 会在屏幕上**原样显示成 `**3**`**(`fx_probe` 有一条专门钉这个)。
         msg = Label(text='将删除全部 %d 条模拟测试历史，\n不可恢复。\n\n'
-                         '（SOC 高压测试历史不受影响）' % _n,
+                         '（CPU 高压测试历史不受影响）' % _n,
                     font_size='15sp', halign='center', valign='middle',
                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None)
         self._auto_h(msg, dp(90), dp(6))
@@ -16063,11 +16197,11 @@ class RootWidget(BoxLayout):
         except Exception:
             pass
 
-    # ---- SOC 高压测试的独立历史(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」) ----
+    # ---- CPU 高压测试的独立历史(玩家 2026-09-15: 「高压测试也专门搞个 log 记录」) ----
     # ⚠️ 与性能测试历史**同一套存取路子**(同目录、同 JSON 套路), 只是另一个文件。
     #    分开存是因为量纲不同(峰值 vs 衰减), 挤一张表只会互相污染。
     def _hp_history_path(self):
-        """SOC 高压测试历史 JSON 路径(与性能测试历史同目录)。"""
+        """CPU 高压测试历史 JSON 路径(与性能测试历史同目录)。"""
         if platform == "android":
             try:
                 base = App.get_running_app().user_data_dir
