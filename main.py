@@ -866,6 +866,18 @@ BENCH_TARGET_LAUNCHES = 5
 #    它们之间只有模块级状态这一条路。
 _FREQ_GATE = [True]
 
+# ---- 波 1 跑分的**按秒进度**(2026-09-16) -------------------------------------
+# 玩家: 「后续物理跑分的时候只有五个颗粒度, 能不能改成秒为颗粒度或进度」
+# (旧版那行是 `物理跑分 3/5`, 一共只动 5 次)。
+# ⚠️ 走**模块级**是因为发布者是 `benchmark_trajectories`(工作线程里的纯函数),
+#    它够不着 RootWidget —— 与 `_FREQ_GATE` 同一条路。
+# ⚠️ 分母/分子的尺子必须是**同一根**: 波 1 的循环条件是 **CPU 秒**,
+#    所以进度也用 CPU 秒(`SOC高压测试` 那边用墙钟是因为它的循环条件就是墙钟)。
+#    拿墙钟当分子会重演 SOC 那次的 bug —— 面板顶到顶了活儿还没干完。
+# ⚠️ 样本之间有 `gap_sec`(5 秒 × 4 次)不烧 CPU ⇒ 那几秒数字**不动**, 那是事实不是卡住。
+_PHYS_PROG = [0.0]        # 已跑掉的 CPU 秒(工作线程写, 主线程读)
+_PHYS_TOTAL_SEC = [0.0]   # 这次一共要跑多少 CPU 秒(每次开跑时按实参算好)
+
 
 # ⚠️⚠️ 这段注释 2026-09-15 **改写过** —— 旧版写的是"那 2 倍只能来自 DVFS(核心频率)",
 #    而真机新数据把它推翻了: 红米 K90 Pro Max 三次同开"均衡", 最大频率 2624/2880/2875
@@ -1126,9 +1138,24 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
         _warm_rng = random.Random(seed ^ 0x5A5A5A)
 
         def _burst(deadline, _rng, _count):
-            """跑到本线程 CPU 时间到 `deadline` 为止; `_count` 为假时只跑、不计数。"""
+            """跑到本线程 CPU 时间到 `deadline` 为止; `_count` 为假时只跑、不计数。
+
+            ⚠️ 2026-09-16: 顺手把**按秒进度**发出去(`_PHYS_PROG`)。
+               发布点选在这里是**刻意的** —— 这个 `while` 是**每颗球**转一圈
+               (内层那个 `range(4000)` 才是每步), 而一颗球要飞几百步
+               ⇒ 每次多"取一次时间 + 存一次列表", 相对一颗球的成本可以忽略。
+               ⚠️ **绝不能挪进内层 `for`**: v0.7.74 的教训就是"热循环里每步多加一点"
+                  直接把跑分拖下去了(`_bench_gil_yield` 那次)。这里加的是**每颗球一次**。
+               ⚠️ 循环形状由 `while cpu_clock() < deadline` 改成 `while True + 一次取值`:
+                  **调用次数与判据完全相同** ⇒ 发球的序列一个数都不变(物理逐位不变,
+                  `temp/_phys_hash.py` 钉着)。
+            """
             _fl = _fr = 0
-            while cpu_clock() < deadline:
+            while True:
+                _now = cpu_clock()
+                if _now >= deadline:
+                    break
+                _PHYS_PROG[0] = _now - _t0[0]
                 _b = launch_ball(_rng.uniform(MISFIRE_POWER, 1.0), rng=_rng)
                 for _ in range(4000):
                     _landed = advance_flight(_b, geo)
@@ -1156,6 +1183,16 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     # ⚠️ `benchmark_sustained`(波 2 / SOC 高压)**没有间隙**, 门对它恒真 —— 默认就是 True,
     #    只有本函数会去翻, 互不干扰。
     _FREQ_GATE[0] = True
+    # ---- 按秒进度的基准(2026-09-16) ------------------------------------------
+    # `_t0` 是"整场跑分开始时的线程 CPU 时间"; 分子 = 当前 CPU 时间 - `_t0`。
+    # 分母 = **一共要烧多少 CPU 秒** —— 每一段 `_burst` 都是 `_BENCH_HEAD_SEC` 秒的
+    # 起跑段 + 计分段, 而 `_run_once` 被调用 `1(预热) + runs` 次。
+    # ⚠️ 起跑段(每轮 0.5 秒 × (runs+1))**必须算进分母**: 它同样在烧 CPU、同样是玩家在等。
+    # ⚠️ 探针会把参数改小(`temp/_bench_*`), 所以按**实参**现算, 不写死常量。
+    _t0 = [cpu_clock()]
+    _PHYS_PROG[0] = 0.0
+    _PHYS_TOTAL_SEC[0] = ((_BENCH_HEAD_SEC + warmup_cpu_sec)
+                          + runs * (_BENCH_HEAD_SEC + sample_cpu_sec))
     _run_once(warmup_cpu_sec, 98765)   # 升频/Python 热身，不计成绩
 
     # ⚠️⚠️ **把这条线程的 CPU 亲和性记下来**(2026-09-15)。真机实测(红米 K90 Pro Max):
@@ -2791,22 +2828,28 @@ def _hp_score(r):
 
 
 def _hist_stamp(raw):
-    """把记录里的时间戳**归一化**成 `2026-09-15 14:07`(年月日 + 时间)。
+    """把记录里的时间戳**归一化**成 `09-15 14:07`(月日 + 时间, **不带年份**)。
 
-    玩家 2026-09-15 **改过三次**: ①「只有月日」→ ②「年月日+时间」(实测放不下, 字号被压到
-    11.48sp) → ③ **本年省年份**(换回 13.16sp) → ④ 删掉「归一化」列腾出宽度之后,
-    玩家又要求**恢复完整年月日+时间**。**现在就是完整格式。**
-
-    ⚠️ **只改显示** —— 盘上本来存的就是 `%Y-%m-%d %H:%M`, 所以旧记录一条都不用动。
+    ⚠️⚠️ 玩家在这一个格子上**来回改过四轮**, 结论按时间排在下面, **别再从头试**:
+       ①「只有月日」→ ②「年月日+时间」(实测放不下, 字号被压到 11.48sp) →
+       ③ **本年省年份**(换回 13.16sp) → ④ 删掉「归一化」列腾出宽度之后, 玩家又要求
+       **恢复完整年月日+时间** → ⑤ **2026-09-16 玩家再次要求去掉年份**:
+       「去掉时间中的年」。**现在就是不带年份的格式。**
+    ⚠️ ⑤ 这次**不是**重犯 ②/③ 的老路: 那次反复是**宽度不够**逼出来的(三列固定栅格,
+       时间列只有 110px 而完整格式要 113px), 而这次是**玩家的显示偏好**, 且去掉年份
+       正好把宽度账彻底松开 —— 见下面那条。
+    ⚠️ **宽度账(2026-09-16 重量)**: 完整格式 `2026-09-15 14:07` 在 14sp 下 **113px**,
+       而时间列只有 110dp ⇒ 全表字号被压到 **13.16sp**; 去掉年份后 `09-15 14:07` 只要
+       **76px** ⇒ **三列的数据全都放得下 ⇒ 全表字号回到 sp(14) 的上限**。
+       所以这次改动**不需要动任何列宽**(`_HW` 一个字没改), 字号自己就上去了。
+    ⚠️ **只改显示** —— 盘上存的一直是 `%Y-%m-%d %H:%M`(完整), 所以旧记录一条都不用动,
+       想看年份随时能从 JSON 里读出来。
     ⚠️ 认不出来**原样返回**, 绝不吞信息、也不抛。
-    ⚠️ 宽度账: 这一串 16 字符在 14sp 下 **113px**, 而三列固定栅格里时间列分到 110px
-    ⇒ 全表共用的那个字号会落在 **13.16sp**(见 `_show_bench_history` 里 `_HW` 那段)。
-    **想再加字/加列之前先去 `temp/benchhist_probe.py` 看 `[360]` 那一行的字号。**
     """
     _s = str(raw if raw is not None else '')
     try:
         _d = time.strptime(_s[:16], "%Y-%m-%d %H:%M")
-        return time.strftime("%Y-%m-%d %H:%M", _d)
+        return time.strftime("%m-%d %H:%M", _d)
     except Exception:
         return _s or '--'
 
@@ -2956,8 +2999,8 @@ def _bench_menu_desc():
        `SOC_SAMPLE_CPU_SEC` + 间隔)。改了那几个参数要回来改这个数 —— 可用
        `python temp/check_desc.py` 顺手复核排版(它同时会量每行宽度)。
     """
-    return ('模拟测试约 67 秒（含落珠动画）。\n测试两项设备性能：\n1. 自动发 3 颗球，测屏幕渲染帧率\n'
-            '2. 物理引擎全力跑，测每秒模拟步数\n第 2 项主要吃 CPU 单核浮点算力。\n'
+    return ('模拟测试约 67 秒（含落珠动画）。\n测试两项设备性能：\n1. 累计发射 5 颗弹珠，测屏幕渲染帧率\n'
+            '2. 通过后台跑物理引擎测试 CPU 性能\n第 2 项主要吃 CPU 单核浮点算力。\n'
             '物理引擎是纯 Python 写的。\n'
             'SOC高压测试：考验调度和散热能力。')
 
@@ -10025,6 +10068,58 @@ def _soc_result_title():
         v = ""
     return ("SOC高压测试 %s" % v) if v else "SOC高压测试"
 
+
+def _bench_score_text(d):
+    """成绩块正文 —— **现场那个弹窗与历史「详情」共用这一份**。
+
+    ⚠️ 只有一份是硬要求: 本工程的规矩是"两处各写一份迟早脱钩"(同一句话在代码里活两份,
+       改一处忘一处, 玩家看到的就是同一个数两种说法)。
+    ⚠️ 入参 `d` 用**记录里的字段名**(`bench_history` 那套键)。现场那条路先用同样的键组一个
+       dict 再传进来 —— 于是"刚跑完"和"翻历史"走的**是同一条渲染路径**。
+    ⚠️ 缺字段一律印「—」, **绝不拿别的字段回填**(老记录没有 `render_10low` / `phys_mad`
+       之类; 与本工程其它面板同一条规矩)。
+    """
+
+    def _g(key, default=None):
+        v = d.get(key, default)
+        return v
+
+    _ver = str(_g('version', '') or '')
+    _dev = str(_g('device', '') or '')
+    _dv = (_dev + " / " + _ver) if (_ver and _ver not in _dev) else _dev
+    # 帧率块: 六个值 vs 三个值 —— 老记录没有 10%Low / p99 / p90 ⇒ 退回三值版。
+    _l10, _p99, _p90 = _g('render_10low'), _g('render_p99'), _g('render_p90')
+    if _l10 is not None and _p99 is not None and _p90 is not None:
+        _low_txt = ('平均帧率： %.1f    中位帧率：%.1f\n'
+                    '1%%Low：%.1f    10%%Low：%.1f\n'
+                    'p99帧率：%.1f    p90帧率：%.1f') % (
+                        float(_g('render_fps', 0.0) or 0.0),
+                        float(_g('render_median', 0.0) or 0.0),
+                        float(_g('render_1low', 0.0) or 0.0),
+                        float(_l10), float(_p99), float(_p90))
+    else:
+        _low_txt = '平均帧率： %.1f　中位帧率：%.1f\n1%%Low帧率：%.1f' % (
+            float(_g('render_fps', 0.0) or 0.0),
+            float(_g('render_median', 0.0) or 0.0),
+            float(_g('render_1low', 0.0) or 0.0))
+    # 高压那一行(常规跑分这条路波 2 是被清空的 ⇒ 不印, 与现场面板一致)。
+    _sv = [x for x in (_g('sust_fps_windows') or []) if x > 0]
+    _s_txt = (('连续高压测试 %d 秒：首 %d → 末 %d 步/秒（降 %.0f%%）· 最低 %d\n'
+               % (int(_g('sust_sec', 0) or 0), int(_g('sust_first', 0) or 0),
+                  int(_g('sust_last', 0) or 0), float(_g('sust_decay_pct', 0.0) or 0.0),
+                  int(_g('sust_min', 0) or 0))) if _sv else '')
+    _mad = _g('phys_mad')
+    return ('%s\n'
+            '运算速度：%d 轮中位每秒 %d 步模拟\n'
+            '稳定性：%d～%d 步/秒 · 平均差系数 %s\n'
+            '%s'
+            '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
+            '%s') % (
+        _dv, int(_g('phys_runs', 0) or 0), int(_g('phys_fps', 0) or 0),
+        int(_g('phys_min', 0) or 0), int(_g('phys_max', 0) or 0),
+        (('%.2f%%' % float(_mad)) if _mad is not None else '无数据'),
+        _s_txt, float(_g('avg_frames', 0) or 0), float(_g('cost_ms', 0) or 0), _low_txt)
+
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
 
@@ -10958,8 +11053,9 @@ class RootWidget(BoxLayout):
     # ---------------------------------------------------------------- 进度显示
     # ⚠️⚠️ **渲染窗口那 25 秒一个字都不显示**(玩家 2026-09-15 定案): 那段正在测 1%Low,
     #   在里面写标签就是往被测帧上加活儿。**只有后面全力跑 SOC 时才显示**:
-    #     · 物理段    -> `物理跑分 d/3`
-    #     · SOC 高压段 -> `SOC高压测试 d/300秒`
+    #     · 物理段    -> `物理跑分 d/d秒`(2026-09-16 由"第几轮/共 5 轮"改成**按秒**;
+    #                     分母 = warmup + (runs+1)*head + runs*sample 的 CPU 秒总数)
+    #     · SOC 高压段 -> `SOC高压测试 d/360秒`(走 `SOC_SUSTAIN_WALL_SEC`, 别手抄数字)
     #   那两个阶段 `_finish_render_sample` 已经跑过(屏幕采样停了) ⇒ 写标签不进成绩。
     def _prog_text(self):
         """当前该显示的进度文案; 没有测试在跑就返回 None。"""
@@ -10993,8 +11089,20 @@ class RootWidget(BoxLayout):
             #    也就**不需要为它预烘**(原设计预烘了 `性能测试 d/5` 那 6 条, 已撤)。
             if not getattr(self, "_phys_started", False):
                 return None
-            return "物理跑分 %d/%d" % (int(getattr(self, "_phys_done", 0) or 0),
-                                      SOC_SAMPLE_RUNS)
+            # ⚠️ 2026-09-16 玩家: 「后续物理跑分的时候**只有五个颗粒度**, 能不能改成
+            #    **秒为颗粒度或进度**」⇒ 由"第几轮 / 共 5 轮"改成**按 CPU 秒**。
+            #    颗粒度实测约 **每秒动一次**(文本 0.25 秒轮询一次 + 整秒才变) —— 从 5 次
+            #    变成 20 多次。
+            #    ⚠️ 为什么是 CPU 秒而不是墙钟: 与本函数上面 SOC 那段**同一条规矩** ——
+            #       "关键不在用不用墙钟, 在**和循环条件是不是同一根尺子**"。波 1 的循环
+            #       条件(`warmup_cpu_sec` / `sample_cpu_sec`)就是 CPU 秒; 拿墙钟当分子会
+            #       重演那次 bug: 面板顶到顶了, 活儿还剩两成没干完。
+            #    ⚠️ 代价: 样本之间的 `gap_sec`(5 秒 × 4 次)不烧 CPU ⇒ 那几秒数字**不动**。
+            #       那是**事实**(那几秒确实没在算), 不是卡住。
+            #    ⚠️ 超了就**封顶**, 不造第二句会跳动的文案(同 SOC 那段)。
+            _dt = float(_PHYS_TOTAL_SEC[0]) or 1.0
+            _dd = float(_PHYS_PROG[0])
+            return "物理跑分 %d/%d秒" % (min(int(_dd), int(_dt)), int(_dt))
         return None
 
     def _prog_tick(self, dt=0):
@@ -12516,7 +12624,7 @@ class RootWidget(BoxLayout):
         }
         self._bench_phys_now = int(phys_fps)   # 给 `_bench_frame_log` 印那一行用
         # 存历史(最近100次)
-        self.bench_history.append({
+        _rec = {
             "time": time.strftime("%Y-%m-%d %H:%M"),
             "phys_fps": int(phys_fps),
             "avg_frames": int(avg_frames),
@@ -12524,6 +12632,12 @@ class RootWidget(BoxLayout):
             "render_fps": round(render_fps, 1),
             "render_median": round(render_median, 1),
             "render_1low": round(render_1low, 1),
+            # ⚠️ 2026-09-16: 补三格 —— 它们本来只印在**跑完那一刻**的面板上,
+            #    历史里没有 ⇒ "从历史里看详情"就少三行。三个数, 体积忽略。
+            #    ⚠️ 老记录没有它们 ⇒ 详情自动退回三值版, **绝不回填**。
+            "render_10low": round(float((getattr(self, "_render_lows", {}) or {}).get(10, 0.0)), 1),
+            "render_p99": round(float((getattr(self, "_render_pct", {}) or {}).get(99, 0.0)), 1),
+            "render_p90": round(float((getattr(self, "_render_pct", {}) or {}).get(90, 0.0)), 1),
             "phys_runs": phys_runs,
             # ⚠️ **逐轮步/秒**(2026-09-15 加): 中位数会把"五轮一直低"和"中途掉一轮"压成
             #    同一个数 —— 而那是两种病(前者是频率/核心, 后者是温控/系统干预)。
@@ -12559,7 +12673,8 @@ class RootWidget(BoxLayout):
             "sust_fps_windows": [int(x) for x in _sv],
             "version": _app_version(),
             "device": dev,
-        })
+        }
+        self.bench_history.append(_rec)
         if len(self.bench_history) > 100:
             self.bench_history.pop(0)
         self._save_bench_history()
@@ -12610,14 +12725,11 @@ class RootWidget(BoxLayout):
                    % (int(SOC_SUSTAIN_WALL_SEC), int(_s_first), int(_s_last),
                       int(_s_decay), int(_s_min)))
                   if _sv else '')
-        score = ('%s\n'
-                 '运算速度：%d 轮中位每秒 %d 步模拟\n'
-                 '稳定性：%d～%d 步/秒 · 平均差系数 %s\n'
-                 '%s'
-                 '每次发射：需 %.0f 步模拟(用时 %.1f 毫秒)\n'
-                 '%s') % (_dev_ver, phys_runs, int(phys_fps), int(phys_min), int(phys_max),
-                            (('%.2f%%' % phys_mad) if phys_mad is not None else '无数据'),
-                            _s_txt, avg_frames, cost_ms, _low_txt)
+        # ⚠️ 2026-09-16: 改成调**共用渲染**函数 —— 现场这个弹窗与历史「详情」重开的那个
+        #    **必须长一模一样**(本工程的规矩: 两处各写一份迟早脱钩)。
+        #    ⚠️ 传进去的就是**刚刚存进历史的那个 dict** ⇒ 两边同源, 连"老记录缺字段"的处理
+        #       都只有一份。
+        score = _bench_score_text(_rec)
         score_lbl = Label(text=score, font_size='17sp', halign='left', valign='top',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
         self._auto_h(score_lbl, dp(130), dp(6))
@@ -13675,9 +13787,19 @@ class RootWidget(BoxLayout):
             pass
         return False, "保存失败(落盘与剪贴板都不可用): %s" % _err1
 
-    def _show_fps_curve(self):
-        """展示本轮提交帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。"""
-        gaps = list(getattr(self, "_render_gaps_ms", []) or [])
+    def _show_fps_curve(self, gaps=None, tags=None, cap=None,
+                        avg=None, med=None, low=None, allow_save=True):
+        """展示帧率趋势；曲线与 1% Low 共用同一份 on_flip 原始采样。
+
+        ⚠️ 2026-09-16: 加了**可选入参** —— 历史「详情」里点曲线时把**记录里**那份
+           (降采样后的)传进来; 而现场那个按钮**一个字都不用改**(缺省仍取 self.*)。
+        ⚠️ **绝不能用"临时把 self._render_gaps_ms 改掉再调"的做法** —— 那会覆盖掉
+           最新一轮的逐帧数据(而它还要给「保存日志」用)。
+        ⚠️ `allow_save=False` 时**不建**「保存日志」按钮: 保存走的是 `_bench_save_log`,
+           它读的是**内存里这一轮**的数据 —— 拿着一张历史记录的曲线去按保存,
+           存下来的是**另一轮**的日志。那是假数据, 比没有按钮更糟。
+        """
+        gaps = list(gaps) if gaps is not None else list(getattr(self, "_render_gaps_ms", []) or [])
         # ⚠️⚠️ **本面板自己的标签不计入字体账本**(2026-09-15, 对抗评审第 0 批)。
         #    病根: 下面那个标题走 `_fit_line` → `_fit_font_size_slow` **一次走满 13 档阶梯**
         #    ⇒ 一口气开 12~13 个 fontid。而玩家**必须**打开这个面板才能导出日志
@@ -13691,19 +13813,28 @@ class RootWidget(BoxLayout):
         # `_on_flip` 一直在往 `_bench_frames` 里存 `(帧间隔, 场景标签)`, 曲线原来只取了前半截。
         # 接到曲线上之后, "哪几帧在掉" 和 "那几帧在演什么" 就是上下对齐看的, 不用再对表格。
         # ⚠️ 取不到(长度对不上/老记录)时 `FpsCurve` 会自己退化成不画阶段条, 曲线照旧。
-        tags = [x[1] for x in (getattr(self, "_bench_frames", []) or []) if len(x) > 1]
+        if tags is None:
+            tags = [x[1] for x in (getattr(self, "_bench_frames", []) or []) if len(x) > 1]
+        else:
+            tags = list(tags)
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title = self._fit_line(Label(text='帧率曲线', bold=True, halign='center',
                                      color=hex_rgb(COL_TEXT) + (1,),
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
-        cap = float(_FPS_INFO[1] or _fps_user_cap())
+        # ⚠️ 历史那条路把**当时**的帧率档位传进来 —— 纵轴上限必须是当时的,
+        #    拿现在的档位去画历史那张会把曲线压扁或拉长。
+        if cap is None:
+            cap = float(_FPS_INFO[1] or _fps_user_cap())
         curve = FpsCurve(gaps, cap_fps=cap, tags=tags,
                          size_hint_y=None, height=dp(276))
         content.add_widget(curve)
-        avg = float(getattr(self, "_render_fps", 0.0))
-        med = float(getattr(self, "_render_median_fps", 0.0))
-        low = float(getattr(self, "_render_1low", 0.0))
+        if avg is None:
+            avg = float(getattr(self, "_render_fps", 0.0))
+        if med is None:
+            med = float(getattr(self, "_render_median_fps", 0.0))
+        if low is None:
+            low = float(getattr(self, "_render_1low", 0.0))
         note = Label(text='逐帧 FPS　平均 %.1f　中位 %.1f　1%%Low %.1f'
                           % (avg, med, low),
                      font_size='13sp', halign='center', valign='middle',
@@ -13714,11 +13845,14 @@ class RootWidget(BoxLayout):
         # ⚠️ 保存是**唯一**能把"逐帧数据"**完整**带出这台设备的出口 —— 曲线只能看, 带不走;
         #    而剪贴板在真机上**会被截断**(实测 3778 帧的日志只贴出 425 行)。
         _btns = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
-        save = Button(text='保存日志(txt)', font_size='16sp', bold=True,
-                      background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
+        # ⚠️ `save` **可能不建**(历史那条路) ⇒ 下面的 bind 要过一道。
+        save = None
+        if allow_save:
+            save = Button(text='保存日志(txt)', font_size='16sp', bold=True,
+                          background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
+            _btns.add_widget(save)
         close = Button(text='返回', font_size='16sp', bold=True,
                        background_normal='', background_color=hex_rgb(COL_BTN_OFF) + (1,))
-        _btns.add_widget(save)
         _btns.add_widget(close)
         content.add_widget(_btns)
         # 保存结果**单独一行常驻显示** —— 按钮上的字两秒就变回去了, 而"存到哪了"是要照着去找的。
@@ -13742,7 +13876,8 @@ class RootWidget(BoxLayout):
             save.text = '已保存' if _ok else '保存失败'
             Clock.schedule_once(lambda _d: setattr(save, 'text', '保存日志(txt)'), 2.5)
 
-        save.bind(on_release=_do_save)
+        if save is not None:
+            save.bind(on_release=_do_save)
         close.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
@@ -14387,6 +14522,54 @@ class RootWidget(BoxLayout):
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
+    def _show_bench_detail(self, r):
+        """「测试历史（渲染 / SoC）」某一条的**详情** —— 点开的就是跑完那一刻的成绩面板。
+
+        玩家 2026-09-16: 「右侧新增一个详情按钮, 点击打开的就是**跑分后的弹窗**,
+        包含**帧率曲线**什么的。和高压测试那个类似」。
+
+        ⚠️ 正文走 `_bench_score_text(r)` —— **与现场那个成绩面板共用同一份渲染**,
+           所以两边永远长一样(本工程的规矩: 两处各写一份迟早脱钩)。
+        ⚠️ **不存逐帧数据**: 帧率曲线**只有刚跑完那一次**能看(原始采样还在内存里);
+           历史行**能找到数据就给按钮, 找不到就不给**(玩家 2026-09-16 定的)。
+        """
+        content = BoxLayout(orientation='vertical', padding=dp(14), spacing=dp(8))
+        title_lbl = self._fit_line(Label(text='测试详情', bold=True, halign='center',
+                                         color=hex_rgb(COL_TEXT) + (1,),
+                                         size_hint_y=None, height=dp(28)), 20)
+        content.add_widget(title_lbl)
+        body = Label(text=_bench_score_text(r), font_size='15sp', halign='left',
+                     valign='top', color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None)
+        self._auto_h(body, dp(190), dp(6))
+        content.add_widget(body)
+        # ⚠️ 2026-09-16 玩家: 「我已经放弃在历史记录中显示帧率曲线了 … **只有当前跑的
+        #    那次**有这个帧率曲线」+ 「**如果能找到数据就[有], 否则没有**」。
+        #    ⇒ **不存任何逐帧数据**(省掉 100 条 × 数千个数): 原始采样
+        #      `_render_gaps_ms` 就在内存里, 只有它还在、而且这条记录就是**刚跑的那一次**时才给按钮。
+        #    ⚠️ 判据是 `r is self.bench_history[-1]` **且** `_render_gaps_ms` 非空:
+        #       重启后最新那条是上一局的记录, 而内存里已经没有逐帧数据
+        #       ⇒ **不给按钮**(后面那种情况给一个点开是**空图**的按钮, 比没按钮更糟)。
+        #    ⚠️ 这条路上 `_show_fps_curve()` **带默认参数**调——它读的就是内存里那一轮,
+        #       而那一轮正好就是这条记录 ⇒ 「保存日志」也是**对的**那一轮, 不用屏。
+        _btns = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        _live_gaps = list(getattr(self, '_render_gaps_ms', None) or [])
+        if _live_gaps and self.bench_history and (r is self.bench_history[-1]):
+            curve_btn = Button(text='帧率曲线', font_size='16sp', bold=True,
+                               background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
+            curve_btn.bind(on_release=lambda *_: self._show_fps_curve())
+            _btns.add_widget(curve_btn)
+        close_btn = Button(text='关闭', font_size='16sp', bold=True, background_normal='',
+                           background_color=hex_rgb(COL_BTN_OFF) + (1,))
+        _btns.add_widget(close_btn)
+        content.add_widget(_btns)
+        _vw, _vh = self._veq()
+        popup = RotPopup(title='', content=content, size_hint=(None, None),
+                         width=0.90 * _vw, height=0.66 * _vh,
+                         auto_dismiss=True, separator_height=0)
+        close_btn.bind(on_release=popup.dismiss)
+        popup.open()
+        self._popup_fit_content(popup, content)
+
     def _show_bench_history(self):
         """性能测试历史：每次完整测试严格一行，保留时间、帧率与 SoC 波动。
 
@@ -14443,7 +14626,14 @@ class RootWidget(BoxLayout):
             #    `中位跑分 / 波动` **89** = 合计 **298px**, 内容区约 290px
             #    ⇒ 按比例配成 110/92/88, **全表共用一个字号**(实测落 13.16sp)。
             #    ⚠️ 表头与数据行**共用同一个宽度元组** —— 否则两边各对一套栅格、永远对不齐。
-            _HW = (dp(110), dp(92), dp(88))
+            # ⚠⚠ 2026-09-16 重量(两件事一起改):
+            #    ① 时间去掉年份后只要 **76px**(`09-15 14:07`), 而时间列还是 110dp;
+            #    ② 新增一列「详情」按钮(玩家 2026-09-16: 「右侧新增一个详情按钮」)。
+            #    ⇒ 80 + 66 + 92 + 50 = **288**(与原来 290 同量级, 弹窗宽度一个字不用改)。
+            #    ⚠️ 字号账: 时间 76≤80 · 数据 `13.2/10.4` 61≤66 · `20300/1.23%` 86≤92
+            #       ⇒ 三列全都放得下 ⇒ **全表字号回到 sp(14)**(去年份前是 13.16sp)。
+            #    ⚠️ 加列最容易挤坏的**不是文字, 是那个按钮**(旧事故: 「详情」被挤成 25px)。
+            _HW = (dp(80), dp(66), dp(92), dp(50))
             _table_w = sum(_HW)
             # ⚠️⚠️ **表头独立排版**(2026-09-15 玩家定稿): 表头**不再**和数据行共用 `_HW`。
             #    玩家原话:「你让表头和表格内的内容不对齐就可以了, 时间才 2 个字, 内容那么长」
@@ -14455,6 +14645,11 @@ class RootWidget(BoxLayout):
             #    代价: 表头与数据**不逐列对齐** —— 玩家已确认接受这一条。
             #    ⚠️ 宽度按基准 `sp(14)` 量(不是裸 14.0 —— 那是**绝对 px**, density=2 的机器上
             #       只有一半大), 再夹到不超过数据行总宽, 免得窄屏上表头比数据还宽。
+            # ⚠️⚠️ 分母是 **3**(= 表头**自己**有几格), **不是 4**(数据行的列数)。
+            #    2026-09-16 试过改成 4.0 —— 那是错的: 上限被压到 `288/4*1.6 = 115px`,
+            #    而表头「中位分/平均差系数」要 **117px** ⇒ **折成两行**, 而这一排只有
+            #    dp(22) 高, 第二行那个「数」被顶出格子(截图实证)。
+            #    这个上限的本意只是"别让表头比数据块还宽", 3.0 给的余量正合适。
             _head_w = [min(_table_w / 3.0 * 1.6, max(dp(30), text_px(_t, sp(14)) + dp(6)))
                        for _t in _HIST_COLS]
             _hw_sum = sum(_head_w)
@@ -14531,6 +14726,13 @@ class RootWidget(BoxLayout):
                     lbl.bind(size=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
                     row.add_widget(lbl)
                     rows[_i].append(lbl)
+                # ⚠️ 第四列是**按钮**(唯一一个), **不进"全表统一字号"** —— 它不是数据格。
+                #    (SOC 那张表同款; 按钮的文字由它自己的 font_size 管。)
+                btn = Button(text='详情', font_size='14sp', bold=True,
+                             background_normal='', size_hint_x=None, width=_HW[3],
+                             background_color=hex_rgb(COL_BTN) + (1,))
+                btn.bind(on_release=lambda _b, rr=r: self._show_bench_detail(rr))
+                row.add_widget(btn)
                 inner.add_widget(row)
             # ⚠️⚠️ **全表共用一个字号**(玩家 2026-09-15:「项目内的字体大小改成相同」)。
             #    做法: **逐列**量出"这一列最多能放多大"(`fit_font_size` 走的是同一套阶梯),
@@ -14541,7 +14743,9 @@ class RootWidget(BoxLayout):
             #       会被最窄列(88px)拖死, 整表缩到 ~11sp。
             #    ⚠️ 必须 `sp(14)` 而不是 `14.0`: 这个形参是**绝对字号(px)**, 传裸 14.0 在
             #       density=2 的机器上只有一半大(实测被探针逮住过)。
-            _groups = [[_heads[_i]] + rows[_i] for _i in range(len(_HW))]
+            # ⚠️ **按数据列数**(`_HIST_COLS`, 3), 不是 `len(_HW)`(4) —— `_HW` 多出来的那一项
+            #    是按钮列, 而 `rows` 只有 3 组 ⇒ 按 4 会 IndexError。
+            _groups = [[_heads[_i]] + rows[_i] for _i in range(len(_HIST_COLS))]
             _fs_all = None
             for _i, _g in enumerate(_groups):
                 # ⚠️⚠️ **字号必须按「数据列宽」`_HW` 算, 不能按表头列宽 `_head_w`**
