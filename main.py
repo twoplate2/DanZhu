@@ -10120,6 +10120,17 @@ def _bench_score_text(d):
             '%s'
             '每次发射：需 %.0f 步模拟\n'
             '　　计算用时 %s　飞行用时 %s　富余 %s\n'
+            # ⚠️ 2026-09-16 玩家: 「**额外显示** 每次飞行平均需 x 步运算, 每次飞行平均需 x 秒,
+            #    每次飞行时间内可以完成 x 次飞行模拟。**这里面的数值用的还是这五次飞行的
+            #    平均值, 可以取一位小数点**」。
+            #    ⇒ 三条**整句**(不用术语、带单位), 与上面那行是**同一批数**的两种说法 ——
+            #      玩家明确选了"叠加"(见 2026-09-16 的问答), 不是替换。
+            #    ① 步运算 = 每发平均步数(一位小数); ② 秒 = 飞行用时 ÷ 1000;
+            #    ③ 次 = 那个倍率(飞行÷计算) —— 换句话说就是"这一趟的时间里够算几趟"。
+            #    ⚠️ 任一取不到一律印「—」, **绝不回填**。
+            '每次飞行平均需 %s 步运算\n'
+            '每次飞行平均需 %s 秒\n'
+            '每次飞行时间内可以完成 %s 次飞行模拟\n'
             '%s') % (
         _dv, int(_g('phys_runs', 0) or 0), int(_g('phys_fps', 0) or 0),
         int(_g('phys_min', 0) or 0), int(_g('phys_max', 0) or 0),
@@ -10128,6 +10139,9 @@ def _bench_score_text(d):
         ('%.1f ms' % float(_g('cost_ms'))) if _g('cost_ms') else '—',
         ('%.1f ms' % float(_g('flight_ms'))) if _g('flight_ms') else '—',
         ('%.1f 倍' % float(_g('margin'))) if _g('margin') else '—',
+        ('%.1f' % float(_g('avg_frames'))) if _g('avg_frames') else '—',
+        ('%.1f' % (float(_g('flight_ms')) / 1000.0)) if _g('flight_ms') else '—',
+        ('%.1f' % float(_g('margin'))) if _g('margin') else '—',
         _low_txt)
 
 class RootWidget(BoxLayout):
@@ -12667,7 +12681,11 @@ class RootWidget(BoxLayout):
         _rec = {
             "time": time.strftime("%Y-%m-%d %H:%M"),
             "phys_fps": int(phys_fps),
-            "avg_frames": int(avg_frames),
+            # ⚠️ 2026-09-16: `int()` -> **一位小数**。玩家新加的那三条整句里
+            #    「每次飞行平均需 x 步运算」要**一位小数**, 取整就永远印 `.0` 了。
+            #    ⚠️ 老记录里存的是整数 ⇒ 读出来补 `.0`, 不影响(`_bench_score_text` 是
+            #       唯一读者, 两处格式化都能吃 float)。
+            "avg_frames": round(avg_frames, 1),
             "cost_ms": round(cost_ms, 1),
             # 每发的**飞行用时**(ms, 渲染采样 5 发的实测均值) 与**富余倍数**(飞行÷计算)。
             # ⚠️ 老记录没有 ⇒ 详情那行印「—」, **不回填**。
