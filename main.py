@@ -12028,7 +12028,13 @@ class RootWidget(BoxLayout):
         #    ⚠️ 有上限(最多等 20 秒): 预热万一卡住也不能把跑分永远挂在这儿 —— 本模块
         #    唯一的红线是"绝不软锁"。
         self._bench_wait_bake = 0.0
-        self._await_prebake()
+        # ⚠⚠ 2026-09-16 玩家(质疑得对): 「**延时执行？**」
+        #    重置珠子会刷新 HUD 上几个标签 ⇒ **文字纹理重建是下一帧才发生的**。
+        #    而 `_await_prebake` 在预热早就完成时(玩过一会儿再跑分,
+        #    **最常见**)会**当场**调 `_start_benchmark()` ⇒ 重置与"开始收样本"
+        #    落在**同一帧** ⇒ 那次重建**正好落进采样窗口** ✗✗
+        #    ⇒ **让出 0.1 秒**(约 3 帧) 再开始采样; 对整场 44.5 秒可忽略。
+        Clock.schedule_once(lambda _dt: self._await_prebake(), 0.1)
 
     def _await_prebake(self, dt=0):
         """预热没跑完就先等着(最多 20 秒), 跑完再开采样。见 `_start_bench_test` 处说明。"""
