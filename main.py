@@ -877,6 +877,20 @@ _FREQ_GATE = [True]
 # ⚠️ 样本之间有 `gap_sec`(5 秒 × 4 次)不烧 CPU ⇒ 那几秒数字**不动**, 那是事实不是卡住。
 _PHYS_PROG = [0.0]        # 已跑掉的 CPU 秒(工作线程写, 主线程读)
 _PHYS_TOTAL_SEC = [0.0]   # 这次一共要跑多少 CPU 秒(每次开跑时按实参算好)
+# ⚠⚠ **模拟盖子里还有"等待"**(样本之间的 `gap_sec` 睡眠):
+#    那几秒**不烧 CPU** ⇒ 光看 CPU 秒的话数字会**冻住**。
+#    2026-09-16 玩家: 「跑分的 24 秒上限有问题, **经常出现每秒不更新**的情况,
+#    **空闲的时候也要更新**, 所以你是不是漏考虑了等待时间」。
+#    ⇒ 分母加上等待总量, 分子加上**实际睡掉的秒数**。两边都是
+#    真实时间, 且**分子不再冻住**, 也不会提前顶到头。
+_PHYS_SLEPT = [0.0]       # 已结束的那几段等待的总秒数
+# ⚠⚠ **正在等待的起点**(0 = 没在等)。这个必须单独发 ——
+#    2026-09-16 测出来的教训: 只把睡眠时长在**睡完之后**累加进 `_PHYS_SLEPT`
+#    是**不够**的: 睡的那 5 秒里 `_PHYS_SLEPT` 一动不动 ⇒ 数字照样冻着
+#    (探针 P6 实测冻 **2.80 秒**, 而该冻的上限只有 ~1.4 秒的正常节奏)。
+#    ⇒ 把起点也发出去, 由**读的一侧**按墙钟实时累加。结束时归零并并入 `_PHYS_SLEPT`
+#    ⇒ 不会重复计一段。
+_PHYS_WAIT_T0 = [0.0]
 
 
 # ⚠️⚠️ 这段注释 2026-09-15 **改写过** —— 旧版写的是"那 2 倍只能来自 DVFS(核心频率)",
@@ -1191,8 +1205,13 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
     # ⚠️ 探针会把参数改小(`temp/_bench_*`), 所以按**实参**现算, 不写死常量。
     _t0 = [cpu_clock()]
     _PHYS_PROG[0] = 0.0
+    _PHYS_SLEPT[0] = 0.0
+    _PHYS_WAIT_T0[0] = 0.0
+    # ⚠️ 分母 = CPU 秒总量 + **等待总量**(`runs-1` 次样本间睡眠)。
+    #    两者都是玩家真在等的时间 ⇒ 不会冻住也不会提前顶头。
     _PHYS_TOTAL_SEC[0] = ((_BENCH_HEAD_SEC + warmup_cpu_sec)
-                          + runs * (_BENCH_HEAD_SEC + sample_cpu_sec))
+                          + runs * (_BENCH_HEAD_SEC + sample_cpu_sec)
+                          + max(0, runs - 1) * float(gap_sec or 0.0))
     _run_once(warmup_cpu_sec, 98765)   # 升频/Python 热身，不计成绩
 
     # ⚠️⚠️ **把这条线程的 CPU 亲和性记下来**(2026-09-15)。真机实测(红米 K90 Pro Max):
@@ -1220,10 +1239,16 @@ def benchmark_trajectories(warmup_cpu_sec=SOC_WARMUP_CPU_SEC,
             _prev_fc, _prev_wt = _FRAME_CALLS[0], time.time()
         if _i > 0 and gap_sec > 0:
             _FREQ_GATE[0] = False      # 关门 → 这几秒的频率不进平均
+            _g0 = time.time()
+            _PHYS_WAIT_T0[0] = _g0     # 告诉读的一侧"从这一刻开始在等"
             try:
                 time.sleep(gap_sec)    # ⚠️ 只在样本之间停, 第一轮前不停(预热刚做完)
             finally:
                 _FREQ_GATE[0] = True   # ⚠️ finally: 中断了也必须把门开回来
+                _PHYS_WAIT_T0[0] = 0.0     # ⚠️ **先清起点再累加**, 否则这一段被算两次
+                # ⚠️ 用**实测**睡眠时长(不是 `gap_sec` 常量): 系统调度
+                #    可能让 `sleep` 多睡一点, 而进度里那一秒就该是真实的。
+                _PHYS_SLEPT[0] += max(0.0, time.time() - _g0)
         flights, frames, used = _run_once(sample_cpu_sec, 12345)
         fps_list.append(frames / used)
         cpu_seconds_list.append(used)
@@ -11125,7 +11150,13 @@ class RootWidget(BoxLayout):
             #       那是**事实**(那几秒确实没在算), 不是卡住。
             #    ⚠️ 超了就**封顶**, 不造第二句会跳动的文案(同 SOC 那段)。
             _dt = float(_PHYS_TOTAL_SEC[0]) or 1.0
-            _dd = float(_PHYS_PROG[0])
+            # ⚠️ 分子 = CPU 秒 + **实际睡掉的秒** —— 等待那几秒也是玩家在等,
+            #    不算就会"每秒不更新"(玩家 2026-09-16 报的)。
+            # ⚠️ 还要加上**正在进行的那段等待**(按墙钟实时算) ——
+            #    否则睡的 5 秒里数字照样冻着(探针实测 2.80 秒 不动)。
+            _w0 = float(_PHYS_WAIT_T0[0])
+            _wait = max(0.0, time.time() - _w0) if _w0 > 0 else 0.0
+            _dd = float(_PHYS_PROG[0]) + float(_PHYS_SLEPT[0]) + _wait
             return "物理跑分 %d/%d秒" % (min(int(_dd), int(_dt)), int(_dt))
         return None
 
@@ -12096,17 +12127,28 @@ class RootWidget(BoxLayout):
             #    每次归零就是新的一发 ⇒ 按它切段、段内帧间隔求和。
             #    ⚠️ 不能拿"两次 launch 的间隔"代替: 那个里面还包含下一发的
             #       蓄力延时(0.1 秒)与 tick 节拍(0.1 秒), 会系统性地多算 ~0.15 秒。
+            # ⚠⚠ 判据是"计数器**回落**"而**不是**"等于 0"。
+            #    2026-09-16 玩家发现 `飞行用时` 印出来像**五次之和**:
+            #    根因就在这里 —— `_SINCE_LAUNCH[0] = 0` 写在 `launch()` 里,
+            #    而 `_SINCE_LAUNCH[0] += 1` 在**另一处**(`_on_flip` 之外), 两者与
+            #    `_bench_frames.append` 的先后不保证 ⇒ 发射那帧被记下来时
+            #    计数器**很可能已经是 1 而不是 0** ⇒ `== 0` 一次都不成立
+            #    ⇒ **整场只切出一段**(那一段 = 整个采样窗口)。
+            #    改成"当前值 <= 上一个值"就开新段: 0 跟 1 都能认出来,
+            #    而飞行中计数器只增不减 ⇒ 不会误切。
             _fl_ms = []
             _seg = None
+            _prev_sl = None
             for _f in (getattr(self, "_bench_frames", None) or []):
                 if len(_f) < 9:
                     continue
-                if _f[8] == 0:                 # 这一帧就是某一发的发射帧
+                _sl = _f[8]
+                if _prev_sl is None or _sl <= _prev_sl:   # 回落 = 新的一发
                     if _seg is not None:
                         _fl_ms.append(_seg)
                     _seg = 0.0
-                if _seg is not None:
-                    _seg += float(_f[0] or 0.0)
+                _seg += float(_f[0] or 0.0)
+                _prev_sl = _sl
             if _seg is not None:
                 _fl_ms.append(_seg)
             self._render_flight_ms = [x for x in _fl_ms if x > 0]
