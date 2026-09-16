@@ -11256,7 +11256,12 @@ class RootWidget(BoxLayout):
             #       精确比雅致重要(且旧日志里已经是这个词)。
             # ⚠️ 后面那个"秒"字保留 —— 玩家只要求改**数字**与**节拍**,
             #    没要求把单位写成"半秒"(那反而不好读)。
-            return "物理演算 %d/%d秒" % (_d2, _cap2)
+            # ⚠️ 2026-09-16 玩家(看了截图): 「这个**不是** 物理验算 x/88秒,
+            #    **而是** 物理验算**进度** x/88」
+            #    ⇒ 加上「进度」两字、**去掉「秒」**。
+            #    ⚠️ 去掉秒字后, "半秒一格"就不再在字面上了 —— 那正是玩家要的
+            #       (他要的是"进度条", 不是"秒表")。
+            return "物理演算进度 %d/%d" % (_d2, _cap2)
         return None
 
     def _prog_tick(self, dt=0):
@@ -11916,48 +11921,59 @@ class RootWidget(BoxLayout):
             v.drop()
         self._show_replay_detail()
 
-    def _snap_bench_counters(self):
-        """跑分前**快照**玩家的弹珠数 / 投中数 —— 跑完原样放回。
+    def _bench_set_balance(self, v):
+        """把余额**直接设成 v** 并同步显示/动画基准 —— 不碰输入、不播音、不写状态栏。
 
-        玩家 2026-09-16: 「跑分前(模拟测试)**需重置弹珠数量**, 跑分完成后
-        也需要重置这个数量」。
-
-        ⚠️ 为什么是**快照+还原**而不是直接调 `reset_balance()`:
-           · 它会把 `plays/hits` **清零** —— 那是玩家**真实的累计投中数**
-             (而且会写进配置) ⇒ 跑一次测试就抹掉 ✗。
-           · 它还会 `_set_controls_enabled(True)`(**解锁输入**)、播 `cash` 音效、
-             写状态栏「已重置」 —— 跑分期间这三样**全是错的**。
-        ⚠️ 跑分期间弹珠数**一定会涨**: 固定盘面 `BENCH_BOARD` 每发都中奖,
-           5 发下来能翻好几倍(玩家截图实证「弹珠 164000 / 累计48投48中」)。
-        ⇒ 净效果 = **这个测试完全不碰你的弹珠数与投中数**。
+        ⚠️ 三个 `_anim_*` **必须一起同步** —— 不同步的话余额会**从旧值开始滚动**
+           (`reset_balance` 里也是这么写的)。
         """
         try:
-            self._bench_snap = (int(self.balance), int(self.plays), int(self.hits),
-                                int(getattr(self, "round_plays", 0) or 0))
-        except Exception:
-            self._bench_snap = None
-
-    def _restore_bench_counters(self):
-        """把快照放回去(**幂等**: 放回后清掉快照, 重复调无害)。"""
-        _s = getattr(self, "_bench_snap", None)
-        if not _s:
-            return
-        self._bench_snap = None
-        try:
-            _bal, _pl, _hi, _rp = _s
-            self.balance = int(_bal)
-            self.plays = int(_pl)
-            self.hits = int(_hi)
-            self.round_plays = int(_rp)
-            # ⚠️ 这三个不能漏: 不同步的话余额会**从被污染的值开始滚动**
-            #    (reset_balance 里也是这么写的)。
-            self.display_balance = float(self.balance)
-            self._anim_target_balance = float(self.balance)
-            self._anim_start_balance = float(self.balance)
+            self.balance = int(v)
+            self.display_balance = float(v)
+            self._anim_target_balance = float(v)
+            self._anim_start_balance = float(v)
             self._anim_start_time = time.time()
             self._refresh_stats()
         except Exception:
             pass
+
+    def _bench_counters_begin(self):
+        """跑分**开始前**: 弹珠数**重置成起始值**; 投中数先记下, 跑完再放回。
+
+        玩家 2026-09-16: 「不对, 我点击开始模拟的时候, **弹珠数量不是从 1000 开始的**,
+        每次开始模拟前, 不是要**重置一次弹珠数量**吗?」
+
+        ⚠️ 上一版我做成了"快照 + 原样放回" —— **会错意了**: 那样跑的时候弹珠数
+           照样从当前值往上滚, 只是跑完还回来。玩家要的是**开始就归零到起始值**
+           (`START_BEADS` = 1000)。
+        ⚠️ **投中数不同处理**: 玩家只说"弹珠数量", 而 `plays/hits` 是他**真实的累计投中数**
+           (而且写进配置) ⇒ 那两项仍然"记下再放回", **不归零**(=不抹他的记录)。
+        ⚠️ 依然**不走 `reset_balance()`**: 那个会解锁输入、播 `cash` 音效、写状态栏。
+        """
+        try:
+            self._bench_snap = (int(self.plays), int(self.hits),
+                                int(getattr(self, "round_plays", 0) or 0))
+        except Exception:
+            self._bench_snap = None
+        self._bench_set_balance(START_BEADS)
+
+    def _bench_counters_end(self):
+        """跑分**结束后**: 弹珠数**再重置一次**(玩家: 跑分完成后也需要重置);
+        投中数放回跑前的值(不让测试那 5 发把它撑大)。
+
+        ⚠️ 幂等: 快照只能用一次(用完置 None) ⇒ 重复调无害。
+        """
+        _s = getattr(self, "_bench_snap", None)
+        self._bench_snap = None
+        if _s:
+            try:
+                _pl, _hi, _rp = _s
+                self.plays = int(_pl)
+                self.hits = int(_hi)
+                self.round_plays = int(_rp)
+            except Exception:
+                pass
+        self._bench_set_balance(START_BEADS)
 
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
@@ -11965,7 +11981,7 @@ class RootWidget(BoxLayout):
         # ⚠️ 2026-09-16: **快照弹珠数/投中数** —— 下面的渲染采样会发 5 发球、
         #    每发都中奖 ⇒ 不快照的话玩家的弹珐数会被这次测试撑大。
         #    还原在 `_run_benchmark` 的 `finally` 里(异常路径也罩得住)。
-        self._snap_bench_counters()
+        self._bench_counters_begin()
         # ⚠️⚠️ **把随机钉死 —— 跑分必须是"放录像", 不是"再抽一次"(2026-09-14, 玩家提的)。**
         #   病根: 每轮球的落格是随机的 ⇒ 中奖次数不同 ⇒ **装杯时长不同** ⇒ 内容配比每轮都不一样。
         #   实测连续三轮的装杯占比是 **25.2% / 30.6% / 38.2%**, 而 1%Low 是 92.4 / 92.2 / 88.4 ——
@@ -12705,7 +12721,7 @@ class RootWidget(BoxLayout):
             # ⚠️ **把弹珠数/投中数还回去**(2026-09-16 玩家) ——
             #    放在 `finally` 里是刻意的: **异常路径也得还**。
             #    ⚠️ 必须在 `_bench_fps_lock_off` **之后** —— 门禁 L6 查的是 `finally:` 的**首行**。
-            self._restore_bench_counters()
+            self._bench_counters_end()
             # ⚠️ **兜底撤黑屏**(异常路径) —— 与波 2 同一条规矩, 理由见 `_hp_done` 的说明:
             #    正常路径由 `_bench_done` 撤, 这里管"跑分中途抛异常"那条 —— 没有它黑屏会
             #    永久留在屏幕上。`_hide_bench_dim` 幂等, 重复调无害。
@@ -12847,7 +12863,7 @@ class RootWidget(BoxLayout):
     def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
         # ⚠️ 兑底再还一次(幂等, 重复调无害): `_run_benchmark` 的 `finally`
         #    正常路径已经还过了, 这里只是防那条路被绕过。
-        self._restore_bench_counters()
+        self._bench_counters_end()
         self.game_area.hide_bench_badge()
         # ⚠️ 撤黑屏。**注释 2026-09-15 更正过**: 旧版这里写的是"兼容旧路径: 当前跑分不再置灰"
         #    —— 那句话在 v0.7.82 之后就**过期了**(黑屏+白字是那一版重新启用的)。
