@@ -868,15 +868,15 @@ SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
 #    上面那段说明), 新加的常量一律别再挂 `SOC_`。
 HP_SAMPLE_SEC = 10.0
 
-# ⚠️ **高压测试的 CPU 频率采样: 掐头去尾各多少秒**(玩家 2026-09-16:
-#    「CPU频率采样, 调整为**只对第12秒到第348秒生效, 掐头去尾**」)。
-#    360 秒的局 ⇒ 只统计 **[12, 348] 秒**这一段里的采样。
+# ⚠️ **高压测试的 CPU 频率/电池温度采样窗口**(玩家 2026-09-16:
+#    「只对第1秒到第359秒生效, 掐头去尾」)。
+#    360 秒的局 ⇒ 只统计 **[1, 359] 秒**这一段里的采样。
 #    两端确实不该算: **头**那一秒 CPU 才刚被拉起来(还在爬频),"平均频率"会把爬坡算进去;
 #    **尾**那一秒测试已经收尾、下一轮排队的调度动作也在动。这与跑分成绩那边
 #    「掐头 0.5 秒(起跑段)/ 不掐尾」是同一条思路 —— **只在跑匀了的那一段上量尺子**。
 #    ⚠️ 窗口用**绝对时刻**表达(见 `_freq_sampler_start` 的 `win`), 与 `_hp_wall0` 同源;
 #       不要写成"线程跑起来之后 N 秒", 那会差出锁核/探测拓扑那几十毫秒。
-HP_FREQ_TRIM_SEC = 12.0
+HP_FREQ_TRIM_SEC = 1.0
 # 渲染采样窗口自动发几颗球(原来是 `self._target_launches = 5` 写死在跑分函数里, 提成常量)。
 BENCH_TARGET_LAUNCHES = 5
 
@@ -1505,15 +1505,18 @@ def _alloc_probe(cpu_seconds=0.05, blocks=_PROBE_BLOCKS):
 def _freq_sampler_start(win=None):
     """起一个主频采样线程, 返回 `(频率列表, 停止标志)`。
 
-    每轮读完所有 CPU 的 sysfs 后 `sleep(0.5)`, 所以真实间隔 = **读取耗时 + 0.5 秒**,
-    并非固定 2Hz。真机 358 秒窗口实测约 424 点, 即约 0.84 秒/点;
-    设备的 sysfs 和调度耗时不同, 点数也可能不同。曲线横轴因此只是“按时间顺序的
-    样本序号”, 不能当作精确秒数。
+    高压测试传入 `win` 时按绝对墙钟 1Hz 采集: 目标时刻是
+    `win[0] + 0, 1, 2...`，读 sysfs 的耗时不累加到下一个时刻。因此 `[1,359]`
+    包含两端时目标为 359 个点, 第 N 个点对应测试的第 N 秒;
+    某次读取失败或耗时超过 1 秒就如实少一点, 不复制旧值凑数。
+
+    波 1 传 `win=None` 时保持旧行为: 每轮读完后 `sleep(0.5)`, 并由
+    `_FREQ_GATE` 排除样本间的等待段。
 
     用 `_cpufreq_mhz()`(读 sysfs), 非安卓/读不到时**采不到任何值**, 列表保持为空 ——
     调用方据此印「没采到」, **不印假数**。
     ⚠️ 同一个循环里顺带累加**逐核**频率(`_FREQ_CORE_STATS`, 见 `_cpufreq_cores`) ——
-       多开几个小文件读, 0.5 秒一次, 开销可忽略。
+       波 1 每轮后等 0.5 秒; 高压测试按绝对墙钟每 1 秒一次。
 
     ⚠️⚠️ `win`(可选)是一个**可变容器** `[起, 止]`, 装的是**绝对时刻**(`time.time()` 口径);
        只有落在 `起 <= now <= 止` 里的样本才计数(玩家 2026-09-16 要的「**掐头去尾**」)。
@@ -1530,62 +1533,150 @@ def _freq_sampler_start(win=None):
     _FREQ_CORE_STATS.clear()
     _t0 = time.time()
 
+    def _read_one():
+        """读一个时刻; 任一 sysfs 失败都不让采样线程退出。"""
+        try:
+            # ⚠️ **关门期间不采**(见 `_FREQ_GATE`): 样本之间那几秒 sleep 里 CPU 是闲的,
+            #    采进来会把"跑分时的平均频率"拖低。
+            if not _FREQ_GATE[0]:
+                return
+            # 一次读全, 频率曲线与逐核统计共用, 不重复读 sysfs。
+            _cores = _cpufreq_cores()
+            # 只统计跑分核; 锁核失败或读不到时才退回全体取最大值。
+            _pin = set(_BENCH_CPU_PIN.get("actual") or ())
+            _sel = [_cm for _ci, _cm, _ca in _cores if (not _pin) or (int(_ci) in _pin)]
+            if not _sel:
+                _sel = [_cm for _ci, _cm, _ca in _cores]
+            _v = max(_sel) if _sel else _cpufreq_mhz()
+            if _v > 0:
+                _frq.append(_v)
+            for _ci, _cm, _ca in _cores:
+                _e = _FREQ_CORE_STATS.get(_ci)
+                if _e is None:
+                    _e = [_cm, 1, _cm, _cm, 0.0, 0]
+                    _FREQ_CORE_STATS[_ci] = _e
+                else:
+                    _e[0] += _cm
+                    _e[1] += 1
+                    if _cm < _e[2]:
+                        _e[2] = _cm
+                    if _cm > _e[3]:
+                        _e[3] = _cm
+                if _ca > 0:
+                    _e[4] += _ca
+                    _e[5] += 1
+        except Exception:
+            pass
+
     def _samp():
+        if win is None:
+            while not _stop[0]:
+                _read_one()
+                time.sleep(0.5)
+            return
+
+        _next = None
         while not _stop[0]:
             try:
-                # ⚠️ **关门期间不采**(见 `_FREQ_GATE`): 样本之间那几秒 sleep 里 CPU 是闲的,
-                #    采进来会把"跑分时的平均频率"拖低 —— 玩家要的是"跑分时"的平均。
-                _on = _FREQ_GATE[0]
-                if _on and win is not None:
-                    _now = time.time()
-                    _on = (win[0] > 0.0) and (win[0] <= _now <= win[1])
-                if _on:
-                    # ⚠️⚠️ **一次读全, 两处用途共用**(原来这里先调 `_cpufreq_mhz()` 读一遍、
-                    #    再由 `_cpufreq_cores()` 读一遍 ⇒ 每个 tick 白读 8 个文件)。
-                    _cores = _cpufreq_cores()
-                    # ⚠️⚠️ **只统计"跑分核"的频率**(玩家 2026-09-16: 「这个频率应该看的是
-                    #    **大核的数据**吧?」)。原来 `_frq` 装的是 `_cpufreq_mhz()` = **所有核
-                    #    里的最大值** —— 只要任何一个核(哪怕跑分线程根本不在上面)瞬间冲到最高,
-                    #    那一格就记那个数, 报出来的不是"我这列车跑多快"。
-                    #    而跑分线程是**锁核**的(`_bench_pin_fast_cpus` 把 affinity 收到最高
-                    #    性能簇, 面板那行「跑分只跑这几个核：cpu6、cpu7」就是它)
-                    #    ⇒ 该看的就是**那几个核**。
-                    #    ⚠️ 锁核信息**延迟才有**(锁核在采样线程起来之后才做, 理由见 `win` 那段)
-                    #       ⇒ 每次 tick **现读一次** `_BENCH_CPU_PIN["actual"]`, 不能缓存。
-                    #    ⚠️ 锁核失败/未锁核时 `actual` 为空 ⇒ 退回"全体取最大"(老行为),
-                    #       那时面板会印「CPU 频率」而不是「跑分核频率」(见 `_hp_result_text`)。
-                    _pin = set(_BENCH_CPU_PIN.get("actual") or ())
-                    _sel = [_cm for _ci, _cm, _ca in _cores
-                            if (not _pin) or (int(_ci) in _pin)]
-                    if not _sel:                      # 锁的那几个核**一个都没读到** ⇒ 退回全体
-                        _sel = [_cm for _ci, _cm, _ca in _cores]
-                    _v = max(_sel) if _sel else _cpufreq_mhz()
-                    if _v > 0:
-                        _frq.append(_v)
-                    for _ci, _cm, _ca in _cores:
-                        _e = _FREQ_CORE_STATS.get(_ci)
-                        if _e is None:
-                            _e = [_cm, 1, _cm, _cm, 0.0, 0]
-                            _FREQ_CORE_STATS[_ci] = _e
-                        else:
-                            _e[0] += _cm
-                            _e[1] += 1
-                            if _cm < _e[2]:
-                                _e[2] = _cm
-                            if _cm > _e[3]:
-                                _e[3] = _cm
-                        if _ca > 0:              # 实际值: **读到才算**, 读不到不进分母
-                            _e[4] += _ca
-                            _e[5] += 1
+                _start, _end = float(win[0]), float(win[1])
             except Exception:
-                pass
-            time.sleep(0.5)
+                _start = _end = 0.0
+            if _start <= 0.0 or _end < _start:
+                time.sleep(0.05)
+                continue
+            if _next is None:
+                _next = _start
+            if _next > _end:
+                return
+            _now = time.time()
+            if _now < _next:
+                time.sleep(min(0.10, max(0.01, _next - _now)))
+                continue
+            _read_one()
+            _next += 1.0
+            _after = time.time()
+            if _next <= _after:
+                _next = _start + (int((_after - _start) // 1.0) + 1) * 1.0
 
     try:
         threading.Thread(target=_samp, daemon=True).start()
     except Exception:
         pass
     return _frq, _stop
+
+
+def _battery_temp_c():
+    """读当前电池温度(摄氏度), 读不到返回 `None`。
+
+    Android `ACTION_BATTERY_CHANGED` 里的 `EXTRA_TEMPERATURE` 单位是 0.1℃。
+    这是**电池**传感器, 不是 CPU/SoC 核心温度; 该 sticky broadcast 不需要
+    `BATTERY_STATS` 或其它额外权限。`receiver=None` 只取当前快照,
+    不会注册一个需要解绑的 Receiver。
+    """
+    if platform != "android":
+        return None
+    try:
+        from jnius import autoclass
+        _act = autoclass("org.kivy.android.PythonActivity").mActivity
+        _Intent = autoclass("android.content.Intent")
+        _IntentFilter = autoclass("android.content.IntentFilter")
+        _BatteryManager = autoclass("android.os.BatteryManager")
+        _status = _act.registerReceiver(None, _IntentFilter(_Intent.ACTION_BATTERY_CHANGED))
+        if _status is None:
+            return None
+        _raw = int(_status.getIntExtra(_BatteryManager.EXTRA_TEMPERATURE, -2147483648))
+        # 厂商未实现时可能返回默认值/异常值; 不让它污染平均值和曲线。
+        if _raw < -500 or _raw > 1200:
+            return None
+        return round(_raw / 10.0, 1)
+    except Exception:
+        return None
+
+
+def _battery_sampler_start(win, interval_sec=1.0):
+    """按绝对墙钟采集电池温度, 返回 `(温度列表, 停止标志)`。
+
+    与 CPU 频率采样不同, 这里下一次的时刻始终按 `win[0] + N秒`
+    计算, 所以读取 API 的耗时不会一轮轮累加成漂移。在 `[1,359]`
+    包含两端且每秒都读到的理想情况下, 会得到 359 个点。
+    """
+    _values = []
+    _stop = [False]
+    _step = max(0.1, float(interval_sec))
+
+    def _samp():
+        _next = None
+        while not _stop[0]:
+            _now = time.time()
+            try:
+                _start = float(win[0])
+                _end = float(win[1])
+            except Exception:
+                _start = _end = 0.0
+            if _start <= 0.0 or _end < _start:
+                time.sleep(0.05)
+                continue
+            if _next is None:
+                _next = _start
+            if _next > _end:
+                return
+            if _now < _next:
+                time.sleep(min(0.10, max(0.01, _next - _now)))
+                continue
+            _v = _battery_temp_c()
+            if _v is not None:
+                _values.append(float(_v))
+            # 按绝对时间追下一点; 若某次读取/调度超过一整个周期,
+            # 跳过已错过的时刻, 不在后面连续补读造成假密集点。
+            _next += _step
+            if _next <= _now:
+                _next = _start + (int((_now - _start) // _step) + 1) * _step
+
+    try:
+        threading.Thread(target=_samp, daemon=True).start()
+    except Exception:
+        pass
+    return _values, _stop
 
 
 def _pick(dist):
@@ -10305,9 +10396,12 @@ class SpeedCurve(Widget):
     Y_TICK_FRAC = 0.01         # 友好刻度的粒度 ≈ **轴量级**的 1%(照玩家那个例子反推的)
     Y_MIN_GAP_FRAC = 0.05      # 兜底: 最低点离底**至少**这么多(占轴高), 见 `_draw` 里的不等式
 
-    def __init__(self, vals, **kw):
+    def __init__(self, vals, value_decimals=0, flat_min_range=None, **kw):
         super().__init__(**kw)
         self._v = [float(x) for x in (vals or []) if x]
+        self._value_decimals = max(0, int(value_decimals))
+        self._flat_min_range = (self.Y_FLAT_MIN_RANGE if flat_min_range is None
+                                else max(0.1, float(flat_min_range)))
         self.bind(pos=self._draw, size=self._draw)
         Clock.schedule_once(self._draw, 0)
 
@@ -10354,7 +10448,7 @@ class SpeedCurve(Widget):
             _p_hi = max(_span_d * self.Y_PAD_FRAC, abs(_hi_d) * self.Y_PAD_VAL_MIN)
         else:
             _p_lo = _p_hi = max(abs(_lo_d) * self.Y_FLAT_FRAC,
-                                self.Y_FLAT_MIN_RANGE / 2.0)
+                                self._flat_min_range / 2.0)
         # 友好刻度: 粒度 = **留白后轴量级**的 1%, 抬到 1/2/5×10^k。
         # ⚠️ 粒度玩家没定("向外取整到友好刻度"只说了方向), **这一档是照他给的例子反推的** ——
         #    13280~35173 必须正好收成 **12000 ~ 36500**, 那个例子只有粒度 500 能做到。
@@ -10410,8 +10504,9 @@ class SpeedCurve(Widget):
             Line(points=_pts, width=1.15, joint="round")
         # ---- 刻度数字(画在 canvas 之外, 各开自己的上下文) ----
         # 纵轴: **成绩点**(玩家 2026-09-16: 「纵坐标需要一个成绩点」)
+        _vf = "%%.%df" % self._value_decimals
         for _val in (_hi, _mid, _lo):
-            self._txt(self.canvas, "%d" % int(_val), x0 - dp(5), _yy(_val) - dp(5), "right")
+            self._txt(self.canvas, _vf % _val, x0 - dp(5), _yy(_val) - dp(5), "right")
         # 横轴: **次数**(玩家: 「横坐标是次数 也需要标记几个数值」)—— 第几个样本
         for _k in (0, (_n - 1) // 2, _n - 1):
             _an = "left" if _k == 0 else ("right" if _k == _n - 1 else "center")
@@ -10420,21 +10515,15 @@ class SpeedCurve(Widget):
 
 
 def _bench_result_title():
-    """跑分**成绩面板**的标题。
+    """普通模拟测试的成绩窗口标题。
 
-    玩家 2026-09-16: 「把版本号**放在性能测试后面** 中间有一个空格」。
-    ⇒ 与 CPU高压结果弹窗(`_soc_result_title`)、启动信息(`_startup_title`)**同一套做法**:
-      名字与版本号之间留一个空格; 拿不到版本时退化成纯名字, 不留一个孤零零的 "v"。
-    ⚠️ 正文里**不再印版本号**(玩家同一次说的「之前界面中不要加版本号」)。
+    跑完即时窗口与历史详情窗口统一为「画面帧率和性能测试」,
+    都不显示版本号。历史 JSON 仍保留 `version` 供数据追溯。
     ⚠️⚠️ 本函数曾经被**整段替换误删过一次**(2026-09-16 重写 `SpeedCurve` 时) ——
        那次用的是"从 `class SpeedCurve` 到 `def _bench_score_text`"两点之间的整段替换,
        而它正好夹在中间。**改这片区域时先数一遍夹在中间的东西。**
     """
-    try:
-        v = _app_version()
-    except Exception:
-        v = ""
-    return ("性能测试 %s" % v) if v else "性能测试"
+    return "画面帧率和性能测试"
 
 
 def _bench_score_text(d):
@@ -10503,6 +10592,14 @@ def _bench_score_text(d):
     #    · ⚠️ 拿不到 `phys_fps_runs`(老记录) ⇒ 印「—」, **不拿别的数回填**。
     _runs = [int(x) for x in (_g('phys_fps_runs') or [])][:20]
     _samples = ','.join('%d' % x for x in _runs) if _runs else '—'
+    # 普通测试只记整场开始/结束两个电池温度。老历史没字段时整行不显示,
+    # 不用 0 或其它数据回填。颜色用弹珠金 `COL_BALL`; 现场和历史的 Label
+    # 都开启 markup, 因为两处共用本函数。
+    _bt0, _bt1 = _g('battery_start_c'), _g('battery_end_c')
+    _battery_txt = ''
+    if _bt0 is not None and _bt1 is not None:
+        _battery_txt = ('[color=%s]电池温度：从%.1f度到%.1f度[/color]\n'
+                        % (COL_BALL, float(_bt0), float(_bt1)))
     return ('%s\n'
             '平均每轮 %d 步模拟，平均差系数 %s\n'
             '分数依次为：%s\n'
@@ -10537,6 +10634,7 @@ def _bench_score_text(d):
             '平均持续 %s 秒' + chr(10) +
             # ⚠️ 2026-09-16 玩家: 「飞行期间改为**弹珠飞行期间**」⇒ 第二行开头加「弹珠」。
             '弹珠飞行期间可完成 %s 次飞行模拟\n'
+            '%s'
             '%s') % (
         _dv, int(_g('phys_fps', 0) or 0),
         (('%.2f%%' % float(_mad)) if _mad is not None else '无数据'),
@@ -10550,7 +10648,7 @@ def _bench_score_text(d):
         #    ⇒ 秒那一项**两位小数**(步运算与次数仍为一位)。
         ('%.2f' % (float(_g('flight_ms')) / 1000.0)) if _g('flight_ms') else '—',
         ('%.1f' % float(_g('margin'))) if _g('margin') else '—',
-        _low_txt)
+        _battery_txt, _low_txt)
 
 class RootWidget(BoxLayout):
     """游戏状态机 + 全部控件。逻辑与 tkinter 版 PlinkoApp 一一对应。"""
@@ -11667,6 +11765,11 @@ class RootWidget(BoxLayout):
         #    ⇒ 这里先交出一个**空窗口**, 等墙钟 `_hp_wall0` 起来之后再填进去。
         _freq_win = [0.0, 0.0]
         _frq, _stop = _freq_sampler_start(_freq_win)
+        # 电池温度与 CPU 频率用同一个 `[1,359]` 墙钟窗口, 但独立按 1Hz
+        # 绝对时刻采集; 不与 sysfs 读取耗时绑在一起。同样在锁核前起线程,
+        # 避免新线程继承跑分核亲和性。
+        _battery_win = [0.0, 0.0]
+        _battery_values, _battery_stop = _battery_sampler_start(_battery_win)
         # ⚠️⚠️ **波 2 全程把帧率按到 `_BENCH_FPS_FORCE`**(与波 1 同一条规矩)。
         _hp_render_fps = 0.0          # ⚠️ 先给初值: 下面抛异常时 finally 之后那一行不能 NameError
         _bench_fps_lock_on()
@@ -11684,11 +11787,15 @@ class RootWidget(BoxLayout):
             #       锁核/提权阶段本来就不该算进"跑分时的频率"。
             _freq_win[0] = self._hp_wall0 + HP_FREQ_TRIM_SEC
             _freq_win[1] = self._hp_wall0 + SOC_SUSTAIN_WALL_SEC - HP_FREQ_TRIM_SEC
+            _battery_win[0] = _freq_win[0]
+            _battery_win[1] = _freq_win[1]
             _fc0, _wt0 = _FRAME_CALLS[0], time.time()
             _fl, _fr, _fps, _cpu = benchmark_sustained()
             _hp_render_fps = (_FRAME_CALLS[0] - _fc0) / max(1e-6, time.time() - _wt0)
         finally:
             _bench_fps_lock_off()
+            _stop[0] = True
+            _battery_stop[0] = True
             # ⚠️ **兜底撤黑屏**: 上面任何一步抛异常, `_hp_done` 就**永远不会被调度**
             #    (那行的 `Clock.schedule_once` 在异常路径上根本走不到) ⇒ 黑屏会永久留在屏幕上。
             #    `_hide_bench_dim` 幂等, 正常路径下 `_hp_done` 再调一次无害。
@@ -11700,12 +11807,13 @@ class RootWidget(BoxLayout):
         self._hp_cpu_pin = dict(_BENCH_CPU_PIN)
         self._hp_tid_prio = dict(_BENCH_TID_PRIO)
         self._hp_render_fps = _hp_render_fps
-        _stop[0] = True
         # ⚠️⚠️ `_frq.sort()` 会**毁掉时间轴**, 而频率曲线要的正是时间轴(玩家 2026-09-16:
         #    「新增按钮 **频率曲线**」)⇒ 排序**之前**先留一份原序副本。
         #    面板那三个数(平均/最低/最高)**仍然用排序后的**, 与以前一样。
         self._hp_freq_series = [float(x) for x in _frq]
+        self._hp_battery_series = [round(float(x), 1) for x in _battery_values]
         _frq.sort()
+        _bat_sorted = sorted(self._hp_battery_series)
         self._hp_fps = list(_fps or [])
         self._hp_cpu = list(_cpu or [])
         # ⚠️ **高压的纯算术探针 + 归一化**(2026-09-15, 与波 1 同一条规矩):
@@ -11722,6 +11830,12 @@ class RootWidget(BoxLayout):
                          "max": _frq[-1] if _frq else 0, "n": len(_frq),
                          # 平均频率 —— 历史里那一列要的就是它(玩家:「CPU 平均频率」)。
                          "mean": int(sum(_frq) / len(_frq)) if _frq else 0}
+        self._hp_battery = {
+            "mean": (round(sum(_bat_sorted) / len(_bat_sorted), 1) if _bat_sorted else None),
+            "min": (_bat_sorted[0] if _bat_sorted else None),
+            "max": (_bat_sorted[-1] if _bat_sorted else None),
+            "n": len(_bat_sorted),
+        }
         Clock.schedule_once(lambda dt: self._hp_done(), 0)
 
     def _hp_stats(self):
@@ -11857,6 +11971,13 @@ class RootWidget(BoxLayout):
                         int(d.get('freq_max', 0) or 0), int(d.get('freq_n', 0) or 0)))
         else:
             _freq = "没采到（非安卓 / 读不到 sysfs）"
+        _bm = d.get('battery_mean')
+        if _bm is not None and int(d.get('battery_n', 0) or 0) > 0:
+            _battery = ("平均 %.1f度（最低 %.1f，最高 %.1f，%d 个采样）"
+                        % (float(_bm), float(d.get('battery_min', _bm)),
+                           float(d.get('battery_max', _bm)), int(d.get('battery_n', 0))))
+        else:
+            _battery = "没采到（非安卓 / 系统未提供）"
         _o = [x for x in (opt_lines or ()) if x]
         _n = chr(10)
         return (str(d.get('head', '') or '') + _n
@@ -11886,7 +12007,8 @@ class RootWidget(BoxLayout):
                 #      点明是哪几个); 没锁上(锁核失败/非安卓能读到 sysfs 的场合)才退回
                 #      老口径「CPU 频率」= 全体取最大。**别把这两个标签合并** —— 它们
                 #      是两个不同的数, 同一个词盖住它们正是"两种口径一个名字"那种坑。
-                + ("跑分核频率：" if d.get('freq_pinned') else "CPU 频率：") + _freq)
+                + ("跑分核频率：" if d.get('freq_pinned') else "CPU 频率：") + _freq + _n
+                + "电池温度：" + _battery)
 
     def _hp_summary_text(self):
         """结果弹窗的正文 —— 与历史「详情」**共用** `_hp_result_text`。
@@ -11899,6 +12021,7 @@ class RootWidget(BoxLayout):
             return ""
         _f, _l, _lo, _mid, _d = st
         _fr = getattr(self, "_hp_freq", None) or {}
+        _bt = getattr(self, "_hp_battery", None) or {}
         _opt = [x for x in (self._hp_cpu_pin_line(), self._hp_tid_prio_line()) if x]
         return self._hp_result_text({
             'head': self._device_info(),
@@ -11910,6 +12033,8 @@ class RootWidget(BoxLayout):
             'freq_min': int(_fr.get('min', 0) or 0),
             'freq_max': int(_fr.get('max', 0) or 0),
             'freq_n': int(_fr.get('n', 0) or 0),
+            'battery_mean': _bt.get('mean'), 'battery_min': _bt.get('min'),
+            'battery_max': _bt.get('max'), 'battery_n': int(_bt.get('n', 0) or 0),
         }, _opt)
 
     def _hp_done(self):
@@ -11934,6 +12059,7 @@ class RootWidget(BoxLayout):
             if _st2 is not None:
                 _f2, _l2, _lo2, _mid2, _d2 = _st2
                 _fr2 = getattr(self, "_hp_freq", None) or {}
+                _bt2 = getattr(self, "_hp_battery", None) or {}
                 _w2 = sorted(x for x in (getattr(self, "_hp_fps", None) or []) if x > 0)
                 self.hp_history.append({
                     "time": time.strftime("%Y-%m-%d %H:%M"),
@@ -11957,14 +12083,20 @@ class RootWidget(BoxLayout):
                     "freq_min": int(_fr2.get("min", 0) or 0),
                     "freq_max": int(_fr2.get("max", 0) or 0),
                     "freq_n": int(_fr2.get("n", 0) or 0),
+                    "battery_mean": _bt2.get("mean"),
+                    "battery_min": _bt2.get("min"),
+                    "battery_max": _bt2.get("max"),
+                    "battery_n": int(_bt2.get("n", 0) or 0),
                     "sec": int(SOC_SUSTAIN_WALL_SEC),
                     "version": _app_version(),
                     "device": self._device_info(),
                     "windows": [int(x) for x in self._hp_fps],
                     # ⚠️ 频率曲线要的那条**按时间顺序**的序列(排序前的原序, 见 `_run_hp_test`)。
-                    # ⚠️ 体积: 实测 ~344 个四位数 ≈ 1.7KB/条, 与 `windows` 同一量级 ——
-                    #    历史表上限 100 条 ⇒ 这一项总共约 +170KB。可接受, 但别再往里塞第二条序列。
+                    # ⚠️ 体积: 359 个四位数约 1.8KB/条; 电池温度序列也同时保存,
+                    #    两者加起来仍与 `windows` 同一量级, 100 条历史可接受。
                     "freq_series": [int(x) for x in (getattr(self, "_hp_freq_series", None) or [])],
+                    "battery_series": [round(float(x), 1) for x in
+                                       (getattr(self, "_hp_battery_series", None) or [])],
                     # ⚠️ 这条频率是"**只算了跑分核**"还是"全体取最大" ⇒ 面板换标签用
                     #    (见 `_hp_result_text` 里的「跑分核频率」)。
                     "freq_pinned": bool((getattr(self, "_hp_cpu_pin", None) or {}).get("actual")),
@@ -12000,11 +12132,11 @@ class RootWidget(BoxLayout):
         #    历史记录照旧落盘(JSON), 只是不再导出 txt。
         # ⚠️ 2026-09-16 玩家: 「点击额外的按钮显示」⇒ 加一个「走势图」。
         #    数据取**内存里这一轮**的 `self._hp_fps`(与下面那串采样同源)。
-        _btnrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10),
+        _btnrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6),
                             orientation="horizontal")
         _cw = [x for x in (getattr(self, "_hp_fps", None) or []) if x > 0]
         if len(_cw) >= 2:
-            curve_btn = Button(text="成绩曲线", font_size="16sp", bold=True,
+            curve_btn = Button(text="成绩曲线", font_size="14sp", bold=True,
                                background_normal="", background_color=hex_rgb(COL_BTN) + (1,))
             curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
             _btnrow.add_widget(curve_btn)
@@ -12015,12 +12147,20 @@ class RootWidget(BoxLayout):
         #       ⇒ 这一段必须夹在成绩曲线与关闭**之间**, 挪前挪后都会改版面。
         _fw = [x for x in (getattr(self, "_hp_freq_series", None) or []) if x > 0]
         if len(_fw) >= 2:
-            freq_btn = Button(text="频率曲线", font_size="16sp", bold=True,
+            freq_btn = Button(text="频率曲线", font_size="14sp", bold=True,
                               background_normal="", background_color=hex_rgb(COL_BTN) + (1,))
             freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _fw, title="高压CPU测试的频率曲线", unit="MHz", unit_name="采样"))
             _btnrow.add_widget(freq_btn)
-        close_btn = Button(text="关闭", font_size="16sp", bold=True,
+        _bw = [x for x in (getattr(self, "_hp_battery_series", None) or []) if x is not None]
+        if len(_bw) >= 2:
+            battery_btn = Button(text="电池曲线", font_size="14sp", bold=True,
+                                 background_normal="", background_color=hex_rgb(COL_SOC) + (1,))
+            battery_btn.bind(on_release=lambda *_: self._show_hp_curve(
+                _bw, title="CPU高压测试的电池曲线", unit="度", unit_name="采样",
+                value_decimals=1, flat_min_range=2.0))
+            _btnrow.add_widget(battery_btn)
+        close_btn = Button(text="关闭", font_size="14sp", bold=True,
                            background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
         _btnrow.add_widget(close_btn)
@@ -12412,6 +12552,9 @@ class RootWidget(BoxLayout):
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
         self._bench_running = True
+        # 普通测试的电池温度只要首尾两个点; 这里是整场测试真正的起点。
+        self._bench_battery_start_c = _battery_temp_c()
+        self._bench_battery_end_c = None
         # 常亮要覆盖**整场**模拟测试: 从预热等待、屏幕渲染采样开始,
         # 而不是等到后半段物理演算的黑屏 `_show_bench_dim()` 才开。这里只开常亮,
         # 不改系统栏/黑屏; 结束和异常路径仍由 `_hide_bench_dim()` 统一关闭。
@@ -13313,6 +13456,9 @@ class RootWidget(BoxLayout):
         #    —— 那句话在 v0.7.82 之后就**过期了**(黑屏+白字是那一版重新启用的)。
         #    别照旧注释以为这里可有可无: 少了它, 波 1 跑完黑屏会一直挂在屏幕上。
         self._hide_bench_dim()
+        # 结果计算已经开始, 此处读整场普通测试的终点温度;
+        # 不放到弹窗建好之后, 避免把结果界面停留时间算进去。
+        self._bench_battery_end_c = _battery_temp_c()
         _phys_sorted = sorted(fps_list)
         # ⚠️⚠️ 2026-09-16 玩家: 「这个**运算速度取平均值**」(原来是中位数)。
         #    与 CPU 高压那边**同一条口径**(那边同期也从"中位数"改成了"平均数")。
@@ -13379,6 +13525,8 @@ class RootWidget(BoxLayout):
             # ⚠️ 老记录没有 ⇒ 详情那行印「—」, **不回填**。
             "flight_ms": flight_ms,
             "margin": margin,
+            "battery_start_c": getattr(self, "_bench_battery_start_c", None),
+            "battery_end_c": getattr(self, "_bench_battery_end_c", None),
             "render_fps": round(render_fps, 1),
             "render_median": round(render_median, 1),
             "render_1low": round(render_1low, 1),
@@ -13499,7 +13647,7 @@ class RootWidget(BoxLayout):
         #       `_show_bench_detail` 里同款的两处) —— 正文只有一份, 字号也只有一份。
         #    ⚠️ 改这里要连带看 `_auto_h` 的**基准高度**: 字号小了内容也矮, 基准还留着
         #       老的大数就会多出一块空白(两个面板的基准高度本来就不同, 见下)。
-        score_lbl = Label(text=score, font_size='14sp', halign='left', valign='top',
+        score_lbl = Label(text=score, markup=True, font_size='14sp', halign='left', valign='top',
                           color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None, height=dp(130))
         self._auto_h(score_lbl, dp(130), dp(6))
         content.add_widget(score_lbl)
@@ -15238,7 +15386,8 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
 
-    def _show_hp_curve(self, windows, sec=None, title=None, unit='步/秒', unit_name='窗口'):
+    def _show_hp_curve(self, windows, sec=None, title=None, unit='步/秒', unit_name='窗口',
+                       value_decimals=0, flat_min_range=None):
         """CPU 高压的**一条曲线**(结果弹窗 / 历史详情上的按钮)。
 
         玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
@@ -15247,7 +15396,8 @@ class RootWidget(BoxLayout):
         ⚠️⚠️ **两个调用点共用这一个**(玩家同日: 「新增按钮 **频率曲线**(**规则和之前那个
            曲线的 y 轴坐标一样**), 放在成绩曲线和关闭按钮的中间」):
              · 成绩曲线 —— 逐秒的**步/秒**(数据 = 记录里的 `windows`, 实测 321 个);
-             · 频率曲线 —— 采样的 **MHz**(数据 = `freq_series`, 实测 ~344 个)。
+             · 频率曲线 —— 第 1~359 秒的 **MHz**(数据 = `freq_series`, 目标 359 个);
+             · 电池曲线 —— 第 1~359 秒的**电池温度**(数据 = `battery_series`)。
            纵轴那套规则(上下留白 + 向外取整到友好刻度 + 保底离底 5%)整个在
            `SpeedCurve` 里 ⇒ 这里**只换标题、单位、和"一个点代表什么"**, 不碰轴。
         ⚠️ 没数据(或只有 1 个点)就**不开弹窗** —— 一条直线没信息, 不如不给。
@@ -15261,7 +15411,8 @@ class RootWidget(BoxLayout):
                                      color=hex_rgb(COL_TEXT) + (1,),
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
-        curve = SpeedCurve(_w, size_hint_y=None, height=dp(240))
+        curve = SpeedCurve(_w, value_decimals=value_decimals, flat_min_range=flat_min_range,
+                           size_hint_y=None, height=dp(240))
         content.add_widget(curve)
         # ⚠️⚠️ 2026-09-16 玩家(截图上圈掉两处): 「**删掉第1段话**(逐秒/秒 到 最高xxx),
         #    **删掉第2段话中括号的内容** 就是那个横线等于啥」。
@@ -15314,6 +15465,8 @@ class RootWidget(BoxLayout):
             'freq_mean': r.get('freq_mean', 0), 'freq_p50': r.get('freq_p50', 0),
             'freq_min': r.get('freq_min', 0), 'freq_max': r.get('freq_max', 0),
             'freq_n': r.get('freq_n', 0),
+            'battery_mean': r.get('battery_mean'), 'battery_min': r.get('battery_min'),
+            'battery_max': r.get('battery_max'), 'battery_n': r.get('battery_n', 0),
         })
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='CPU高压测试详情', bold=True,
@@ -15327,11 +15480,11 @@ class RootWidget(BoxLayout):
         # ⚠️ 2026-09-16 玩家: 「点击额外的按钮显示」⇒ 历史详情也加一个「走势图」。
         #    数据用**记录里那份** `windows`(逐秒一个, 实测 321 个)。
         #    ⚠️ 不够 2 个点就**不建**按钮(`_show_hp_curve` 自己也会拒)。
-        _btnrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(10),
+        _btnrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6),
                             orientation='horizontal')
         _cw = [x for x in (r.get('windows') or []) if x > 0]
         if len(_cw) >= 2:
-            curve_btn = Button(text='成绩曲线', font_size='16sp', bold=True,
+            curve_btn = Button(text='成绩曲线', font_size='14sp', bold=True,
                                background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
             curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
             _btnrow.add_widget(curve_btn)
@@ -15339,12 +15492,20 @@ class RootWidget(BoxLayout):
         #    数据用**记录里那份** `freq_series`(老记录没这个字段 ⇒ 自然不建按钮, 不印假图)。
         _fw = [x for x in (r.get('freq_series') or []) if x > 0]
         if len(_fw) >= 2:
-            freq_btn = Button(text='频率曲线', font_size='16sp', bold=True,
+            freq_btn = Button(text='频率曲线', font_size='14sp', bold=True,
                               background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
             freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _fw, title='高压CPU测试的频率曲线', unit='MHz', unit_name='采样'))
             _btnrow.add_widget(freq_btn)
-        close_btn = Button(text='关闭', font_size='16sp', bold=True,
+        _bw = [x for x in (r.get('battery_series') or []) if x is not None]
+        if len(_bw) >= 2:
+            battery_btn = Button(text='电池曲线', font_size='14sp', bold=True,
+                                 background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
+            battery_btn.bind(on_release=lambda *_: self._show_hp_curve(
+                _bw, title='CPU高压测试的电池曲线', unit='度', unit_name='采样',
+                value_decimals=1, flat_min_range=2.0))
+            _btnrow.add_widget(battery_btn)
+        close_btn = Button(text='关闭', font_size='14sp', bold=True,
                            background_normal='',
                            background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
@@ -15369,11 +15530,12 @@ class RootWidget(BoxLayout):
            历史行**能找到数据就给按钮, 找不到就不给**(玩家 2026-09-16 定的)。
         """
         content = BoxLayout(orientation='vertical', padding=dp(14), spacing=dp(8))
-        title_lbl = self._fit_line(Label(text='测试详情', bold=True, halign='center',
+        # 历史详情标题不带版本号; 版本仍保留在记录字段中供追溯。
+        title_lbl = self._fit_line(Label(text='画面帧率和性能测试', bold=True, halign='center',
                                          color=hex_rgb(COL_TEXT) + (1,),
                                          size_hint_y=None, height=dp(28)), 20)
         content.add_widget(title_lbl)
-        body = Label(text=_bench_score_text(r), font_size='14sp', halign='left',
+        body = Label(text=_bench_score_text(r), markup=True, font_size='14sp', halign='left',
                      valign='top', color=hex_rgb(COL_TEXT) + (1,), size_hint_y=None)
         self._auto_h(body, dp(190), dp(6))
         content.add_widget(body)
