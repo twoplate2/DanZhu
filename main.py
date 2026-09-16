@@ -867,6 +867,16 @@ SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
 # ⚠️ 名字用 `HP_` 前缀: 本文件里 `SOC_` 是**历史名**(屏幕上早已全叫 CPU, 见 `SOC_WARMUP_CPU_SEC`
 #    上面那段说明), 新加的常量一律别再挂 `SOC_`。
 HP_SAMPLE_SEC = 10.0
+
+# ⚠️ **高压测试的 CPU 频率采样: 掐头去尾各多少秒**(玩家 2026-09-16:
+#    「CPU频率采样, 调整为**只对第1秒到第359秒生效, 掐头去尾**」)。
+#    360 秒的局 ⇒ 只统计 **[1, 359] 秒**这一段里的采样。
+#    两端确实不该算: **头**那一秒 CPU 才刚被拉起来(还在爬频),"平均频率"会把爬坡算进去;
+#    **尾**那一秒测试已经收尾、下一轮排队的调度动作也在动。这与跑分成绩那边
+#    「掐头 0.5 秒(起跑段)/ 不掐尾」是同一条思路 —— **只在跑匀了的那一段上量尺子**。
+#    ⚠️ 窗口用**绝对时刻**表达(见 `_freq_sampler_start` 的 `win`), 与 `_hp_wall0` 同源;
+#       不要写成"线程跑起来之后 N 秒", 那会差出锁核/探测拓扑那几十毫秒。
+HP_FREQ_TRIM_SEC = 1.0
 # 渲染采样窗口自动发几颗球(原来是 `self._target_launches = 5` 写死在跑分函数里, 提成常量)。
 BENCH_TARGET_LAUNCHES = 5
 
@@ -1492,28 +1502,62 @@ def _alloc_probe(cpu_seconds=0.05, blocks=_PROBE_BLOCKS):
     return _best
 
 
-def _freq_sampler_start():
+def _freq_sampler_start(win=None):
     """起一个 0.5 秒一次的主频采样线程, 返回 `(频率列表, 停止标志)`。
 
     用 `_cpufreq_mhz()`(读 sysfs), 非安卓/读不到时**采不到任何值**, 列表保持为空 ——
     调用方据此印「没采到」, **不印假数**。
     ⚠️ 同一个循环里顺带累加**逐核**频率(`_FREQ_CORE_STATS`, 见 `_cpufreq_cores`) ——
        多开几个小文件读, 0.5 秒一次, 开销可忽略。
+
+    ⚠️⚠️ `win`(可选)是一个**可变容器** `[起, 止]`, 装的是**绝对时刻**(`time.time()` 口径);
+       只有落在 `起 <= now <= 止` 里的样本才计数(玩家 2026-09-16 要的「**掐头去尾**」)。
+       `win[0] <= 0` 表示"窗口还没填" ⇒ **一个都不收**(宁可空着, 也不收没定过窗口的样本)。
+    ⚠️ 为什么用"可变容器"而**不是两个秒数参数**: 高压那段的墙钟 `_hp_wall0` 是在**锁核 /
+       提权之后**才起的(那段的规矩是"拓扑探测不计入测试时长"), 而采样线程必须**在那之前**
+       就起来 —— 因为 `os.sched_setaffinity` 只改**调用线程**、**新线程继承创建者的亲和性**:
+       把采样线程挪到锁核之后起, 它就会跟着被钉到同一批性能核上, 反过来跟被测线程抢核。
+       ⇒ 只能"先起线程、后填窗口"。
+    ⚠️ 传 `None` = 全程计数(波 1 就是这条路, 它没有"掐头去尾"这回事)。
     """
     _frq = []
     _stop = [False]
     _FREQ_CORE_STATS.clear()
+    _t0 = time.time()
 
     def _samp():
         while not _stop[0]:
             try:
                 # ⚠️ **关门期间不采**(见 `_FREQ_GATE`): 样本之间那几秒 sleep 里 CPU 是闲的,
                 #    采进来会把"跑分时的平均频率"拖低 —— 玩家要的是"跑分时"的平均。
-                if _FREQ_GATE[0]:
-                    _v = _cpufreq_mhz()
+                _on = _FREQ_GATE[0]
+                if _on and win is not None:
+                    _now = time.time()
+                    _on = (win[0] > 0.0) and (win[0] <= _now <= win[1])
+                if _on:
+                    # ⚠️⚠️ **一次读全, 两处用途共用**(原来这里先调 `_cpufreq_mhz()` 读一遍、
+                    #    再由 `_cpufreq_cores()` 读一遍 ⇒ 每个 tick 白读 8 个文件)。
+                    _cores = _cpufreq_cores()
+                    # ⚠️⚠️ **只统计"跑分核"的频率**(玩家 2026-09-16: 「这个频率应该看的是
+                    #    **大核的数据**吧?」)。原来 `_frq` 装的是 `_cpufreq_mhz()` = **所有核
+                    #    里的最大值** —— 只要任何一个核(哪怕跑分线程根本不在上面)瞬间冲到最高,
+                    #    那一格就记那个数, 报出来的不是"我这列车跑多快"。
+                    #    而跑分线程是**锁核**的(`_bench_pin_fast_cpus` 把 affinity 收到最高
+                    #    性能簇, 面板那行「跑分只跑这几个核：cpu6、cpu7」就是它)
+                    #    ⇒ 该看的就是**那几个核**。
+                    #    ⚠️ 锁核信息**延迟才有**(锁核在采样线程起来之后才做, 理由见 `win` 那段)
+                    #       ⇒ 每次 tick **现读一次** `_BENCH_CPU_PIN["actual"]`, 不能缓存。
+                    #    ⚠️ 锁核失败/未锁核时 `actual` 为空 ⇒ 退回"全体取最大"(老行为),
+                    #       那时面板会印「CPU 频率」而不是「跑分核频率」(见 `_hp_result_text`)。
+                    _pin = set(_BENCH_CPU_PIN.get("actual") or ())
+                    _sel = [_cm for _ci, _cm, _ca in _cores
+                            if (not _pin) or (int(_ci) in _pin)]
+                    if not _sel:                      # 锁的那几个核**一个都没读到** ⇒ 退回全体
+                        _sel = [_cm for _ci, _cm, _ca in _cores]
+                    _v = max(_sel) if _sel else _cpufreq_mhz()
                     if _v > 0:
                         _frq.append(_v)
-                    for _ci, _cm, _ca in _cpufreq_cores():
+                    for _ci, _cm, _ca in _cores:
                         _e = _FREQ_CORE_STATS.get(_ci)
                         if _e is None:
                             _e = [_cm, 1, _cm, _cm, 0.0, 0]
@@ -8189,6 +8233,22 @@ _JNI_STAT = [0.0, 0.0, 0, 0.0, 0.0, 0, 0.0, 0, 0.0]
 #    ⚠️ 别再把它写成常量: 两档都是玩家点名的需求。
 _SYSUI_MODE = [False]
 
+# ⚠️⚠️ **防息屏标志** —— `[False]` = 正常(允许系统按超时息屏); `[True]` = **屏幕常亮**。
+#
+# 玩家 2026-09-16 报的 bug: 「跑分的过程中(**包括 cpu 压力测试和那个 45s 测试**等),
+#   都应该**阻止屏幕进入黑屏(待机)休眠**, 现在没有阻止」。
+# ⇒ 与 `_SYSUI_MODE` **同一个开关对**(`_show_bench_dim` / `_hide_bench_dim`), 因为
+#   "跑分期间"这件事本来就是那一对在表达 —— 两波(物理演算 / CPU高压)共用, 不用各写一份。
+#
+# ⚠️ 实现用**窗口标志**(`FLAG_KEEP_SCREEN_ON`)而不是 `PowerManager.WakeLock`:
+#    · 前者**不需要权限**, 后者要 `WAKE_LOCK`(本工程 `android.permissions` 只声明了 VIBRATE);
+#    · 前者**随窗口可见性自动失效**(切后台/退出就放行), 后者写不好会泄漏成"一直亮着"。
+# ⚠️ 这**不是体验优化, 是正确性**: 屏幕一灭, 安卓会暂停游戏、冻结 Clock
+#    (`BUILD_APK.md` §3.22 那个坑)⇒ **6 分钟的高压测试会被打断, 跑出来的成绩是假的**。
+# ⚠️ 两个标志**共用同一个 UI 线程任务**(`ImmersiveTask`), 所以切一次只投一趟 JNI,
+#    不会为了这两件事各跑一遍 `runOnUiThread`。
+_WAKE_MODE = [False]
+
 # 上一帧 `_frame` **自己**在**本线程**上花了多少毫秒(由 `_frame_timed` 写)。
 # ⚠️ 为什么必须单独有这一格: 面板那栏"每帧实算"读的是 `time.process_time()`, 那是
 #    **整个进程**的 CPU —— 含发声/震动两条工作线程、以及安卓那一堆 Java 线程。
@@ -8566,6 +8626,28 @@ def _set_system_ui(immersive):
     ⚠️ 非安卓直接只改标志位(桌面没有系统栏可切), 与 `_enter_immersive` 的分支一致。
     """
     _SYSUI_MODE[0] = bool(immersive)
+    if platform != "android":
+        return
+    try:
+        ok = _guard_post("immerse")
+        if not ok:
+            _guard_immersive_now()
+    except Exception:
+        pass
+
+
+def _set_keep_awake(on):
+    """**跑分期间不让屏幕息屏**(玩家 2026-09-16 报的 bug, 详见 `_WAKE_MODE` 那段说明)。
+
+    `on=True`  ⇒ 屏幕常亮(跑分期间);
+    `on=False` ⇒ 交还给系统按超时息屏(跑完就还回去)。
+
+    ⚠️ 与 `_set_system_ui` **同一套机制**: 改标志位 + **立即投一次任务**(不等 2.5 秒的周期
+       重申) —— 否则跑分开始后最多有 2.5 秒仍可能息屏, 而**屏幕一灭测试就废了**。
+    ⚠️ 两者**共用同一个 Runnable**: 那个任务会把**两个标志位一起**应用, 所以这里投的那一趟
+       顺带也把系统栏状态重申了一次(幂等, 无副作用)。
+    """
+    _WAKE_MODE[0] = bool(on)
     if platform != "android":
         return
     try:
@@ -11346,6 +11428,10 @@ class RootWidget(BoxLayout):
         #    ⚠️ 放在 `_relayout_bench_dim()` **之后**: 切档会让窗口 inset 变一次(重新布局),
         #       先让黑屏铺满再切, 那一瞬间的重排就落在黑屏底下、看不见。
         _set_system_ui(True)
+        # ⚠️ 同一对开关的**另一半**: 跑分期间**不让屏幕息屏**(玩家 2026-09-16 报的 bug)。
+        #    见 `_WAKE_MODE` 那段 —— 屏幕一灭会让安卓暂停游戏、冻结 Clock, 6 分钟的高压
+        #    测试会被打断, 成绩直接失真 ⇒ 这是**正确性**问题, 不是体验问题。
+        _set_keep_awake(True)
 
     def _set_bench_msg(self, text):
         """黑屏上的白字(进度)。文字没变就整个跳过 —— 一次 refresh 要重排文字。"""
@@ -11388,6 +11474,9 @@ class RootWidget(BoxLayout):
         #    ⚠️ 必须**主动切**: 这一档的样子是"系统默认值", 不主动清标志就会一直全屏着
         #       (黑屏没了、屏还是全屏的)。`_set_system_ui` 是立即生效的, 不等周期重申。
         _set_system_ui(False)
+        # ⚠️ 跑分一结束就把"常亮"还回去 —— 别忘了这一半, 否则跑完一次之后**屏幕永远不灭**
+        #    (那会实打实地吃电)。与上面那一对严格成对, 见 `_show_bench_dim` 的说明。
+        _set_keep_awake(False)
         # ⚠️ 白字必须一起撤 —— 否则跑分结束后那行字会**留在黑屏位置**(黑屏没了、字还在)。
         try:
             self._bench_msg_col.a = 0.0
@@ -11568,7 +11657,11 @@ class RootWidget(BoxLayout):
 
     def _run_hp_test(self):
         # ⚠️ 工作线程: 只写属性, **不碰界面**(界面只能在 Clock 回调里动)。
-        _frq, _stop = _freq_sampler_start()
+        # ⚠️ 频率采样线程**在锁核之前就起**(理由见 `_freq_sampler_start` 的 `win` 那段:
+        #    新线程继承创建者的亲和性, 晚起会跟着被钉到性能核上、跟被测线程抢核)。
+        #    ⇒ 这里先交出一个**空窗口**, 等墙钟 `_hp_wall0` 起来之后再填进去。
+        _freq_win = [0.0, 0.0]
+        _frq, _stop = _freq_sampler_start(_freq_win)
         # ⚠️⚠️ **波 2 全程把帧率按到 `_BENCH_FPS_FORCE`**(与波 1 同一条规矩)。
         _hp_render_fps = 0.0          # ⚠️ 先给初值: 下面抛异常时 finally 之后那一行不能 NameError
         _bench_fps_lock_on()
@@ -11579,6 +11672,13 @@ class RootWidget(BoxLayout):
         try:
             # 锁核完成后才起墙钟；拓扑探测不计入高压测试时长。
             self._hp_wall0 = time.time()
+            # ⚠️ **填"掐头去尾"的窗口**(玩家 2026-09-16 定的 `HP_FREQ_TRIM_SEC`)。
+            #    ⚠️ 必须在**这里**填、不能在线程起来时填: 这一段墙钟是**锁核/提权之后**
+            #       才起的(那段的规矩是"拓扑探测不计入测试时长"), 而这个窗口必须与它同源。
+            #    ⚠️ 填之前 `win[0] == 0` ⇒ 采样线程**一个都不收** —— 上面那几十毫秒的
+            #       锁核/提权阶段本来就不该算进"跑分时的频率"。
+            _freq_win[0] = self._hp_wall0 + HP_FREQ_TRIM_SEC
+            _freq_win[1] = self._hp_wall0 + SOC_SUSTAIN_WALL_SEC - HP_FREQ_TRIM_SEC
             _fc0, _wt0 = _FRAME_CALLS[0], time.time()
             _fl, _fr, _fps, _cpu = benchmark_sustained()
             _hp_render_fps = (_FRAME_CALLS[0] - _fc0) / max(1e-6, time.time() - _wt0)
@@ -11596,6 +11696,10 @@ class RootWidget(BoxLayout):
         self._hp_tid_prio = dict(_BENCH_TID_PRIO)
         self._hp_render_fps = _hp_render_fps
         _stop[0] = True
+        # ⚠️⚠️ `_frq.sort()` 会**毁掉时间轴**, 而频率曲线要的正是时间轴(玩家 2026-09-16:
+        #    「新增按钮 **频率曲线**」)⇒ 排序**之前**先留一份原序副本。
+        #    面板那三个数(平均/最低/最高)**仍然用排序后的**, 与以前一样。
+        self._hp_freq_series = [float(x) for x in _frq]
         _frq.sort()
         self._hp_fps = list(_fps or [])
         self._hp_cpu = list(_cpu or [])
@@ -11770,7 +11874,14 @@ class RootWidget(BoxLayout):
                 #    随后再改: 「**每10秒**连续采样成绩」(与上面那个抽点间隔**同一个常量**,
                 #    别再手抄一个 10 进来 —— 那种写法迟早和抽点逻辑脱钩)。
                 + "每%d秒连续采样成绩：" % int(HP_SAMPLE_SEC) + _samples + _n
-                + "CPU 频率：" + _freq)
+                # ⚠️⚠️ 标签跟着**口径**走(玩家 2026-09-16: 「这个频率应该看的是**大核的数据**
+                #    吧?」)。跑分线程是**锁核**的 ⇒ 这条频率现在只统计**跑分核那几个**
+                #    (`_freq_sampler_start` 里按 `_BENCH_CPU_PIN["actual"]` 过滤)。
+                #    ⇒ 锁上了就写「**跑分核频率**」(上面还有一行「跑分只跑这几个核：cpu6、cpu7」
+                #      点明是哪几个); 没锁上(锁核失败/非安卓能读到 sysfs 的场合)才退回
+                #      老口径「CPU 频率」= 全体取最大。**别把这两个标签合并** —— 它们
+                #      是两个不同的数, 同一个词盖住它们正是"两种口径一个名字"那种坑。
+                + ("跑分核频率：" if d.get('freq_pinned') else "CPU 频率：") + _freq)
 
     def _hp_summary_text(self):
         """结果弹窗的正文 —— 与历史「详情」**共用** `_hp_result_text`。
@@ -11845,6 +11956,13 @@ class RootWidget(BoxLayout):
                     "version": _app_version(),
                     "device": self._device_info(),
                     "windows": [int(x) for x in self._hp_fps],
+                    # ⚠️ 频率曲线要的那条**按时间顺序**的序列(排序前的原序, 见 `_run_hp_test`)。
+                    # ⚠️ 体积: 实测 ~344 个四位数 ≈ 1.7KB/条, 与 `windows` 同一量级 ——
+                    #    历史表上限 100 条 ⇒ 这一项总共约 +170KB。可接受, 但别再往里塞第二条序列。
+                    "freq_series": [int(x) for x in (getattr(self, "_hp_freq_series", None) or [])],
+                    # ⚠️ 这条频率是"**只算了跑分核**"还是"全体取最大" ⇒ 面板换标签用
+                    #    (见 `_hp_result_text` 里的「跑分核频率」)。
+                    "freq_pinned": bool((getattr(self, "_hp_cpu_pin", None) or {}).get("actual")),
                     # ⚠️ **归一化步/秒 + 逐窗探针**(2026-09-15 玩家:「高压测试的跑分也应该
                     #    同步修订」)。高压的绝对值同样会被"渲染抢内存"污染, 所以它也得能
                     #    归一化 —— **跨设置/跨设备比高压成绩只能用这个数**。
@@ -11885,6 +12003,18 @@ class RootWidget(BoxLayout):
                                background_normal="", background_color=hex_rgb(COL_BTN) + (1,))
             curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
             _btnrow.add_widget(curve_btn)
+        # ⚠️ 2026-09-16 玩家: 「CPU高压测试, **新增按钮 频率曲线**(规则和之前那个曲线的
+        #    **y 轴坐标一样**), 放在**成绩曲线和关闭按钮的中间**」。
+        #    数据取**内存里这一轮**的频率序列(`_hp_freq_series`, 是排序前的原序)。
+        #    ⚠️ 位置就是**加进 BoxLayout 的先后**(横向 BoxLayout 按 add 顺序从左到右)
+        #       ⇒ 这一段必须夹在成绩曲线与关闭**之间**, 挪前挪后都会改版面。
+        _fw = [x for x in (getattr(self, "_hp_freq_series", None) or []) if x > 0]
+        if len(_fw) >= 2:
+            freq_btn = Button(text="频率曲线", font_size="16sp", bold=True,
+                              background_normal="", background_color=hex_rgb(COL_BTN) + (1,))
+            freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
+                _fw, title="高压CPU测试的频率曲线", unit="MHz", unit_name="采样"))
+            _btnrow.add_widget(freq_btn)
         close_btn = Button(text="关闭", font_size="16sp", bold=True,
                            background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
@@ -15099,20 +15229,26 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
 
-    def _show_hp_curve(self, windows, sec=None):
-        """CPU 高压**逐秒样本的走势图**(结果弹窗 / 历史详情上的「走势图」按钮)。
+    def _show_hp_curve(self, windows, sec=None, title=None, unit='步/秒', unit_name='窗口'):
+        """CPU 高压的**一条曲线**(结果弹窗 / 历史详情上的按钮)。
 
         玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
         点击额外的按钮显示, 类似之前的帧曲线」。
 
-        ⚠️ 数据就是记录里的 `windows`(逐秒一个, 实测 321 个)。
+        ⚠️⚠️ **两个调用点共用这一个**(玩家同日: 「新增按钮 **频率曲线**(**规则和之前那个
+           曲线的 y 轴坐标一样**), 放在成绩曲线和关闭按钮的中间」):
+             · 成绩曲线 —— 逐秒的**步/秒**(数据 = 记录里的 `windows`, 实测 321 个);
+             · 频率曲线 —— 采样的 **MHz**(数据 = `freq_series`, 实测 ~344 个)。
+           纵轴那套规则(上下留白 + 向外取整到友好刻度 + 保底离底 5%)整个在
+           `SpeedCurve` 里 ⇒ 这里**只换标题、单位、和"一个点代表什么"**, 不碰轴。
         ⚠️ 没数据(或只有 1 个点)就**不开弹窗** —— 一条直线没信息, 不如不给。
         """
         _w = [x for x in (windows or []) if x > 0]
         if len(_w) < 2:
             return
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
-        title = self._fit_line(Label(text='高压CPU测试的成绩曲线', bold=True, halign='center',
+        title = self._fit_line(Label(text=(title or '高压CPU测试的成绩曲线'),
+                                     bold=True, halign='center',
                                      color=hex_rgb(COL_TEXT) + (1,),
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
@@ -15127,8 +15263,8 @@ class RootWidget(BoxLayout):
         #       ② 下面第二行的 `（横线 = 纵轴刻度）` 那个括号也删掉。
         #    ⚠️ 删掉 note 之后弹窗矮了一行(dp(22) + dp(8) 间距) —— 定高控件那一套没动,
         #       `_popup_fit_content` 自己按内容算高, 不用手调。
-        _n2 = Label(text='横轴 = 按时间顺序的 %d 个窗口　竖轴 = 步/秒'
-                      % len(_w),
+        _n2 = Label(text='横轴 = 按时间顺序的 %d 个%s　竖轴 = %s'
+                      % (len(_w), unit_name, unit),
                      font_size='12sp', halign='center', valign='middle',
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         _n2.bind(width=lambda _w2, *_: setattr(_w2, 'text_size', (_w2.width, None)))
@@ -15190,6 +15326,15 @@ class RootWidget(BoxLayout):
                                background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
             curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
             _btnrow.add_widget(curve_btn)
+        # ⚠️ 2026-09-16 玩家要的「**频率曲线**」, 历史这条路也是**夹在成绩曲线与关闭之间**。
+        #    数据用**记录里那份** `freq_series`(老记录没这个字段 ⇒ 自然不建按钮, 不印假图)。
+        _fw = [x for x in (r.get('freq_series') or []) if x > 0]
+        if len(_fw) >= 2:
+            freq_btn = Button(text='频率曲线', font_size='16sp', bold=True,
+                              background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
+            freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
+                _fw, title='高压CPU测试的频率曲线', unit='MHz', unit_name='采样'))
+            _btnrow.add_widget(freq_btn)
         close_btn = Button(text='关闭', font_size='16sp', bold=True,
                            background_normal='',
                            background_color=hex_rgb(COL_BTN_OFF) + (1,),
@@ -17688,6 +17833,25 @@ class PlinkoApp(App):
                             # 0 = 清掉全部标志 ⇒ 状态栏与导航栏都恢复默认(可见)。
                             # ⚠️ 这一句是**必须的**: 从真全屏切回来时, 不主动清就会一直全屏。
                             act.getWindow().getDecorView().setSystemUiVisibility(0)
+                        # ---- 防息屏(跑分期间) --------------------------------------
+                        # ⚠️⚠️ 2026-09-16 玩家报的 bug: 「跑分的过程中(**包括 cpu 压力测试和
+                        #    那个 45s 测试**等), 都应该**阻止屏幕进入黑屏(待机)休眠**, 现在没有阻止」。
+                        #    ⇒ 用 **窗口标志 `FLAG_KEEP_SCREEN_ON`**(不是 WakeLock):
+                        #       · **不需要任何权限**(WakeLock 要 `WAKE_LOCK`, 本工程没声明,
+                        #         也不想为一个跑分去加权限);
+                        #       · 它**随窗口可见性自动失效** —— 切后台/退出时系统自己放行,
+                        #         不会像 WakeLock 那样泄漏成"一直亮着把电吃光"。
+                        #    ⚠️ 这不只是"看着方便": 屏幕一灭, 安卓会把游戏**暂停、Clock 冻结**
+                        #       (`BUILD_APK.md` §3.22 记着这个坑)⇒ **6 分钟的高压测试会被
+                        #       整整打断**, 跑出来的成绩是假的。所以它是**正确性问题**, 不是体验问题。
+                        #    ⚠️ `addFlags`/`clearFlags` 收的是 **WindowManager.LayoutParams
+                        #       的静态常量**, 所以要多 autoclass 一个类。
+                        _w = act.getWindow()
+                        _WM = autoclass('android.view.WindowManager')
+                        if _WAKE_MODE[0]:
+                            _w.addFlags(_WM.FLAG_KEEP_SCREEN_ON)
+                        else:
+                            _w.clearFlags(_WM.FLAG_KEEP_SCREEN_ON)
                     except Exception:
                         pass
                     try:
