@@ -10103,18 +10103,18 @@ def _soc_result_title():
 
 
 class SpeedCurve(Widget):
-    """SOC 高压那 **300 多个逐秒样本**的走势图。
+    """SOC 高压那 **300 多个逐秒样本**的成绩曲线。
 
     玩家 2026-09-16: 「soc高压测试可以**搞个图**吗, 也就 300 个数据作用, **点击额外的按钮**
-    显示, 类似之前的帧曲线」。
+    显示, 类似之前的帧曲线」+ 后续四条(标题/纵轴刻度/横轴刻度/线宽)。
 
     ⚠️ 与 `FpsCurve` **分开写是故意的**: 那张图的纵轴是**帧率**(由帧间隔换算)且带一条
-       帧率上限参考线; 这张的纵轴是**步/秒**, 语义完全不同 —— 硬套的话得把值取倒数,
-       纵轴就"越快越靠下", 读图的人会理解反。
-    ⚠️ 只画**折线 + 中位参考线**, 不做交互、不画阶段色带(高压没有"阶段"这回事)。
-       这是个"一眼看出有没有掉下去"的图, 不是分析工具。
-    ⚠️ 点数可能上千(理论上 360), 用 `Line` 一次画完 —— Kivy 的 `Line` 是单条指令,
-       与点数无关地便宜; 别按点建 `Rectangle`。
+       帧率上限参考线; 这张的纵轴是**步/秒**, 语义完全不同 —— 硬套得把值取倒数,
+       纵轴就变成"越快越靠下", 读图的人会理解反。
+    ⚠️ **线宽与 `FpsCurve` 完全一致**(`width=1.15, joint="round"`) —— 玩家 2026-09-16:
+       「这个曲线是不是**太粗**了, 你看看之前的那个帧率曲线用哪个粗细, 这个也那个粗细」。
+    ⚠️ 点数可能上千, 用 `Line` 一次画完 —— `Line` 是单条指令, 与点数无关地便宜;
+       别按点建 `Rectangle`。
     """
 
     def __init__(self, vals, **kw):
@@ -10123,31 +10123,64 @@ class SpeedCurve(Widget):
         self.bind(pos=self._draw, size=self._draw)
         Clock.schedule_once(self._draw, 0)
 
+    @staticmethod
+    def _txt(canvas, text, x, y, anchor="left"):
+        """刻度文字。⚠️ 颜色**不能沿用 `FpsCurve._label`**(那里写死深灰, 是配它的浅底)——
+        这张是**深底**, 必须用浅色, 否则刻度根本看不见。"""
+        lb = CoreLabel(text=text, font_size=sp(10), color=hex_rgb(COL_SUB) + (1,))
+        lb.refresh()
+        tw, th = lb.texture.size
+        if anchor == "right":
+            x -= tw
+        elif anchor == "center":
+            x -= tw / 2.0
+        with canvas:
+            Color(1, 1, 1, 1)
+            Rectangle(texture=lb.texture, pos=(x, y), size=(tw, th))
+
     def _draw(self, *_):
         self.canvas.clear()
-        if len(self._v) < 2 or self.width <= 2 or self.height <= 2:
+        if len(self._v) < 2 or self.width < 40 or self.height < 40:
             return
+        # 左侧留 46dp 给纵轴成绩点、下方留 18dp 给横轴次数
+        pad_l, pad_r, pad_t, pad_b = dp(46), dp(8), dp(8), dp(18)
+        pw = max(1.0, self.width - pad_l - pad_r)
+        ph = max(1.0, self.height - pad_b - pad_t)
+        x0, y0 = self.x + pad_l, self.y + pad_b
         _lo, _hi = min(self._v), max(self._v)
+        _mid = (_hi + _lo) / 2.0
         _sp = max(1.0, _hi - _lo)
         _n = len(self._v)
-        _pad = 2.0
-        _h = self.height - 2 * _pad
+
+        def _yy(_val):
+            return y0 + ph * ((_val - _lo) / _sp)
+
         _pts = []
         for _i, _y in enumerate(self._v):
-            _pts.append(self.x + self.width * (_i / float(_n - 1)))
-            _pts.append(self.y + _pad + _h * ((_y - _lo) / _sp))
+            _pts.append(x0 + pw * (_i / float(_n - 1)))
+            _pts.append(_yy(_y))
         with self.canvas:
-            # 底: 一个深色矩形(与面板其它区域分开, 否则曲线浮在弹窗底色上看不清)
             Color(*hex_rgb(COL_BTN_OFF), 0.55)
             Rectangle(pos=self.pos, size=self.size)
-            # 中位参考线(先画, 免得压住曲线)
-            _med = sorted(self._v)[len(self._v) // 2]
-            Color(*hex_rgb(COL_SUB), 0.8)
-            Line(points=[self.x, self.y + _pad + _h * ((_med - _lo) / _sp),
-                         self.x + self.width, self.y + _pad + _h * ((_med - _lo) / _sp)],
-                 width=1.0)
+            # 纵轴三条刻度线(最高 / 中 / 最低)
+            for _val in (_hi, _mid, _lo):
+                Color(*hex_rgb(COL_SUB), 0.30)
+                Line(points=[x0, _yy(_val), x0 + pw, _yy(_val)], width=1)
+            Color(*hex_rgb(COL_SUB), 0.75)
+            Line(points=[x0, y0, x0 + pw, y0], width=1)
+            Line(points=[x0, y0, x0, y0 + ph], width=1)
             Color(*hex_rgb(COL_BALL))
-            Line(points=_pts, width=1.2)
+            # ⚠️ 线宽与 `FpsCurve` 一致(见类 docstring)。
+            Line(points=_pts, width=1.15, joint="round")
+        # ---- 刻度数字(画在 canvas 之外, 各开自己的上下文) ----
+        # 纵轴: **成绩点**(玩家 2026-09-16: 「纵坐标需要一个成绩点」)
+        for _val in (_hi, _mid, _lo):
+            self._txt(self.canvas, "%d" % int(_val), x0 - dp(5), _yy(_val) - dp(5), "right")
+        # 横轴: **次数**(玩家: 「横坐标是次数 也需要标记几个数值」)—— 第几个样本
+        for _k in (0, (_n - 1) // 2, _n - 1):
+            _an = "left" if _k == 0 else ("right" if _k == _n - 1 else "center")
+            self._txt(self.canvas, "%d" % (_k + 1),
+                      x0 + pw * (_k / float(_n - 1)), self.y + dp(3), _an)
 
 
 def _bench_result_title():
@@ -10157,6 +10190,9 @@ def _bench_result_title():
     ⇒ 与 SOC 结果弹窗(`_soc_result_title`)、启动信息(`_startup_title`)**同一套做法**:
       名字与版本号之间留一个空格; 拿不到版本时退化成纯名字, 不留一个孤零零的 "v"。
     ⚠️ 正文里**不再印版本号**(玩家同一次说的「之前界面中不要加版本号」)。
+    ⚠️⚠️ 本函数曾经被**整段替换误删过一次**(2026-09-16 重写 `SpeedCurve` 时) ——
+       那次用的是"从 `class SpeedCurve` 到 `def _bench_score_text`"两点之间的整段替换,
+       而它正好夹在中间。**改这片区域时先数一遍夹在中间的东西。**
     """
     try:
         v = _app_version()
@@ -11460,52 +11496,81 @@ class RootWidget(BoxLayout):
         return "跑分线程没提权：可能被画面抢 CPU（%s）" % (
             _pr.get("reason", "未执行") or "未知原因")
 
+    def _hp_result_text(self, d, opt_lines=()):
+        """SOC 高压的**成绩正文** —— 结果弹窗与历史「详情」**共用这一份**。
+
+        玩家 2026-09-16: 「这个**历史详情打开后, 应该用之前的那个格式**, 而不是再新作一个
+        用这个的修改版本」—— 详情原来有自己的「成绩 / 频率 / 过程」三段版式 ✗, 与结果弹窗
+        **两套说法**（同一个数一个写「平均 A / 最低 B」、另一个写「最低 B，平均 A」）。
+        本工程的规矩: 两处各写一份**迟早脱钩** ⇒ 合成这一份, 两边都调它。
+
+        ⚠️ 入参 `d` 用**记录里的字段名**(`hp_history` 那套)。现场那条路先用同样的键组一个
+           dict 再传进来 ⇒ 「刚跑完」与「翻历史」走**同一条渲染路径**。
+        ⚠️ `opt_lines` 是**只在现场才有**的两行(`_hp_cpu_pin_line` / `_hp_tid_prio_line`
+           —— 那是 android 运行时状态, 记录里没存) ⇒ 详情传空。
+        ⚠️ 缺字段一律印「—」, **绝不回填**(老记录没有 `mad` / `windows` 之类)。
+        """
+        _w = [int(x) for x in (d.get('windows') or []) if x > 0]
+        _sec = float(d.get('sec') or SOC_SUSTAIN_WALL_SEC)
+        _f, _l, _mn = d.get('first'), d.get('last'), d.get('min')
+        _decay = float(d.get('decay') or 0.0)
+        _avg = int(round(sum(_w) / float(len(_w)))) if _w else None
+        _mc = _mad_coef(_w)
+        # ⚠️ 等间隔抽 **20** 个点(玩家 2026-09-16: 「高压测试的样本之前只显示 10 个,
+        #    现在也提高到 20 个」)。点数按实际算, 不写死。
+        _step = max(1, len(_w) // 20)
+        _idx = list(range(0, len(_w), _step))
+        _samples = " / ".join("%d" % _w[_i] for _i in _idx) if _idx else '—'
+        # 频率行: 口径取**平均**(与 `_hp_freq_line` 一致 —— 那段的论证是"频率采样是双峰的,
+        # 中位数必然落在其中一个峰上", 见 `_hp_freq_line` 的注释)。
+        _fm = int(d.get('freq_mean', 0) or 0)
+        if _fm > 0:
+            _freq = ("平均 %dMHz（最低 %d / 最高 %d，%d 个采样）"
+                     % (_fm, int(d.get('freq_min', 0) or 0),
+                        int(d.get('freq_max', 0) or 0), int(d.get('freq_n', 0) or 0)))
+        else:
+            _freq = "没采到（非安卓 / 读不到 sysfs）"
+        _o = [x for x in (opt_lines or ()) if x]
+        _n = chr(10)
+        return (str(d.get('head', '') or '') + _n
+                # ⚠️ 2026-09-16 玩家: 「高压 360 秒改为 **连续高压测试 360 秒**(之前的那个)」
+                #    —— 与历史详情、空态那句**用同一个说法**, 全工程只此一种写法。
+                + "连续高压测试 %d 秒" % int(_sec) + _n
+                + "".join(x + _n for x in _o)
+                + "首 %s → 末 %s 步/秒（降 %.0f%%）" % (
+                    '—' if _f is None else int(_f), '—' if _l is None else int(_l), _decay) + _n
+                # ⚠️ 2026-09-16 玩家: 「圆点改为逗号」。
+                + "最低 %s，平均 %s 步/秒" % (
+                    '—' if _mn is None else int(_mn), '—' if _avg is None else _avg) + _n
+                + ("平均差系数 %.2f%%" % _mc if _mc is not None else "平均差系数 无数据")
+                + _n + _n
+                # ⚠️ 2026-09-16 玩家: 「每段采样（括号内很多字）改为**等间隔连续采样成绩：**xxx」。
+                + "等间隔连续采样成绩：" + _samples + _n
+                + "CPU 频率：" + _freq)
+
     def _hp_summary_text(self):
-        """弹窗里那几行(短)。没数据返回空串 —— **不印假数**。"""
+        """结果弹窗的正文 —— 与历史「详情」**共用** `_hp_result_text`。
+
+        ⚠️ 现场这条路把运行时状态**按记录的字段名**组一个 dict 再传 —— 这样"刚跑完"与
+           "翻历史"就是同一条渲染路径, 不会再出现"同一个数两种说法"。
+        """
         st = self._hp_stats()
         if st is None:
             return ""
         _f, _l, _lo, _mid, _d = st
-        # ⚠️ 2026-09-16 玩家: 「把版本号**放入标题**中吧…**这个地方就不要版本号了**」。
-        #    ⇒ 正文这行**只留设备/系统/Python**, 版本号挪进标题(见 `_soc_result_title`),
-        #      与「启动信息」同一套做法 —— 那边也是标题带版本、正文只留制作时刻。
-        #    ⚠️ 设备/系统/Python **不能一起删**: 它们不是标题能表达的东西, 而且跨机器比成绩
-        #       时(平板 vs 手机、Windows vs 安卓)靠的就是这一段。
-        #    ⚠️ **历史详情弹窗里那行 `设备 版本` 照旧保留** —— 那是**记录诞生时**的版本,
-        #       是不同的历史数据(同一条记录可能来自旧版本), 删了就丢了。
-        _dv = self._device_info()
-        v = [x for x in self._hp_fps if x > 0]
-        # ⚠️ 跑分口径 = **平均数**(2026-09-16 玩家定案:「跑分从中位数改为平均数」)。
-        #    论证与 `_hp_freq_line` 里那条**同款**: 每秒窗口的步/秒是**双峰**样本
-        #    (空转窗口 + 满窗口), 中位数必然落在其中一个峰上 ⇒ 要么像"全程很慢"、
-        #    要么像"全程满血", 两个都不代表这一段。**历史面板同一口径**(见 `_hp_score`)。
-        _avg = int(round(sum(v) / float(len(v)))) if v else 0
-        # ⚠️ 这一串是**按时间顺序、等间隔抽出来的十来个点**, 不是全部窗口、也不是随机取。
-        #    玩家 2026-09-16 盯着它问:「这个是随机的 还是按照时间顺序的 **需要说出来**」——
-        #    面板上一个字都没交代, 只能靠问。⇒ 前缀里直接把三件事写清:
-        #    ① 按时间顺序 ② 左起最早 ③ 等间隔抽了几个点(点数按实际算, 不写死 12)。
-        # ⚠️ 2026-09-16 玩家: 「高压测试的样本之前只显示 10 个, 现在也
-        #    提高到 **20 个**」⇒ 12 -> 20(两处同步: 这里与 `_show_hp_detail`)。
-        _step = max(1, len(v) // 20)
-        _idx = list(range(0, len(v), _step))
-        _curve = " / ".join("%d" % v[_i] for _i in _idx)
-        # ⚠️ 2026-09-15 玩家定稿: 高压这里**删掉「归一化」、删掉「波动」, 新增平均差系数**
-        #    (= 平均差 ÷ 均值, 见 `_mad_coef`)。旧「波动」是 (max-min)/中位, 只看两个极端点。
-        # ⚠️ 锁核/提优先级这两行**只在安卓上出现**(PC 上它们永远是恒定值)。
-        _opt = [_x for _x in (self._hp_cpu_pin_line(), self._hp_tid_prio_line()) if _x]
-        _mc = _mad_coef(v)
-        return (_dv + chr(10)
-                + "高压 %.0f 秒" % SOC_SUSTAIN_WALL_SEC + chr(10)
-                + "".join(_x + chr(10) for _x in _opt)
-                + "首 %d → 末 %d 步/秒（降 %.0f%%）" % (_f, _l, _d) + chr(10)
-                # ⚠️ 2026-09-16 玩家:「跑分**从中位数改为平均数**」。**历史面板与这个结果
-                #    弹窗必须同一口径** —— 频率那边就是因为两处不一样被玩家逮到过(见
-                #    `_hp_freq_line` 的注释), 别再犯同一个错。
-                + "最低 %d · 平均 %d 步/秒" % (_lo, _avg) + chr(10)
-                + ("平均差系数 %.2f%%" % _mc if _mc is not None else "平均差系数 无数据")
-                + chr(10) + chr(10)
-                + "每段采样（按时间顺序，左起最早，等间隔取 %d 点）：" % len(_idx) + _curve + chr(10)
-                + "CPU 频率：" + self._hp_freq_line())
+        _fr = getattr(self, "_hp_freq", None) or {}
+        _opt = [x for x in (self._hp_cpu_pin_line(), self._hp_tid_prio_line()) if x]
+        return self._hp_result_text({
+            'head': self._device_info(),
+            'sec': SOC_SUSTAIN_WALL_SEC,
+            'first': _f, 'last': _l, 'min': _lo, 'decay': _d,
+            'windows': list(getattr(self, "_hp_fps", None) or []),
+            'freq_mean': int(_fr.get('mean', 0) or 0),
+            'freq_p50': int(_fr.get('p50', 0) or 0),
+            'freq_min': int(_fr.get('min', 0) or 0),
+            'freq_max': int(_fr.get('max', 0) or 0),
+            'freq_n': int(_fr.get('n', 0) or 0),
+        }, _opt)
 
     def _hp_done(self):
         """高压测试结束: 弹结果弹窗。"""
@@ -11592,7 +11657,7 @@ class RootWidget(BoxLayout):
                             orientation="horizontal")
         _cw = [x for x in (getattr(self, "_hp_fps", None) or []) if x > 0]
         if len(_cw) >= 2:
-            curve_btn = Button(text="走势图", font_size="16sp", bold=True,
+            curve_btn = Button(text="成绩曲线", font_size="16sp", bold=True,
                                background_normal="", background_color=hex_rgb(COL_BTN) + (1,))
             curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
             _btnrow.add_widget(curve_btn)
@@ -14794,7 +14859,7 @@ class RootWidget(BoxLayout):
         if len(_w) < 2:
             return
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
-        title = self._fit_line(Label(text='高压走势', bold=True, halign='center',
+        title = self._fit_line(Label(text='高压SOC测试的成绩曲线', bold=True, halign='center',
                                      color=hex_rgb(COL_TEXT) + (1,),
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
@@ -14825,51 +14890,26 @@ class RootWidget(BoxLayout):
 
     def _show_hp_detail(self, r):
         """某一条 SOC 高压记录的**详细成绩 + SOC 平均频率**。"""
-        _n = chr(10)
-        _w = [x for x in (r.get('windows') or []) if x > 0]
-        # ⚠️ 2026-09-16: 12 -> **20**(与 `_hp_summary_text` 同步; 玩家要求样本提到 20 个)。
-        _step = max(1, len(_w) // 20) if _w else 1
-        # ⚠️ 与结果弹窗**同一口径**: 按时间顺序、左起最早、等间隔抽点(理由见 `_hp_summary_text`)。
-        _idx = list(range(0, len(_w), _step)) if _w else []
-        _curve = ' / '.join('%d' % _w[i] for i in _idx) if _idx else '—'
-        _fm = int(r.get('freq_mean', 0) or 0)
-        _fp = int(r.get('freq_p50', 0) or 0)
-        _fn = int(r.get('freq_n', 0) or 0)
-        if _fm > 0:
-            _ft = ('%d MHz' % _fm)
-            _fd = ('中位 %d / 最低 %d / 最高 %d（%d 个采样）'
-                   % (_fp, int(r.get('freq_min', 0) or 0), int(r.get('freq_max', 0) or 0), _fn))
-        else:
-            _ft, _fd = '没采到', '非安卓 / 读不到 sysfs'
-        _mad = r.get('mad')
-        # ⚠️ 2026-09-16 玩家定稿: **分三块**(成绩 / 频率 / 过程) + 组内缩进两格。
-        #    玩家原话是「一堆看不懂的东西」—— 病根**不是字太多, 是没有分组**:
-        #    读者不知道哪块是什么, 一屏并列的数字就成了浆糊。所以**内容一条不删**,
-        #    只加三个小标题 + 缩进。(代价: 仍是**一个 Label** ⇒ 小标题无法单独上色;
-        #    要上色就得拆成多个 `_auto_h` 标签, 那会动"自动撑高"那条路, 现在不值当。)
-        _txt = (_n + str(r.get('device', '?')) + '  ' + str(r.get('version', '')) + _n
-                # ⚠️ 2026-09-16 玩家: 「连续高压测试 360 秒」(原来是「高压 360 秒」)。
-                #    与空态那句「连续高压测试 N 秒即可产生一条」**用同一个说法**。
-                #    ⚠️ 这行会因此**折成两行**(整句约 300px > 手机上的内容区 ~285px) ——
-                #       可以接受: 正文是 `_auto_h` 撑高的多行标签, 折行只是长高, 不会被裁。
-                + str(r.get('time', '--')) + '   连续高压测试 %d 秒'
-                % int(r.get('sec', 0) or 0) + _n + _n
-                + '成绩' + _n
-                + '  平均 %d / 最低 %d 步/秒'
-                % (int(r.get('median', 0) or 0), int(r.get('min', 0) or 0)) + _n
-                + '  首 %d → 末 %d（降 %.1f%%）'
-                % (int(r.get('first', 0) or 0), int(r.get('last', 0) or 0),
-                   float(r.get('decay', 0) or 0)) + _n
-                # ⚠️ 2026-09-15 玩家定稿: 「波动」换成**平均差系数**(= 平均差 ÷ 均值)。
-                #    旧记录没有 `mad` 字段 ⇒ 整行不印(**不回填、不印假数**)。
-                + ((('  平均差系数 %.2f%%（越小越稳）' % float(_mad)) + _n)
-                   if _mad is not None else '')
-                + _n
-                + '频率' + _n
-                + '  平均 ' + _ft + _n
-                + '  ' + _fd + _n + _n
-                + '过程' + _n
-                + '  每段采样（按时间顺序，左起最早，等间隔取 %d 点）：' % len(_idx) + _curve)
+        # ⚠⚠ 2026-09-16 玩家: 「这个**历史详情打开后, 应该用之前的那个格式**,
+        #    而不是再新作一个」⇒ 正文改走**与结果弹窗共用的**
+        #    `_hp_result_text` —— 原来那套「成绩/频率/过程」三段版式**已删**
+        #    (它与结果弹窗是**两套说法**: 同一个数一个写「平均 A / 最低 B」、
+        #    另一个写「最低 B，平均 A」)。
+        #    ⚠️ `opt_lines` 传空: 锁核/提优先级那两行是 **android 运行时状态**,
+        #       记录里没存 ⇒ **不印假值**。
+        #    ⚠️ 头一行保留**设备 + 记录当年的版本** + 时间 —— 那是**历史数据**
+        #       (同一条记录可能来自旧版本), 不能省。
+        _txt = self._hp_result_text({
+            'head': ('%s  %s' % (r.get('device', '?'), r.get('version', ''))).strip()
+                    + chr(10) + str(r.get('time', '--')),
+            'sec': r.get('sec', 0),
+            'first': r.get('first'), 'last': r.get('last'),
+            'min': r.get('min'), 'decay': r.get('decay', 0.0),
+            'windows': list(r.get('windows') or []),
+            'freq_mean': r.get('freq_mean', 0), 'freq_p50': r.get('freq_p50', 0),
+            'freq_min': r.get('freq_min', 0), 'freq_max': r.get('freq_max', 0),
+            'freq_n': r.get('freq_n', 0),
+        })
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='SOC高压测试详情', bold=True,
                                          halign='center', color=hex_rgb(COL_BALL) + (1,),
@@ -14886,7 +14926,7 @@ class RootWidget(BoxLayout):
                             orientation='horizontal')
         _cw = [x for x in (r.get('windows') or []) if x > 0]
         if len(_cw) >= 2:
-            curve_btn = Button(text='走势图', font_size='16sp', bold=True,
+            curve_btn = Button(text='成绩曲线', font_size='16sp', bold=True,
                                background_normal='', background_color=hex_rgb(COL_BTN) + (1,))
             curve_btn.bind(on_release=lambda *_: self._show_hp_curve(_cw))
             _btnrow.add_widget(curve_btn)
