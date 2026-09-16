@@ -11240,7 +11240,12 @@ class RootWidget(BoxLayout):
             _w0 = float(_PHYS_WAIT_T0[0])
             _wait = max(0.0, time.time() - _w0) if _w0 > 0 else 0.0
             _dd = float(_PHYS_PROG[0]) + float(_PHYS_SLEPT[0]) + _wait
-            return "物理跑分 %d/%d秒" % (min(int(_dd), int(_dt)), int(_dt))
+            # ⚠️ 2026-09-16 玩家: 「这个**物理跑分太粗俗了**, 能不能换个**文雅点的名字**」
+            #    ⇒ `物理跑分` -> **`物理演算`**(玩家从候选里选的;「演算」比「跑分」雅,
+            #      而两个字把「物理」保留了, 与旁边那行「SOC高压测试」并列也齐)。
+            #    ⚠️ 日志里那些「物理跑分…」**不改** —— 那是给人看的诊断行,
+            #       精确比雅致重要(且旧日志里已经是这个词)。
+            return "物理演算 %d/%d秒" % (min(int(_dd), int(_dt)), int(_dt))
         return None
 
     def _prog_tick(self, dt=0):
@@ -12635,7 +12640,11 @@ class RootWidget(BoxLayout):
             #    真机表现: **黑屏出来了、白字停在「物理跑分 0/5」一动不动, 整轮卡死**。
             #    ⇒ 建在**主线程这一侧**(本函数是 Clock 回调), 别搬回线程体里。
             self._show_bench_dim()
-            self._set_bench_msg("物理跑分 0/%d" % SOC_SAMPLE_RUNS)
+            # ⚠️ 2026-09-16: 这里原来写的是 `"物理跑分 0/%d" % SOC_SAMPLE_RUNS`
+            #    —— 既是**旧名字**, 又是**旧格式**(`0/5` 是轮数,而现在进度是按秒)。
+            #    这句只在黑屏刚上来时亮一下—— 0.25 秒后 `_prog_tick` 就会用真进度盖掉
+            #    —— 所以**不拼数字**(总秒数到那时还没算出来),只写名字。
+            self._set_bench_msg("物理演算")
             threading.Thread(target=self._run_benchmark, daemon=True).start()
         else:
             Clock.schedule_once(self._wait_idle_then_bench, 0.5)
