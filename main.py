@@ -185,9 +185,17 @@ ARC_E = 0.50                 # [死代码] 弧面法向反弹: 物理层已不�
                              # 曾试 0.2~0.4 想实现"沿弧面滑行": 弱档抖动(碰-弹-再碰),
                              # 中/满档出口散布 80px+ 且首钉出包络——滑行在此空间物理上不可行,
                              # 反弹系数必须 ≥0.5 出口才确定(首钉 390/350/301 单调稳定)。
-ARC_VISUAL = 1.4             # 弧面碰撞半径系数(独立物理常量): 不随纯视觉 BALL_VIEW 改动
+ARC_VISUAL = 1.4             # 弧面碰撞半径系数(=渲染层 BALL_VIEW): 球视觉半径 12.6 比碰撞
                              # 半径 9 大 3.6px, 弧面碰撞必须用视觉半径, 球才"与弧面相切"而非
                              # 嵌进弧面 3.6px —— 曲线相切是常识, 球要给足运动空间
+                             # ⚠️ 2026-09-17: 有人把上面这行改成"独立物理常量: 不随纯视觉 BALL_VIEW
+                             #    改动"并同时把 BALL_VIEW 提到 1.6 —— 那是**同时改注释和改值**, 把一条
+                             #    设计不变量说成从来不存在。现值已回退到 1.4, 等式恢复。**这两条必须
+                             #    联动**: 要么都留 1.4; 要么都改, 但 ARC_VISUAL 是物理常量, 实测会让
+                             #    84.7% 的落格槽号变化(360 条定种子飞行) = 改玩法, 越界。
+                             #    另: 导轨带的**真实宽度是 7px 不是 3.5px** —— Kivy 的 Line(width=w)
+                             #    把顶点沿法线两侧各偏 w, 所以 width=3.5 画出来是 7px。按 7px 带算,
+                             #    1.4 时代球缘已伸进带内 41.9%, "相切"指的是球缘落在带的中轴上。
 # 弧面碰撞的实际作用半径 —— 与 `_collide_arc` 里算的 r 必须是**同一个值**
 # (y 带粗筛要用它当 reach; 两处不同步就会漏碰, 而且是静默的)。
 _ARC_REACH = BALL_R * ARC_VISUAL
@@ -6253,9 +6261,14 @@ BOUNCE_A2_BASE, BOUNCE_A2_AMP = 0.25, 0.20       # 第二跳
 VISIBLE_TOP = -DESIGN_H * CUP_T / CUP_H
 
 _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
-# 装杯球纹理取 128px：真机对比过 128→256 几乎没有屏幕收益，却会让
-# 纯 Python 合成耗时更高。清晰度的有效改动是下面收紧边缘羽化，仍分帧预烘。
-_CUP_BALL_TEX_PX = 128
+# 装杯球纹理取 256px(2026-09-17 从 128 提上来)。
+# ⚠️ 这里原来写着"真机对比过 128→256 几乎没有屏幕收益" —— **那句是在 1080 档设备上测的,
+#    不能推广**: 杯中球在屏幕上的直径 = 逻辑 68.4 × s。1080 档 s=2.077 → 142 设备px,
+#    128 贴图 0.90 texel/px(勉强够, 所以看不出收益); 而 1900p 档 s≈3.65 → **250 设备px**,
+#    128 贴图只有 0.51 texel/px = **明显欠采样**(球会糊), 256 才到 1.02。
+#    **贴图密度是相对屏幕尺寸定的, 不是一个绝对数** —— 改 BALL_VIEW / 换设备都要重算这个比值。
+#    代价: 256² 的纯 Python 合成约是 128² 的 4 倍, 所以仍走下面 prebake_step 的分帧预烘。
+_CUP_BALL_TEX_PX = 256
 # 启动预热要"碰一次"的字号: 大字 sp(36)/sp(48) + 飘字 sp(26)/sp(30)。
 # ⚠️ **必须懒算**: `sp()` 读当时的窗口密度, 而模块导入时窗口还没建 —— 在这里直接
 #    写 `sp(36)` 会拿到错误的密度(真机上就是"预热了一堆没人用的字号")。
@@ -7923,7 +7936,16 @@ H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区�
 H_BETS = 44                  # 投入弹珠单位行(左对齐, 降低以增大游戏区间隙)
 H_INFO = 26                  # 弹珠 + 统计(缩高, 腾空间给底部留白)
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
-BALL_VIEW = 1.6              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不动)
+BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不动)
+                             # ⚠️ 2026-09-17 曾试到 1.6("球更大更醒目"), 已按用户决定退回 1.4:
+                             #    代价是地面/井区/弹簧三处承托面统一多冒 1.4px, 且弧面从"边缘落在
+                             #    带中轴"变成压进带内 70%(见 ARC_VISUAL 处注释)。贴图那一组改动
+                             #    (外圈暗边/羽化/猫眼带)与 1.4 无关, 已全部保留。
+BALL_VIS_R = BALL_R * BALL_VIEW   # 球的视觉半径 = 12.6。**所有"球该坐在上面"的绘制线按它对齐**
+                             # —— 井区顶边 / 弹簧上横线 / 底墙绘制上沿都从它派生。原来这三处写死
+                             # BALL_R(=9), 而球的视觉半径比碰撞半径大 3.6px, 于是球在贴地处会陷进去
+                             # 3.6px(玩家截图报过"小球陷入地面"; 当时 BALL_VIEW=1.6 时是 5.4px)。
+                             # ⚠️ 以后新加任何承托面绘制线, 一律用这个常量, 别写 BALL_R。
 _BALL_TEX_PX = 128           # 飞行球仅一张纹理; 提高密度不会增加每帧开销
 
 def slot_color(m):
@@ -9845,6 +9867,12 @@ class GameArea(FloatLayout):
             Rectangle(**self._rect(LANE_L, 0, RIGHT_INNER, FLOOR))
             Color(*hex_rgb(COL_WALL))
             for w in g.geo["walls"]:
+                if w[1] == FLOOR:
+                    # 底墙: **绘制**上沿下移到球的新下沿, 球才"坐在地面上"而非陷进去。
+                    # ⚠️ 只改绘制 —— 物理层的底墙在 physics_step 里被显式跳过(见"地板不是墙"那段),
+                    #    所以这里改 y 不影响碰撞/落格/门禁; build_walls() 的几何一个字不动。
+                    Rectangle(**self._rect(w[0], FLOOR + BALL_R * (BALL_VIEW - 1), w[2], w[3]))
+                    continue
                 Rectangle(**self._rect(*w))
             # 发射区导流弧(3~4px 金属细带, 右壁口部弧形导轨, 比钉略细但可见)
             if g.geo["deflectors"]:
@@ -9916,7 +9944,7 @@ class GameArea(FloatLayout):
             self._meter_fill = Rectangle(pos=(0, 0), size=(0, 0))
             # 弹簧凹槽(发射槽下方暗色井区, 跟随 PLUNGER_Y; 从球底延伸到画布底)
             Color(*hex_rgb("#060e18"))
-            Rectangle(**self._rect(LANE_L, PLUNGER_Y + BALL_R, RIGHT_INNER, CH))
+            Rectangle(**self._rect(LANE_L, PLUNGER_Y + BALL_VIS_R, RIGHT_INNER, CH))
             # 弹簧: 2 条横线(在凹槽内, 间距=松弛, 贴紧=压缩)
             self._spring_bar_col = Color(*hex_rgb("#8fa0c4"))
             self._spring_bars = []
@@ -10193,7 +10221,7 @@ class GameArea(FloatLayout):
             self._spring_vel = 0.0
         sp = max(-0.25, self._spring_power)  # 过冲到 -0.25(回弹约 11px), 视觉明显
         # 弹簧 Z 字形: 上横线→斜线→下横线
-        bar_top = PLUNGER_Y + BALL_R
+        bar_top = PLUNGER_Y + BALL_VIS_R      # 球的下沿: 球"坐在弹簧上"而非陷进去
         bar_bot = bar_top + 9 + sp * 45
         lx = self._px(LANE_L + 5)
         rx = self._px(RIGHT_INNER - 5)
