@@ -2101,6 +2101,17 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   门禁: fx_probe 330 条(+3)。
 #   验证: --selftest OK · fx_probe 330 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
 #
+# 【v0.7.100 菜单文案: 换成更短的说法, 6 行在 360dp 上全部一行放得下】
+#
+#   v0.7.99 把那两行合并后是 **312px**, 而 360dp 只有 261px
+#   ⇒ 窄屏会折行。玩家定稿换成更短的说法:
+#     旧: `物理引擎是用 Python 写的，吃单核浮点算力。`  (312px)
+#     新: `Python 写的引擎，吃单核浮点算力。`        (**249px**)
+#   ⇒ `check_desc`: 6 行全部 `360:OK`, 最宽 256px / 余量 5px。
+#   ⚠️ `tools/android_part_ui.py` 已同步(否则重跑生成器会盖回来)。
+#
+#   验证: --selftest OK · py_compile OK · 纯 LF · `temp/check_desc.py` 全行 OK。
+#
 # 【v0.7.99 成绩面板: 飞行时长只算「飞行」那段 + 三条整句并一行 + 版本进标题 + 菜单文案合并】
 #
 #   玩家 2026-09-16 四条:
@@ -4434,7 +4445,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe 336 条(+6: 持久指令表四条 + 面板两档两条; 另更新了几条被取代的旧断言)。
 #   验证: --selftest OK · fx_probe 336 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
-version = 0.7.99
+version = 0.7.100
 
 
 
