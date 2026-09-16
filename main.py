@@ -869,14 +869,14 @@ SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
 HP_SAMPLE_SEC = 10.0
 
 # ⚠️ **高压测试的 CPU 频率采样: 掐头去尾各多少秒**(玩家 2026-09-16:
-#    「CPU频率采样, 调整为**只对第1秒到第359秒生效, 掐头去尾**」)。
-#    360 秒的局 ⇒ 只统计 **[1, 359] 秒**这一段里的采样。
+#    「CPU频率采样, 调整为**只对第12秒到第348秒生效, 掐头去尾**」)。
+#    360 秒的局 ⇒ 只统计 **[12, 348] 秒**这一段里的采样。
 #    两端确实不该算: **头**那一秒 CPU 才刚被拉起来(还在爬频),"平均频率"会把爬坡算进去;
 #    **尾**那一秒测试已经收尾、下一轮排队的调度动作也在动。这与跑分成绩那边
 #    「掐头 0.5 秒(起跑段)/ 不掐尾」是同一条思路 —— **只在跑匀了的那一段上量尺子**。
 #    ⚠️ 窗口用**绝对时刻**表达(见 `_freq_sampler_start` 的 `win`), 与 `_hp_wall0` 同源;
 #       不要写成"线程跑起来之后 N 秒", 那会差出锁核/探测拓扑那几十毫秒。
-HP_FREQ_TRIM_SEC = 1.0
+HP_FREQ_TRIM_SEC = 12.0
 # 渲染采样窗口自动发几颗球(原来是 `self._target_launches = 5` 写死在跑分函数里, 提成常量)。
 BENCH_TARGET_LAUNCHES = 5
 
@@ -1503,7 +1503,12 @@ def _alloc_probe(cpu_seconds=0.05, blocks=_PROBE_BLOCKS):
 
 
 def _freq_sampler_start(win=None):
-    """起一个 0.5 秒一次的主频采样线程, 返回 `(频率列表, 停止标志)`。
+    """起一个主频采样线程, 返回 `(频率列表, 停止标志)`。
+
+    每轮读完所有 CPU 的 sysfs 后 `sleep(0.5)`, 所以真实间隔 = **读取耗时 + 0.5 秒**,
+    并非固定 2Hz。真机 358 秒窗口实测约 424 点, 即约 0.84 秒/点;
+    设备的 sysfs 和调度耗时不同, 点数也可能不同。曲线横轴因此只是“按时间顺序的
+    样本序号”, 不能当作精确秒数。
 
     用 `_cpufreq_mhz()`(读 sysfs), 非安卓/读不到时**采不到任何值**, 列表保持为空 ——
     调用方据此印「没采到」, **不印假数**。
@@ -12407,6 +12412,10 @@ class RootWidget(BoxLayout):
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
         self._bench_running = True
+        # 常亮要覆盖**整场**模拟测试: 从预热等待、屏幕渲染采样开始,
+        # 而不是等到后半段物理演算的黑屏 `_show_bench_dim()` 才开。这里只开常亮,
+        # 不改系统栏/黑屏; 结束和异常路径仍由 `_hide_bench_dim()` 统一关闭。
+        _set_keep_awake(True)
         # ⚠️ 2026-09-16: **快照弹珠数/投中数** —— 下面的渲染采样会发 5 发球、
         #    每发都中奖 ⇒ 不快照的话玩家的弹珐数会被这次测试撑大。
         #    还原在 `_run_benchmark` 的 `finally` 里(异常路径也罩得住)。
@@ -17847,13 +17856,23 @@ class PlinkoApp(App):
                         #    ⚠️ `addFlags`/`clearFlags` 收的是 **WindowManager.LayoutParams
                         #       的静态常量**, 所以要多 autoclass 一个类。
                         _w = act.getWindow()
-                        _WM = autoclass('android.view.WindowManager')
+                        # FLAG_KEEP_SCREEN_ON 定义在 WindowManager.LayoutParams,
+                        # 不在 WindowManager 接口本身。pyjnius 访问 Java 嵌套类用 `$`;
+                        # 若取 `android.view.WindowManager.FLAG_KEEP_SCREEN_ON`, 会抛异常
+                        # 并被本 Runnable 的保护层吞掉, 表现为黑屏/全屏正常但常亮失效。
+                        _LP = autoclass('android.view.WindowManager$LayoutParams')
                         if _WAKE_MODE[0]:
-                            _w.addFlags(_WM.FLAG_KEEP_SCREEN_ON)
+                            _w.addFlags(_LP.FLAG_KEEP_SCREEN_ON)
                         else:
-                            _w.clearFlags(_WM.FLAG_KEEP_SCREEN_ON)
-                    except Exception:
-                        pass
+                            _w.clearFlags(_LP.FLAG_KEEP_SCREEN_ON)
+                    except Exception as _exc:
+                        # 这里一旦失败, 全屏可能仍正常而常亮已失效;
+                        # 不能再静默吞掉, 否则真机上只会表现为“偶发息屏”。
+                        _JNI_STAT[5] += 1
+                        try:
+                            print("[system-ui] apply failed: %r" % (_exc,))
+                        except Exception:
+                            pass
                     try:
                         _d = time.perf_counter() - _t0
                         _JNI_STAT[6] += _d
