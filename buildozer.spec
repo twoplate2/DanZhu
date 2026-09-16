@@ -2101,6 +2101,33 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   门禁: fx_probe 330 条(+3)。
 #   验证: --selftest OK · fx_probe 330 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
 #
+# 【v0.7.105 跑分前后**弹珠数/投中数**原样放回】
+#
+#   玩家 2026-09-16: 「跑分前(模拟测试)前需**重置弹珠数量**, 跑分完成后
+#   也需要重置这个数量」。
+#
+#   ⚠️ **为什么是“快照 + 还原”而不是直接调 `reset_balance()`**:
+#      · 它会把 `plays`/`hits` **清零** —— 那是玩家**真实的累计投中数**(而且会写进配置)
+#        ⇒ 跑一次测试就抹掉 ✗。
+#      · 它还会 `_set_controls_enabled(True)`(**解锁输入**)、播 `cash` 音效、写状态栏
+#        「已重置」 —— 跑分期间这三样**全是错的**。
+#
+#   · 新增 `_snap_bench_counters()` / `_restore_bench_counters()`(幂等)。
+#   · 快照在 `_start_bench_test` 开头(渲染采样发 5 发球**之前**)。
+#   · 还原在 `_run_benchmark` 的 `finally`(异常路径也罩得住;
+#     ⚠️ 必须在 `_bench_fps_lock_off` **之后** —— 门禁 L6 查的是 `finally:` 首行),
+#     `_bench_done` 开头再兜一次(幂等)。
+#   · 还原时**同步 `display_balance` / 三个 `_anim_*`** —— 不同步的话余额会从
+#     被污染的值开始滚动(`reset_balance` 里也是这么写的)。
+#
+#   ⚠️ 跑分期间弹珠数**一定会涨**: 固定盘面 `BENCH_BOARD` 每发都中奖,
+#      5 发下来能翻好几倍(玩家截图实证「弹珠 164000 / 累计48投48中」)。
+#      ⇒ 净效果 = **这个测试完全不碰你的弹珠数与投中数**。
+#
+#   验证: --selftest OK · py_compile OK · 纯 LF · 字体子集复核缺字形 **0** ·
+#        `temp/_benchdetail.py` **29 项全绿**(B9/B9a/B9b/B9c: 跑完弹珠数回到跑前 ·
+#        投中数也回退 · 幂等 · 没走 `reset_balance` 那条会解锁输入的路)。
+#
 # 【v0.7.104 历史详情补上诊断块 + SOC 高压新增「走势图」】
 #
 #   玩家 2026-09-16 两条:
@@ -4545,7 +4572,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe 336 条(+6: 持久指令表四条 + 面板两档两条; 另更新了几条被取代的旧断言)。
 #   验证: --selftest OK · fx_probe 336 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
-version = 0.7.104
+version = 0.7.105
 
 
 

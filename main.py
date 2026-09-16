@@ -11900,9 +11900,56 @@ class RootWidget(BoxLayout):
             v.drop()
         self._show_replay_detail()
 
+    def _snap_bench_counters(self):
+        """跑分前**快照**玩家的弹珠数 / 投中数 —— 跑完原样放回。
+
+        玩家 2026-09-16: 「跑分前(模拟测试)**需重置弹珠数量**, 跑分完成后
+        也需要重置这个数量」。
+
+        ⚠️ 为什么是**快照+还原**而不是直接调 `reset_balance()`:
+           · 它会把 `plays/hits` **清零** —— 那是玩家**真实的累计投中数**
+             (而且会写进配置) ⇒ 跑一次测试就抹掉 ✗。
+           · 它还会 `_set_controls_enabled(True)`(**解锁输入**)、播 `cash` 音效、
+             写状态栏「已重置」 —— 跑分期间这三样**全是错的**。
+        ⚠️ 跑分期间弹珠数**一定会涨**: 固定盘面 `BENCH_BOARD` 每发都中奖,
+           5 发下来能翻好几倍(玩家截图实证「弹珠 164000 / 累计48投48中」)。
+        ⇒ 净效果 = **这个测试完全不碰你的弹珠数与投中数**。
+        """
+        try:
+            self._bench_snap = (int(self.balance), int(self.plays), int(self.hits),
+                                int(getattr(self, "round_plays", 0) or 0))
+        except Exception:
+            self._bench_snap = None
+
+    def _restore_bench_counters(self):
+        """把快照放回去(**幂等**: 放回后清掉快照, 重复调无害)。"""
+        _s = getattr(self, "_bench_snap", None)
+        if not _s:
+            return
+        self._bench_snap = None
+        try:
+            _bal, _pl, _hi, _rp = _s
+            self.balance = int(_bal)
+            self.plays = int(_pl)
+            self.hits = int(_hi)
+            self.round_plays = int(_rp)
+            # ⚠️ 这三个不能漏: 不同步的话余额会**从被污染的值开始滚动**
+            #    (reset_balance 里也是这么写的)。
+            self.display_balance = float(self.balance)
+            self._anim_target_balance = float(self.balance)
+            self._anim_start_balance = float(self.balance)
+            self._anim_start_time = time.time()
+            self._refresh_stats()
+        except Exception:
+            pass
+
     def _start_bench_test(self):
         """开始性能测试(菜单点"开始测试"后)。"""
         self._bench_running = True
+        # ⚠️ 2026-09-16: **快照弹珠数/投中数** —— 下面的渲染采样会发 5 发球、
+        #    每发都中奖 ⇒ 不快照的话玩家的弹珐数会被这次测试撑大。
+        #    还原在 `_run_benchmark` 的 `finally` 里(异常路径也罩得住)。
+        self._snap_bench_counters()
         # ⚠️⚠️ **把随机钉死 —— 跑分必须是"放录像", 不是"再抽一次"(2026-09-14, 玩家提的)。**
         #   病根: 每轮球的落格是随机的 ⇒ 中奖次数不同 ⇒ **装杯时长不同** ⇒ 内容配比每轮都不一样。
         #   实测连续三轮的装杯占比是 **25.2% / 30.6% / 38.2%**, 而 1%Low 是 92.4 / 92.2 / 88.4 ——
@@ -12635,6 +12682,10 @@ class RootWidget(BoxLayout):
         #       配对 —— 少一个 `_BENCH_FPS_PHYS` 就只增不减 ⇒ 跑完一次跑分后帧率**再也回不去**。
         finally:
             _bench_fps_lock_off(phys=True)
+            # ⚠️ **把弹珠数/投中数还回去**(2026-09-16 玩家) ——
+            #    放在 `finally` 里是刻意的: **异常路径也得还**。
+            #    ⚠️ 必须在 `_bench_fps_lock_off` **之后** —— 门禁 L6 查的是 `finally:` 的**首行**。
+            self._restore_bench_counters()
             # ⚠️ **兜底撤黑屏**(异常路径) —— 与波 2 同一条规矩, 理由见 `_hp_done` 的说明:
             #    正常路径由 `_bench_done` 撤, 这里管"跑分中途抛异常"那条 —— 没有它黑屏会
             #    永久留在屏幕上。`_hide_bench_dim` 幂等, 重复调无害。
@@ -12774,6 +12825,9 @@ class RootWidget(BoxLayout):
         return ' · '.join(parts)
 
     def _bench_done(self, flights, frames, fps_list, cpu_secs=None):
+        # ⚠️ 兑底再还一次(幂等, 重复调无害): `_run_benchmark` 的 `finally`
+        #    正常路径已经还过了, 这里只是防那条路被绕过。
+        self._restore_bench_counters()
         self.game_area.hide_bench_badge()
         # ⚠️ 撤黑屏。**注释 2026-09-15 更正过**: 旧版这里写的是"兼容旧路径: 当前跑分不再置灰"
         #    —— 那句话在 v0.7.82 之后就**过期了**(黑屏+白字是那一版重新启用的)。
