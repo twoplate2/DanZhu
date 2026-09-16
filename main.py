@@ -10167,9 +10167,19 @@ def _bench_score_text(d):
     #    (现象是掉帧/球变慢, **不会崩**)。
     #    ⚠️ 不叫「溢出倍率」: 数值 >1 表示有余量, 而"溢出"字面上像出事了。
     #    ⚠️ 任一项拿不到就印「—」, **绝不拿别的数回填**(老记录没有 flight_ms/margin)。
+    # ⚠️ 2026-09-16 玩家定稿版式(**他给的原式**):
+    #       平均每轮 x 步模拟，平均差系数 x.xx%
+    #       稳定性：xxx~xxx 步/秒，样本是：xxx,xxx
+    #    「括号内容是备注, 不发」—— 他那句关于采样的说明是**给我看的**, 不打进面板。
+    #    · 「样本是」列出**逐轮样本**, **按时间顺序**、逗号分隔。玩家要求"采集多次样本、
+    #      至少 20 次; 如果只能采集 5 个就用 5 个" ⇒ **取前 20 个**(本测试每轮一个样本,
+    #      常规就是 5 个, 所以现在是 5 个)。
+    #    · ⚠️ 拿不到 `phys_fps_runs`(老记录) ⇒ 印「—」, **不拿别的数回填**。
+    _runs = [int(x) for x in (_g('phys_fps_runs') or [])][:20]
+    _samples = ','.join('%d' % x for x in _runs) if _runs else '—'
     return ('%s\n'
-            '运算速度：%d 轮平均每秒 %d 步模拟\n'
-            '稳定性：%d～%d 步/秒 · 平均差系数 %s\n'
+            '平均每轮 %d 步模拟，平均差系数 %s\n'
+            '稳定性：%d～%d 步/秒，样本是：%s\n'
             '%s'
             # ⚠️ 2026-09-16 玩家(看了截图): 「**去掉前面的文字, 保留后面的**, 后面的文字
             #    **放 1 行**」⇒ 删掉「每次发射 / 计算用时·飞行用时·富余」那两行(它们与下面
@@ -10180,9 +10190,9 @@ def _bench_score_text(d):
             '飞行平均持续 %s 秒，'
             '飞行期间可完成 %s 次飞行模拟\n'
             '%s') % (
-        _dv, int(_g('phys_runs', 0) or 0), int(_g('phys_fps', 0) or 0),
-        int(_g('phys_min', 0) or 0), int(_g('phys_max', 0) or 0),
+        _dv, int(_g('phys_fps', 0) or 0),
         (('%.2f%%' % float(_mad)) if _mad is not None else '无数据'),
+        int(_g('phys_min', 0) or 0), int(_g('phys_max', 0) or 0), _samples,
         _s_txt, float(_g('avg_frames', 0) or 0),
         # ⚠️ 2026-09-16 玩家: 「持续时间的单位从 x.x 秒改为 **x.xx 秒**」
         #    ⇒ 秒那一项**两位小数**(步运算与次数仍为一位)。
@@ -11401,7 +11411,9 @@ class RootWidget(BoxLayout):
         #    玩家 2026-09-16 盯着它问:「这个是随机的 还是按照时间顺序的 **需要说出来**」——
         #    面板上一个字都没交代, 只能靠问。⇒ 前缀里直接把三件事写清:
         #    ① 按时间顺序 ② 左起最早 ③ 等间隔抽了几个点(点数按实际算, 不写死 12)。
-        _step = max(1, len(v) // 12)
+        # ⚠️ 2026-09-16 玩家: 「高压测试的样本之前只显示 10 个, 现在也
+        #    提高到 **20 个**」⇒ 12 -> 20(两处同步: 这里与 `_show_hp_detail`)。
+        _step = max(1, len(v) // 20)
         _idx = list(range(0, len(v), _step))
         _curve = " / ".join("%d" % v[_i] for _i in _idx)
         # ⚠️ 2026-09-15 玩家定稿: 高压这里**删掉「归一化」、删掉「波动」, 新增平均差系数**
@@ -14602,7 +14614,8 @@ class RootWidget(BoxLayout):
         """某一条 SOC 高压记录的**详细成绩 + SOC 平均频率**。"""
         _n = chr(10)
         _w = [x for x in (r.get('windows') or []) if x > 0]
-        _step = max(1, len(_w) // 12) if _w else 1
+        # ⚠️ 2026-09-16: 12 -> **20**(与 `_hp_summary_text` 同步; 玩家要求样本提到 20 个)。
+        _step = max(1, len(_w) // 20) if _w else 1
         # ⚠️ 与结果弹窗**同一口径**: 按时间顺序、左起最早、等间隔抽点(理由见 `_hp_summary_text`)。
         _idx = list(range(0, len(_w), _step)) if _w else []
         _curve = ' / '.join('%d' % _w[i] for i in _idx) if _idx else '—'
