@@ -360,6 +360,13 @@ COL_DIV = "#33507f"
 COL_BTN = "#3563d1"
 COL_BTN_HOVER = "#4a78ea"
 COL_BTN_OFF = "#26324f"
+# "不可用"不再换一个颜色, 而是把按钮**自己的身份色**朝 `COL_BG` 混一档(见 `dim_rgb`)。
+# ⚠️ 2026-09-17 之前 `COL_BTN_OFF` 一色两用("没选中" + "不能点") ⇒ 飞行中选中的档位
+#    被涂成和旁边没选的一模一样, "我押的是哪一档"从画面上消失(玩家报的"置灰逻辑混乱")。
+# ⚠️ **别把 `COL_BTN_OFF` 本身改掉** —— 它还给约 20 处弹窗(取消/返回/关闭/未选中档)当底色。
+COL_BTN_LOCK = "#4a5a6a"       # 重置键按下态(原先硬编码在 `reset_btn` 的 bind 里)
+COL_MUTE_OFF = "#3d3828"       # 音效"已关"的身份色(原先硬编码在 `_refresh_mute_btn` 里)
+BTN_OFF_DIM = 0.55             # "不可用"时**保留**多少对比度; 取值区间实测 [0.45, 0.72]
 COL_FIRE = "#e0533b"
 COL_DARKRED = "#8f3a2e"        # 暗砖红(安卓隐藏档弹窗的"确定"按钮): 深蓝紫底上够沉, 白字够清
                                # ⚠️ 不复用 COL_FIRE(偏亮偏橙, 且已是"蓄力发射"按钮的颜色),
@@ -367,6 +374,7 @@ COL_DARKRED = "#8f3a2e"        # 暗砖红(安卓隐藏档弹窗的"确定"按�
 COL_GREEN = "#39d98a"
 COL_GRAY = "#5a6a8c"
 COL_METER = "#f0b000"
+COL_FIRE_HOT = "#8B6914"       # 蓄力期发射键的力度色(`_frame` 里按 power 逐帧写, 原先是个字面量)
 # CPU 高压测试那一系的按钮色(2026-09-15)。⚠️ **不复用 `COL_METER`**: 那个 #f0b000 太亮,
 # 白字压在上面读不清; 这两个是**同色相、够深**的一对(行动亮 / 历史暗), 白字都够清,
 # 而且与"模拟系"的红明显分开 —— 玩家要的"同 1 类是一个色系、不同类分开"就靠这一对。
@@ -381,6 +389,26 @@ COL_BUMPER = "#4a6aa8"       # 底部挡板(比隔板亮, 醒目)
 COL_LAMP_OFF = "#243250"     # 指示灯熄灭色
 HILITE = "#ffffff"
 FONT = "Segoe UI"
+
+
+def dim_rgb(h, keep=BTN_OFF_DIM, base=COL_BG):
+    """身份色 -> "不可用"色: 朝 `base` 混掉 (1-keep), 只保留 keep 的对比度。
+
+    ⚠️ **不要改成"逐通道乘一个系数"**(2026-09-17 设计时算过): 乘会把暗色挤到背景色
+       **以下** —— `COL_BTN_OFF` x0.55 = (21,28,43), 对 `COL_BG` = (14,21,36) 只差
+       7/255, 按钮从"凸起"翻成"凹陷"、基本看不见, 而"变灰必须保留(万一状态卡住,
+       玩家看得见按钮是暗的)"是 `_set_controls_enabled` 自己立的规矩。
+       而且三个通道等比缩会把暗色挤到背景的另一个色相象限(同 10522 行"用同一个数乘会偏色")。
+       朝 `base` 混是线性映射 ⇒ `禁用选中 > 禁用未选中 > 窗口底色` 的序恒成立,
+       而且这正是本作已有的视觉语言(装杯压暗层 `DIM_RGB`、标签染色 `_tint_from` 都这么干)。
+
+    ⚠️ **必须定义在配色块之后** —— `keep`/`base` 是默认参数, 在 `def` 那一刻求值,
+       挪到 `hex_rgb`(文件顶部)旁边会在 import 期 NameError(同 `_TINT_BRIGHT` 那个坑)。
+    """
+    c = hex_rgb(h)
+    b = hex_rgb(base)
+    return tuple(c[i] + (b[i] - c[i]) * (1.0 - keep) for i in range(3))
+
 
 def build_pegs():
     """板 B：偶数行钉在槽中心，奇数行钉在槽边界 + 两端贴墙钉(消除死走廊)。
@@ -11625,13 +11653,14 @@ class RootWidget(BoxLayout):
         fire = BoxLayout(size_hint_y=None, height=dp(H_BOTTOM),
                          padding=[dp(6), dp(4), dp(12), dp(4)], spacing=dp(6))
         self._row_bottom = fire
-        self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg="#2a2a35")
+        self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg=COL_BTN_OFF)
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
+        # ⚠️ 按下态是"这个键被按住了", 与输入锁无关; 松手**必须回到取值口**而不是写死一个色 ——
+        #    否则"按住重置不放 → 3s 兜底自动发射(上锁) → 松手"会把锁着的键涂回亮的。
         self.reset_btn.bind(on_press=lambda _b: setattr(self.reset_btn, "background_color",
-            hex_rgb("#4a5a6a") + (1,)),
-            on_release=lambda _b: setattr(self.reset_btn, "background_color",
-            hex_rgb("#2a2a35") + (1,)))
+                                                        hex_rgb(COL_BTN_LOCK) + (1,)),
+                            on_release=lambda _b: self._restyle_buttons())
         fire.add_widget(Widget(size_hint_x=None, width=dp(12)))     # 重置按钮右移
         fire.add_widget(self.reset_btn)
         fire.add_widget(Widget(size_hint_x=0.95))                 # 弹簧(让出少量给右侧)
@@ -11648,18 +11677,45 @@ class RootWidget(BoxLayout):
         fire.add_widget(Widget(size_hint_x=0.05))                 # 右侧弹簧(蓄力左移≈2dp)
         self.add_widget(fire)
         self.padding = [0, 0, 0, dp(12)]  # 底部留白
+        self._restyle_buttons()           # 首帧之前把底色定死(不靠别处的调用顺带纠正)
         # 压暗块放在最后建: 它要读 game_area 的 pos/size, 且 canvas.after 必须排在
         # 全部子控件之后(见 _build_hud_dim 的说明)。
         self._build_hud_dim()
         self._refresh_stats()
 
     # ------------------------------ 控件状态 ------------------------------
-    def _restyle_selects(self):
-        for pv, btn in self.bet_btns.items():
-            btn.background_color = hex_rgb(COL_BTN if pv == self.bet else COL_BTN_OFF) + (1,)
-        for tv, btn in self.rtp_btns.items():
-            btn.background_color = hex_rgb(COL_BTN if abs(tv - self.rtp_target) < 1e-6
-                                           else COL_BTN_OFF) + (1,)
+    def _restyle_buttons(self):
+        """**按钮底色的唯一取值口**。三个输入: 输入锁 / 选中档 / 音效档。
+
+        ⚠️ "唯一"的意思是**别在别处再写 `btn.background_color`** —— 写两处必然漂移,
+           表现就是"某个状态下看不出自己押的是哪一档"(本函数出生的原因)。
+        ⚠️ 输入锁**不是换一个颜色**, 而是把身份色朝 `COL_BG` 混一档(`dim_rgb`):
+           换色会让"锁着且选中"和"锁着且没选中"变成同一个色 ⇒ "我押的是哪一档"
+           这条信息在飞行/中奖期间从画面上消失。
+        ⚠️ `state == "charging"` 时**跳开发射键** —— 蓄力期它的底色归 `_frame`
+           按力度独占写(`COL_FIRE` / 金色), 这里再写就是抢帧(会闪一帧亮红)。
+        ⚠️ 四个 HUD 按钮一律 `getattr` 取: `fx_probe [19]` 的夹具是 `RootWidget.__new__`
+           搭的半套控件(只有 `rtp_btns`/`bet_btns`), 硬取属性会把探针整个打红。
+        """
+        _keep = BTN_OFF_DIM if not getattr(self, "_controls_enabled", True) else 1.0
+        _bg = lambda _h: dim_rgb(_h, _keep) + (1,)
+        _fb = getattr(self, "fire_btn", None)
+        if _fb is not None and getattr(self, "state", "") != "charging":
+            _fb.background_color = _bg(COL_FIRE)
+        _rb = getattr(self, "reset_btn", None)
+        if _rb is not None:
+            _rb.background_color = _bg(COL_BTN_OFF)
+        _ob = getattr(self, "round_btn", None)
+        if _ob is not None:
+            _ob.background_color = _bg(COL_GREEN)
+        _mb = getattr(self, "mute_btn", None)
+        if _mb is not None:
+            _mb.background_color = _bg(COL_GREEN if self.sound_mode == "on" else COL_MUTE_OFF)
+        for _pv, _btn in self.bet_btns.items():
+            _btn.background_color = _bg(COL_BTN if _pv == self.bet else COL_BTN_OFF)
+        for _tv, _btn in self.rtp_btns.items():
+            _btn.background_color = _bg(COL_BTN if abs(_tv - self.rtp_target) < 1e-6
+                                        else COL_BTN_OFF)
 
     def _set_controls_enabled(self, enabled):
         """锁/解锁 HUD 输入。
@@ -11682,30 +11738,26 @@ class RootWidget(BoxLayout):
         真机对应: 每一发两次爆发 —— **发射时禁用 16 次 / 回 ready 时启用 15 次**,
         间隔正好一个蓄力时长(0.1s), 每次卡 12~21 毫秒。
 
-        现在的做法: 变灰照旧走 `background_color`(免费), 输入锁改由
+        现在的做法: 变灰走 `_restyle_buttons`(把身份色朝 `COL_BG` 混一档, 仍只写
+        `background_color`, 免费), 输入锁改由
         `RootWidget.on_touch_down` 在**触摸层**统一吞掉(见那里的注释)。
         ⚠️ 变灰必须保留 —— 万一状态卡住, 玩家**看得见**按钮是暗的, 比"看起来正常却点不动"强得多。
+        ⚠️ 变灰**不是"把按钮全涂成 `COL_BTN_OFF`"**(2026-09-17 改): 那个色同时也是
+           "没选中"的色, 两者撞车 ⇒ 飞行/中奖期间选中的档位和旁边没选的长得一模一样,
+           "我押的是哪一档"从画面上消失(玩家报的"置灰逻辑混乱")。别改回去。
         """
         self._controls_enabled = bool(enabled)
+        # 底色: **唯一取值口**。输入锁在这里变成"身份色朝 COL_BG 混一档" ——
+        # 不是"全涂成 COL_BTN_OFF", 那样会把"选中了哪一档"一起抹掉。
+        self._restyle_buttons()
         if enabled:
-            self.fire_btn.background_color = hex_rgb(COL_FIRE) + (1,)
-            self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
-            self._restyle_selects()
-            self._refresh_mute_btn()
-            self.round_btn.background_color = hex_rgb(COL_GREEN) + (1,)
+            self._refresh_mute_btn()      # 只负责"文字 + .color"; 底色上面已经给过
             # ⚠️ **不写 `.color`** —— 写它就是一次字形纹理重排(4~7 毫秒), 而这一拍正是"回 ready"。
             #    染色走画布那条 Color; 拿不到才退回写 `.color`(绝不静默不染色)。
             for _lbl in (self._rtp_title_lbl, self._bet_title_lbl, self.stats_lbl):
                 if not _set_lbl_tint(_lbl, _TINT_BRIGHT):
                     _lbl.color = _lbl._tint_base_rgba
         else:
-            off = hex_rgb(COL_BTN_OFF) + (1,)
-            self.fire_btn.background_color = off
-            self.reset_btn.background_color = hex_rgb("#1a1a22") + (1,)
-            for btn in list(self.bet_btns.values()) + list(self.rtp_btns.values()):
-                btn.background_color = off
-            self.round_btn.background_color = off
-            self.mute_btn.background_color = off
             # 同上一支: 变暗走染色, 不重建纹理。系数 = 目标色 / 烘的那个色(逐通道)。
             for _lbl in (self._rtp_title_lbl, self._bet_title_lbl, self.stats_lbl):
                 if not _set_lbl_tint(_lbl, _TINT_DIM[_lbl._tint_key]):
@@ -16350,17 +16402,23 @@ class RootWidget(BoxLayout):
         else:
             self.sfx.set_enabled(True)
         self._refresh_mute_btn()
+        # 底色归取值口 —— `_refresh_mute_btn` 只管文字与字色, 不碰底色(见那里的注释)。
+        self._restyle_buttons()
         self._save_config()
 
     def _refresh_mute_btn(self):
+        """只写"文字 + `.color`" —— 底色归 `_restyle_buttons`(可能是朝 `COL_BG` 混过一档的)。
+
+        ⚠️ 那两个前景色都打过 tag + 预热过 ⇒ 这里是**命中**, 零重建。
+           **不要**在这里多加第三种颜色(比如"禁用态的字色"): 那是新纹理, 而且正好落在
+           "回 ready"那一拍(4~7ms 一次字形重排)。
+        """
         # 开=绿底深字 / 关=深底亮灰字, 两态一眼可辨
         if self.sound_mode == "on":
             self.mute_btn.text = "音效已开"
-            self.mute_btn.background_color = hex_rgb(COL_GREEN) + (1,)
             self.mute_btn.color = hex_rgb("#0e1524") + (1,)
         else:
             self.mute_btn.text = "音效已关"
-            self.mute_btn.background_color = hex_rgb("#3d3828") + (1,)
             self.mute_btn.color = hex_rgb("#c0c8e4") + (1,)
 
     def _refresh_stats(self):
@@ -16372,7 +16430,7 @@ class RootWidget(BoxLayout):
 
     def set_bet(self, v, silent=False):
         self.bet = v
-        self._restyle_selects()
+        self._restyle_buttons()
         self._refresh_stats()
         self.sfx.play("click", throttle=0.08)
         if not silent and self.sound_mode == "on" and time.time() >= self._result_until:
@@ -16430,7 +16488,7 @@ class RootWidget(BoxLayout):
 
         ⚠️ 两处必须**一起**改: ① `rtp_btns` 字典 ② `_rtp_row` 的 children。
            只删字典 -> 按钮还画在屏幕上、点下去照样切档(玩家看到"关了还在");
-           只删 children -> `_restyle_selects`/`_set_controls_enabled` 还在遍历它(白干不报错),
+           只删 children -> `_restyle_buttons`/`_set_controls_enabled` 还在遍历它(白干不报错),
            而且下次 `_unlock_rtp` 走 `val in self.rtp_btns` 直接 return, 按钮永远加不回来。
         ⚠️ `_rtp_spacer` 绝不碰 —— 它是 `_add_rtp_button` 的定位锚点。
         `pop(val, None)` 让"本来就没这个按钮"(冷启动直接点「关闭隐藏」)天然是空操作。
@@ -16574,7 +16632,7 @@ class RootWidget(BoxLayout):
 
     def set_rtp(self, t, silent=False):
         self.rtp_target = t
-        self._restyle_selects()
+        self._restyle_buttons()
         self.sfx.play("click", throttle=0.08)
         if not silent and self.sound_mode == "on" and time.time() >= self._result_until:
             pct = int(t * 100)
@@ -16613,8 +16671,6 @@ class RootWidget(BoxLayout):
                 "弹珠数量已调整到1000个", hexcolor=COL_GREEN, size=28, life=1.5), 0.05)
             if self.sound_mode == "on":
                 self.sfx.play("voice_reset_progress", throttle=1.5)
-        # 恢复按钮颜色
-        self.reset_btn.background_color = hex_rgb("#2a2a35") + (1,)
         self._save_config()
 
     def start_charge(self):
@@ -17683,7 +17739,7 @@ class RootWidget(BoxLayout):
                 return
             self._play_charge_sound(self.power)
             weak = self.power < MISFIRE_POWER
-            self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else "#8B6914") + (1,)
+            self.fire_btn.background_color = hex_rgb(COL_FIRE if weak else COL_FIRE_HOT) + (1,)
         elif self.state == "flying" and self.ball is not None:
             b = self.ball
             self._accumulator = _clamp_accum(self._accumulator + dt)

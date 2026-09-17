@@ -85,7 +85,18 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
      ⚠️ 病根在这儿：landing 循环里只有重力/横向弹簧/地板，**没有隔板碰撞**，而球带着飞行末段的横速入槽，回弹期能横着滑过隔板停到隔壁槽（结算槽仍是本槽 = "钱算对了、球停错地方"）。清零横速是治本的解法，比补隔板碰撞干净。
    - **结算提前到"第一次触地"那一刻**：`settle(i)` 直接在 `landed` 分支里调（原来要等回弹落定）。实测原来 88.7% 的落定是走 0.5s 超时兜底结束的、平均比触地晚 0.3~0.5s。**回弹照播**（landing 状态只是不再拦着结算），但中奖演出/揭晓从触地就开始排。
      ⚠️ 改这里要保住两条：`_settled` 守重复；landing 分支的 `landed_at` 仍要按"回弹结束"重设，否则 LAND_HOLD 会从触地时刻开始算。
-   - 飞行中灰化: `_set_controls_enabled(False)` 时按钮+标签文字统一变暗
+   - 飞行中灰化: `_set_controls_enabled(False)` 时按钮+标签文字统一变暗。
+     ⚠️ **底色的唯一取值口是 `RootWidget._restyle_buttons()`**(2026-09-17 改), 别处一律不许写
+     `btn.background_color` —— 写两处必然漂移。四个输入: 输入锁 / 选中档 / 音效档 / `state=="charging"`。
+     ⚠️ **"不能点"不是"换成另一个颜色"**, 而是把按钮**自己的身份色**朝 `COL_BG` 混一档
+     (`dim_rgb`, 保留系数 `BTN_OFF_DIM=0.55`)。原先「不能点」和「没选中」共用 `COL_BTN_OFF`
+     ⇒ 飞行中选中的档位被涂得和旁边没选的一模一样, "我押的是哪一档"从画面上消失(玩家报的
+     "置灰逻辑混乱")。**改回去就是把这个 bug 改回来。**
+     ⚠️ 别改成"逐通道乘系数": 暗色会被压到窗口底色**以下**(实测 `COL_BTN_OFF`x0.55 对 `COL_BG`
+     只差 7/255), 按钮从"凸起"翻成"凹陷"、基本看不见, 违反"变灰必须保留"。门禁 `fx_probe [25b]`
+     有一条**阴性对照**专门钉这件事(乘法 Δmax=7 < 混合 Δmax=24)。
+     ⚠️ 蓄力期发射键的力度色由 `_frame` 按 power **逐帧**写(`COL_FIRE` / `COL_FIRE_HOT`),
+     `_restyle_buttons` 必须**跳过** `state=="charging"` 的发射键, 否则会抢帧闪亮红。
    - 中奖大字: life=BIG_TEXT_LIFE=1.8s(见 android_part_pile.py 顶部), font_size 仅值变时写
    - 满蓄力: 每0.60s轻响 charge_full(0.40)
    - 防沉迷: balance/round_plays/plays/hits 持久化, 启动自动处理打满状态
