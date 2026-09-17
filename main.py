@@ -6394,6 +6394,17 @@ _CUP_BALL_TEX = {}          # bet -> Texture(最多 4 个)
 #    **贴图密度是相对屏幕尺寸定的, 不是一个绝对数** —— 改 BALL_VIEW / 换设备都要重算这个比值。
 #    代价: 256² 的纯 Python 合成约是 128² 的 4 倍, 所以仍走下面 prebake_step 的分帧预烘。
 _CUP_BALL_TEX_PX = 256
+# 弹珠贴图的"型"参数(2026-09-17, 玩家报"球脏脏的、不太清晰")。
+# 诊断: 这颗球上有三个渐变(径向亮 / 猫眼带 / 边缘暗), 各自都摊得很开、都没有边界 ——
+#   在屏幕 158 设备像素的杯球上分别约 80 / 30 / 21 像素, 叠起来读作"一团晕开的色斑"。
+#   **与分辨率无关**: 贴图 256 对屏幕 158 的比值 1.6 已经够, 提高 d 不会变清楚 ——
+#   这颗球压根没有边界可以变清楚。("提高贴图边长"那条路到此为止。)
+# 下面四个只改【烘出来的内容】, 运行期一个字节没多; 尺寸 / 物理 / 玩法一个字不动。
+# ⚠️ 调这四个数之前先出图(离线脚本 temp/facilitator/ab_render.py 能逐像素复现)。
+_BALL_RIM_K = 0.74       # 边缘暗环: 位置 p>0.40 的色标往外挤成 1-(1-p)*K ⇒ 亮球身更大、过渡更短
+_BALL_BAND_W = 0.66      # 猫眼带宽度倍率(那道横穿球心的宽"污渍"收窄)
+_BALL_BAND_S = 0.76      # 猫眼带强度倍率(同时变淡, 球身颜色不再被冲掉)
+_BALL_BAND_SPAN = 0.92   # 猫眼带长度倍率(眼睛形收在 |s| < r*SPAN 内)
 # 启动预热要"碰一次"的字号: 大字 sp(36)/sp(48) + 飘字 sp(26)/sp(30)。
 # ⚠️ **必须懒算**: `sp()` 读当时的窗口密度, 而模块导入时窗口还没建 —— 在这里直接
 #    写 `sp(36)` 会拿到错误的密度(真机上就是"预热了一堆没人用的字号")。
@@ -6523,6 +6534,9 @@ def _ball_texture(bet):
                  (0.965, _mix_rgb(base, (0, 0, 0), 0.74)),
                  (0.985, _mix_rgb(base, (0, 0, 0), 0.88)),
                  (0.99, _mix_rgb(base, (0, 0, 0), 0.92))]
+    # 收窄边缘暗环那段(见 _BALL_RIM_K 处注释): 亮球身变大、过渡变短, 球重新有边界。
+    # 两个分支(未知档的金球 / 投注色)都过这一行, 所以放在 if/else 之后。
+    stops = [(p if p <= 0.40 else 1.0 - (1.0 - p) * _BALL_RIM_K, c) for (p, c) in stops]
     d = _CUP_BALL_TEX_PX
     r = d / 2.0
     buf = bytearray(d * d * 4)
@@ -6554,7 +6568,7 @@ def _ball_texture(bet):
     band_c = _mix_rgb(base, (0, 0, 0), 0.28)
     ba = math.radians(-32.0)
     off = 0.08 * d
-    band_w = 0.085 * d
+    band_w = 0.085 * d * _BALL_BAND_W
     cos_a, sin_a = math.cos(ba), math.sin(ba)
     for y in range(d):
         for x in range(d):
@@ -6564,12 +6578,12 @@ def _ball_texture(bet):
             dx, dy = x - r, y - r
             s = dx * cos_a + dy * sin_a
             v = -dx * sin_a + dy * cos_a
-            if abs(s) < r:
-                wmax = band_w * math.sqrt(1.0 - (s / r) ** 2)
+            if abs(s) < r * _BALL_BAND_SPAN:
+                wmax = band_w * math.sqrt(max(0.0, 1.0 - (s / (r * _BALL_BAND_SPAN)) ** 2))
                 dv = abs(v - off)
                 if dv < wmax:
                     t = dv / wmax
-                    w = (1.0 - t * t) ** 2 * 0.42
+                    w = (1.0 - t * t) ** 2 * (0.42 * _BALL_BAND_S)
                     buf[i] = int(buf[i] + (band_c[0] - buf[i]) * w)
                     buf[i + 1] = int(buf[i + 1] + (band_c[1] - buf[i + 1]) * w)
                     buf[i + 2] = int(buf[i + 2] + (band_c[2] - buf[i + 2]) * w)
@@ -8385,6 +8399,8 @@ def ball_texture():
         (0.65, (202, 138, 4)), (0.82, (172, 108, 9)), (0.92, (128, 69, 8)),
         (0.965, (84, 42, 5)), (0.985, (46, 22, 3)), (0.99, (36, 16, 2)),
     ]
+    # 收窄边缘暗环那段(见 _BALL_RIM_K 处注释), 与杯中球同一套参数。
+    stops = [(p if p <= 0.40 else 1.0 - (1.0 - p) * _BALL_RIM_K, c) for (p, c) in stops]
     buf = bytearray(d * d * 4)
     for y in range(d):
         for x in range(d):
@@ -8415,9 +8431,9 @@ def ball_texture():
     # 1) 猫眼色带(焦糖, 眼睛形, 偏离圆心): 深色带形成明暗对比, 旋转可见
     ba = math.radians(-32.0)
     off = 0.08 * d                # 中心线偏离圆心(偏右下, 与左上高光错开)
-    band_w = 0.09 * d             # 窄一点: 让径向明暗比猫眼带更清楚
+    band_w = 0.09 * d * _BALL_BAND_W     # 窄一点: 让径向明暗比猫眼带更清楚(再 ×_BALL_BAND_W 收窄)
     band_c = (178, 108, 22)       # 焦糖色
-    strength = 0.44               # 保留滚动感,不让彩带变成球身主视觉
+    strength = 0.44 * _BALL_BAND_S       # 保留滚动感,不让彩带变成球身主视觉(再 ×_BALL_BAND_S 变淡)
     cos_a, sin_a = math.cos(ba), math.sin(ba)
     for y in range(d):
         for x in range(d):
@@ -8428,8 +8444,9 @@ def ball_texture():
             dy = y - r
             s = dx * cos_a + dy * sin_a          # 沿带方向(-r..r)
             v = -dx * sin_a + dy * cos_a         # 垂直带方向
-            if abs(s) < r:
-                wmax = band_w * math.sqrt(1.0 - (s / r) ** 2)   # 眼睛形: 中间宽两端尖
+            if abs(s) < r * _BALL_BAND_SPAN:
+                # 眼睛形: 中间宽两端尖(长度收在 |s| < r*_BALL_BAND_SPAN 内)
+                wmax = band_w * math.sqrt(max(0.0, 1.0 - (s / (r * _BALL_BAND_SPAN)) ** 2))
                 dv = abs(v - off)
                 if dv < wmax:
                     t = dv / wmax
