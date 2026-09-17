@@ -904,13 +904,14 @@ SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
 #    上面那段说明), 新加的常量一律别再挂 `SOC_`。
 HP_SAMPLE_SEC = 10.0
 # 功率曲线**前几秒不要**(玩家 2026-09-17: 「功率数据的前3秒不能用, 需要删掉, 变化很大,
-#   没有啥用」)。那一段是 CPU 从 idle 冲到满载的**过渡期**(实测从 11.5W 一路掉到 7.5W),
+#   没有啥用」, 随后定案为 **5 秒**: 「不用前5秒的功率数据」)。
+#   那一段是 CPU 从 idle 冲到满载的**过渡期**(实测从 11.5W 一路掉到 7.5W),
 #   把它算进平均/最高/最低会把整场的读数带偏 —— 尤其"最高", 那个 11.5 根本不是稳态。
 # ⚠️ **只跳功率**, 不跳温度/频率: 玩家点名的是功率; 而且温度那条是**变长**序列
 #   (读不到就不记), 按下标切会切错位。
 # ⚠️ 切片只做**一处**(`_run_hp_test` 里存 `_hp_power_*` 时)—— 统计 / 曲线 / 每瓦跑分 /
 #   导出 txt 全都吃那一条, 所以一处切就全都跟上了。
-HP_PWR_SKIP_SEC = 3.0
+HP_PWR_SKIP_SEC = 5.0
 
 # ⚠️ **高压测试的 CPU 频率/电池温度采样窗口**(玩家 2026-09-16:
 #    「只对第1秒到第359秒生效, 掐头去尾」)。
@@ -11072,6 +11073,30 @@ def _axis_nice_step(x):
     return 10.0 * (10.0 ** _e)
 
 
+def _med5(_arr, _k=5):
+    """每 `_k` 个点**一组(不重叠)**取中位数 —— 玩家 2026-09-17 定的功率曲线口径:
+    「每 5 个点取中位数」。
+
+    ⚠️ 为什么是 5 点、而且这是**结构决定**的不是拍的: 底层电量计约 0.96 秒才刷新一次,
+       而我们按 5Hz 采样 ⇒ **一个真实读数必然连续占约 4~6 格**。于是"只占 1~2 格"的值
+       在结构上就不可能是真读数(那是采样侧毛刺)。5 点一组的无损门槛恰好是 **3 格** ——
+       正好把 1~2 格的滤掉、把完整占 5 格的保留。
+    ⚠️ 用**中位数**而不是均值: 均值/截尾均值会**造出没测到过的值**(实测 8.8 / 10.4 / 8.7,
+       而原始数据里根本没有这些数); 中位数的输出**必然是窗口里存在过的读数**。
+    ⚠️ 组内 `None`(该格没读到)**先剔掉再取中位**; 整组都是 None 则返回 `None`。
+    ⚠️⚠️ **只给"画曲线"用** —— 统计(平均/最低/最高)与导出的 txt 一律走**原始序列**:
+       滤波会改 `max`(实测单点尖峰 11.87 → 3.9, 差 3 倍), 而"最高功率"是机器的能力指标;
+       导出的那份 txt 更是**专门**拿原始值去判尖峰真伪的。
+    """
+    _k = max(1, int(_k))
+    _a = list(_arr or [])
+    _out = []
+    for _i in range(0, len(_a), _k):
+        _w = sorted(x for x in _a[_i:_i + _k] if x is not None)
+        _out.append(_w[len(_w) // 2] if _w else None)
+    return _out
+
+
 def _curve_axis_range(_vals, _flat_min_range):
     """`SpeedCurve` 的纵轴取整规则 —— **2026-09-17 从 `_draw` 里原样搬出来的**。
 
@@ -13232,9 +13257,14 @@ class RootWidget(BoxLayout):
             _dt1 = ((getattr(self, "_hp_power_meta", None) or {}).get("dt") or 0.2)
             power_btn = Button(text="功率曲线", font_size="14sp", bold=True,
                                background_normal="", background_color=hex_rgb(COL_SOC) + (1,))
+            # ⚠️ 曲线走**每 5 点中位数**(玩家 2026-09-17 定的口径); `dt` 跟着 **×5**
+            #    (5 个点合成 1 个 ⇒ 时间间隔变成 1.0 秒, 正好与底层刷新同频)。
+            # ⚠️ 而下面 `log_extra` 里那份**原始序列一个字不动** —— 导出的 txt 就是拿去判
+            #    尖峰真伪的, 滤了就没用了。**曲线滤波、导出原始**, 两者不是同一份。
+            _cur1 = _med5(_pw1)
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _pw1, dt=_dt1, title="CPU高压测试的功率曲线",
-                unit="W", unit_name="采样", value_decimals=2, flat_min_range=1.0,
+                _cur1, dt=_dt1 * 5, title="CPU高压测试的功率曲线",
+                unit="W", unit_name="中位段", value_decimals=2, flat_min_range=1.0,
                 axis_unit="W", save_log=True,
                 log_extra={"pt": list(getattr(self, "_hp_power_times", None) or []),
                            "raw": list(getattr(self, "_hp_power_raw", None) or []),
@@ -16870,9 +16900,11 @@ class RootWidget(BoxLayout):
             _dt2 = (r.get('power_dt') or 0.2)
             power_btn = Button(text='功率曲线', font_size='14sp', bold=True,
                                background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
+            # ⚠️ 与现场那条**同一套**(曲线 5 点中位数 + 导出原始值), 数据从记录里取。
+            _cur2 = _med5(_pw2)
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _pw2, dt=_dt2, title='CPU高压测试的功率曲线',
-                unit='W', unit_name='采样', value_decimals=2, flat_min_range=1.0,
+                _cur2, dt=_dt2 * 5, title='CPU高压测试的功率曲线',
+                unit='W', unit_name='中位段', value_decimals=2, flat_min_range=1.0,
                 axis_unit='W', save_log=True,
                 # ⚠️ 老记录里**没有**原始电流/电压序列(那是 v0.8.32 才开始留内存的),
                 #    所以这三项**显式传空** —— 让 txt 里那几列印 nan, 而不是退回
