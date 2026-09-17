@@ -6419,9 +6419,10 @@ def _ball_texture(bet):
                     bb = int(c0[2] + (c1[2] - c0[2]) * f)
                     break
             i = (y * d + x) * 4
-            # 收紧透明边缘：保留抗锯齿，不让大球看上去有毛边。
-            buf[i:i + 4] = bytes((rr, gg, bb, 255 if dist <= 0.982
-                                  else int(255 * (1.0 - dist) / 0.018)))
+            # 边缘羽化带 = 3% 半径(2026-09-17 从 1.8% 放宽回 3%)。
+            # ⚠️ 区分"柔"和"糊": 柔 = 过渡带宽(这里管); 糊 = 贴图信息不够(欠采样, 靠 d 管)。
+            buf[i:i + 4] = bytes((rr, gg, bb, 255 if dist <= 0.97
+                                  else int(255 * (1.0 - dist) / 0.03)))
     # 偏移猫眼色带: 收窄一点且降低混入强度, 让径向明暗和同色细暗边
     # 主导立体感; 不追加白色高光(已被玩家取消的视觉风格)。
     base = stops[3][1]
@@ -8273,8 +8274,8 @@ def ball_texture():
                     bb = int(c0[2] + (c1[2] - c0[2]) * f)
                     break
             alpha = 255
-            if dist > 0.98:                      # 保留抗锯齿，同时收紧边缘毛边
-                alpha = int(255 * (1.0 - dist) / 0.02)
+            if dist > 0.97:                      # 边缘抗锯齿(羽化带 = 3% 半径, 过渡更柔)
+                alpha = int(255 * (1.0 - dist) / 0.03)
             i = (y * d + x) * 4
             buf[i] = rr
             buf[i + 1] = gg
