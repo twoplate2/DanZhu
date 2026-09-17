@@ -1644,10 +1644,86 @@ def _freq_sampler_start(win=None):
 def _battery_temp_c():
     """读当前电池温度(摄氏度), 读不到返回 `None`。
 
+    ⚠️ 2026-09-17 起这里只是**委托** `_battery_snapshot()`(温度与电压共用同一次
+       sticky 广播读取)。**对外的签名与语义一个字没变** —— 波 1 在
+       `_start_bench_test` / 结果计算两处直接调它。
+
     Android `ACTION_BATTERY_CHANGED` 里的 `EXTRA_TEMPERATURE` 单位是 0.1℃。
     这是**电池**传感器, 不是 CPU/SoC 核心温度; 该 sticky broadcast 不需要
     `BATTERY_STATS` 或其它额外权限。`receiver=None` 只取当前快照,
     不会注册一个需要解绑的 Receiver。
+    """
+    _s = _battery_snapshot()
+    return None if _s is None else _s.get("temp")
+
+
+# ---- 电池功率采集(2026-09-17, 测试版) --------------------------------------
+# 高压测试原来只有电池温度, 看不到**功耗**。功率 = |电流| × 电压, 而这两个数
+#   来自**两条完全不同的路**:
+#     · 电压 —— 就在 `ACTION_BATTERY_CHANGED` 里(`EXTRA_VOLTAGE`, mV), 和温度同一次读;
+#     · 电流 —— 广播里**没有**, 只能走 `BatteryManager.getIntProperty(CURRENT_NOW)`(µA)。
+#   ⚠️ AOSP 里**不存在** `BATTERY_PROPERTY_VOLTAGE` —— 别去 getIntProperty 找电压。
+#
+# ⚠️⚠️ `CURRENT_NOW` 的**底层更新周期由 fuel gauge 硬件决定, Android 不保证**:
+#   官方记录过 Nexus 6/9 约 175.8ms, 而 Nexus 10 约 **3.5 秒**。
+#   ⇒ 「轮询频率」≠「真实刷新频率」, 采得再密也可能拿到重复值。
+#   本项目按 5Hz 采(见 `_battery_sampler_start`), 并把"实际变了多少次"记进
+#   `power_stats`。**5Hz 只能分辨到 200ms** —— gauge 更快时只能说
+#   「≤0.2 秒, 测不到更细」, 报成具体毫秒数就是编数。
+#
+# ⚠️ 权限: `getIntProperty` 是公开 API, **不需要 `BATTERY_STATS`**
+#   (本工程 `android.permissions` 至今只有 VIBRATE, 本次也不加)。
+_BM_PROXY = [None]        # 缓存的 BatteryManager 代理(与 `_VIB_PROXY` 同款)
+_PWR_SRC = [None]         # 已锁定的电流源: "now"/"avg"/"sysfs:<路径>"/"zero"; None = 还没探
+_PWR_UNIT = ["ua"]        # 电流原始值的单位: "ua" 或 "ma"(厂商报 mA 的场合)
+_PWR_ZERO_RUN = [0]       # 连续读到 0 的次数 —— 区分"待机电流"与"这台没这属性"
+_INT_MIN = -2147483648
+_PS_DIR = "/sys/class/power_supply"
+
+
+def _read_int_file(_p):
+    """读一个只含整数的 sysfs 文件; 失败返回 None(读不到是常态, 不是错误)。"""
+    try:
+        with open(_p, "r") as _f:
+            return int(_f.read().strip())
+    except Exception:
+        return None
+
+
+def _battery_manager():
+    """取(并缓存) `BatteryManager` 系统服务代理; 取不到返回 None。
+
+    ⚠️ **必须传 `Context.BATTERY_SERVICE` 那个字符串常量**, 不能传
+       `autoclass("android.os.BatteryManager")` 的 Class 对象 —— 后者在 pyjnius 下
+       匹配不到 `getSystemService(Class<T>)` 重载、**静默失败**
+       (同款踩坑见 `_vib_get` 那条注释)。
+    """
+    if platform != "android":
+        return None
+    if _BM_PROXY[0] is not None:
+        return _BM_PROXY[0]
+    try:
+        from jnius import autoclass
+        _act = autoclass("org.kivy.android.PythonActivity").mActivity
+        _Context = autoclass("android.content.Context")
+        _bm = _act.getSystemService(_Context.BATTERY_SERVICE)
+        if _bm is None:
+            return None
+        _BM_PROXY[0] = _bm
+        return _bm
+    except Exception:
+        _BM_PROXY[0] = None
+        return None
+
+
+def _battery_snapshot():
+    """读**一次** `ACTION_BATTERY_CHANGED`, 返回 `{"temp","mv","plugged"}`; 读不到返回 None。
+
+    ⚠️ 温度与电压**共用这一次读** —— 该广播被 `BatteryService` 限流(温度变化 ≥1℃
+       **或**电压/电量/充电状态等字段变化才发), 多读几次**不会更新**, 所以没有理由
+       为电压再开一次往返。
+    单位: `EXTRA_TEMPERATURE` = 0.1℃; `EXTRA_VOLTAGE` = mV(未实现时给 0);
+       `EXTRA_PLUGGED` 非 0 = 正在充电 ⇒ 此时电流报的是**充入**方向。
     """
     if platform != "android":
         return None
@@ -1657,16 +1733,138 @@ def _battery_temp_c():
         _Intent = autoclass("android.content.Intent")
         _IntentFilter = autoclass("android.content.IntentFilter")
         _BatteryManager = autoclass("android.os.BatteryManager")
-        _status = _act.registerReceiver(None, _IntentFilter(_Intent.ACTION_BATTERY_CHANGED))
-        if _status is None:
+        _st = _act.registerReceiver(None, _IntentFilter(_Intent.ACTION_BATTERY_CHANGED))
+        if _st is None:
             return None
-        _raw = int(_status.getIntExtra(_BatteryManager.EXTRA_TEMPERATURE, -2147483648))
+        _raw = int(_st.getIntExtra(_BatteryManager.EXTRA_TEMPERATURE, _INT_MIN))
         # 厂商未实现时可能返回默认值/异常值; 不让它污染平均值和曲线。
-        if _raw < -500 or _raw > 1200:
-            return None
-        return round(_raw / 10.0, 1)
+        _temp = (round(_raw / 10.0, 1) if (-500 <= _raw <= 1200) else None)
+        _mv = int(_st.getIntExtra(_BatteryManager.EXTRA_VOLTAGE, 0))
+        if not (2000 <= _mv <= 6000):
+            _mv = None                       # 未实现时给 0 ⇒ 当"没有", 不编数
+        _pl = int(_st.getIntExtra(_BatteryManager.EXTRA_PLUGGED, 0))
+        return {"temp": _temp, "mv": _mv, "plugged": _pl}
     except Exception:
         return None
+
+
+def _pwr_sysfs_paths():
+    """枚举 `/sys/class/power_supply/*/current_now` 候选路径(读不到就是空表)。"""
+    _out = []
+    try:
+        for _n in sorted(os.listdir(_PS_DIR)):
+            _p = _PS_DIR + "/" + _n + "/current_now"
+            if os.path.exists(_p):
+                _out.append(_p)
+    except Exception:
+        pass
+    return _out
+
+
+def _pwr_read_by(_src):
+    """按**已锁定**的来源读一次电流原始值。
+
+    返回整数(有效读数) / `None`(当次读失败) / `"RETRY"`(这条路废了, 让调用方重探)。
+    """
+    if _src.startswith("sysfs:"):
+        _v = _read_int_file(_src[6:])
+    else:
+        _bm = _battery_manager()
+        if _bm is None:
+            return None
+        try:
+            # BATTERY_PROPERTY_CURRENT_NOW = 2, CURRENT_AVERAGE = 3
+            _v = int(_bm.getIntProperty(2 if _src == "now" else 3))
+        except Exception:
+            _BM_PROXY[0] = None
+            return None
+        if _v == _INT_MIN:
+            return "RETRY"                   # 属性消失/服务重启 ⇒ 重探
+    if _v is None:
+        return None
+    if abs(_v) > 30000000:                   # >30A ⇒ 哨兵/垃圾, 不是真读数
+        return None
+    return _v
+
+
+def _battery_current_raw():
+    """读一次瞬时电流, 返回 `(原始整数, 来源)`; 读不到返回 `(None, None)`。
+
+    三条路按序试, **第一条能用的锁定**(记进 `_PWR_SRC`), 之后不再重复试探 ——
+    缓存的是"哪条路能用", **不是值**(值必须每次真读)。
+      ① `CURRENT_NOW`     ← 官方 API(API 21+), 无需权限
+      ② `CURRENT_AVERAGE` ← 有的 gauge 只给平均
+      ③ sysfs `/sys/class/power_supply/*/current_now` ← 有的厂商只在这儿给
+
+    判废: `MIN_VALUE` = 本机不支持(目标 SDK ≥P 时官方约定的"不支持"返回值);
+       `0` = 可能真是待机电流, **连续 3 次**才判定"这台没这属性"并往下换路。
+    """
+    _src = _PWR_SRC[0]
+    if _src == "zero":
+        return None, "zero"                  # 已判定没有 fuel gauge, 不再重复试探
+    if _src is not None:
+        _v = _pwr_read_by(_src)
+        if _v == "RETRY":
+            _PWR_SRC[0] = None               # 掉下来重探
+        elif _v is not None:
+            return _v, _src
+        else:
+            return None, _src                # 当次失败 ⇒ 交给上层记 None
+    # ---- 还没锁定: 按序探 ----
+    _bm = _battery_manager()
+    if _bm is not None:
+        for _name in ("now", "avg"):
+            try:
+                _v = int(_bm.getIntProperty(2 if _name == "now" else 3))
+            except Exception:
+                _BM_PROXY[0] = None
+                break
+            if _v == _INT_MIN:
+                continue                     # 本机不支持这个属性
+            if _v == 0:
+                _PWR_ZERO_RUN[0] += 1
+                if _PWR_ZERO_RUN[0] < 3:
+                    return 0, _name          # 先当"待机电流"用, 攒够 3 次再说
+                continue
+            _PWR_ZERO_RUN[0] = 0
+            _PWR_SRC[0] = _name
+            return _v, _name
+    for _p in _pwr_sysfs_paths():
+        _v = _read_int_file(_p)
+        if _v:
+            _PWR_SRC[0] = "sysfs:" + _p
+            return _v, _PWR_SRC[0]
+    if _PWR_ZERO_RUN[0] >= 3:
+        _PWR_SRC[0] = "zero"                 # 三条路都试过: 这台**没有** fuel gauge
+    return None, None
+
+
+def _power_from(_i, _mv, _unit):
+    """电流原始值 + 电压(mV) → 瓦(W); 任一项缺就返回 None。**取绝对值**。
+
+    ⚠️ **符号不参与计算**: AOSP 定义"正 = 充入电池, 负 = 放电", 但厂商实现不统一
+       (社区实测两极分化)。玩家要的是功率**大小** ⇒ 一律 `abs()`;
+       符号只作诊断(见 `_pwr_finish` 的 `sign_inverted`)。
+    """
+    if _i is None or _mv is None:
+        return None
+    _a = abs(float(_i)) / (1000.0 if _unit == "ma" else 1000000.0)
+    return abs((float(_mv) / 1000.0) * _a)
+
+
+def _pwr_guess_unit(_raws):
+    """从全程原始值猜**单位**, 返回 "ua" 或 "ma"。
+
+    判据: 360 秒满负载 + 屏幕常亮下, 电流**必然** ≥200mA。
+      ⇒ 原始值的中位绝对值 < 20000 时只可能是 **mA**(20000µA 才 20mA, 不可能);
+      ⇒ 否则是 **µA**(常见 30 万~150 万)。
+    ⚠️ 这是启发式, 结论写进记录的 `power_unit` 供追溯。
+    """
+    _v = sorted(abs(x) for x in _raws if x)
+    if not _v:
+        return "ua"
+    return "ma" if _v[len(_v) // 2] < 20000 else "ua"
+
 
 
 _THERMAL_NAMES = ("无", "轻微", "中等", "严重", "危急", "紧急", "关机")
@@ -1754,19 +1952,91 @@ def _thermal_probe():
     return out
 
 
-def _battery_sampler_start(win, interval_sec=1.0):
-    """按绝对墙钟采集电池温度, 返回 `(温度列表, 停止标志)`。
+def _pwr_finish(_raw, _dt, _plugs):
+    """算功率序列的统计 —— **在采样线程退出前跑一次**, 整份结果交给主线程。
 
-    与 CPU 频率采样不同, 这里下一次的时刻始终按 `win[0] + N秒`
-    计算, 所以读取 API 的耗时不会一轮轮累加成漂移。在 `[1,359]`
-    包含两端且每秒都读到的理想情况下, 会得到 359 个点。
+    ⚠️ 为什么在这里算: 主线程读 `_raw` 的时候采样线程可能还在 append。
+       线程自己算完写进收集器, 主线程拿到的才是一份完整的。
+
+    返回的 dict **只存标量**(序列另存), 键:
+      n        有效读数个数
+      n_chg    "值发生变化"的次数 —— 相邻两格原始整数不等 ⇒ 底层在这两格之间更新过
+      frac     n_chg / 有效相邻对数
+      gap_*    两次"变化"之间的间隔(秒), **按网格下标差 × dt 算** ——
+               不取墙钟差, 免掉读取耗时与调度抖动(这是绝对网格白送的好处)
+      est/est_kind  刷新周期估计与种类, 见下
+      n_uniq/step_med  唯一值个数 / 相邻非零差的中位台阶(诊断"这台报得多细")
+      inverted 测试期间在充电、电流却多数为负 ⇒ 厂商符号约定与 AOSP 相反
+
+    ⚠️⚠️ **5Hz 的分辨下限是 200ms**: `frac ≈ 1.0`(每次采样都变)时只能说
+       「τ ≤ 0.2 秒」—— 那个 0.2 是**采样周期本身**, 不是刷新周期, 报成 175ms
+       就是编数。只有底层明显比采样慢(像 Nexus 10 的 3.5 秒)才给具体值,
+       此时 `est = dt / frac`(每次采样撞上更新的概率 ≈ dt/τ)。
+    """
+    _v = [(i, x) for i, x in enumerate(_raw) if x is not None]
+    _n = len(_v)
+    _chg = []
+    _pairs = 0
+    _d = []
+    for _k in range(1, _n):
+        _pairs += 1
+        if _v[_k][1] != _v[_k - 1][1]:
+            _chg.append(_v[_k][0])
+            _d.append(abs(_v[_k][1] - _v[_k - 1][1]))
+    _nch = len(_chg)
+    _gaps = sorted((_chg[_k] - _chg[_k - 1]) * _dt for _k in range(1, _nch))
+    _frac = (_nch / float(_pairs)) if _pairs else 0.0
+    _neg = sum(1 for _, _x in _v if _x < 0)
+    _d.sort()
+    return {
+        "n": _n, "n_chg": _nch, "frac": round(_frac, 3),
+        "gap_min": (_gaps[0] if _gaps else None),
+        "gap_p50": (_gaps[len(_gaps) // 2] if _gaps else None),
+        "gap_p90": (_gaps[min(len(_gaps) - 1, int(len(_gaps) * 0.9))] if _gaps else None),
+        "gap_max": (_gaps[-1] if _gaps else None),
+        "est": ((None if _frac >= 0.9 else round(_dt / _frac, 2)) if _frac > 0 else None),
+        "est_kind": ("le_dt" if _frac >= 0.9 else ("ratio" if _frac > 0 else "none")),
+        "n_uniq": len(set(x for _, x in _v)),
+        "step_med": (_d[len(_d) // 2] if _d else None),
+        "inverted": bool(_n and _neg > _n * 0.5 and any(_plugs)),
+    }
+
+
+def _battery_sampler_start(win, interval_sec=1.0, power_hz=5.0):
+    """同时采电池**温度**(`interval_sec`)与电池**功率**(`power_hz`)。
+
+    返回 `(温度列表, 停止标志, 功率收集器)`。
+
+    温度列表: 与旧版**逐字同语义** —— 只装读成功的值, **失败不留占位**, 保留时间序
+       (`_bat_sorted` / `len>=2` 判据 / 历史 `battery_series` 的消费者全都不动)。
+    功率收集器: dict, 由采样线程在**退出前**把序列与统计算好写进去 —— 主线程读的时候
+       采样线程已经结束, 不存在"边读边 append"。
+
+    ⚠️⚠️ 两条序列的**时基不同、长度不同**, 这是刻意的:
+       · 功率 `power_hz` Hz(默认 0.2s), 窗口 [1,359] ⇒ 约 1790 点;
+       · 温度 `interval_sec`(1.0s), 同一个窗口 ⇒ 约 359 点。
+       双轴图按**秒**画横轴(见 `SpeedCurve`), 所以长度不同**不需要对齐**。
+    功率那条走**构造网格** `t_i = i / power_hz`; 某次读超时就**逐格补 None**
+       (不是跳格) ⇒ 下标 ↔ 时刻恒成立。温度那条沿用"不 append"的旧语义。
+
+    ⚠️ 成本: 采样线程本来每秒最贵的是 `_freq_sampler_start` 的 `_cpufreq_cores()`
+       (最多 32 次 sysfs open, 1Hz)。本次新增 5 次/s 的 `getIntProperty`
+       (一次 Binder 往返, 约 0.1~0.5ms); 温度/电压那条**一次都没多**
+       (合并进同一次 `registerReceiver`)。
     """
     _values = []
+    _values_t = []
     _stop = [False]
     _step = max(0.1, float(interval_sec))
+    _p_step = 1.0 / max(0.5, float(power_hz))
+    _sink = {"raw": [], "t": [], "w": [], "mv": [], "plugged": [], "bat_t": _values_t,
+             "dt": _p_step, "stats": None, "src": None, "unit": "ua"}
 
     def _samp():
-        _next = None
+        _np = None
+        _nt = None
+        _mv_last = None
+        _pl_last = 0
         while not _stop[0]:
             _now = time.time()
             try:
@@ -1777,27 +2047,55 @@ def _battery_sampler_start(win, interval_sec=1.0):
             if _start <= 0.0 or _end < _start:
                 time.sleep(0.05)
                 continue
-            if _next is None:
-                _next = _start
-            if _next > _end:
-                return
-            if _now < _next:
-                time.sleep(min(0.10, max(0.01, _next - _now)))
+            if _np is None:
+                _np = _start
+                _nt = _start
+            if _np > _end:
+                break
+            if _now < _np:
+                time.sleep(min(0.10, max(0.01, _np - _now)))
                 continue
-            _v = _battery_temp_c()
-            if _v is not None:
-                _values.append(float(_v))
-            # 按绝对时间追下一点; 若某次读取/调度超过一整个周期,
-            # 跳过已错过的时刻, 不在后面连续补读造成假密集点。
-            _next += _step
-            if _next <= _now:
-                _next = _start + (int((_now - _start) // _step) + 1) * _step
+            # ---- 温度/电压: 每 `_step` 那一格顺带读(1Hz 整除 5Hz ⇒ 必落在功率格上) ----
+            if _nt <= _now:
+                _sn = _battery_snapshot()
+                if _sn is not None:
+                    if _sn.get("temp") is not None:
+                        _values.append(float(_sn["temp"]))
+                        _values_t.append(round(_nt - _start, 1))
+                    if _sn.get("mv") is not None:
+                        _mv_last = _sn["mv"]
+                    _pl_last = int(_sn.get("plugged") or 0)
+                _nt += _step
+                if _nt <= _now:
+                    _nt = _start + (int((_now - _start) // _step) + 1) * _step
+            # ---- 功率: 每次到点都读, 失败记 None(采样期间**只存原始值**) ----
+            _raw, _src = _battery_current_raw()
+            if _src:
+                _sink["src"] = _src
+            _sink["raw"].append(_raw)
+            _sink["t"].append(round(_np - _start, 1))
+            _sink["mv"].append(_mv_last)
+            _sink["plugged"].append(_pl_last)
+            # 追下一格; 落后超过一格就**逐格补 None**(不跳格 ⇒ 下标↔时刻恒成立)
+            _np += _p_step
+            while _np <= _now and _np <= _end:
+                _sink["raw"].append(None)
+                _sink["t"].append(round(_np - _start, 1))
+                _sink["mv"].append(_mv_last)
+                _sink["plugged"].append(_pl_last)
+                _np += _p_step
+        # ⚠️ 单位只能**采完之后**猜(要看全程分布) ⇒ 功率序列也在这里统一算。
+        #    采样期间若按错的单位算 W, 会得到一串差 1000 倍的值。
+        _sink["unit"] = _pwr_guess_unit(_sink["raw"])
+        _sink["w"] = [_power_from(_r, _m, _sink["unit"])
+                      for _r, _m in zip(_sink["raw"], _sink["mv"])]
+        _sink["stats"] = _pwr_finish(_sink["raw"], _p_step, _sink["plugged"])
 
     try:
         threading.Thread(target=_samp, daemon=True).start()
     except Exception:
         pass
-    return _values, _stop
+    return _values, _stop, _sink
 
 
 def _pick(dist):
@@ -10766,6 +11064,42 @@ def _axis_nice_step(x):
     return 10.0 * (10.0 ** _e)
 
 
+def _curve_axis_range(_vals, _flat_min_range):
+    """`SpeedCurve` 的纵轴取整规则 —— **2026-09-17 从 `_draw` 里原样搬出来的**。
+
+    ⚠️⚠️ **只做了搬迁, 一个数都没动** —— 这套规则被 `temp/_curveaxis.py` 的 A1~A10
+       逐条钉着(玩家 2026-09-16 亲口定的), 要改它必须重跑那个探针。
+    ⚠️ 搬出来是为了让**双轴图的右轴**也走同一套 —— 两边各写一份必然漂移。
+
+    返回 `(lo, hi)`。规则(逐字照搬):
+      · 常规: 下限 = 最小值 − max(跨度×5%, |最小值|×2%), 上限同理向上留;
+      · 常数(跨度为 0): 上下各留 max(|值|×5%, 最小展示范围/2);
+      · 最后**向外**取整到友好刻度(1/2/5×10^k); 最低点不贴底(至少留 5% 图高)。
+    """
+    _lo_d, _hi_d = min(_vals), max(_vals)
+    _span_d = _hi_d - _lo_d
+    if _span_d > 0:
+        _p_lo = max(_span_d * SpeedCurve.Y_PAD_FRAC, abs(_lo_d) * SpeedCurve.Y_PAD_VAL_MIN)
+        _p_hi = max(_span_d * SpeedCurve.Y_PAD_FRAC, abs(_hi_d) * SpeedCurve.Y_PAD_VAL_MIN)
+    else:
+        _p_lo = _p_hi = max(abs(_lo_d) * SpeedCurve.Y_FLAT_FRAC,
+                            _flat_min_range / 2.0)
+    _lo_p, _hi_p = _lo_d - _p_lo, _hi_d + _p_hi
+    _step = _axis_nice_step(max(abs(_lo_p), abs(_hi_p)) * SpeedCurve.Y_TICK_FRAC)
+    _lo = math.floor(_lo_p / _step) * _step
+    if _lo_d >= 0.0:
+        _lo = max(0.0, _lo)   # 本指标不可能为负 ⇒ 轴不必画到 0 以下
+    _hi = math.ceil(_hi_p / _step) * _step
+    if _lo_d >= 0.0:
+        _g = SpeedCurve.Y_MIN_GAP_FRAC
+        _lo_max = (_lo_d - _g * _hi) / (1.0 - _g)
+        if _lo > _lo_max:
+            _lo = max(0.0, math.floor(_lo_max / _step) * _step)
+    if _hi - _lo < 1.0:       # 兜底: 极端退化时别造出零高度(会除零)
+        _hi = _lo + 1.0
+    return _lo, _hi
+
+
 class SpeedCurve(Widget):
     """CPU 高压那 **300 多个逐秒样本**的成绩曲线。
 
@@ -10800,12 +11134,45 @@ class SpeedCurve(Widget):
     Y_TICK_FRAC = 0.01         # 友好刻度的粒度 ≈ **轴量级**的 1%(照玩家那个例子反推的)
     Y_MIN_GAP_FRAC = 0.05      # 兜底: 最低点离底**至少**这么多(占轴高), 见 `_draw` 里的不等式
 
-    def __init__(self, vals, value_decimals=0, flat_min_range=None, **kw):
+    def __init__(self, vals, value_decimals=0, flat_min_range=None,
+                 vals2=None, times2=None, dt=None, value_decimals2=1,
+                 flat_min_range2=None, unit2='', t_max=None, **kw):
+        """`vals` 是**左轴**序列; 传了 `vals2` 就变成**双轴图**(右轴 = `vals2`)。
+
+        ⚠️⚠️ **不传 `vals2` 时逐字走老路径** —— 成绩/频率两条曲线一个字都不受影响。
+        ⚠️ 双轴时横轴一律按**秒**(两条序列长度不同, 按下标画必然对不齐):
+           `vals` 的时刻由 `dt`(网格宽) × 下标推出来; `vals2` 的时刻必须由 `times2`
+           **显式给出** —— 温度那条是**非等距**的(广播限流会让某些整秒读失败)。
+        ⚠️ `vals` 里的 `None` = 那一格没读到 ⇒ **跳过该点**(线在缺口处直连),
+           **不要插 0**(那会画出一条掉到底的假线)。时刻由下标推出来, 所以跳过值
+           不会让后面的点错位。
+        """
         super().__init__(**kw)
         self._v = [float(x) for x in (vals or []) if x]
         self._value_decimals = max(0, int(value_decimals))
         self._flat_min_range = (self.Y_FLAT_MIN_RANGE if flat_min_range is None
                                 else max(0.1, float(flat_min_range)))
+        # ---- 双轴(2026-09-17): 电池功率走左轴、电池温度走右轴 --------------------
+        _dt = max(1e-6, float(dt)) if dt else None
+        _p2 = []
+        if vals2 and times2:
+            for _a, _b in zip(list(vals2), list(times2)):
+                if _a is not None and _b is not None:
+                    _p2.append((float(_a), float(_b)))
+        self._v2 = [p[0] for p in _p2]
+        self._t2 = [p[1] for p in _p2]
+        self._px = ([(float(_a), _i * _dt) for _i, _a in enumerate(vals or [])
+                     if _a is not None] if _dt else [])
+        # 两条里任意一条不足两点 ⇒ 双轴没意义, 退回单轴(右边不画)
+        self._dual = (len(self._v2) >= 2 and len(self._px) >= 2)
+        self._value_decimals2 = max(0, int(value_decimals2))
+        self._flat_min_range2 = (self.Y_FLAT_MIN_RANGE if flat_min_range2 is None
+                                 else max(0.1, float(flat_min_range2)))
+        self._unit2 = unit2 or ''
+        _all_t = [_t for _, _t in self._px] + list(self._t2)
+        self._t_max = float(t_max) if t_max else (max(_all_t) if _all_t else None)
+        self._ax2 = None
+        self._series = None
         self.bind(pos=self._draw, size=self._draw)
         Clock.schedule_once(self._draw, 0)
 
@@ -10826,96 +11193,109 @@ class SpeedCurve(Widget):
 
     def _draw(self, *_):
         self.canvas.clear()
-        if len(self._v) < 2 or self.width < 40 or self.height < 40:
+        _dual = self._dual
+        # ⚠️ 双轴时"够不够两点"看的是**成对序列**(`_px` / `_v2`), 不是老路径那个 `_v`
+        if (_dual and (len(self._px) < 2 or len(self._v2) < 2)) or len(self._v) < 2:
             return
-        # 左侧留 46dp 给纵轴成绩点、下方留 18dp 给横轴次数
-        pad_l, pad_r, pad_t, pad_b = dp(46), dp(8), dp(8), dp(18)
+        if self.width < 40 or self.height < 40:
+            return
+        # 左侧留 46dp 给纵轴刻度、下方留 18dp 给横轴次数;
+        # ⚠️ 双轴时**右侧加宽到 38dp** 放右轴那三个刻度数字 —— `pad_l` 一动不动
+        #    (`temp/_curveaxis.py` 的 A10 拿 `dp(46)` 钉着左刻度文字的位置)。
+        pad_l, pad_r, pad_t, pad_b = dp(46), (dp(38) if _dual else dp(8)), dp(8), dp(18)
         pw = max(1.0, self.width - pad_l - pad_r)
         ph = max(1.0, self.height - pad_b - pad_t)
         x0, y0 = self.x + pad_l, self.y + pad_b
-        # ---- 纵轴范围: "留白 + 有效差异"(玩家 2026-09-16 亲自定的规则) --------------
-        # 玩家原话: 「**不建议把 Y 轴最低点机械地设为"成绩最低点"**。这样虽然数据不被截断,
-        #   但**曲线会贴着底边**, 尤其像图中大量低分段, 会显得拥挤、跳变更刺眼。」
-        #   ⇒ 规则(逐字照搬):
-        #     · 常规: 下限 = 数据最小值 − max(跨度×5%, 最小值×2%)
-        #             上限 = 数据最大值 + max(跨度×5%, 最大值×2%)
-        #     · 常数(跨度为 0): 上下各留 max(值×5%, 最小展示范围/2)
-        #     · 最后**向外取整到友好刻度**; 最低点不贴底(约留 5% 图高)
-        #   ⚠️ **向外**取整(下界 floor、上界 ceil)是硬要求 —— 向内会把真实极值切出画外,
-        #      那就从"不好看"变成"画错了"。
-        #   ⚠️ 两个 `max(...)` 的分工: 跨度那一项管"波动大的图", 数值那一项管"跨度很小
-        #      但绝对值很大的图"(否则窄幅波动会被放大成满屏锯齿)。
-        _lo_d, _hi_d = min(self._v), max(self._v)
-        _span_d = _hi_d - _lo_d
-        if _span_d > 0:
-            _p_lo = max(_span_d * self.Y_PAD_FRAC, abs(_lo_d) * self.Y_PAD_VAL_MIN)
-            _p_hi = max(_span_d * self.Y_PAD_FRAC, abs(_hi_d) * self.Y_PAD_VAL_MIN)
-        else:
-            _p_lo = _p_hi = max(abs(_lo_d) * self.Y_FLAT_FRAC,
-                                self._flat_min_range / 2.0)
-        # 友好刻度: 粒度 = **留白后轴量级**的 1%, 抬到 1/2/5×10^k。
-        # ⚠️ 粒度玩家没定("向外取整到友好刻度"只说了方向), **这一档是照他给的例子反推的** ——
-        #    13280~35173 必须正好收成 **12000 ~ 36500**, 那个例子只有粒度 500 能做到。
-        # ⚠️ 试过"跨度 × 2%"那种更直觉的取法: 例子同样对得上, 但遇到**窄幅大值**数据
-        #    (例: 30000~30200)会退化成粒度 **5** ⇒ 刻度印出 30805/30102 这种脏数字。
-        #    按"轴量级 × 1%"两处都给 500, 刻度全是整百。
-        _lo_p, _hi_p = _lo_d - _p_lo, _hi_d + _p_hi
-        _step = _axis_nice_step(max(abs(_lo_p), abs(_hi_p)) * self.Y_TICK_FRAC)
-        _lo = math.floor(_lo_p / _step) * _step
-        if _lo_d >= 0.0:
-            _lo = max(0.0, _lo)   # 本指标是"步/秒", 不可能为负 ⇒ 轴不必画到 0 以下
-        _hi = math.ceil(_hi_p / _step) * _step
-        # 玩家还要求「**最低点不应贴底**, 默认至少保留约 5% 图高的视觉空间」——
-        # 而"上下各留 5% 跨度"在**取整之后**未必够(实测低端机口径 5000~9000 会落到 4.5%,
-        # 因为上界向上取整把分母抬大了)。⇒ 直接解那条不等式, 差多少就**再往外退一格**
-        # (仍退在粒度整数倍上 ⇒ 还是友好刻度)。
-        #   (lo_d − lo) ≥ g·(hi − lo)  ⟺  lo ≤ (lo_d − g·hi) / (1 − g)
-        # ⚠️ 解不出来时(值很小、上界很高 ⇒ 需要负的下界)就放弃这条, 由上面那个 `max(0.0, ...)`
-        #    兜住 —— **不为了凑 5% 把轴画到 0 以下**。
-        if _lo_d >= 0.0:
-            _g = self.Y_MIN_GAP_FRAC
-            _lo_max = (_lo_d - _g * _hi) / (1.0 - _g)
-            if _lo > _lo_max:
-                _lo = max(0.0, math.floor(_lo_max / _step) * _step)
-        if _hi - _lo < 1.0:       # 兜底: 极端退化时别造出零高度(会除零)
-            _hi = _lo + 1.0
+        # ---- 纵轴范围: 规则整个在 `_curve_axis_range()` 里(2026-09-17 原样搬出去的) ----
+        # ⚠️ 搬迁时**一个数都没动**: 单轴这一支用的仍是 `self._v` + `_flat_min_range`,
+        #    结果与搬之前逐位相同; 双轴时左轴看的是 `_px`(功率成对序列, 跳过了 None 点)。
+        _lo, _hi = _curve_axis_range(([p[0] for p in self._px] if _dual else self._v),
+                                     self._flat_min_range)
         # ⚠️ 把**最终真正画上去**的那组轴范围记在控件上 —— 探针要断言的是"真画出来的这一组",
         #    而不是在探针里把算法重抄一遍(本仓库的规矩: 复制品只会测它自己)。
         self._ax = (_lo, _hi)
         _mid = (_hi + _lo) / 2.0
         _sp = max(1.0, _hi - _lo)
         _n = len(self._v)
+        # 右轴(双轴才有): 同一条规则, 但用**温度自己的**留白系数
+        _lo2 = _hi2 = _mid2 = None
+        _sp2 = 1.0
+        if _dual:
+            _lo2, _hi2 = _curve_axis_range(self._v2, self._flat_min_range2)
+            _mid2 = (_hi2 + _lo2) / 2.0
+            _sp2 = max(1e-6, _hi2 - _lo2)
+        self._ax2 = ((_lo2, _hi2) if _dual else None)
 
         def _yy(_val):
             return y0 + ph * ((_val - _lo) / _sp)
 
-        _pts = []
-        for _i, _y in enumerate(self._v):
-            _pts.append(x0 + pw * (_i / float(_n - 1)))
-            _pts.append(_yy(_y))
+        def _yy2(_val):
+            return y0 + ph * ((_val - _lo2) / _sp2)
+
+        _pts2 = []
+        if _dual:
+            # ⚠️ 双轴**必须按秒画横轴**: 两条序列长度不同(功率 ~1790 / 温度 ~359),
+            #    按下标画会把它们错开一大截。`None` 点已经在 `_px`/`_v2` 里剔掉了。
+            _tm = self._t_max or 1.0
+            _pts = []
+            for _val, _t in self._px:
+                _pts.append(x0 + pw * (_t / _tm))
+                _pts.append(_yy(_val))
+            for _val, _t in zip(self._v2, self._t2):
+                _pts2.append(x0 + pw * (_t / _tm))
+                _pts2.append(_yy2(_val))
+        else:
+            _pts = []
+            for _i, _y in enumerate(self._v):
+                _pts.append(x0 + pw * (_i / float(_n - 1)))
+                _pts.append(_yy(_y))
         with self.canvas:
             Color(*hex_rgb(COL_BTN_OFF), 0.55)
             Rectangle(pos=self.pos, size=self.size)
-            # 纵轴三条刻度线(轴的上界 / 中点 / 下界)
+            # 横向网格线**只挂左轴**(双轴图的标准做法: 网格共享, 右轴只出自己的刻度)
             for _val in (_hi, _mid, _lo):
                 Color(*hex_rgb(COL_SUB), 0.30)
                 Line(points=[x0, _yy(_val), x0 + pw, _yy(_val)], width=1)
             Color(*hex_rgb(COL_SUB), 0.75)
             Line(points=[x0, y0, x0 + pw, y0], width=1)
             Line(points=[x0, y0, x0, y0 + ph], width=1)
+            if _dual:
+                Line(points=[x0 + pw, y0, x0 + pw, y0 + ph], width=1)
             Color(*hex_rgb(COL_BALL))
             # ⚠️ 线宽与 `FpsCurve` 一致(见类 docstring)。
             Line(points=_pts, width=1.0, joint="round")
+            if _dual:
+                # 第二条用 COL_FIRE(红) —— "热是红的", 与"温度"的直觉一致。
+                Color(*hex_rgb(COL_FIRE))
+                Line(points=_pts2, width=1.0, joint="round")
         # ---- 刻度数字(画在 canvas 之外, 各开自己的上下文) ----
         # 纵轴: **成绩点**(玩家 2026-09-16: 「纵坐标需要一个成绩点」)
         _vf = "%%.%df" % self._value_decimals
         for _val in (_hi, _mid, _lo):
             self._txt(self.canvas, _vf % _val, x0 - dp(5), _yy(_val) - dp(5), "right")
-        # 横轴: **次数**(玩家: 「横坐标是次数 也需要标记几个数值」)—— 第几个样本
-        for _k in (0, (_n - 1) // 2, _n - 1):
-            _an = "left" if _k == 0 else ("right" if _k == _n - 1 else "center")
-            self._txt(self.canvas, "%d" % (_k + 1),
-                      x0 + pw * (_k / float(_n - 1)), self.y + dp(3), _an)
+        if _dual:
+            # 右轴刻度: 贴在右边界**外侧**, 左对齐(否则会盖到曲线上)
+            _vf2 = "%%.%df" % self._value_decimals2
+            for _val in (_hi2, _mid2, _lo2):
+                self._txt(self.canvas, _vf2 % _val,
+                          x0 + pw + dp(4), _yy2(_val) - dp(5), "left")
+        # 横轴: 单轴印**第几个样本**(玩家: 「横坐标是次数 也需要标记几个数值」);
+        #       双轴印**秒**(两条长度不同, 只能按时间读)。
+        if _dual:
+            _tm = self._t_max or 1.0
+            for _k, _frac in ((0, 0.0), (1, 0.5), (2, 1.0)):
+                _an = "left" if _k == 0 else ("right" if _k == 2 else "center")
+                self._txt(self.canvas, "%ds" % int(round(_tm * _frac)),
+                          x0 + pw * _frac, self.y + dp(3), _an)
+        else:
+            for _k in (0, (_n - 1) // 2, _n - 1):
+                _an = "left" if _k == 0 else ("right" if _k == _n - 1 else "center")
+                self._txt(self.canvas, "%d" % (_k + 1),
+                          x0 + pw * (_k / float(_n - 1)), self.y + dp(3), _an)
+        # ⚠️ 与 `_ax` 同一条规矩: 记的是**真画出去的那两条线**的颜色/点数/小数位, 供探针断言。
+        self._series = ([("left", COL_BALL, len(_pts) // 2, self._value_decimals),
+                         ("right", COL_FIRE, len(_pts2) // 2, self._value_decimals2)]
+                        if _dual else None)
 
 
 def _bench_result_title():
@@ -12235,7 +12615,9 @@ class RootWidget(BoxLayout):
         # 绝对时刻采集; 不与 sysfs 读取耗时绑在一起。同样在锁核前起线程,
         # 避免新线程继承跑分核亲和性。
         _battery_win = [0.0, 0.0]
-        _battery_values, _battery_stop = _battery_sampler_start(_battery_win)
+        # ⚠️ 2026-09-17 起返回**三**个值 —— 第三个是功率收集器(温度 1Hz + 功率 5Hz
+        #    在同一个线程、同一个绝对网格上采, 见 `_battery_sampler_start`)。
+        _battery_values, _battery_stop, _pwr = _battery_sampler_start(_battery_win)
         # ⚠️⚠️ **波 2 全程把帧率按到 `_BENCH_FPS_FORCE`**(与波 1 同一条规矩)。
         _hp_render_fps = 0.0          # ⚠️ 先给初值: 下面抛异常时 finally 之后那一行不能 NameError
         _bench_fps_lock_on()
@@ -12278,6 +12660,18 @@ class RootWidget(BoxLayout):
         #    面板那三个数(平均/最低/最高)**仍然用排序后的**, 与以前一样。
         self._hp_freq_series = [float(x) for x in _frq]
         self._hp_battery_series = [round(float(x), 1) for x in _battery_values]
+        # ---- 功率(2026-09-17 新增) ----------------------------------------------
+        # ⚠️ 统计(`_pwr["stats"]`)是**采样线程退出前**算好的(见 `_pwr_finish`) ——
+        #    主线程这里只搬运, 别再自己遍历一遍序列去算, 否则"谁在算什么"就有两份。
+        self._hp_power_series = list(_pwr["w"])        # 含 None, 定长 5Hz 网格
+        self._hp_power_times = list(_pwr["t"])         # 与之一一对应(秒, 相对窗口起点)
+        self._hp_battery_times = list(_pwr["bat_t"])   # 与 `_hp_battery_series` 一一对应
+        self._hp_power_meta = {"src": _pwr["src"], "unit": _pwr["unit"],
+                               "dt": _pwr["dt"], "stats": _pwr["stats"]}
+        _pwr_ok = [x for x in self._hp_power_series if x is not None]
+        _mv_ok = [x for x in _pwr["mv"] if x is not None]
+        _i_ok = [abs(float(x)) * (0.001 if _pwr["unit"] == "ma" else 1e-6)
+                 for x in _pwr["raw"] if x]
         _frq.sort()
         _bat_sorted = sorted(self._hp_battery_series)
         self._hp_fps = list(_fps or [])
@@ -12301,6 +12695,32 @@ class RootWidget(BoxLayout):
             "min": (_bat_sorted[0] if _bat_sorted else None),
             "max": (_bat_sorted[-1] if _bat_sorted else None),
             "n": len(_bat_sorted),
+            # ---- 功率 / 电压 / 电流 / 耗电(2026-09-17 新增) ----------------------
+            # ⚠️ 功率序列里有 None(那一格没读到) ⇒ 统计一律**先过滤 None**;
+            #    一个有效值都没有时全部是 None —— 渲染端据此**整行不印**,
+            #    而不是印成"没采到"(那是另一件事, 见 `_hp_result_text`)。
+            "power_mean": (round(sum(_pwr_ok) / len(_pwr_ok), 2) if _pwr_ok else None),
+            "power_min": (min(_pwr_ok) if _pwr_ok else None),
+            "power_max": (max(_pwr_ok) if _pwr_ok else None),
+            "power_n": len(_pwr_ok),
+            "power_dt": _pwr["dt"],
+            "power_src": _pwr["src"],
+            "power_unit": _pwr["unit"],
+            "power_stats": _pwr["stats"],
+            # 测试期间**多数格**在充电 ⇒ 上面那些功率读数是"充入"而不是"耗电",
+            # 面板要据此加一句说明(否则"满载 6 分钟才 2 瓦"会被读成省电)。
+            "power_plugged": (sum(1 for x in _pwr["plugged"] if x)
+                              > len(_pwr["plugged"]) * 0.5),
+            # 电压来自 sticky 广播(mV), 电流原始值按 `power_unit` 折算成安培。
+            "volt_mean": (round(sum(_mv_ok) / len(_mv_ok) / 1000.0, 2) if _mv_ok else None),
+            "volt_min": (round(min(_mv_ok) / 1000.0, 2) if _mv_ok else None),
+            "volt_max": (round(max(_mv_ok) / 1000.0, 2) if _mv_ok else None),
+            "amp_mean": (round(sum(_i_ok) / len(_i_ok), 2) if _i_ok else None),
+            "amp_min": (round(min(_i_ok), 2) if _i_ok else None),
+            "amp_max": (round(max(_i_ok), 2) if _i_ok else None),
+            # 总耗电 = Σ(P × dt) —— 功率是 5Hz **定长网格**, 所以 dt 就是格宽,
+            # 缺失格(None)已经在 `_pwr_ok` 里滤掉, 不会把缺口算成 0 瓦。
+            "wh": (round(sum(_pwr_ok) * _pwr["dt"] / 3600.0, 3) if _pwr_ok else None),
             # 热限制等级(Android 10+; 不需要权限)。见 `_thermal_status` 的说明 ——
             # ⚠️ 它是**收尾时刻的一个快照**, 不是全程曲线; 不支持的设备恒为 0, 和"真没热限制"
             #    分不出来 ⇒ 只作参考, 不能单独当结论。
@@ -12335,8 +12755,8 @@ class RootWidget(BoxLayout):
         """
         _f = getattr(self, "_hp_freq", None) or {}
         if _f.get("mean"):
-            return ("平均 %dMHz（最低 %d / 最高 %d，%d 个采样）"
-                    % (_f["mean"], _f["min"], _f["max"], _f["n"]))
+            return ("平均 %dMHz（最低 %d / 最高 %d）"
+                    % (_f["mean"], _f["min"], _f["max"]))
         return "没采到（非安卓 / 读不到 sysfs）"
 
     def _hp_cpu_pin_line(self):
@@ -12439,18 +12859,67 @@ class RootWidget(BoxLayout):
         # 中位数必然落在其中一个峰上", 见 `_hp_freq_line` 的注释)。
         _fm = int(d.get('freq_mean', 0) or 0)
         if _fm > 0:
-            _freq = ("平均 %dMHz（最低 %d / 最高 %d，%d 个采样）"
+            _freq = ("平均 %dMHz（最低 %d / 最高 %d）"
                      % (_fm, int(d.get('freq_min', 0) or 0),
-                        int(d.get('freq_max', 0) or 0), int(d.get('freq_n', 0) or 0)))
+                        int(d.get('freq_max', 0) or 0)))
         else:
             _freq = "没采到（非安卓 / 读不到 sysfs）"
         _bm = d.get('battery_mean')
         if _bm is not None and int(d.get('battery_n', 0) or 0) > 0:
-            _battery = ("平均 %.1f度（最低 %.1f，最高 %.1f，%d 个采样）"
+            # ⚠️ 2026-09-17 玩家: 「这2项去掉 xx 个采样字眼。**每次都不变的**」——
+            #    频率/温度两行尾巴上的「，N 个采样」删掉了(采样数在记录 JSON 里照旧存着)。
+            _battery = ("平均 %.1f度（最低 %.1f，最高 %.1f）"
                         % (float(_bm), float(d.get('battery_min', _bm)),
-                           float(d.get('battery_max', _bm)), int(d.get('battery_n', 0))))
+                           float(d.get('battery_max', _bm))))
         else:
             _battery = "没采到（非安卓 / 系统未提供）"
+        # ---- 功率 / 电压·电流 / 每瓦性能 / 总耗电 / 电流刷新(2026-09-17 新增) --------
+        # ⚠️⚠️ **老记录的判据是「键在不在」, 不是「值是不是 None」** —— 2026-09-17 之前的
+        #    存档里根本没有 `power_*`, 那种情况**整块不印**; 印成"没采到"就是把
+        #    「当时没采集」和「这台采不到」混成同一个词(同一个坑见上面 thermal 那段注释)。
+        _plines = []
+        _pm = d.get('power_mean')
+        if _pm is not None:
+            _pt = ("电池功率：平均 %.2fW（最低 %.2f，最高 %.2f）"
+                   % (float(_pm), float(d.get('power_min', _pm)),
+                      float(d.get('power_max', _pm))))
+            # ⚠️ 测试期间插着电 ⇒ 采到的是**充入**功率, 不是耗电。必须说清, 否则
+            #    "满载跑 6 分钟才 2 瓦"会被读成这台设备很省电 —— 那是反的。
+            if d.get('power_plugged'):
+                _pt += "　⚠ 测试期间在充电，这是充入功率"
+            _plines.append(_pt)
+        elif d.get('power_src') == 'zero':
+            # 与"读不到"**必须分开说**: 这条 API 在、只是恒返回 0 ⇒ 这台大概率没有 fuel gauge。
+            _plines.append("电池功率：接口在、但恒为 0（这台大概率没有 fuel gauge）")
+        elif 'power_mean' in d:
+            _plines.append("电池功率：没采到（非安卓 / 系统未提供电流）")
+        _vm, _am = d.get('volt_mean'), d.get('amp_mean')
+        if _vm is not None and _am is not None:
+            _plines.append("电压/电流：平均 %.2fV / %.2fA（最低 %.2fV / %.2fA，最高 %.2fV / %.2fA）"
+                           % (float(_vm), float(_am),
+                              float(d.get('volt_min', _vm)), float(d.get('amp_min', _am)),
+                              float(d.get('volt_max', _vm)), float(d.get('amp_max', _am))))
+        if _pm and _avg:
+            _plines.append("每瓦性能：平均 %d 步/秒·W" % int(round(_avg / float(_pm))))
+        _wh = d.get('wh')
+        if _wh is not None:
+            _ma = (float(_wh) / float(_vm) * 1000.0) if _vm else None
+            _plines.append("总耗电：%.3f Wh%s"
+                           % (float(_wh), ("（约 %d mAh）" % int(round(_ma))) if _ma else ""))
+        # ⚠️⚠️ 电流刷新周期**只能给到这个精度**: 采样本就是 5Hz, 底层更快时观测到的是
+        #    "每次都在变" —— 那时**只能说"≤ 采样周期"**, 报成具体毫秒数就是编数
+        #    (见 `_pwr_finish` 的注释)。
+        _pst = d.get('power_stats') or {}
+        if _pst.get('est_kind') == 'le_dt':
+            _plines.append("电流刷新：≤%.1f 秒（受采样频率限制，测不到更快）"
+                           % float(d.get('power_dt') or 0.2))
+        elif _pst.get('est'):
+            _plines.append("电流刷新：约 %.1f 秒（中位，共 %d 次跳变）"
+                           % (float(_pst['est']), int(_pst.get('n_chg', 0) or 0)))
+        # ⚠️ 这里**不能**用 `_n` —— 它在函数更靠下的地方才定义, 而生成器表达式是
+        #    **延迟求值**的(`join()` 在这里就执行了), 会直接 NameError。
+        #    实测: 一点「详情」就崩(`temp/_tempwr_shot.py` 抓到的)。
+        _pwr_txt = "".join(x + chr(10) for x in _plines)
         # ⚠️⚠️ 2026-09-17 **玩家把"热限制等级 / 本机 thermal zone"那两行从界面上删掉了**
         #    (原话:「A + 删掉之前多加的测量文本」)。理由: 那两行的用词(`thermal zone` /
         #    `batt` / `bms` / `charger` / `cpullc-0-0` …)对**看结果的人**就是噪音 ——
@@ -12478,8 +12947,13 @@ class RootWidget(BoxLayout):
                 #    —— 与历史详情、空态那句**用同一个说法**, 全工程只此一种写法。
                 + "连续高压测试 %d 秒" % int(_sec) + _n
                 + "".join(x + _n for x in _o)
-                + "首 %s → 末 %s 步/秒（降 %.0f%%）" % (
-                    '—' if _f is None else int(_f), '—' if _l is None else int(_l), _decay) + _n
+                # ⚠️ 2026-09-17 玩家(看到截图「首 19809 → 末 20242 步/秒（降 -2%）」):
+                #    「如果是增加, 改为**增加x.x%**, 而不是降低一个负数」。
+                #    `decay` = (首−末)/首×100 ⇒ 末尾更高时它是**负数**, 直接印就成了
+                #    "降 -2%"(读起来像"降了负的 2%", 实际是升)。⇒ 按符号换词、数字取绝对值。
+                + "首 %s → 末 %s 步/秒（%s %.0f%%）" % (
+                    '—' if _f is None else int(_f), '—' if _l is None else int(_l),
+                    "增加" if _decay < 0 else "降", abs(_decay)) + _n
                 # ⚠️ 2026-09-16 玩家: 「圆点改为逗号」。
                 + "最低 %s，平均 %s 步/秒" % (
                     '—' if _mn is None else int(_mn), '—' if _avg is None else _avg) + _n
@@ -12501,7 +12975,7 @@ class RootWidget(BoxLayout):
                 #      老口径「CPU 频率」= 全体取最大。**别把这两个标签合并** —— 它们
                 #      是两个不同的数, 同一个词盖住它们正是"两种口径一个名字"那种坑。
                 + ("跑分核频率：" if d.get('freq_pinned') else "CPU 频率：") + _freq + _n
-                + "电池温度：" + _battery)
+                + "电池温度：" + _battery + _pwr_txt)
 
     def _hp_summary_text(self):
         """结果弹窗的正文 —— 与历史「详情」**共用** `_hp_result_text`。
@@ -12528,6 +13002,19 @@ class RootWidget(BoxLayout):
             'freq_n': int(_fr.get('n', 0) or 0),
             'battery_mean': _bt.get('mean'), 'battery_min': _bt.get('min'),
             'battery_max': _bt.get('max'), 'battery_n': int(_bt.get('n', 0) or 0),
+            # ---- 功率那一族(2026-09-17 新增) -------------------------------------
+            # ⚠️⚠️ **键名必须与记录 JSON 里的逐字一致** —— 渲染端 `_hp_result_text`
+            #    只认这些名字。这里漏搬任何一个, 真机上那一行就恒不显示(或恒印"没采到"),
+            #    而且**跑分本身是成功的**, 不报错 —— 正是下面那条注释记的翻车方式。
+            'power_mean': _bt.get('power_mean'), 'power_min': _bt.get('power_min'),
+            'power_max': _bt.get('power_max'), 'power_n': int(_bt.get('power_n', 0) or 0),
+            'power_dt': _bt.get('power_dt'), 'power_src': _bt.get('power_src'),
+            'power_unit': _bt.get('power_unit'), 'power_stats': _bt.get('power_stats'),
+            'power_plugged': _bt.get('power_plugged'),
+            'volt_mean': _bt.get('volt_mean'), 'volt_min': _bt.get('volt_min'),
+            'volt_max': _bt.get('volt_max'),
+            'amp_mean': _bt.get('amp_mean'), 'amp_min': _bt.get('amp_min'),
+            'amp_max': _bt.get('amp_max'), 'wh': _bt.get('wh'),
             # ⚠️⚠️ **这两个键必须跟着搬**(2026-09-17 对抗评审抓出来的): 只把 `_hp_battery`
             #    填好是没用的 —— 渲染端 `_hp_result_text` 走的是**这个 dict**, 漏搬的后果
             #    是那两行**恒印"读不到"**, 在读数成功的真机上也一样 ⇒ 功能等于没上线,
@@ -12585,6 +13072,25 @@ class RootWidget(BoxLayout):
                     "battery_min": _bt2.get("min"),
                     "battery_max": _bt2.get("max"),
                     "battery_n": int(_bt2.get("n", 0) or 0),
+                    # ---- 功率那一族(2026-09-17 新增) -------------------------------
+                    # ⚠️ 与 `_hp_summary_text`(现场那条路)**必须成对** —— 见上面那条注释:
+                    #    只搬一半的后果是"现场对、翻历史错"(或反过来), 而且两边都不报错。
+                    "power_mean": _bt2.get("power_mean"),
+                    "power_min": _bt2.get("power_min"),
+                    "power_max": _bt2.get("power_max"),
+                    "power_n": int(_bt2.get("power_n", 0) or 0),
+                    "power_dt": _bt2.get("power_dt"),
+                    "power_src": _bt2.get("power_src"),
+                    "power_unit": _bt2.get("power_unit"),
+                    "power_stats": _bt2.get("power_stats"),
+                    "power_plugged": _bt2.get("power_plugged"),
+                    "volt_mean": _bt2.get("volt_mean"),
+                    "volt_min": _bt2.get("volt_min"),
+                    "volt_max": _bt2.get("volt_max"),
+                    "amp_mean": _bt2.get("amp_mean"),
+                    "amp_min": _bt2.get("amp_min"),
+                    "amp_max": _bt2.get("amp_max"),
+                    "wh": _bt2.get("wh"),
                     # ⚠️ 和现场那条路**必须成对**: 存了才能让"历史详情"印出当时的真实情况;
                     #    不存的话翻历史永远显示"读不到"(假结论)。
                     "thermal": _bt2.get("thermal"),
@@ -12599,6 +13105,15 @@ class RootWidget(BoxLayout):
                     "freq_series": [int(x) for x in (getattr(self, "_hp_freq_series", None) or [])],
                     "battery_series": [round(float(x), 1) for x in
                                        (getattr(self, "_hp_battery_series", None) or [])],
+                    # ---- 曲线用的两条序列(2026-09-17 新增) -------------------------
+                    # `power_series` 是**定长 5Hz 网格**, 时刻可以由 `power_dt` 推出来
+                    #   (t_i = i × dt), 所以不必另存时刻表; `None` = 那一格没读到。
+                    # `battery_t` 则是**非等距**的(广播限流会让某些秒整点读失败),
+                    #   所以温度那条必须连**时刻**一起存, 否则双轴图的横轴会对不上。
+                    "power_series": [None if x is None else round(float(x), 2) for x in
+                                     (getattr(self, "_hp_power_series", None) or [])],
+                    "battery_t": [round(float(x), 1) for x in
+                                  (getattr(self, "_hp_battery_times", None) or [])],
                     # ⚠️ 这条频率是"**只算了跑分核**"还是"全体取最大" ⇒ 面板换标签用
                     #    (见 `_hp_result_text` 里的「跑分核频率」)。
                     "freq_pinned": bool((getattr(self, "_hp_cpu_pin", None) or {}).get("actual")),
@@ -12654,13 +13169,33 @@ class RootWidget(BoxLayout):
             freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _fw, title="高压CPU测试的频率曲线", unit="MHz", unit_name="采样"))
             _btnrow.add_widget(freq_btn)
-        _bw = [x for x in (getattr(self, "_hp_battery_series", None) or []) if x is not None]
-        if len(_bw) >= 2:
-            battery_btn = Button(text="电池曲线", font_size="14sp", bold=True,
+        # ⚠️ 2026-09-17 玩家: 「把**电池曲线**按钮改名为**温度功率**」, 外加
+        #    「把功率曲线和电池温度放在一起, 一个是左坐标轴, 一个是右坐标轴」。
+        #    ⇒ **不新增按钮** —— 这一行本来就有 4 个控件, 360dp 上每个只剩 ~68dp,
+        #       第 5 个会直接溢出弹窗(见 `_show_hp_curve` 那条注释)。改名复用即可。
+        # ⚠️ 闭包晚绑定: 下面这几份局部量**各起唯一名字**(`1` 后缀) —— 同一个函数里
+        #    若有两个 lambda 共用同名变量, 它们会看到对方最后一次赋的值。
+        _bw1 = [x for x in (getattr(self, "_hp_battery_series", None) or []) if x is not None]
+        if len(_bw1) >= 2:
+            # ⚠️⚠️ 这里**不能过滤 None** —— 功率的时刻是按**原下标 × dt** 推出来的
+            #    (见 `SpeedCurve.__init__` 的 `_px`), 过滤掉一个点会让它**后面所有点
+            #    左移一格**(实测: 末点从 357.8s 变成 357.2s)。序列原样传, `_ok1` 只判
+            #    "有效点够不够两个"。
+            _pw1 = list(getattr(self, "_hp_power_series", None) or [])
+            _ok1 = len([x for x in _pw1 if x is not None]) >= 2
+            _main1 = _pw1 if _ok1 else _bw1
+            _sec1 = _bw1 if _ok1 else None
+            _st1 = (list(getattr(self, "_hp_battery_times", None) or []) if _ok1 else None)
+            _dt1 = ((getattr(self, "_hp_power_meta", None) or {}).get("dt") if _ok1 else None)
+            battery_btn = Button(text="温度功率", font_size="14sp", bold=True,
                                  background_normal="", background_color=hex_rgb(COL_SOC) + (1,))
             battery_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _bw, title="CPU高压测试的电池曲线", unit="度", unit_name="采样",
-                value_decimals=1, flat_min_range=2.0))
+                _main1, windows2=_sec1, times2=_st1, dt=_dt1,
+                title=("CPU高压测试的温度功率曲线" if _ok1 else "CPU高压测试的电池温度曲线"),
+                unit=("W" if _ok1 else "度"), unit_name="采样",
+                value_decimals=(2 if _ok1 else 1),
+                flat_min_range=(1.0 if _ok1 else 2.0),
+                unit2="度", value_decimals2=1, flat_min_range2=2.0))
             _btnrow.add_widget(battery_btn)
         close_btn = Button(text="关闭", font_size="14sp", bold=True,
                            background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
@@ -15982,7 +16517,9 @@ class RootWidget(BoxLayout):
         self._popup_fit_content(popup, content)
 
     def _show_hp_curve(self, windows, sec=None, title=None, unit='步/秒', unit_name='窗口',
-                       value_decimals=0, flat_min_range=None):
+                       value_decimals=0, flat_min_range=None,
+                       windows2=None, times2=None, dt=None, unit2='',
+                       value_decimals2=1, flat_min_range2=None):
         """CPU 高压的**一条曲线**(结果弹窗 / 历史详情上的按钮)。
 
         玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
@@ -15992,13 +16529,23 @@ class RootWidget(BoxLayout):
            曲线的 y 轴坐标一样**), 放在成绩曲线和关闭按钮的中间」):
              · 成绩曲线 —— 逐秒的**步/秒**(数据 = 记录里的 `windows`, 实测 321 个);
              · 频率曲线 —— 第 1~359 秒的 **MHz**(数据 = `freq_series`, 目标 359 个);
-             · 电池曲线 —— 第 1~359 秒的**电池温度**(数据 = `battery_series`)。
+             · 温度功率曲线 —— **电池功率(左轴) + 电池温度(右轴)**(2026-09-17 玩家:
+               「把功率曲线和电池温度放在一起, 一个是左坐标轴, 一个是右坐标轴」)。
+               此时 `windows`/`dt` = 功率那条(5Hz 定长网格, 含 None),
+               `windows2`/`times2` = 温度那条(1Hz **非等距**)。
            纵轴那套规则(上下留白 + 向外取整到友好刻度 + 保底离底 5%)整个在
            `SpeedCurve` 里 ⇒ 这里**只换标题、单位、和"一个点代表什么"**, 不碰轴。
         ⚠️ 没数据(或只有 1 个点)就**不开弹窗** —— 一条直线没信息, 不如不给。
+        ⚠️ 双轴的两条序列**长度本来就不同**(功率 ~1790 / 温度 ~359), 所以
+           `SpeedCurve` 内部一律**按秒**画横轴 —— 这里只负责把时刻表传对。
         """
-        _w = [x for x in (windows or []) if x > 0]
-        if len(_w) < 2:
+        # ⚠️⚠️ **不能在这里过滤 `None`** —— 功率那条的时刻是按**原下标 × dt** 推出来的
+        #    (见 `SpeedCurve.__init__` 的 `_px`), 过滤掉一个点会让它**后面所有点左移一格**
+        #    (实测: 温度末点从 357.8s 变成 321s, 横轴对不上)。
+        #    ⇒ 原样传下去, 由 `SpeedCurve` 自己跳过 None 点; 这里只数"够不够两个有效点"。
+        #    (`None > 0` 在 Python 3 里会抛 TypeError, 老写法就是 `if x > 0`。)
+        _w = list(windows or [])
+        if len([x for x in _w if x is not None and x > 0]) < 2:
             return
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         title = self._fit_line(Label(text=(title or '高压CPU测试的成绩曲线'),
@@ -16007,6 +16554,8 @@ class RootWidget(BoxLayout):
                                      size_hint_y=None, height=dp(26)), 19)
         content.add_widget(title)
         curve = SpeedCurve(_w, value_decimals=value_decimals, flat_min_range=flat_min_range,
+                           vals2=windows2, times2=times2, dt=dt, unit2=unit2,
+                           value_decimals2=value_decimals2, flat_min_range2=flat_min_range2,
                            size_hint_y=None, height=dp(240))
         content.add_widget(curve)
         # ⚠️⚠️ 2026-09-16 玩家(截图上圈掉两处): 「**删掉第1段话**(逐秒/秒 到 最高xxx),
@@ -16018,10 +16567,19 @@ class RootWidget(BoxLayout):
         #       ② 下面第二行的 `（横线 = 纵轴刻度）` 那个括号也删掉。
         #    ⚠️ 删掉 note 之后弹窗矮了一行(dp(22) + dp(8) 间距) —— 定高控件那一套没动,
         #       `_popup_fit_content` 自己按内容算高, 不用手调。
-        _n2 = Label(text='横轴 = 按时间顺序的 %d 个%s　竖轴 = %s'
-                      % (len(_w), unit_name, unit),
-                     font_size='12sp', halign='center', valign='middle',
-                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
+        if curve._dual:
+            # 双轴必须**说清哪条是哪条**。颜色串从画线用的**同一批常量**拼 ——
+            # 哪天调色板改了, 图例不会说谎。
+            _n2 = Label(text=('[color=%s]%s（左轴）[/color]　[color=%s]%s（右轴）[/color]'
+                              % (COL_BALL, unit or '功率', COL_FIRE, unit2 or '温度')),
+                        markup=True,
+                        font_size='12sp', halign='center', valign='middle',
+                        color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
+        else:
+            _n2 = Label(text='横轴 = 按时间顺序的 %d 个%s　竖轴 = %s'
+                             % (len(_w), unit_name, unit),
+                        font_size='12sp', halign='center', valign='middle',
+                        color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         _n2.bind(width=lambda _w2, *_: setattr(_w2, 'text_size', (_w2.width, None)))
         content.add_widget(_n2)
         close_btn = Button(text='返回', font_size='16sp', bold=True, background_normal='',
@@ -16063,6 +16621,16 @@ class RootWidget(BoxLayout):
             'thermal': r.get('thermal'), 'zones': r.get('zones'),
             'battery_mean': r.get('battery_mean'), 'battery_min': r.get('battery_min'),
             'battery_max': r.get('battery_max'), 'battery_n': r.get('battery_n', 0),
+            # ---- 功率那一族(2026-09-17) -----------------------------------------
+            # ⚠️⚠️ **只在记录里真有这些键时才搬** —— 渲染端 `_hp_result_text` 的判据是
+            #    「键在不在」, 不是「值是不是 None」。老记录(2026-09-17 之前)根本没有
+            #    `power_*`, 若这里一律搬成 None, 翻历史就会把"当时没采集"印成
+            #    "这台采不到"(假结论)。⇒ 展开时过滤掉记录里没有的键。
+            **{_k: r[_k] for _k in (
+                'power_mean', 'power_min', 'power_max', 'power_n', 'power_dt',
+                'power_src', 'power_unit', 'power_stats', 'power_plugged',
+                'volt_mean', 'volt_min', 'volt_max',
+                'amp_mean', 'amp_min', 'amp_max', 'wh') if _k in r},
         })
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='CPU高压测试详情', bold=True,
@@ -16093,13 +16661,28 @@ class RootWidget(BoxLayout):
             freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _fw, title='高压CPU测试的频率曲线', unit='MHz', unit_name='采样'))
             _btnrow.add_widget(freq_btn)
-        _bw = [x for x in (r.get('battery_series') or []) if x is not None]
-        if len(_bw) >= 2:
-            battery_btn = Button(text='电池曲线', font_size='14sp', bold=True,
+        # ⚠️ 与现场那个按钮**同一套逻辑**(改名 + 双轴), 只是数据从**记录**里取:
+        #    `power_series`(定长 5Hz 网格) + `battery_t`(温度的时刻表)。
+        #    老记录没有这些键 ⇒ `_ok2` 为假 ⇒ **降级成单轴温度曲线**, 与今天一样。
+        # ⚠️ 变量名带 `2` 后缀: 别和 `_hp_done` 那个按钮的闭包变量撞车。
+        _bw2 = [x for x in (r.get('battery_series') or []) if x is not None]
+        if len(_bw2) >= 2:
+            # ⚠️ 同上: **不过滤 None**(时刻由原下标推), `_ok2` 只看有效点数。
+            _pw2 = list(r.get('power_series') or [])
+            _ok2 = len([x for x in _pw2 if x is not None]) >= 2
+            _main2 = _pw2 if _ok2 else _bw2
+            _sec2 = _bw2 if _ok2 else None
+            _st2 = (list(r.get('battery_t') or []) if _ok2 else None)
+            _dt2 = (r.get('power_dt') if _ok2 else None)
+            battery_btn = Button(text='温度功率', font_size='14sp', bold=True,
                                  background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
             battery_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _bw, title='CPU高压测试的电池曲线', unit='度', unit_name='采样',
-                value_decimals=1, flat_min_range=2.0))
+                _main2, windows2=_sec2, times2=_st2, dt=_dt2,
+                title=('CPU高压测试的温度功率曲线' if _ok2 else 'CPU高压测试的电池温度曲线'),
+                unit=('W' if _ok2 else '度'), unit_name='采样',
+                value_decimals=(2 if _ok2 else 1),
+                flat_min_range=(1.0 if _ok2 else 2.0),
+                unit2='度', value_decimals2=1, flat_min_range2=2.0))
             _btnrow.add_widget(battery_btn)
         close_btn = Button(text='关闭', font_size='14sp', bold=True,
                            background_normal='',
