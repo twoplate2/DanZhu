@@ -12909,14 +12909,11 @@ class RootWidget(BoxLayout):
             _plines.append("电池功率：接口在、但恒为 0（这台大概率没有 fuel gauge）")
         elif 'power_mean' in d:
             _plines.append("电池功率：没采到（非安卓 / 系统未提供电流）")
-        _vm, _am = d.get('volt_mean'), d.get('amp_mean')
-        if _vm is not None and _am is not None:
-            # ⚠️ 用「平均 + 区间」而不是「最低…，最高…」—— 后者在 360dp 上会**折行**
-            #    (实测截图: "最高 4.21V / 1.48A）" 被挤到下一行)。信息一点没少。
-            _plines.append("电压/电流：平均 %.2fV / %.2fA（%.2f~%.2fV / %.2f~%.2fA）"
-                           % (float(_vm), float(_am),
-                              float(d.get('volt_min', _vm)), float(d.get('volt_max', _vm)),
-                              float(d.get('amp_min', _am)), float(d.get('amp_max', _am))))
+        # ⚠️ 2026-09-17 玩家: 「**电压/电流** … 这个删掉吧」——
+        #    那一行从面板撤掉(它当初是"功率的分子分母、零成本"才加的, 但玩家看下来
+        #    觉得没必要)。
+        #    ⚠️ **采集与落盘照旧**(`volt_mean/min/max`、`amp_mean/min/max` 还在记录
+        #       JSON 里) —— 只是不显示; 将来想查那两台机器的电压压降, 翻记录还有。
         # 能效跑分 = 平均步/秒 ÷ 平均功率(全程) —— 玩家 2026-09-17: 「压力测试需要
         #   后面新增一个**每瓦跑分**功能」。用它比"同样功耗下谁算得多",
         #   比单看"谁跑得快"更接近"这台机器值不值"。
