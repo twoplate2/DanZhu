@@ -1642,7 +1642,12 @@ def _battery_temp_c():
 
 
 _THERMAL_NAMES = ("无", "轻微", "中等", "严重", "危急", "紧急", "关机")
-"""`PowerManager.getCurrentThermalStatus()` 的 0~6 对应的中文(与 `_thermal_status` 配对)。"""
+"""`PowerManager.getCurrentThermalStatus()` 的 0~6 对应的中文(与 `_thermal_status` 配对)。
+
+⚠️ 2026-09-17: **界面上已经不显示它了**(玩家把"热限制等级"那行删了, 见 `_hp_result_text` 里
+   那段说明)。留着是因为**采集还在**(`_hp_battery["thermal"]` 照旧写进历史 JSON) ——
+   将来换台机器想再看一眼, 把显示那几行加回来就能直接用。
+"""
 
 
 def _thermal_status():
@@ -12273,49 +12278,26 @@ class RootWidget(BoxLayout):
                            float(d.get('battery_max', _bm)), int(d.get('battery_n', 0))))
         else:
             _battery = "没采到（非安卓 / 系统未提供）"
-        # ---- 热限制等级 + 本机 thermal zone 探测(见 `_thermal_status` / `_thermal_probe`) ----
-        # ⚠️ 这两行是 2026-09-17 加来**回答"电池温度曲线的台阶到底是谁造成的"**的。
-        #    结论(已查证): 电池温度只走 `ACTION_BATTERY_CHANGED`, 而它被 `BatteryService`
-        #    限流(ΔT≥1°C 或别的字段变化才发) ⇒ **台阶是系统给的, 不是我们画坏的**;
-        #    更底层的源(Health HAL / thermal sysfs)**普通 app 通常读不到** —— 但
-        #    **"通常"不等于"这台"**(厂商可以开口子), 所以每次测试都实测一次、印出来。
-        #    下次有人问"为什么曲线是台阶", 翻这两行就知道当时到底是"没权限"还是"压根没这 zone"。
+        # ⚠️⚠️ 2026-09-17 **玩家把"热限制等级 / 本机 thermal zone"那两行从界面上删掉了**
+        #    (原话:「A + 删掉之前多加的测量文本」)。理由: 那两行的用词(`thermal zone` /
+        #    `batt` / `bms` / `charger` / `cpullc-0-0` …)对**看结果的人**就是噪音 ——
+        #    而它回答的那个问题(电池温度为什么是台阶)**已经有结论了**: 真机实测这台机器
+        #    32 个 thermal zone 里**一个电池的都没有**, 所以"更细的温度源"这条路走不通,
+        #    台阶只能保持原样。结论记在下面的注释里, 不再占界面。
+        #    实测留档(联想 TB323FU / Android 16): 「本机 thermal zone（共 32 个）:
+        #      没有一个带电池字样(batt/bms/charger/fg/ib); 例如 cpullc-0-0、cpullc-0-1、
+        #      qmx-0-0、qmx-0-1、qmx-0-2、cpu-0-0-0…」; 热限制等级报 0(无) —— 跑满 360 秒
+        #      系统也没触发降频(与当时 CPU 那几个 zone 才 50 多度对得上)。
+        # ⚠️⚠️ **采集本身留着**(`_hp_battery` 里的 `thermal` / `zones`, 见 `_thermal_status` /
+        #    `_thermal_probe`) —— **只是不显示**: 数据照旧写进历史 JSON, 零成本,
+        #    将来换台机器(比如还没测过的手机)想再看一眼, 改这一处就能加回来。
+        #    ⚠️ 别把它们从 `self._hp_battery` 里删掉 —— 那会让"以后想查"变成"得重新写一遍探测"。
         # ⚠️⚠️ **老记录(2026-09-17 之前的存档)根本没有这两个键** —— 那时还没采集。**不能印成**
         #    "读不到（设备不支持 Thermal HAL）": "当时没采集"和"这台读不到"是**两件不同的事**,
         #    印同一个词就是假结论(同一个函数的 docstring 自己写着"缺字段一律印「—」, 绝不回填")。
         #    ⇒ 老记录**整段不印**(省得占地方又说谎); 新记录才走下面。
         #    ⚠️ 判据用"**键在不在**", 不用"值是不是 None": 新记录里"读不到"就是 `None`,
         #       拿值判会把新记录也当成老记录。
-        if 'thermal' in d or 'zones' in d:
-            _th = d.get('thermal')
-            _th_txt = ("热限制等级：%s" % _THERMAL_NAMES[_th]
-                       if isinstance(_th, int) and 0 <= _th < len(_THERMAL_NAMES)
-                       else "热限制等级：读不到（非安卓 / 设备不支持 Thermal HAL）")
-            _zs = d.get('zones')
-            if _zs:
-                # ⚠️⚠️ **只印"可疑的"那几个, 不把 24 个全塞进去**(2026-09-17 真机数据回来之后定的):
-                #    ① 第一版只印前 8 个, 而那 8 个全是 CPU/GPU 的 zone(`cpullc-*`/`qmx-*`/`cpu-*`)
-                #       ⇒ **看不出这台机器到底有没有电池的**, 白费一次真机实验;
-                #    ② 改成全印实测 **517 字** —— 结果弹窗那一栏本来就已经排满到按钮了, 会**撑爆**。
-                #    ⇒ 折中: **名字里带电池字样的全印**(通常 0~3 个, 这才是能定案的东西),
-                #      没有的话就报个数 + 举几个例子。
-                #    ⚠️ 关键词放宽几个: zone 名是厂商随手起的, 高通平台见过 `batt`/`bms`/`charger`/`ibat`。
-                #    ⚠️ 文案里**不许用 markdown 星号**(Kivy 不认, 会原样显示两个星号)。
-                _key = ("batt", "bms", "charger", "fg", "ib")
-                _pri = [z for z in _zs if any(_k in z[1].lower() for _k in _key)]
-                if _pri:
-                    _z_txt = ("本机 thermal zone（共 %d 个）里带电池字样的：" % len(_zs)
-                              + " · ".join("%s=%s" % (t, ("%.1f度" % v) if v is not None else "无温度")
-                                           for _i, t, v in _pri))
-                else:
-                    _z_txt = ("本机 thermal zone（共 %d 个）：没有一个带电池字样"
-                              "（batt / bms / charger / fg / ib）；例如 %s…"
-                              % (len(_zs), "、".join(t for _i, t, _v in _zs[:6])))
-            else:
-                _z_txt = ("本机 thermal zone：一个都读不到 —— 普通 app 的常态"
-                          "（电池温度只有广播那一条路, 台阶是系统限流造成的）")
-            # ⚠️ 用 `chr(10)` 而不是下面那个 `_n` —— `_n` 定义在**这几行之后**, 这里用会 NameError。
-            _battery = _battery + chr(10) + _th_txt + chr(10) + _z_txt
         _o = [x for x in (opt_lines or ()) if x]
         _n = chr(10)
         return (str(d.get('head', '') or '') + _n
