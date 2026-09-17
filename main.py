@@ -11136,7 +11136,7 @@ class SpeedCurve(Widget):
 
     def __init__(self, vals, value_decimals=0, flat_min_range=None,
                  vals2=None, times2=None, dt=None, value_decimals2=1,
-                 flat_min_range2=None, unit2='', t_max=None, **kw):
+                 flat_min_range2=None, unit2='', t_max=None, unit='', **kw):
         """`vals` 是**左轴**序列; 传了 `vals2` 就变成**双轴图**(右轴 = `vals2`)。
 
         ⚠️⚠️ **不传 `vals2` 时逐字走老路径** —— 成绩/频率两条曲线一个字都不受影响。
@@ -11169,6 +11169,11 @@ class SpeedCurve(Widget):
         self._flat_min_range2 = (self.Y_FLAT_MIN_RANGE if flat_min_range2 is None
                                  else max(0.1, float(flat_min_range2)))
         self._unit2 = unit2 or ''
+        # 纵轴数字后面拼的单位(2026-09-17 玩家: 「数字后面加个 **W** 字」)。
+        # ⚠️⚠️ **只有功率曲线能传** —— 左留白是 `dp(46)`, 实测: `12.20W` = 36px
+        #    (与现有最宽的 `102000` **一样宽**, 安全), 而 `2425MHz` 要 **44px**,
+        #    只剩 2px 余量。想给频率曲线加单位得先加宽 `pad_l`, 那会动 A10 的判据。
+        self._unit = unit or ''
         _all_t = [_t for _, _t in self._px] + list(self._t2)
         self._t_max = float(t_max) if t_max else (max(_all_t) if _all_t else None)
         self._ax2 = None
@@ -11272,7 +11277,8 @@ class SpeedCurve(Widget):
         # 纵轴: **成绩点**(玩家 2026-09-16: 「纵坐标需要一个成绩点」)
         _vf = "%%.%df" % self._value_decimals
         for _val in (_hi, _mid, _lo):
-            self._txt(self.canvas, _vf % _val, x0 - dp(5), _yy(_val) - dp(5), "right")
+            self._txt(self.canvas, (_vf % _val) + self._unit,
+                      x0 - dp(5), _yy(_val) - dp(5), "right")
         if _dual:
             # 右轴刻度: 贴在右边界**外侧**, 左对齐(否则会盖到曲线上)
             _vf2 = "%%.%df" % self._value_decimals2
@@ -13209,7 +13215,8 @@ class RootWidget(BoxLayout):
                                background_normal="", background_color=hex_rgb(COL_SOC) + (1,))
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _pw1, dt=_dt1, title="CPU高压测试的功率曲线",
-                unit="W", unit_name="采样", value_decimals=2, flat_min_range=1.0))
+                unit="W", unit_name="采样", value_decimals=2, flat_min_range=1.0,
+                axis_unit="W"))
             _btnrow.add_widget(power_btn)
         close_btn = Button(text="关闭", font_size="14sp", bold=True,
                            background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
@@ -16533,7 +16540,7 @@ class RootWidget(BoxLayout):
     def _show_hp_curve(self, windows, sec=None, title=None, unit='步/秒', unit_name='窗口',
                        value_decimals=0, flat_min_range=None,
                        windows2=None, times2=None, dt=None, unit2='',
-                       value_decimals2=1, flat_min_range2=None):
+                       value_decimals2=1, flat_min_range2=None, axis_unit=''):
         """CPU 高压的**一条曲线**(结果弹窗 / 历史详情上的按钮)。
 
         玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
@@ -16572,6 +16579,7 @@ class RootWidget(BoxLayout):
         curve = SpeedCurve(_w, value_decimals=value_decimals, flat_min_range=flat_min_range,
                            vals2=windows2, times2=times2, dt=dt, unit2=unit2,
                            value_decimals2=value_decimals2, flat_min_range2=flat_min_range2,
+                           unit=axis_unit,
                            size_hint_y=None, height=dp(240))
         content.add_widget(curve)
         # ⚠️⚠️ 2026-09-16 玩家(截图上圈掉两处): 「**删掉第1段话**(逐秒/秒 到 最高xxx),
@@ -16592,7 +16600,7 @@ class RootWidget(BoxLayout):
                         font_size='12sp', halign='center', valign='middle',
                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         else:
-            _n2 = Label(text='横轴 = 按时间顺序的 %d 个%s　竖轴 = %s'
+            _n2 = Label(text='横轴 = 按时间顺序的 %d 个%s　竖轴单位是%s'
                              % (len(_w), unit_name, unit),
                         font_size='12sp', halign='center', valign='middle',
                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
@@ -16689,7 +16697,8 @@ class RootWidget(BoxLayout):
                                background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _pw2, dt=_dt2, title='CPU高压测试的功率曲线',
-                unit='W', unit_name='采样', value_decimals=2, flat_min_range=1.0))
+                unit='W', unit_name='采样', value_decimals=2, flat_min_range=1.0,
+                axis_unit='W'))
             _btnrow.add_widget(power_btn)
         close_btn = Button(text='关闭', font_size='14sp', bold=True,
                            background_normal='',
