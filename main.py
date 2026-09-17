@@ -1641,6 +1641,86 @@ def _battery_temp_c():
         return None
 
 
+_THERMAL_NAMES = ("无", "轻微", "中等", "严重", "危急", "紧急", "关机")
+"""`PowerManager.getCurrentThermalStatus()` 的 0~6 对应的中文(与 `_thermal_status` 配对)。"""
+
+
+def _thermal_status():
+    """当前**热限制等级**(Android 10+), 读不到返回 `None`。
+
+    0=NONE / 1=LIGHT / 2=MODERATE / 3=SEVERE / 4=CRITICAL / 5=EMERGENCY / 6=SHUTDOWN
+
+    这是和电池温度**互补**的一个维度: 温度说"多热", 它说"系统开始降频了没有" ——
+    高压测试真正关心的是后者。
+
+    ⚠️ **不需要任何权限**(2026-09-17 查证: `PowerManager.getCurrentThermalStatus()` 是
+       API 29+ 的公开方法, 官方文档没有要求权限) —— 和电池温度(被 `BatteryService`
+       的广播限流卡着)**不一样, 这条是直接可用的**。
+    ⚠️ 但它**依赖设备的 Thermal HAL 2.0**: 不支持的设备会**一直返回 0(NONE)**, 而 0
+       同时也是"真没热限制" —— **两种分不出来** ⇒ 只能和温度一起看, 不能单独下结论。
+    ⚠️ 拿不到就返回 `None`, **绝不编个 0 冒充**(那会变成"这台机器很凉快"的假结论)。
+    """
+    if platform != "android":
+        return None
+    try:
+        from jnius import autoclass
+        _act = autoclass("org.kivy.android.PythonActivity").mActivity
+        # ⚠️ 常量从**类**上取 —— 与本文件 `_vib_get` 的 `Context.VIBRATOR_SERVICE` 逐字同款。
+        #    别写 `_act.POWER_SERVICE`: 那是全文件**唯一**一处"从实例取 Context 常量",
+        #    其余 20+ 处一律从 autoclass 出来的类上取。实例取法**大概率也能用**
+        #    (pyjnius 的字段描述符会随类链继承, 方法继承已被 `_vib_get` 证实), **但失败是
+        #    静默的**: AttributeError 被下面的 except 吞掉 → 印成"设备不支持 Thermal HAL",
+        #    你根本查不出来。换成熟路子, 去掉这个未知数。
+        # ⚠️ 也**不需要 `cast`**: pyjnius 对声明返回 `java.lang.Object` 的方法会用**运行时类**
+        #    建代理(`convert_jobject_to_python` 里 `lookup_java_object_name`), 拿回来的就是
+        #    PowerManager 代理 —— `_vib_get` 拿到返回值直接 `.vibrate()` 就是这么用的。
+        _Context = autoclass("android.content.Context")
+        _pm = _act.getSystemService(_Context.POWER_SERVICE)
+        return int(_pm.getCurrentThermalStatus())
+    except Exception:
+        return None
+
+
+def _thermal_probe():
+    """探测**这台设备**上有没有普通 app 读得到的 thermal zone; 返回 `[(序号, 类型, 温度), ...]`。
+
+    为什么要有这个: 电池温度只有 `ACTION_BATTERY_CHANGED` 一条路, 而它经过
+    `BatteryService` 的**广播限流**(温度变化 ≥1°C **或** 电量/电压/充电状态等字段变化才发),
+    所以曲线必然是**台阶**。更底层的源(Health HAL / thermal sysfs)在架构上**存在**
+    (AOSP 给 `system_server` 显式开了 `sysfs_thermal` 读权限), 但普通 app 的
+    `untrusted_app` 域**通常**读不到。
+    ⚠️⚠️ **"通常读不到" ≠ "这台读不到"** —— 厂商可以自己开口子。这个探测就是去问一句:
+       **这台机器上有没有**。一次高压测试就能定案(结果写进日志)。
+    ⚠️ 读不到是**常态, 不是错误** —— 所有异常一律吞掉、跳过。
+    ⚠️ 单位: Linux thermal sysfs 的 `temp` 是**毫摄氏度**(`31480` = 31.48°C)。
+    ⚠️ **别只认 `type` 里带 "battery" 的**: 名字是厂商随手起的(还有 `batt` / `battery_therm`
+       / `fg_therm` 等), 而且"名字叫 battery"也**不代表**它就是 BatteryService 用的那个
+       温度源。这里把**所有**读得到的 zone 都记下来, 由人比对。
+    """
+    if platform != "android":
+        return []                            # 桌面没有 /sys, 白开 24 次文件没意义(只是难看)
+    out = []
+    for i in range(24):                      # 常见 0~20, 留点余量
+        _d = "/sys/class/thermal/thermal_zone%d/" % i
+        try:
+            with open(_d + "type") as fh:
+                _t = fh.read().strip()
+        except Exception:
+            continue                         # 没这个 zone(或没权限) ⇒ 跳过, 不当错误
+        _v = None
+        try:
+            with open(_d + "temp") as fh:
+                _s = fh.read().strip()
+            # ⚠️ **空文件要记成 None, 不能记成 0** —— 写成 `int(_s or 0)` 的话空文件会变成
+            #    `0.0度`, 一个看起来很真的假数, 与本函数"读不到就不编数"的初衷正好相反。
+            if _s:
+                _v = int(_s) / 1000.0
+        except Exception:
+            pass                             # 有类型没温度(少见) ⇒ 保持 None, **不编数**
+        out.append((i, _t, _v))
+    return out
+
+
 def _battery_sampler_start(win, interval_sec=1.0):
     """按绝对墙钟采集电池温度, 返回 `(温度列表, 停止标志)`。
 
@@ -11981,6 +12061,13 @@ class RootWidget(BoxLayout):
             "min": (_bat_sorted[0] if _bat_sorted else None),
             "max": (_bat_sorted[-1] if _bat_sorted else None),
             "n": len(_bat_sorted),
+            # 热限制等级(Android 10+; 不需要权限)。见 `_thermal_status` 的说明 ——
+            # ⚠️ 它是**收尾时刻的一个快照**, 不是全程曲线; 不支持的设备恒为 0, 和"真没热限制"
+            #    分不出来 ⇒ 只作参考, 不能单独当结论。
+            "thermal": _thermal_status(),
+            # 这台设备上**读得到的 thermal zone**(大概率是空表, 见 `_thermal_probe`)。
+            # 存它是为了下次翻日志时能回答"当初到底是没权限还是没这个 zone"。
+            "zones": _thermal_probe(),
         }
         Clock.schedule_once(lambda dt: self._hp_done(), 0)
 
@@ -12124,6 +12211,34 @@ class RootWidget(BoxLayout):
                            float(d.get('battery_max', _bm)), int(d.get('battery_n', 0))))
         else:
             _battery = "没采到（非安卓 / 系统未提供）"
+        # ---- 热限制等级 + 本机 thermal zone 探测(见 `_thermal_status` / `_thermal_probe`) ----
+        # ⚠️ 这两行是 2026-09-17 加来**回答"电池温度曲线的台阶到底是谁造成的"**的。
+        #    结论(已查证): 电池温度只走 `ACTION_BATTERY_CHANGED`, 而它被 `BatteryService`
+        #    限流(ΔT≥1°C 或别的字段变化才发) ⇒ **台阶是系统给的, 不是我们画坏的**;
+        #    更底层的源(Health HAL / thermal sysfs)**普通 app 通常读不到** —— 但
+        #    **"通常"不等于"这台"**(厂商可以开口子), 所以每次测试都实测一次、印出来。
+        #    下次有人问"为什么曲线是台阶", 翻这两行就知道当时到底是"没权限"还是"压根没这 zone"。
+        # ⚠️⚠️ **老记录(2026-09-17 之前的存档)根本没有这两个键** —— 那时还没采集。**不能印成**
+        #    "读不到（设备不支持 Thermal HAL）": "当时没采集"和"这台读不到"是**两件不同的事**,
+        #    印同一个词就是假结论(同一个函数的 docstring 自己写着"缺字段一律印「—」, 绝不回填")。
+        #    ⇒ 老记录**整段不印**(省得占地方又说谎); 新记录才走下面。
+        #    ⚠️ 判据用"**键在不在**", 不用"值是不是 None": 新记录里"读不到"就是 `None`,
+        #       拿值判会把新记录也当成老记录。
+        if 'thermal' in d or 'zones' in d:
+            _th = d.get('thermal')
+            _th_txt = ("热限制等级：%s" % _THERMAL_NAMES[_th]
+                       if isinstance(_th, int) and 0 <= _th < len(_THERMAL_NAMES)
+                       else "热限制等级：读不到（非安卓 / 设备不支持 Thermal HAL）")
+            _zs = d.get('zones')
+            if _zs:
+                _z_txt = ("本机可读的 thermal zone（%d 个）：" % len(_zs)
+                          + " · ".join("%s=%s" % (t, ("%.1f度" % v) if v is not None else "无温度")
+                                       for _i, t, v in _zs[:8]))
+            else:
+                _z_txt = ("本机 thermal zone：一个都读不到 —— 普通 app 的常态"
+                          "（电池温度只有广播那一条路, 台阶是系统限流造成的）")
+            # ⚠️ 用 `chr(10)` 而不是下面那个 `_n` —— `_n` 定义在**这几行之后**, 这里用会 NameError。
+            _battery = _battery + chr(10) + _th_txt + chr(10) + _z_txt
         _o = [x for x in (opt_lines or ()) if x]
         _n = chr(10)
         return (str(d.get('head', '') or '') + _n
@@ -12181,6 +12296,11 @@ class RootWidget(BoxLayout):
             'freq_n': int(_fr.get('n', 0) or 0),
             'battery_mean': _bt.get('mean'), 'battery_min': _bt.get('min'),
             'battery_max': _bt.get('max'), 'battery_n': int(_bt.get('n', 0) or 0),
+            # ⚠️⚠️ **这两个键必须跟着搬**(2026-09-17 对抗评审抓出来的): 只把 `_hp_battery`
+            #    填好是没用的 —— 渲染端 `_hp_result_text` 走的是**这个 dict**, 漏搬的后果
+            #    是那两行**恒印"读不到"**, 在读数成功的真机上也一样 ⇒ 功能等于没上线,
+            #    而且印出来的正是"设备不支持 Thermal HAL"这种**假结论**。
+            'thermal': _bt.get('thermal'), 'zones': _bt.get('zones'),
         }, _opt)
 
     def _hp_done(self):
@@ -12233,6 +12353,10 @@ class RootWidget(BoxLayout):
                     "battery_min": _bt2.get("min"),
                     "battery_max": _bt2.get("max"),
                     "battery_n": int(_bt2.get("n", 0) or 0),
+                    # ⚠️ 和现场那条路**必须成对**: 存了才能让"历史详情"印出当时的真实情况;
+                    #    不存的话翻历史永远显示"读不到"(假结论)。
+                    "thermal": _bt2.get("thermal"),
+                    "zones": _bt2.get("zones"),
                     "sec": int(SOC_SUSTAIN_WALL_SEC),
                     "version": _app_version(),
                     "device": self._device_info(),
@@ -15694,6 +15818,7 @@ class RootWidget(BoxLayout):
             'freq_mean': r.get('freq_mean', 0), 'freq_p50': r.get('freq_p50', 0),
             'freq_min': r.get('freq_min', 0), 'freq_max': r.get('freq_max', 0),
             'freq_n': r.get('freq_n', 0),
+            'thermal': r.get('thermal'), 'zones': r.get('zones'),
             'battery_mean': r.get('battery_mean'), 'battery_min': r.get('battery_min'),
             'battery_max': r.get('battery_max'), 'battery_n': r.get('battery_n', 0),
         })
