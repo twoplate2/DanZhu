@@ -107,7 +107,7 @@ plinko.py (tkinter版)
 tools/android_part_head.py     (kivy imports/中文字体注册/hex_rgb)
 tools/android_part_backends.py (SoundPool/SoundLoader 后端 + Sfx 总线)
 tools/pile3d.py                (中奖杯的生成期球堆: 解析式 3D 密堆, 纯 stdlib 零 Kivy)
-tools/android_part_pile.py     (中奖杯覆盖层 WinPileFX: 压暗/玻璃/落珠回放)
+tools/android_part_pile.py     (中奖杯覆盖层 WinPileFX: 压暗/玻璃/装杯回放)
 tools/android_part_ui.py       (GameArea/RootWidget/App/冒烟)
                                                   ↓
                                         android/main.py (生成物, 勿手改)
