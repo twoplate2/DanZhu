@@ -9372,10 +9372,13 @@ class FpsCurve(Widget):
     # ⚠️ x 按**累计真实时间**定位(不是按点数均分)—— 所以一个 200 毫秒的长卡顿在横轴上
     #    占的宽度是真实的, 不会被压扁。
 
-    # 放大图里**每帧占多少像素**(玩家 2026-09-17 定: 放大图 = 1:1 原始图, 每帧一个点)。
-    # ⚠️ 这个数决定**要不要横向滚多久**: 5263 帧 x 3px ≈ 15789px, 手机上一屏约 1220px
-    #    ⇒ 大概拖 13 屏(一屏约 2.5 秒)。调小就少拖几屏, 但线会挤在一起。
-    ZOOM_PER_FRAME_PX = 3.0
+    # 放大图里**每帧占多少像素**(玩家 2026-09-17 定: 放大图 = 1:1 原始图)。
+    # 数据口径是 1:1(每帧一个点), 这个数只管**排得多稀** —— 它必须**明显大于线宽(1.15)**,
+    # 否则相邻两段线叠在一起, 整片糊成一条黑带(实测: 1px 糊成黑带 / 3px 还糊 /
+    # 6px 能看清 / 10px 很清楚, 见 `temp/fps_density.png` 与 `temp/den_1.png`)。
+    # ⚠️ 玩家 2026-09-17 定的值就是 **6**。它同时决定要横向拖多久:
+    #    5263 帧 x 6px ≈ 31618px, 手机一屏约 1220px ⇒ 约 26 屏(一屏约 1.2 秒)。
+    ZOOM_PER_FRAME_PX = 6.0
 
     def __init__(self, gaps_ms, cap_fps=120.0, tags=None, on_zoom=None, **kw):
         super().__init__(**kw)
@@ -14926,6 +14929,17 @@ class RootWidget(BoxLayout):
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(22))
         note.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
         content.add_widget(note)
+        # ⚠️ 这行**说明两张图各是什么口径**, 玩家 2026-09-17 点名要的 —— 让看图的人知道
+        #    "上面那条线不是平均值, 是每几帧里最慢的那帧"(所以看着比实际差), 以及
+        #    "点一下能看到每一帧的原始值"。**措辞是玩家逐字定的, 别改顺口** ——
+        #    我原来写"每组取最慢", 他当场问「什么叫每组」: "组"是我造的词, 他从没说过。
+        _tip = Label(text='本图每若干帧合一个点、取最慢的那帧（看着比实际差）'
+                          '· 点一下＝1:1 原始帧',
+                     font_size='12sp', halign='center', valign='middle',
+                     color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
+        _tip.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
+        self._auto_h(_tip, dp(20), dp(4))
+        content.add_widget(_tip)
         # 两个按钮一行: 保存日志(txt) + 返回。
         # ⚠️ 保存是**唯一**能把"逐帧数据"**完整**带出这台设备的出口 —— 曲线只能看, 带不走;
         #    而剪贴板在真机上**会被截断**(实测 3778 帧的日志只贴出 425 行)。
