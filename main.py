@@ -12672,6 +12672,10 @@ class RootWidget(BoxLayout):
         _mv_ok = [x for x in _pwr["mv"] if x is not None]
         _i_ok = [abs(float(x)) * (0.001 if _pwr["unit"] == "ma" else 1e-6)
                  for x in _pwr["raw"] if x]
+        # 每瓦跑分的分子(平均步/秒) —— ⚠️ 口径必须与 `_hp_result_text` 里那个 `_avg`
+        # **一致**(都只取 >0 的窗口), 否则同一次测试的面板上两行会自相矛盾。
+        _w_ok = [int(x) for x in (_fps or []) if x > 0]
+        _avg_sp = (sum(_w_ok) / float(len(_w_ok))) if _w_ok else None
         _frq.sort()
         _bat_sorted = sorted(self._hp_battery_series)
         self._hp_fps = list(_fps or [])
@@ -12721,6 +12725,14 @@ class RootWidget(BoxLayout):
             # 总耗电 = Σ(P × dt) —— 功率是 5Hz **定长网格**, 所以 dt 就是格宽,
             # 缺失格(None)已经在 `_pwr_ok` 里滤掉, 不会把缺口算成 0 瓦。
             "wh": (round(sum(_pwr_ok) * _pwr["dt"] / 3600.0, 3) if _pwr_ok else None),
+            # ---- 每瓦跑分(2026-09-17, 玩家: 「压力测试需要后面新增一个每瓦跑分功能」) ----
+            # 口径 = **全程平均步/秒 ÷ 全程平均功率**。
+            # ⚠️ 用**全程平均**而不是首窗峰值 —— 压力测试关心的是"持续能效", 首窗那几秒
+            #    还没热起来, 拿它比会把每台机器都高估(与 `_hp_result_text` 同一处注释)。
+            # ⚠️ 存进记录才有意义: 这个指标是拿来**跨设备对比**的(玩家手上 K90 / Y700),
+            #    只印在当场那个弹窗里就翻不出来了。
+            "ppw": (int(round(_avg_sp / (sum(_pwr_ok) / float(len(_pwr_ok)))))
+                    if (_avg_sp and _pwr_ok) else None),
             # 热限制等级(Android 10+; 不需要权限)。见 `_thermal_status` 的说明 ——
             # ⚠️ 它是**收尾时刻的一个快照**, 不是全程曲线; 不支持的设备恒为 0, 和"真没热限制"
             #    分不出来 ⇒ 只作参考, 不能单独当结论。
@@ -12895,12 +12907,24 @@ class RootWidget(BoxLayout):
             _plines.append("电池功率：没采到（非安卓 / 系统未提供电流）")
         _vm, _am = d.get('volt_mean'), d.get('amp_mean')
         if _vm is not None and _am is not None:
-            _plines.append("电压/电流：平均 %.2fV / %.2fA（最低 %.2fV / %.2fA，最高 %.2fV / %.2fA）"
+            # ⚠️ 用「平均 + 区间」而不是「最低…，最高…」—— 后者在 360dp 上会**折行**
+            #    (实测截图: "最高 4.21V / 1.48A）" 被挤到下一行)。信息一点没少。
+            _plines.append("电压/电流：平均 %.2fV / %.2fA（%.2f~%.2fV / %.2f~%.2fA）"
                            % (float(_vm), float(_am),
-                              float(d.get('volt_min', _vm)), float(d.get('amp_min', _am)),
-                              float(d.get('volt_max', _vm)), float(d.get('amp_max', _am))))
-        if _pm and _avg:
-            _plines.append("每瓦性能：平均 %d 步/秒·W" % int(round(_avg / float(_pm))))
+                              float(d.get('volt_min', _vm)), float(d.get('volt_max', _vm)),
+                              float(d.get('amp_min', _am)), float(d.get('amp_max', _am))))
+        # 每瓦跑分 = 平均步/秒 ÷ 平均功率(全程) —— 玩家 2026-09-17: 「压力测试需要
+        #   后面新增一个**每瓦跑分**功能」。用它比"同样功耗下谁算得多",
+        #   比单看"谁跑得快"更接近"这台机器值不值"。
+        # ⚠️ 取**全程平均**而不是首窗峰值: 压力测试关心的是**持续能效**, 首窗那几秒
+        #    还没热起来, 拿它比会把所有机器都高估。
+        # ⚠️ 优先读记录里的 `ppw`(口径在 `_run_hp_test` 里算好存下的), 老记录没有才现算
+        #    —— 两处都算会在"存的"和"印的"之间留一个静默分叉。
+        _ppw = d.get('ppw')
+        if _ppw is None and _pm and _avg:
+            _ppw = int(round(_avg / float(_pm)))
+        if _ppw is not None:
+            _plines.append("每瓦跑分：%d 步/秒·W" % int(_ppw))
         _wh = d.get('wh')
         if _wh is not None:
             _ma = (float(_wh) / float(_vm) * 1000.0) if _vm else None
@@ -12919,7 +12943,11 @@ class RootWidget(BoxLayout):
         # ⚠️ 这里**不能**用 `_n` —— 它在函数更靠下的地方才定义, 而生成器表达式是
         #    **延迟求值**的(`join()` 在这里就执行了), 会直接 NameError。
         #    实测: 一点「详情」就崩(`temp/_tempwr_shot.py` 抓到的)。
-        _pwr_txt = "".join(x + chr(10) for x in _plines)
+        # ⚠️⚠️ **换行必须加在前面**: 上面那句「电池温度：…」是**末行**写法(结尾没有换行),
+        #    所以功率块要自己带前导换行 —— 第一版写成尾随换行, 结果面板印成
+        #    「…电池温度：没采到（…）电池功率：平均 4.75W」**两行挤在一起**
+        #    (截图 `tempwr_detail*.png` 抓到的, 门禁全绿但画面是坏的)。
+        _pwr_txt = "".join(chr(10) + x for x in _plines)
         # ⚠️⚠️ 2026-09-17 **玩家把"热限制等级 / 本机 thermal zone"那两行从界面上删掉了**
         #    (原话:「A + 删掉之前多加的测量文本」)。理由: 那两行的用词(`thermal zone` /
         #    `batt` / `bms` / `charger` / `cpullc-0-0` …)对**看结果的人**就是噪音 ——
@@ -13015,6 +13043,7 @@ class RootWidget(BoxLayout):
             'volt_max': _bt.get('volt_max'),
             'amp_mean': _bt.get('amp_mean'), 'amp_min': _bt.get('amp_min'),
             'amp_max': _bt.get('amp_max'), 'wh': _bt.get('wh'),
+            'ppw': _bt.get('ppw'),
             # ⚠️⚠️ **这两个键必须跟着搬**(2026-09-17 对抗评审抓出来的): 只把 `_hp_battery`
             #    填好是没用的 —— 渲染端 `_hp_result_text` 走的是**这个 dict**, 漏搬的后果
             #    是那两行**恒印"读不到"**, 在读数成功的真机上也一样 ⇒ 功能等于没上线,
@@ -13091,6 +13120,7 @@ class RootWidget(BoxLayout):
                     "amp_min": _bt2.get("amp_min"),
                     "amp_max": _bt2.get("amp_max"),
                     "wh": _bt2.get("wh"),
+                    "ppw": _bt2.get("ppw"),
                     # ⚠️ 和现场那条路**必须成对**: 存了才能让"历史详情"印出当时的真实情况;
                     #    不存的话翻历史永远显示"读不到"(假结论)。
                     "thermal": _bt2.get("thermal"),
@@ -16630,7 +16660,7 @@ class RootWidget(BoxLayout):
                 'power_mean', 'power_min', 'power_max', 'power_n', 'power_dt',
                 'power_src', 'power_unit', 'power_stats', 'power_plugged',
                 'volt_mean', 'volt_min', 'volt_max',
-                'amp_mean', 'amp_min', 'amp_max', 'wh') if _k in r},
+                'amp_mean', 'amp_min', 'amp_max', 'wh', 'ppw') if _k in r},
         })
         content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(8))
         title_lbl = self._fit_line(Label(text='CPU高压测试详情', bold=True,
