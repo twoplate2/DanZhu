@@ -1700,7 +1700,7 @@ def _thermal_probe():
     if platform != "android":
         return []                            # 桌面没有 /sys, 白开 24 次文件没意义(只是难看)
     out = []
-    for i in range(24):                      # 常见 0~20, 留点余量
+    for i in range(32):                      # 实测一台联想读到 24 个(0~23 连续), 留点余量
         _d = "/sys/class/thermal/thermal_zone%d/" % i
         try:
             with open(_d + "type") as fh:
@@ -12231,9 +12231,24 @@ class RootWidget(BoxLayout):
                        else "热限制等级：读不到（非安卓 / 设备不支持 Thermal HAL）")
             _zs = d.get('zones')
             if _zs:
-                _z_txt = ("本机可读的 thermal zone（%d 个）：" % len(_zs)
-                          + " · ".join("%s=%s" % (t, ("%.1f度" % v) if v is not None else "无温度")
-                                       for _i, t, v in _zs[:8]))
+                # ⚠️⚠️ **只印"可疑的"那几个, 不把 24 个全塞进去**(2026-09-17 真机数据回来之后定的):
+                #    ① 第一版只印前 8 个, 而那 8 个全是 CPU/GPU 的 zone(`cpullc-*`/`qmx-*`/`cpu-*`)
+                #       ⇒ **看不出这台机器到底有没有电池的**, 白费一次真机实验;
+                #    ② 改成全印实测 **517 字** —— 结果弹窗那一栏本来就已经排满到按钮了, 会**撑爆**。
+                #    ⇒ 折中: **名字里带电池字样的全印**(通常 0~3 个, 这才是能定案的东西),
+                #      没有的话就报个数 + 举几个例子。
+                #    ⚠️ 关键词放宽几个: zone 名是厂商随手起的, 高通平台见过 `batt`/`bms`/`charger`/`ibat`。
+                #    ⚠️ 文案里**不许用 markdown 星号**(Kivy 不认, 会原样显示两个星号)。
+                _key = ("batt", "bms", "charger", "fg", "ib")
+                _pri = [z for z in _zs if any(_k in z[1].lower() for _k in _key)]
+                if _pri:
+                    _z_txt = ("本机 thermal zone（共 %d 个）里带电池字样的：" % len(_zs)
+                              + " · ".join("%s=%s" % (t, ("%.1f度" % v) if v is not None else "无温度")
+                                           for _i, t, v in _pri))
+                else:
+                    _z_txt = ("本机 thermal zone（共 %d 个）：没有一个带电池字样"
+                              "（batt / bms / charger / fg / ib）；例如 %s…"
+                              % (len(_zs), "、".join(t for _i, t, _v in _zs[:6])))
             else:
                 _z_txt = ("本机 thermal zone：一个都读不到 —— 普通 app 的常态"
                           "（电池温度只有广播那一条路, 台阶是系统限流造成的）")
