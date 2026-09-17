@@ -12767,7 +12767,7 @@ class RootWidget(BoxLayout):
         """
         _f = getattr(self, "_hp_freq", None) or {}
         if _f.get("mean"):
-            return ("平均 %dMHz（最低 %d / 最高 %d）"
+            return ("平均 %dMHz（%d到%d）"
                     % (_f["mean"], _f["min"], _f["max"]))
         return "没采到（非安卓 / 读不到 sysfs）"
 
@@ -12871,7 +12871,7 @@ class RootWidget(BoxLayout):
         # 中位数必然落在其中一个峰上", 见 `_hp_freq_line` 的注释)。
         _fm = int(d.get('freq_mean', 0) or 0)
         if _fm > 0:
-            _freq = ("平均 %dMHz（最低 %d / 最高 %d）"
+            _freq = ("平均 %dMHz（%d到%d）"
                      % (_fm, int(d.get('freq_min', 0) or 0),
                         int(d.get('freq_max', 0) or 0)))
         else:
@@ -12880,19 +12880,23 @@ class RootWidget(BoxLayout):
         if _bm is not None and int(d.get('battery_n', 0) or 0) > 0:
             # ⚠️ 2026-09-17 玩家: 「这2项去掉 xx 个采样字眼。**每次都不变的**」——
             #    频率/温度两行尾巴上的「，N 个采样」删掉了(采样数在记录 JSON 里照旧存着)。
-            _battery = ("平均 %.1f度（最低 %.1f，最高 %.1f）"
+            # ⚠️ 2026-09-17 玩家: 「从**最低xx/最高xx** 简化为**（x到y）**」——
+            #    原写法在 360dp 上会**折行**(实测: 「最高 4185）」被挤到下一行)。
+            #    三处同格式的说明(频率/温度/功率)一起改, 别只改看见的那一处。
+            #    ⚠️ 用的是**「到」**(U+5230) 不是连字符 —— 玩家点名的写法。
+            _battery = ("平均 %.1f度（%.1f到%.1f）"
                         % (float(_bm), float(d.get('battery_min', _bm)),
                            float(d.get('battery_max', _bm))))
         else:
             _battery = "没采到（非安卓 / 系统未提供）"
-        # ---- 功率 / 电压·电流 / 每瓦性能 / 总耗电 / 电流刷新(2026-09-17 新增) --------
+        # ---- 电池功率 / 电压·电流 / 能效跑分(2026-09-17 新增) ----------------------
         # ⚠️⚠️ **老记录的判据是「键在不在」, 不是「值是不是 None」** —— 2026-09-17 之前的
         #    存档里根本没有 `power_*`, 那种情况**整块不印**; 印成"没采到"就是把
         #    「当时没采集」和「这台采不到」混成同一个词(同一个坑见上面 thermal 那段注释)。
         _plines = []
         _pm = d.get('power_mean')
         if _pm is not None:
-            _pt = ("电池功率：平均 %.2fW（最低 %.2f，最高 %.2f）"
+            _pt = ("电池功率：平均 %.2fW（%.2f到%.2f）"
                    % (float(_pm), float(d.get('power_min', _pm)),
                       float(d.get('power_max', _pm))))
             # ⚠️ 测试期间插着电 ⇒ 采到的是**充入**功率, 不是耗电。必须说清, 否则
@@ -12913,40 +12917,29 @@ class RootWidget(BoxLayout):
                            % (float(_vm), float(_am),
                               float(d.get('volt_min', _vm)), float(d.get('volt_max', _vm)),
                               float(d.get('amp_min', _am)), float(d.get('amp_max', _am))))
-        # 每瓦跑分 = 平均步/秒 ÷ 平均功率(全程) —— 玩家 2026-09-17: 「压力测试需要
+        # 能效跑分 = 平均步/秒 ÷ 平均功率(全程) —— 玩家 2026-09-17: 「压力测试需要
         #   后面新增一个**每瓦跑分**功能」。用它比"同样功耗下谁算得多",
         #   比单看"谁跑得快"更接近"这台机器值不值"。
         # ⚠️ 取**全程平均**而不是首窗峰值: 压力测试关心的是**持续能效**, 首窗那几秒
         #    还没热起来, 拿它比会把所有机器都高估。
         # ⚠️ 优先读记录里的 `ppw`(口径在 `_run_hp_test` 里算好存下的), 老记录没有才现算
         #    —— 两处都算会在"存的"和"印的"之间留一个静默分叉。
+        # ⚠️⚠️ **面板上不能出现「瓦」字** —— 2026-09-17 玩家截图: 「每?跑分」的"瓦"
+        #    渲染成了豆腐块。项目字体 `fonts/NotoSansSC-Medium.otf` 是**子集**
+        #    (实测只有 1602 个字形), `瓦`(U+74E6) **不在里面**, 而 每/步/秒/度 都在。
+        #    ⇒ 玩家定的写法是「**每W跑分**」(W 是 ASCII, 一定在字体里)。
+        #    加新文案前先查字形表。
         _ppw = d.get('ppw')
         if _ppw is None and _pm and _avg:
             _ppw = int(round(_avg / float(_pm)))
         if _ppw is not None:
-            _plines.append("每瓦跑分：%d 步/秒·W" % int(_ppw))
-        _wh = d.get('wh')
-        if _wh is not None:
-            _ma = (float(_wh) / float(_vm) * 1000.0) if _vm else None
-            _plines.append("总耗电：%.3f Wh%s"
-                           % (float(_wh), ("（约 %d mAh）" % int(round(_ma))) if _ma else ""))
-        # ⚠️⚠️ 电流刷新周期**只能给到这个精度**: 采样本就是 5Hz, 底层更快时观测到的是
-        #    "每次都在变" —— 那时**只能说"≤ 采样周期"**, 报成具体毫秒数就是编数
-        #    (见 `_pwr_finish` 的注释)。
-        _pst = d.get('power_stats') or {}
-        if _pst.get('est_kind') == 'le_dt':
-            _plines.append("电流刷新：≤%.1f 秒（受采样频率限制，测不到更快）"
-                           % float(d.get('power_dt') or 0.2))
-        elif _pst.get('est'):
-            _plines.append("电流刷新：约 %.1f 秒（中位，共 %d 次跳变）"
-                           % (float(_pst['est']), int(_pst.get('n_chg', 0) or 0)))
-        # ⚠️ 这里**不能**用 `_n` —— 它在函数更靠下的地方才定义, 而生成器表达式是
-        #    **延迟求值**的(`join()` 在这里就执行了), 会直接 NameError。
-        #    实测: 一点「详情」就崩(`temp/_tempwr_shot.py` 抓到的)。
-        # ⚠️⚠️ **换行必须加在前面**: 上面那句「电池温度：…」是**末行**写法(结尾没有换行),
-        #    所以功率块要自己带前导换行 —— 第一版写成尾随换行, 结果面板印成
-        #    「…电池温度：没采到（…）电池功率：平均 4.75W」**两行挤在一起**
-        #    (截图 `tempwr_detail*.png` 抓到的, 门禁全绿但画面是坏的)。
+            # ⚠️ 标签里的「W」已经说明了单位 ⇒ 数值后面**不再重复写「·W」**
+            #    (玩家 2026-09-17: 「每W跑分的格式是 **每W跑分：xxx步/秒**」)。
+            _plines.append("每W跑分：%d 步/秒" % int(_ppw))
+        # ⚠️ 2026-09-17 玩家: 「去掉**总耗电**和下面的这个描述」——
+        #    「总耗电」与「电流刷新」两行**从面板上撤掉**。
+        #    ⚠️ **采集与落盘照旧**(`wh` / `power_stats` 还在记录 JSON 里) —— 撤的只是显示;
+        #       真要查那两台机器的刷新周期, 翻记录还能翻到, 不用重新跑一次测试。
         _pwr_txt = "".join(chr(10) + x for x in _plines)
         # ⚠️⚠️ 2026-09-17 **玩家把"热限制等级 / 本机 thermal zone"那两行从界面上删掉了**
         #    (原话:「A + 删掉之前多加的测量文本」)。理由: 那两行的用词(`thermal zone` /
@@ -13199,34 +13192,28 @@ class RootWidget(BoxLayout):
             freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _fw, title="高压CPU测试的频率曲线", unit="MHz", unit_name="采样"))
             _btnrow.add_widget(freq_btn)
-        # ⚠️ 2026-09-17 玩家: 「把**电池曲线**按钮改名为**温度功率**」, 外加
-        #    「把功率曲线和电池温度放在一起, 一个是左坐标轴, 一个是右坐标轴」。
-        #    ⇒ **不新增按钮** —— 这一行本来就有 4 个控件, 360dp 上每个只剩 ~68dp,
-        #       第 5 个会直接溢出弹窗(见 `_show_hp_curve` 那条注释)。改名复用即可。
-        # ⚠️ 闭包晚绑定: 下面这几份局部量**各起唯一名字**(`1` 后缀) —— 同一个函数里
-        #    若有两个 lambda 共用同名变量, 它们会看到对方最后一次赋的值。
-        _bw1 = [x for x in (getattr(self, "_hp_battery_series", None) or []) if x is not None]
-        if len(_bw1) >= 2:
-            # ⚠️⚠️ 这里**不能过滤 None** —— 功率的时刻是按**原下标 × dt** 推出来的
-            #    (见 `SpeedCurve.__init__` 的 `_px`), 过滤掉一个点会让它**后面所有点
-            #    左移一格**(实测: 末点从 357.8s 变成 357.2s)。序列原样传, `_ok1` 只判
-            #    "有效点够不够两个"。
-            _pw1 = list(getattr(self, "_hp_power_series", None) or [])
-            _ok1 = len([x for x in _pw1 if x is not None]) >= 2
-            _main1 = _pw1 if _ok1 else _bw1
-            _sec1 = _bw1 if _ok1 else None
-            _st1 = (list(getattr(self, "_hp_battery_times", None) or []) if _ok1 else None)
-            _dt1 = ((getattr(self, "_hp_power_meta", None) or {}).get("dt") if _ok1 else None)
-            battery_btn = Button(text="温度功率", font_size="14sp", bold=True,
-                                 background_normal="", background_color=hex_rgb(COL_SOC) + (1,))
-            battery_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _main1, windows2=_sec1, times2=_st1, dt=_dt1,
-                title=("CPU高压测试的温度功率曲线" if _ok1 else "CPU高压测试的电池温度曲线"),
-                unit=("W" if _ok1 else "度"), unit_name="采样",
-                value_decimals=(2 if _ok1 else 1),
-                flat_min_range=(1.0 if _ok1 else 2.0),
-                unit2="度", value_decimals2=1, flat_min_range2=2.0))
-            _btnrow.add_widget(battery_btn)
+        # ⚠️ 2026-09-17 玩家(第二轮): 「**去掉温度曲线**, 只汇报温度, 那个曲线更名为
+        #    **功率曲线**, 单独的界面标题改为 **cpu高压测试的功率曲线**」。
+        #    ⇒ 图里**只画功率**(单轴); 温度仍然报, 但**只在面板文字**里
+        #      (「电池温度：平均…」那一行)。
+        #    ⇒ **不新增按钮**: 这一行本来就有 4 个控件, 360dp 上每个只剩 ~68dp,
+        #       第 5 个会直接溢出弹窗(见 `_show_hp_curve` 那条注释)。
+        # ⚠️ 没功率(非安卓 / 这台读不到 fuel gauge)就**不建按钮** —— 以前会降级成
+        #    "只画温度", 现在温度不进图了, 没有可降级的东西。
+        # ⚠️ 闭包晚绑定: 这几份局部量**各起唯一名字**(`1` 后缀) —— 同一个函数里若有两个
+        #    lambda 共用同名变量, 它们会看到对方最后一次赋的值。
+        _pw1 = list(getattr(self, "_hp_power_series", None) or [])
+        if len([x for x in _pw1 if x is not None]) >= 2:
+            # ⚠️⚠️ 传下去的是**原始序列(含 None)**, 不能先过滤 —— 功率的时刻按**原下标 × dt**
+            #    推(见 `SpeedCurve` 的 `_px`), 过滤掉一个点会让它**后面所有点左移一格**
+            #    (实测: 末点从 357.8s 变成 357.2s)。跳点由 `SpeedCurve` 自己负责。
+            _dt1 = ((getattr(self, "_hp_power_meta", None) or {}).get("dt") or 0.2)
+            power_btn = Button(text="功率曲线", font_size="14sp", bold=True,
+                               background_normal="", background_color=hex_rgb(COL_SOC) + (1,))
+            power_btn.bind(on_release=lambda *_: self._show_hp_curve(
+                _pw1, dt=_dt1, title="CPU高压测试的功率曲线",
+                unit="W", unit_name="采样", value_decimals=2, flat_min_range=1.0))
+            _btnrow.add_widget(power_btn)
         close_btn = Button(text="关闭", font_size="14sp", bold=True,
                            background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
@@ -16559,10 +16546,12 @@ class RootWidget(BoxLayout):
            曲线的 y 轴坐标一样**), 放在成绩曲线和关闭按钮的中间」):
              · 成绩曲线 —— 逐秒的**步/秒**(数据 = 记录里的 `windows`, 实测 321 个);
              · 频率曲线 —— 第 1~359 秒的 **MHz**(数据 = `freq_series`, 目标 359 个);
-             · 温度功率曲线 —— **电池功率(左轴) + 电池温度(右轴)**(2026-09-17 玩家:
-               「把功率曲线和电池温度放在一起, 一个是左坐标轴, 一个是右坐标轴」)。
-               此时 `windows`/`dt` = 功率那条(5Hz 定长网格, 含 None),
-               `windows2`/`times2` = 温度那条(1Hz **非等距**)。
+             · 功率曲线 —— 第 1~359 秒的**电池功率(W)**(数据 = `power_series`,
+               5Hz 定长网格, 含 `None` = 那一格没读到; 时刻由 `dt` 推出来)。
+               ⚠️ 2026-09-17 玩家第二轮: 「**去掉温度曲线**, 只汇报温度」——
+                  温度**不进图**了(它仍然报, 只在面板文字里, 见 `_hp_result_text`),
+                  所以这条曲线**是单轴**。`SpeedCurve` 的双轴能力(`vals2`/`times2`)
+                  留着没删, 但目前**没有调用点**。
            纵轴那套规则(上下留白 + 向外取整到友好刻度 + 保底离底 5%)整个在
            `SpeedCurve` 里 ⇒ 这里**只换标题、单位、和"一个点代表什么"**, 不碰轴。
         ⚠️ 没数据(或只有 1 个点)就**不开弹窗** —— 一条直线没信息, 不如不给。
@@ -16691,29 +16680,20 @@ class RootWidget(BoxLayout):
             freq_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _fw, title='高压CPU测试的频率曲线', unit='MHz', unit_name='采样'))
             _btnrow.add_widget(freq_btn)
-        # ⚠️ 与现场那个按钮**同一套逻辑**(改名 + 双轴), 只是数据从**记录**里取:
-        #    `power_series`(定长 5Hz 网格) + `battery_t`(温度的时刻表)。
-        #    老记录没有这些键 ⇒ `_ok2` 为假 ⇒ **降级成单轴温度曲线**, 与今天一样。
+        # ⚠️ 与现场那个按钮**同一套逻辑**(只画功率), 只是数据从**记录**里取:
+        #    `power_series`(定长 5Hz 网格) + `power_dt`(格宽)。
+        #    老记录 / 读不到功率的记录没有这些键 ⇒ **不建按钮**
+        #    (温度不进图了, 没有可降级的东西)。
         # ⚠️ 变量名带 `2` 后缀: 别和 `_hp_done` 那个按钮的闭包变量撞车。
-        _bw2 = [x for x in (r.get('battery_series') or []) if x is not None]
-        if len(_bw2) >= 2:
-            # ⚠️ 同上: **不过滤 None**(时刻由原下标推), `_ok2` 只看有效点数。
-            _pw2 = list(r.get('power_series') or [])
-            _ok2 = len([x for x in _pw2 if x is not None]) >= 2
-            _main2 = _pw2 if _ok2 else _bw2
-            _sec2 = _bw2 if _ok2 else None
-            _st2 = (list(r.get('battery_t') or []) if _ok2 else None)
-            _dt2 = (r.get('power_dt') if _ok2 else None)
-            battery_btn = Button(text='温度功率', font_size='14sp', bold=True,
-                                 background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
-            battery_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _main2, windows2=_sec2, times2=_st2, dt=_dt2,
-                title=('CPU高压测试的温度功率曲线' if _ok2 else 'CPU高压测试的电池温度曲线'),
-                unit=('W' if _ok2 else '度'), unit_name='采样',
-                value_decimals=(2 if _ok2 else 1),
-                flat_min_range=(1.0 if _ok2 else 2.0),
-                unit2='度', value_decimals2=1, flat_min_range2=2.0))
-            _btnrow.add_widget(battery_btn)
+        _pw2 = list(r.get('power_series') or [])
+        if len([x for x in _pw2 if x is not None]) >= 2:
+            _dt2 = (r.get('power_dt') or 0.2)
+            power_btn = Button(text='功率曲线', font_size='14sp', bold=True,
+                               background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
+            power_btn.bind(on_release=lambda *_: self._show_hp_curve(
+                _pw2, dt=_dt2, title='CPU高压测试的功率曲线',
+                unit='W', unit_name='采样', value_decimals=2, flat_min_range=1.0))
+            _btnrow.add_widget(power_btn)
         close_btn = Button(text='关闭', font_size='14sp', bold=True,
                            background_normal='',
                            background_color=hex_rgb(COL_BTN_OFF) + (1,),
