@@ -13263,15 +13263,15 @@ class RootWidget(BoxLayout):
             _dt1 = ((getattr(self, "_hp_power_meta", None) or {}).get("dt") or 0.2)
             power_btn = Button(text="功率曲线", font_size="14sp", bold=True,
                                background_normal="", background_color=hex_rgb(COL_SOC) + (1,))
-            # ⚠️ 曲线走**每 5 点中位数**(玩家 2026-09-17 定的口径); `dt` 跟着 **×5**
-            #    (5 个点合成 1 个 ⇒ 时间间隔变成 1.0 秒, 正好与底层刷新同频)。
-            # ⚠️ 而下面 `log_extra` 里那份**原始序列一个字不动** —— 导出的 txt 就是拿去判
-            #    尖峰真伪的, 滤了就没用了。**曲线滤波、导出原始**, 两者不是同一份。
-            _cur1 = _med5(_pw1)
+            # 两个粒度: 「每帧」= 原样(1710 点, 保住每一根真实的爆发);
+            #           「每5秒」= 每 25 格取中位数 ⇒ 那些 2 秒宽的峰被平台拉回来(max 7.60→3.81)。
+            # ⚠️ 实测「每3秒」**去不掉**: 两根挨着的峰合起来 10 格, 3 秒一组占 2/3。
+            # ⚠️ 导出那份**始终是原始值**(`log_extra` 不动), 与看哪一档无关。
+            _v1 = {"每帧": (list(_pw1), "采样"), "每5秒": (_med5(_pw1, 25), "5秒段")}
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _cur1, dt=_dt1 * 5, title="CPU高压测试的功率曲线",
-                unit="W", unit_name="中位段", value_decimals=2, flat_min_range=1.0,
-                axis_unit="W", save_log=True,
+                _v1["每帧"][0], dt=_dt1, title="CPU高压测试的功率曲线",
+                unit="W", unit_name="采样", value_decimals=2, flat_min_range=1.0,
+                axis_unit="W", save_log=True, variants=_v1, cur_key="每帧",
                 log_extra={"pt": list(getattr(self, "_hp_power_times", None) or []),
                            "raw": list(getattr(self, "_hp_power_raw", None) or []),
                            "mv": list(getattr(self, "_hp_power_mv", None) or []),
@@ -16720,7 +16720,8 @@ class RootWidget(BoxLayout):
                        value_decimals=0, flat_min_range=None,
                        windows2=None, times2=None, dt=None, unit2='',
                        value_decimals2=1, flat_min_range2=None, axis_unit='',
-                       save_log=False, log_extra=None):
+                       save_log=False, log_extra=None,
+                       variants=None, cur_key=None):
         """CPU 高压的**一条曲线**(结果弹窗 / 历史详情上的按钮)。
 
         玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
@@ -16780,12 +16781,38 @@ class RootWidget(BoxLayout):
                         font_size='12sp', halign='center', valign='middle',
                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         else:
+            # `variants` 的一项 = `(序列, 一个点代表什么)` —— 粒度不同, 说明行也得跟着变
+            if variants and cur_key and cur_key in variants:
+                try:
+                    unit_name = variants[cur_key][1]
+                except Exception:
+                    pass
             _n2 = Label(text='横轴 = 按时间顺序的 %d 个%s　竖轴单位是%s'
                              % (len(_w), unit_name, unit),
                         font_size='12sp', halign='center', valign='middle',
                         color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         _n2.bind(width=lambda _w2, *_: setattr(_w2, 'text_size', (_w2.width, None)))
         content.add_widget(_n2)
+        # ---- 粒度切换(2026-09-17 玩家: 「新增2个按钮: **每帧** / **每3秒**」) ----------
+        # ⚠️ 实测「每 3 秒」**去不掉那些峰**: 两根挨着的峰合起来 = 10 格连续高值(2 秒),
+        #    3 秒一组它占 2/3 ⇒ 均值 5.71 / 中位 5.94, 峰还在。
+        #    **5 秒一组(25 格)它只占 40%** ⇒ 中位数被平台拉回来, max 7.60 → 3.81, 一个不剩。
+        #    ⇒ 两个粒度做成「**每帧**(原样)」+「**每5秒**」, 让玩家自己切着看。
+        if variants:
+            _kw = dict(sec=sec, title=title, unit=unit, unit_name=unit_name,
+                       value_decimals=value_decimals, flat_min_range=flat_min_range,
+                       dt=dt, axis_unit=axis_unit, save_log=save_log, log_extra=log_extra,
+                       variants=variants, value_decimals2=value_decimals2,
+                       flat_min_range2=flat_min_range2, unit2=unit2,
+                       windows2=windows2, times2=times2)
+            _vrow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+            for _k in variants:
+                _vb = Button(text=_k, font_size="16sp", bold=True, background_normal="",
+                             background_color=hex_rgb(
+                                 COL_BTN if _k == cur_key else COL_BTN_OFF) + (1,))
+                _vb.bind(on_release=lambda *_a, _kk=_k: self._reopen_curve(_kk, variants, _kw))
+                _vrow.add_widget(_vb)
+            content.add_widget(_vrow)
         close_btn = Button(text='返回', font_size='16sp', bold=True, background_normal='',
                            background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
@@ -16812,6 +16839,24 @@ class RootWidget(BoxLayout):
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
+
+    def _reopen_curve(self, key, variants, kw):
+        """切曲线粒度: 关掉当前弹窗, 用 `key` 那套数据重开一个。
+
+        ⚠️ **参数在闭包里整个捕获**(`kw`), 不能等点击时再去读 `self._hp_*` —— 那时可能
+           已经被下一局覆盖, 而翻历史那条路的数据根本不在 `self` 里。
+        """
+        for _w in list(Window.children):
+            if isinstance(_w, Popup):
+                try:
+                    _w.dismiss()
+                except Exception:
+                    pass
+        try:
+            _w2 = variants[key][0]
+        except Exception:
+            return
+        self._show_hp_curve(_w2, cur_key=key, **kw)
 
     def _on_save_power_click(self, btn, pw=None, extra=None):
         """点「保存记录」: 落盘, 并把结果**当场写在按钮上**(绝不静默失败)。
@@ -16909,12 +16954,12 @@ class RootWidget(BoxLayout):
             _dt2 = (r.get('power_dt') or 0.2)
             power_btn = Button(text='功率曲线', font_size='14sp', bold=True,
                                background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
-            # ⚠️ 与现场那条**同一套**(曲线 5 点中位数 + 导出原始值), 数据从记录里取。
-            _cur2 = _med5(_pw2)
+            # ⚠️ 与现场那条**同一套**(两个粒度 + 导出原始值), 数据从记录里取。
+            _v2 = {"每帧": (list(_pw2), "采样"), "每5秒": (_med5(_pw2, 25), "5秒段")}
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _cur2, dt=_dt2 * 5, title='CPU高压测试的功率曲线',
-                unit='W', unit_name='中位段', value_decimals=2, flat_min_range=1.0,
-                axis_unit='W', save_log=True,
+                _v2["每帧"][0], dt=_dt2, title='CPU高压测试的功率曲线',
+                unit='W', unit_name='采样', value_decimals=2, flat_min_range=1.0,
+                axis_unit='W', save_log=True, variants=_v2, cur_key='每帧',
                 # ⚠️ 老记录里**没有**原始电流/电压序列(那是 v0.8.32 才开始留内存的),
                 #    所以这三项**显式传空** —— 让 txt 里那几列印 nan, 而不是退回
                 #    `self._hp_*`(上一局的残值)。游程那两行只用 W 序列, 照样算得出来。
