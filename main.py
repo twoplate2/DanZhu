@@ -12702,13 +12702,19 @@ class RootWidget(BoxLayout):
         # ---- 功率(2026-09-17 新增) ----------------------------------------------
         # ⚠️ 统计(`_pwr["stats"]`)是**采样线程退出前**算好的(见 `_pwr_finish`) ——
         #    主线程这里只搬运, 别再自己遍历一遍序列去算, 否则"谁在算什么"就有两份。
-        # ⚠️⚠️ **开头 `HP_PWR_SKIP_SEC` 秒整段丢掉**(玩家: 「前3秒不能用, 变化很大」)——
-        #    那几秒是 CPU 从 idle 冲到满载的过渡期, 不是稳态。**切在这里 = 只切一处**:
-        #    面板统计、曲线、每瓦跑分、导出 txt 全都吃下面这几条序列, 一处切就全跟上。
-        #    (`_pwr["w"]` 本身不动; `_pwr["stats"]` 那个"刷新周期"诊断仍按**全程**算 ——
-        #     它量的是**仪器**不是被测对象, 样本越多越好。)
-        _sk = max(0, int(round(HP_PWR_SKIP_SEC / max(1e-6, _pwr["dt"]))))
-        self._hp_power_series = list(_pwr["w"])[_sk:]        # 含 None, 定长 5Hz 网格
+        # ⚠️⚠️ 2026-09-17 玩家(看了真机导出的记录): 「你需要忽视这些**无用的数据**,
+        #    同时在**有用的数据处延后 5 秒**再开始统计」。
+        #    实测那份 Redmi K90 的记录里, **t=3.0~10.8s 的电流全是 `nan`**
+        #    (CPU 刚冲满载那几秒 Binder 被抢占, 一格都没读到) —— 所以"固定剔前 N 秒"
+        #    根本不管用: N 得随设备变(K90 要 11 秒, 别的机器可能 3 秒)。
+        #    ⇒ 改成两步: ① 跳过**开头那段读不到的空段**; ② 再从第一个有效读数
+        #      往后延 `HP_PWR_SKIP_SEC` 秒(那段是 CPU 从 idle 冲到满载的过渡期)。
+        #    ⚠️ 只处理**开头**: 中途偶发的 nan 不算"无效段", 那是采样抖动, 该留着。
+        _pw_all = list(_pwr["w"])
+        _i0 = next((i for i, x in enumerate(_pw_all) if x is not None), 0)
+        _sk = _i0 + int(round(HP_PWR_SKIP_SEC / max(1e-6, _pwr["dt"])))
+        self._hp_pwr_skipped = _sk       # 导出的 txt 要写明剔了多少(玩家要看得见)
+        self._hp_power_series = _pw_all[_sk:]                # 含 None, 定长 5Hz 网格
         self._hp_power_times = list(_pwr["t"])[_sk:]         # 与之一一对应(秒, 相对窗口起点)
         self._hp_battery_times = list(_pwr["bat_t"])   # 与 `_hp_battery_series` 一一对应
         self._hp_power_meta = {"src": _pwr["src"], "unit": _pwr["unit"],
@@ -15758,9 +15764,12 @@ class RootWidget(BoxLayout):
         _L.append("# 窗口: 第 1 ~ 359 秒(连续高压测试 %d 秒)" % int(SOC_SUSTAIN_WALL_SEC))
         _L.append("# 采样: 5Hz 定长网格, dt=%ss, 共 %d 格(nan = 该格没读到)"
                   % (_m.get("dt", 0.2), len(_pw)))
-        _L.append("# ⚠️ 开头 %s 秒已整段剔除(那是 CPU 从 idle 冲到满载的过渡期, 不是稳态)"
-                  " —— 下面 t 列是**相对测试起点**的秒数, 所以起点不是 0"
+        _L.append("# ⚠️ 开头已整段剔除 = **读不到的空段**(CPU 刚冲满载时 Binder 被抢占)"
+                  " + 其后再延 %s 秒(CPU 从 idle 冲到满载的过渡期), 都不是稳态。"
                   % HP_PWR_SKIP_SEC)
+        _L.append("#    实际剔掉 %s 格(t 列起点 %.1f 秒) —— 下面 t 是**相对测试起点**的秒数"
+                  % (getattr(self, "_hp_pwr_skipped", "?"),
+                     (_pt[0] if _pt else 0.0)))
         _L.append("# 电流源: %s   单位: %s   (BatteryManager.getIntProperty)"
                   % (_m.get("src"), _m.get("unit")))
         _L.append("# 电压源: ACTION_BATTERY_CHANGED / EXTRA_VOLTAGE   单位: mV"
