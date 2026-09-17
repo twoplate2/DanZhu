@@ -16781,11 +16781,15 @@ class RootWidget(BoxLayout):
         if len([x for x in _w if x is not None and x > 0]) < 2:
             return
         content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
-        title = self._fit_line(Label(text=(title or '高压CPU测试的成绩曲线'),
-                                     bold=True, halign='center',
-                                     color=hex_rgb(COL_TEXT) + (1,),
-                                     size_hint_y=None, height=dp(26)), 19)
-        content.add_widget(title)
+        # ⚠️⚠️ **不能叫 `title`** —— 那会遮蔽入参 `title`(字符串)。而下面给粒度切换拼的
+        #    `_kw` 要拿**原始的字符串**去重开弹窗; 一旦这里覆盖成 Label 控件, `_kw["title"]`
+        #    抓到的就是控件 ⇒ 切粒度时 `Label(text=<Label>)` ⇒
+        #    `ValueError: Label.text accept only str`(玩家 2026-09-18 报的崩溃)。
+        _title_lbl = self._fit_line(Label(text=(title or '高压CPU测试的成绩曲线'),
+                                          bold=True, halign='center',
+                                          color=hex_rgb(COL_TEXT) + (1,),
+                                          size_hint_y=None, height=dp(26)), 19)
+        content.add_widget(_title_lbl)
         curve = SpeedCurve(_w, value_decimals=value_decimals, flat_min_range=flat_min_range,
                            vals2=windows2, times2=times2, dt=dt, unit2=unit2,
                            value_decimals2=value_decimals2, flat_min_range2=flat_min_range2,

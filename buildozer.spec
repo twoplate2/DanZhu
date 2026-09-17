@@ -2101,6 +2101,21 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   门禁: fx_probe 330 条(+3)。
 #   验证: --selftest OK · fx_probe 330 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
 #
+# 【v0.8.37 修崩溃: 切「每5秒」时 `Label.text` 收到了一个控件】
+#   玩家 2026-09-18: 「新增 bug: 切换到每5秒的时候, 系统崩溃」。
+#   ⚠️ 根因: `_show_hp_curve` 里 **`title` 这个入参名被函数体覆盖**了 ——
+#      `title = self._fit_line(Label(text=...))` 之后它变成了 **Label 控件**; 而给粒度切换
+#      拼的 `_kw` 字典是在**那之后**才建的 ⇒ `_kw["title"]` 抓到控件 ⇒ 切粒度时
+#      `Label(text=<Label>)` ⇒ `ValueError: Label.text accept only str`。
+#      ⚠️ **只有切粒度会崩**, 直接打开没事(那条路用的是原始字符串)。
+#   ⇒ 把那个局部变量改名 `_title_lbl`, 不再遮蔽入参。
+#   验证: 探针新增三条 —— E15(切到每5秒不崩) / E15b(换成 72 点的新弹窗) /
+#         **E16(来回切四个来回都不崩: 1787 → 72 → 1787 → 72, 点数都对)**。
+#         ⚠️ E16 是玩家点名的: 「这2个**互相切换都不能报错**」—— 只测一个方向不够。
+#   另: 顺带修了**探针自己的**一个 Python 坑 —— 打桩 `staticmethod` 要从 `__dict__` 取
+#       descriptor, 否则还原后会丢掉 staticmethod 身份 ⇒ `_txt()` 多收一个 self
+#       (`TypeError: takes from 4 to 5 positional arguments but 6 were given`)。
+#
 # 【v0.8.36 粒度选择改为**保存**, 且它现在也**影响面板的数值范围**】
 #   玩家 2026-09-17: 「每5秒和每帧的选择**是保存的**, 他**应该影响**电池功率的输出界面的
 #   数值范围」。
@@ -5564,7 +5579,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe 336 条(+6: 持久指令表四条 + 面板两档两条; 另更新了几条被取代的旧断言)。
 #   验证: --selftest OK · fx_probe 336 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
-version = 0.8.36
+version = 0.8.37
 # ⚠️ **版本号实际一直在用 `0.8.x`**(玩家 2026-09-17 定: 这次 bump 到 `0.8.21`)。
 #    下面这段"换成 `1.0`"的方案**已作废**, 留着只为解释历史, **别再照着改**:
 #    2026-09-16 14:47 的 `84b8a57` 曾把值改成 `1.0` 并写下这段注释, **11 分钟后**
