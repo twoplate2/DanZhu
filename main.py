@@ -7937,6 +7937,11 @@ H_RTP = 44                   # 返还率行(左对齐, 降低以增大游戏区�
 H_BETS = 44                  # 投入弹珠单位行(左对齐, 降低以增大游戏区间隙)
 H_INFO = 26                  # 弹珠 + 统计(缩高, 腾空间给底部留白)
 H_BOTTOM = 64                # 重置 + 力度 + 蓄力发射
+# 宽屏(平板)上**弹窗内表格的等比放大上限**(玩家 2026-09-17「你要做的应该是宽度适配」)。
+# 两个历史记录弹窗的表格原来是**固定 288dp、只缩不放**, 于是平板(等效竖屏窗口 792dp、
+# 弹窗 760dp)上表格缩在中间、两边各空 236dp。现在按"撑满弹窗可用宽度"等比放大,
+# 这个上限防它变成巨无霸。手机上算出来是 1.0(不触发); Y700 上算出来约 2.5 ⇒ 夹到 1.6。
+_TW_GROW_MAX = 1.6
 BALL_VIEW = 1.4              # 小球视觉放大倍数(仅渲染; 碰撞半径 BALL_R 是物理常量不动)
                              # ⚠️ 2026-09-17 曾试到 1.6("球更大更醒目"), 已按用户决定退回 1.4:
                              #    代价是地面/井区/弹簧三处承托面统一多冒 1.4px, 且弧面从"边缘落在
@@ -11059,6 +11064,29 @@ class RootWidget(BoxLayout):
         if cb is not None:
             b.bind(on_release=cb)
         return b
+
+    def _fit_w(self, base_w):
+        """宽屏(平板)上把弹窗里的固定宽块按可用宽度等比放大, 返回 `(可用宽度, 缩放系数)`。
+
+        玩家 2026-09-17: 「你要做的应该是**宽度适配**」。两个历史记录弹窗的表格原来是
+        **固定 288dp、只缩不放**, 于是平板(等效竖屏窗口 792dp、弹窗 760dp)上表格缩在
+        中间、两边各空 **236dp**(手机 444dp 上只要空 69dp)。
+
+        ⚠️⚠️ **只在宽屏放大** —— 手机上可用宽度(约 388dp)本来就大于表格(288dp),
+           无脑按比例放大会把**手机侧本来就不错的观感**一起改掉(玩家要的是
+           「让 2 个界面都显示的不错」, 不是把手机也重做一遍)。
+           门槛用 Android 的 `sw600dp` 惯例: 等效竖屏窗口宽 > 600dp 才算平板。
+        ⚠️ 窄屏照旧**收缩**(`min(1.0, ...)`) —— 360dp 那档小屏靠它防表格溢出弹窗
+           (`size_hint_x=None` 的子控件宽度不够时**不会自己缩**, 会直接飘到弹窗外)。
+        ⚠️ 两处调用点必须**共用这一个口径**, 否则两台设备上会算出不同的留白。
+        """
+        _vw = self._veq()[0]
+        _avail = _vw * 0.96 - dp(38)          # 弹窗宽 0.96*vw - content padding 16*2 - 余量 6
+        if base_w <= 0:
+            return _avail, 1.0
+        if _vw <= dp(600):
+            return _avail, min(1.0, _avail / base_w)
+        return _avail, min(_TW_GROW_MAX, _avail / base_w)
 
     def _popup(self, hint_w, h_dp, **kw):
         """统一建 Popup(RotPopup: 横屏挂旋转层随画面转, 坐标系统一为等效竖屏窗口)。
@@ -14859,11 +14887,16 @@ class RootWidget(BoxLayout):
                                tags=list(getattr(curve, "_tags", []) or []),
                                size_hint=(None, 1), width=_w))
         content.add_widget(sv)
-        # ⚠️ 文案**不写"每 N 帧一个点"这种算出来的数** —— 它和实际绘制的 `_grp` 可能差 1:
-        #    这里按浮点 `_w` 算, 而 `_draw` 按 Kivy 取整后的控件宽算(实测 2671.5 vs 2672
-        #    就让两边一个说"每 2 帧"、一个画"每 3 帧")。写死 1:1 则要求 `PER >= 1`,
-        #    那个由 `ZOOM_PER_FRAME_PX` 保证。
-        note = Label(text='左右拖动查看 · 1:1 原始图', font_size='12sp',
+        # ⚠️ 文案**不写"1:1"也别写"每 N 帧一个点"**:
+        #    ① "1:1" 是**错的**(玩家 2026-09-17 指出): 现在是每帧占
+        #       `ZOOM_PER_FRAME_PX`(=2) 像素, 不是"1 像素 1 帧" —— 多出来的那 1 像素是
+        #       **给两条线之间留的空隙**(线宽 1.15 比 1 像素还宽, 真按 1 像素排会叠死)。
+        #       "1:1" 说的是**数据口径**(每帧一个点), 不是像素比, 混在一起就会误导。
+        #    ② "每 N 帧一个点"这种**算出来的数**也不能写死 —— 它和实际绘制的 `_grp` 可能差 1
+        #       (这里按浮点 `_w` 算, 而 `_draw` 按 Kivy 取整后的控件宽算: 实测 2671.5 vs 2672
+        #       就让两边一个说"每 2 帧"、一个画"每 3 帧")。
+        #    ⇒ 只说**数据口径**, 不碰像素比、不写算出来的数。
+        note = Label(text='左右拖动查看 · 逐帧原始值', font_size='12sp',
                      halign='center', valign='middle',
                      color=hex_rgb(COL_SUB) + (1,),
                      size_hint_y=None, height=dp(20))
@@ -14938,8 +14971,12 @@ class RootWidget(BoxLayout):
         #    "上面那条线不是平均值, 是每几帧里最慢的那帧"(所以看着比实际差), 以及
         #    "点一下能看到每一帧的原始值"。**措辞是玩家逐字定的, 别改顺口** ——
         #    我原来写"每组取最慢", 他当场问「什么叫每组」: "组"是我造的词, 他从没说过。
+        # ⚠️⚠️ **这里用半角 `=` 不是全角 `＝`**(玩家 2026-09-17 真机截图报「无法显示的文字」:
+        #    那个位置是个方块)。**桌面渲染全角等号是正常的**(同一份代码、同一个字体),
+        #    只有真机把它画成豆腐块 —— 所以别拿桌面截图当"没问题"的证据。
+        #    结论: **UI 文案里别用全角标点里的冷门符号**, 拿不准就用 ASCII。
         _tip = Label(text='本图每若干帧合一个点、取最慢的那帧（看着比实际差）'
-                          '· 点一下＝1:1 原始帧',
+                          '· 点一下看每一帧的原始值',
                      font_size='12sp', halign='center', valign='middle',
                      color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(20))
         _tip.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
@@ -15386,20 +15423,25 @@ class RootWidget(BoxLayout):
             # ⚠️ 窄屏按比例收(`_k`): `size_hint_x=None` 的子控件宽度不够时**不会自己缩**,
             #    会直接**溢出弹窗**(就是"字飘在游戏画面上"那一类)。
             _HW = (dp(110), dp(58), dp(62), dp(58))
-            _tw_max = self._veq()[0] * 0.96 - dp(38)   # 弹窗宽 0.96*vw - content 的 padding 16*2 - 余量 6
-            _k = min(1.0, _tw_max / sum(_HW))
+            # ⚠️⚠️ **宽度适配**(玩家 2026-09-17: 「你要做的应该是**宽度适配**」)。
+            #    原来这里是 `_k = min(1.0, _tw_max / sum(_HW))` —— **只缩不放**, 于是平板
+            #    (等效竖屏 792dp、弹窗 760dp)上表格还是 288dp, 缩在中间、两边各空 236dp。
+            #    ⇒ 统一交给 `_fit_w()`: 宽屏按可用宽度等比放大(夹 `_TW_GROW_MAX`)、
+            #      窄屏收缩、**手机上保持 1.0**(它是现在就不错的观感, 不该跟着变)。
+            #    ⚠️ 分母是**基准** `sum(_HW)` —— 别拿缩放后的 `_HW` 再算一次(会自己乘自己)。
+            _tw_max, _k = self._fit_w(sum(_HW))
             _HW = tuple(_w * _k for _w in _HW)
             _table_w = sum(_HW)
             # 表头**独立排版**: 各按自己文字的宽度分列, 整行居中(与隔壁同款)。
             # ⚠️ 宽度按 `sp(14)` 量(不是裸 14.0 —— 那是**绝对 px**, density=2 的机器上只有一半大)。
-            _head_w = [min(_table_w / 4.0 * 1.6, max(dp(30), text_px(_t, sp(14)) + dp(6)))
+            _head_w = [min(_table_w / 4.0 * 1.6, max(dp(30), text_px(_t, sp(14) * _k) + dp(6)))
                        for _t in _HP_COLS]
             _hw_sum = sum(_head_w)
             if _hw_sum > _table_w:
                 _head_w = [_w * _table_w / _hw_sum for _w in _head_w]
                 _hw_sum = _table_w
             columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_hw_sum,
-                                height=dp(22), pos_hint={'center_x': 0.5})
+                                height=dp(22) * _k, pos_hint={'center_x': 0.5})
             _heads = []
             for _t, _w in zip(_HP_COLS, _head_w):
                 h = Label(text=_t, halign='center', valign='middle',
@@ -15417,7 +15459,7 @@ class RootWidget(BoxLayout):
             #    与记录数**无关**(玩家 2026-09-16: 「我**的意思是窗口的高度是固定的**」)。
             #    上一版按 `_vn` 算死高度, 既多一套公式、又和弹窗高度打架, 这里整个删掉。
             scroll = ScrollView(size_hint=(1, 1))
-            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
+            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2) * _k)
             inner.bind(minimum_height=inner.setter('height'))
             rows = [[], [], []]          # 逐列一组, 只为下面"全表统一字号"取最长内容
             for r in reversed(self.hp_history[-100:]):
@@ -15431,7 +15473,7 @@ class RootWidget(BoxLayout):
                 _mad = r.get('mad')
                 mad_text = ('%.2f%%' % float(_mad)) if _mad is not None else '—'
                 row = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
-                                height=dp(26), pos_hint={'center_x': 0.5})
+                                height=dp(26) * _k, pos_hint={'center_x': 0.5})
                 for _i, _t in enumerate((stamp, avg_text, mad_text)):
                     lbl = Label(text=_t, halign='center', valign='middle',
                                 color=hex_rgb(COL_TEXT) + (1,), size_hint_x=None)
@@ -15440,7 +15482,7 @@ class RootWidget(BoxLayout):
                     row.add_widget(lbl)
                     rows[_i].append(lbl)
                 # ⚠️ 最后一列是**按钮**(唯一一个), 不进"全表统一字号" —— 它不是数据格。
-                btn = Button(text='详情', font_size='14sp', bold=True,
+                btn = Button(text='详情', font_size=sp(14) * _k, bold=True,
                              background_normal='', size_hint_x=None, width=_HW[3],
                              background_color=hex_rgb(COL_BTN) + (1,))
                 btn.bind(on_release=lambda _b, rr=r: self._show_hp_detail(rr))
@@ -15462,7 +15504,7 @@ class RootWidget(BoxLayout):
             _fs_all = None
             for _i, _g in enumerate(_groups):
                 _long = max(rows[_i], key=lambda x: text_px(x.text or '', sp(14)))
-                _f = fit_font_size(_long.text or '', sp(14), float(_HW[_i]))
+                _f = fit_font_size(_long.text or '', sp(14) * _k, float(_HW[_i]))
                 _fs_all = _f if _fs_all is None else min(_fs_all, _f)
             for _g in _groups:
                 for _c in _g:
@@ -15832,6 +15874,14 @@ class RootWidget(BoxLayout):
             #       ⇒ 三列全都放得下 ⇒ **全表字号回到 sp(14)**(去年份前是 13.16sp)。
             #    ⚠️ 加列最容易挤坏的**不是文字, 是那个按钮**(旧事故: 「详情」被挤成 25px)。
             _HW = (dp(80), dp(66), dp(92), dp(50))
+            # ⚠️⚠️ **宽度适配**(玩家 2026-09-17): 这一处原来**连缩放都没有**
+            #    (`_table_w = sum(_HW)` 写死 288dp), 于是平板(等效竖屏 792dp)上 760dp 的
+            #    弹窗里表格缩在中间、两边各空 236dp。
+            #    ⇒ 和 `_show_hp_history` 那处**共用同一个 `_fit_w()`**: 同一个门槛、同一个口径。
+            #    ⚠️ 手上这两台设备里**只有平板会被放大**(手机上 `_fit_w` 返回 1.0) ——
+            #       所以这一处虽然原来"从没缩放过", 手机侧的观感也不会变。
+            _tw_max, _k = self._fit_w(sum(_HW))
+            _HW = tuple(_w * _k for _w in _HW)
             _table_w = sum(_HW)
             # ⚠️⚠️ **表头独立排版**(2026-09-15 玩家定稿): 表头**不再**和数据行共用 `_HW`。
             #    玩家原话:「你让表头和表格内的内容不对齐就可以了, 时间才 2 个字, 内容那么长」
@@ -15848,7 +15898,7 @@ class RootWidget(BoxLayout):
             #    而表头「平均分/平均差系数」要 **117px** ⇒ **折成两行**, 而这一排只有
             #    dp(22) 高, 第二行那个「数」被顶出格子(截图实证)。
             #    这个上限的本意只是"别让表头比数据块还宽", 3.0 给的余量正合适。
-            _head_w = [min(_table_w / 3.0 * 1.6, max(dp(30), text_px(_t, sp(14)) + dp(6)))
+            _head_w = [min(_table_w / 3.0 * 1.6, max(dp(30), text_px(_t, sp(14) * _k) + dp(6)))
                        for _t in _HIST_COLS]
             _hw_sum = sum(_head_w)
             if _hw_sum > _table_w:
@@ -15857,7 +15907,7 @@ class RootWidget(BoxLayout):
             # 固定列宽表格不能默认贴在父容器左边；宽屏设备上这会明显偏左，
             # 窄屏设备上也会造成标题/数据与面板中心不一致。表头和每一行各自整体居中。
             columns = BoxLayout(size_hint_x=None, size_hint_y=None, width=_hw_sum,
-                                height=dp(22), pos_hint={'center_x': 0.5})
+                                height=dp(22) * _k, pos_hint={'center_x': 0.5})
             _heads = []
             for _t, _w in zip(_HIST_COLS, _head_w):
                 h = Label(text=_t, halign='center', valign='middle',
@@ -15873,7 +15923,7 @@ class RootWidget(BoxLayout):
                 _heads.append(h)
             content.add_widget(columns)
             scroll = ScrollView(size_hint=(1, 1))
-            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2))
+            inner = BoxLayout(orientation='vertical', size_hint_y=None, spacing=dp(2) * _k)
             inner.bind(minimum_height=inner.setter('height'))
             # ⚠️ **逐列一组**, 但字号**不逐列定** —— 见下面"全表共用一个字号"那一段。
             rows = [[], [], []]
@@ -15915,7 +15965,7 @@ class RootWidget(BoxLayout):
                 # ⚠️ **整行改成一排固定列宽的 Label**(2026-09-15 玩家:「排版回归准表格,
                 #    不要用空格来分割」)。列宽与表头**共用 `_HW`**。
                 row = BoxLayout(size_hint_x=None, size_hint_y=None, width=_table_w,
-                                height=dp(26), pos_hint={'center_x': 0.5})
+                                height=dp(26) * _k, pos_hint={'center_x': 0.5})
                 for _i, (_t, _w) in enumerate(zip((stamp, fps_text, soc_text), _HW)):
                     lbl = Label(text=_t, halign='center', valign='middle',
                                 color=hex_rgb(COL_TEXT) + (1,), size_hint_x=None)
@@ -15926,7 +15976,7 @@ class RootWidget(BoxLayout):
                     rows[_i].append(lbl)
                 # ⚠️ 第四列是**按钮**(唯一一个), **不进"全表统一字号"** —— 它不是数据格。
                 #    (CPU 高压那张表同款; 按钮的文字由它自己的 font_size 管。)
-                btn = Button(text='详情', font_size='14sp', bold=True,
+                btn = Button(text='详情', font_size=sp(14) * _k, bold=True,
                              background_normal='', size_hint_x=None, width=_HW[3],
                              background_color=hex_rgb(COL_BTN) + (1,))
                 btn.bind(on_release=lambda _b, rr=r: self._show_bench_detail(rr))
@@ -15958,7 +16008,7 @@ class RootWidget(BoxLayout):
                 #    表头「平均分/平均差系数」9 个字把全表从 13.16sp 拖到 **10.64sp**)。
                 #    这正是玩家说的「表头和数据不对齐就可以了」要解决的问题。
                 _long = max(rows[_i], key=lambda x: text_px(x.text or "", sp(14), _bd))
-                _f = fit_font_size(_long.text or "", sp(14), _w, _bd)
+                _f = fit_font_size(_long.text or "", sp(14) * _k, _w, _bd)
                 _fs_all = _f if _fs_all is None else min(_fs_all, _f)
             for _g in _groups:
                 for _c in _g:
