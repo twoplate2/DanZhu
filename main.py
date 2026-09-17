@@ -903,6 +903,14 @@ SOC_SUSTAIN_WINDOW_CPU_SEC = 1.0
 # ⚠️ 名字用 `HP_` 前缀: 本文件里 `SOC_` 是**历史名**(屏幕上早已全叫 CPU, 见 `SOC_WARMUP_CPU_SEC`
 #    上面那段说明), 新加的常量一律别再挂 `SOC_`。
 HP_SAMPLE_SEC = 10.0
+# 功率曲线**前几秒不要**(玩家 2026-09-17: 「功率数据的前3秒不能用, 需要删掉, 变化很大,
+#   没有啥用」)。那一段是 CPU 从 idle 冲到满载的**过渡期**(实测从 11.5W 一路掉到 7.5W),
+#   把它算进平均/最高/最低会把整场的读数带偏 —— 尤其"最高", 那个 11.5 根本不是稳态。
+# ⚠️ **只跳功率**, 不跳温度/频率: 玩家点名的是功率; 而且温度那条是**变长**序列
+#   (读不到就不记), 按下标切会切错位。
+# ⚠️ 切片只做**一处**(`_run_hp_test` 里存 `_hp_power_*` 时)—— 统计 / 曲线 / 每瓦跑分 /
+#   导出 txt 全都吃那一条, 所以一处切就全都跟上了。
+HP_PWR_SKIP_SEC = 3.0
 
 # ⚠️ **高压测试的 CPU 频率/电池温度采样窗口**(玩家 2026-09-16:
 #    「只对第1秒到第359秒生效, 掐头去尾」)。
@@ -12669,11 +12677,22 @@ class RootWidget(BoxLayout):
         # ---- 功率(2026-09-17 新增) ----------------------------------------------
         # ⚠️ 统计(`_pwr["stats"]`)是**采样线程退出前**算好的(见 `_pwr_finish`) ——
         #    主线程这里只搬运, 别再自己遍历一遍序列去算, 否则"谁在算什么"就有两份。
-        self._hp_power_series = list(_pwr["w"])        # 含 None, 定长 5Hz 网格
-        self._hp_power_times = list(_pwr["t"])         # 与之一一对应(秒, 相对窗口起点)
+        # ⚠️⚠️ **开头 `HP_PWR_SKIP_SEC` 秒整段丢掉**(玩家: 「前3秒不能用, 变化很大」)——
+        #    那几秒是 CPU 从 idle 冲到满载的过渡期, 不是稳态。**切在这里 = 只切一处**:
+        #    面板统计、曲线、每瓦跑分、导出 txt 全都吃下面这几条序列, 一处切就全跟上。
+        #    (`_pwr["w"]` 本身不动; `_pwr["stats"]` 那个"刷新周期"诊断仍按**全程**算 ——
+        #     它量的是**仪器**不是被测对象, 样本越多越好。)
+        _sk = max(0, int(round(HP_PWR_SKIP_SEC / max(1e-6, _pwr["dt"]))))
+        self._hp_power_series = list(_pwr["w"])[_sk:]        # 含 None, 定长 5Hz 网格
+        self._hp_power_times = list(_pwr["t"])[_sk:]         # 与之一一对应(秒, 相对窗口起点)
         self._hp_battery_times = list(_pwr["bat_t"])   # 与 `_hp_battery_series` 一一对应
         self._hp_power_meta = {"src": _pwr["src"], "unit": _pwr["unit"],
                                "dt": _pwr["dt"], "stats": _pwr["stats"]}
+        # ⚠️ 2026-09-17: **原始电流整数与电压序列也要留在内存里** —— 导出的 txt 要用它们,
+        #    而这两条**没有落盘**(落盘的 `power_series` 已经是换算成 W 且 round 到 2 位的数,
+        #    拿它回答不了"那个尖峰是不是采样毛刺"这种问题)。
+        self._hp_power_raw = list(_pwr["raw"])[_sk:]
+        self._hp_power_mv = list(_pwr["mv"])[_sk:]
         _pwr_ok = [x for x in self._hp_power_series if x is not None]
         _mv_ok = [x for x in _pwr["mv"] if x is not None]
         _i_ok = [abs(float(x)) * (0.001 if _pwr["unit"] == "ma" else 1e-6)
@@ -13216,7 +13235,12 @@ class RootWidget(BoxLayout):
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _pw1, dt=_dt1, title="CPU高压测试的功率曲线",
                 unit="W", unit_name="采样", value_decimals=2, flat_min_range=1.0,
-                axis_unit="W"))
+                axis_unit="W", save_log=True,
+                log_extra={"pt": list(getattr(self, "_hp_power_times", None) or []),
+                           "raw": list(getattr(self, "_hp_power_raw", None) or []),
+                           "mv": list(getattr(self, "_hp_power_mv", None) or []),
+                           "meta": getattr(self, "_hp_power_meta", None) or {},
+                           "panel": getattr(self, "_hp_battery", None) or {}}))
             _btnrow.add_widget(power_btn)
         close_btn = Button(text="关闭", font_size="14sp", bold=True,
                            background_normal="", background_color=hex_rgb(COL_BTN_OFF) + (1,),
@@ -15636,7 +15660,120 @@ class RootWidget(BoxLayout):
             Clock.schedule_once(lambda _d: setattr(btn, 'text', '复制逐帧日志'), 2.0)
         return True
 
-    def _bench_save_log(self):
+    def _power_log_text(self, pw=None, extra=None):
+        """把功率的**原始采样**拼成一份可导出的 txt(玩家 2026-09-17:
+        「新增一个按钮, 保存记录, 点击后把 txt 文件放在下载目录中」)。
+
+        ⚠️ 为什么要导**原始值**: 落盘的 `power_series` 已经是**换算成 W 且 round 到 2 位**
+           的数 —— 而"那个尖峰是真读数还是采样毛刺"这类问题, 只能拿**原始整数电流 +
+           当时的电压**去回答。这份 txt 就是那批原始值, 一行一格。
+
+        ⚠️⚠️ **表头里那两行"极值点游程"是这份文件的重点**: 底层电量计约 0.96 秒才刷新
+           一次, 而我们是 5Hz 采样 ⇒ **一个真实读数应当连续占约 5 格**。所以"最高值
+           连续占了几格"直接回答了"它像不像真的"。而且它**只用 W 序列就能算** ——
+           翻历史导出的老记录(没有原始电流)也能得到这个数。
+
+        ⚠️ `pw` / `extra` 供**翻历史**那条路用(那时的数据来自记录, 不在 `self._hp_*` 里);
+           都不传就退回现场状态。
+        返回字符串; 没有任何功率数据时返回 ""。
+        """
+        _e = extra or {}
+        _pw = list(pw if pw is not None
+                   else (getattr(self, "_hp_power_series", None) or []))
+        if not _pw:
+            return ""
+        # ⚠️ 取值必须**按"键在不在"判**, 不能用 `or` —— 翻历史那条路会显式传空列表
+        #    表示"这条记录里没有这个数据"; 用 `or` 的话空列表会被当成"没传",
+        #    于是**退回 `self._hp_*`(上一局的残值)**, 导出一份张冠李戴的 txt。
+        def _pick(_k, _attr):
+            if _k in _e:
+                return list(_e[_k] or [])
+            return list(getattr(self, _attr, None) or [])
+
+        _pt = _pick("pt", "_hp_power_times")
+        _raw = _pick("raw", "_hp_power_raw")
+        _mv = _pick("mv", "_hp_power_mv")
+        _m = _e["meta"] if "meta" in _e else (getattr(self, "_hp_power_meta", None) or {})
+        _st = _m.get("stats") or {}
+        _bt = _e["panel"] if "panel" in _e else (getattr(self, "_hp_battery", None) or {})
+        _head = _e.get("head") or None
+
+        def _hold(_arr, _i):
+            """一个下标所在的值连续出现多少格(往两边数相等的)。判游程宽度用。"""
+            if _i < 0 or _i >= len(_arr) or _arr[_i] is None:
+                return 0
+            _v = _arr[_i]
+            _a, _b = _i, _i
+            while _a > 0 and _arr[_a - 1] == _v:
+                _a -= 1
+            while _b + 1 < len(_arr) and _arr[_b + 1] == _v:
+                _b += 1
+            return _b - _a + 1
+
+        def _g(_k, _d="-"):
+            _v = _bt.get(_k)
+            return _d if _v is None else ("%s" % (_v,))
+
+        _L = []
+        _L.append("# 跳跳的弹珠机 · CPU高压测试 · 电池功率原始记录")
+        try:
+            _L.append("# 时间: %s" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        except Exception:
+            pass
+        try:
+            _L.append("# 版本: %s   设备: %s"
+                      % (_app_version(), _head or self._device_info()))
+        except Exception:
+            pass
+        _L.append("# 窗口: 第 1 ~ 359 秒(连续高压测试 %d 秒)" % int(SOC_SUSTAIN_WALL_SEC))
+        _L.append("# 采样: 5Hz 定长网格, dt=%ss, 共 %d 格(nan = 该格没读到)"
+                  % (_m.get("dt", 0.2), len(_pw)))
+        _L.append("# ⚠️ 开头 %s 秒已整段剔除(那是 CPU 从 idle 冲到满载的过渡期, 不是稳态)"
+                  " —— 下面 t 列是**相对测试起点**的秒数, 所以起点不是 0"
+                  % HP_PWR_SKIP_SEC)
+        _L.append("# 电流源: %s   单位: %s   (BatteryManager.getIntProperty)"
+                  % (_m.get("src"), _m.get("unit")))
+        _L.append("# 电压源: ACTION_BATTERY_CHANGED / EXTRA_VOLTAGE   单位: mV"
+                  "   (每秒读一次, 被 5 个功率格复用 —— 所以 V 是阶梯)")
+        _L.append("# 变化点: n=%s n_chg=%s frac=%s gap_p50=%ss n_uniq=%s step_med=%s"
+                  % (_st.get("n"), _st.get("n_chg"), _st.get("frac"),
+                     _st.get("gap_p50"), _st.get("n_uniq"), _st.get("step_med")))
+        _L.append("# 功率: 平均 %sW  最低 %s  最高 %s"
+                  % (_g("power_mean"), _g("power_min"), _g("power_max")))
+        _ok = [(i, x) for i, x in enumerate(_pw) if x is not None]
+        if _ok:
+            _hi_i, _hi_v = max(_ok, key=lambda p: p[1])
+            _lo_i, _lo_v = min(_ok, key=lambda p: p[1])
+            _L.append("#")
+            _L.append("# 极值点游程(判毛刺用: 底层约 0.96s 刷新一次 ⇒ 真读数应连续占约 5 格)")
+            for _tag, _i, _v in (("最高", _hi_i, _hi_v), ("最低", _lo_i, _lo_v)):
+                _L.append("#   %s %.2fW @ t=%ss (idx=%d), 连续 %d 格"
+                          % (_tag, _v, _pt[_i] if _i < len(_pt) else "?",
+                             _i, _hold(_pw, _i)))
+        _L.append("#")
+        _L.append("# idx\tt(s)\tI_raw(uA)\tV(mV)\tP(W)")
+        for _i in range(len(_pw)):
+            _r = _raw[_i] if _i < len(_raw) else None
+            _v = _mv[_i] if _i < len(_mv) else None
+            _p = _pw[_i]
+            _t = _pt[_i] if _i < len(_pt) else ""
+            _L.append("%d\t%s\t%s\t%s\t%s"
+                      % (_i, _t,
+                         "nan" if _r is None else _r,
+                         "nan" if _v is None else _v,
+                         "nan" if _p is None else ("%.2f" % _p)))
+        return "\n".join(_L) + "\n"
+
+    def _save_power_log(self, pw=None, extra=None):
+        """「保存记录」按钮的动作 —— 复用 `_bench_save_log` 那整条降级链
+        (MediaStore → 公共 Download / 外部私有 / 内部 / 剪贴板), 只换内容与文件名前缀。"""
+        try:
+            _txt = self._power_log_text(pw, extra)
+        except Exception:
+            _txt = ""
+        return self._bench_save_log(text=_txt, prefix="plinko_power")
+
+    def _bench_save_log(self, text=None, prefix="plinko_fps"):
         """把逐帧日志**存成 txt 文件**(玩家 2026-09-15: 「复制改为下载 txt, 这样就不缺少东西」)。
 
         ⚠️ 为什么不能只存 `user_data_dir`: 那是**应用内部目录**(`/data/data/<pkg>/files`),
@@ -15649,22 +15786,25 @@ class RootWidget(BoxLayout):
           ③ `user_data_dir`(最后手段, 要 adb 才能取);
           ④ 全失败 → 退回**复制到剪贴板**, 并在提示里写明"剪贴板可能被截断"。
         返回 (成功?, 给玩家看的说明)。
+
+        ⚠️ 2026-09-17 参数化(`text` / `prefix`), 好让**功率原始记录**复用这整条降级链 ——
+           **默认值与原行为逐字相同**(不传就是逐帧日志 + `plinko_fps` 前缀), 零回归。
         """
         try:
-            txt = self._bench_frame_log()
+            txt = text if text is not None else self._bench_frame_log()
         except Exception:
             txt = ""
         if not txt:
             return False, "没有可保存的数据"
         try:
-            name = "plinko_fps_%s.txt" % time.strftime("%Y%m%d_%H%M%S")
+            name = "%s_%s.txt" % (prefix, time.strftime("%Y%m%d_%H%M%S"))
         except Exception:
-            name = "plinko_fps.txt"
+            name = prefix + ".txt"
 
         if platform != "android":
             # 桌面: 写到一个明确的地方(这样桌面也能验证"文件真的写出来了、内容完整")
             try:
-                d = os.path.join(tempfile.gettempdir(), "plinko_fps")
+                d = os.path.join(tempfile.gettempdir(), prefix)
                 os.makedirs(d, exist_ok=True)
                 p = os.path.join(d, name)
                 with open(p, "wb") as f:
@@ -16540,7 +16680,8 @@ class RootWidget(BoxLayout):
     def _show_hp_curve(self, windows, sec=None, title=None, unit='步/秒', unit_name='窗口',
                        value_decimals=0, flat_min_range=None,
                        windows2=None, times2=None, dt=None, unit2='',
-                       value_decimals2=1, flat_min_range2=None, axis_unit=''):
+                       value_decimals2=1, flat_min_range2=None, axis_unit='',
+                       save_log=False, log_extra=None):
         """CPU 高压的**一条曲线**(结果弹窗 / 历史详情上的按钮)。
 
         玩家 2026-09-16: 「可以搞个图吗, 也就 300 个数据;
@@ -16609,12 +16750,46 @@ class RootWidget(BoxLayout):
         close_btn = Button(text='返回', font_size='16sp', bold=True, background_normal='',
                            background_color=hex_rgb(COL_BTN_OFF) + (1,),
                            size_hint_y=None, height=dp(46))
-        content.add_widget(close_btn)
+        if save_log:
+            # ⚠️ 2026-09-17 玩家: 「新增一个按钮, **保存记录**, 点击后把 txt 文件放在下载目录中」。
+            #    **只给功率曲线传 `save_log=True`** —— 那份 txt 里是功率的**原始采样**
+            #    (整数电流 + 当时的电压), 落盘的历史记录里没有这两条。
+            _srow = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+            _save_btn = Button(text='保存记录', font_size='16sp', bold=True,
+                               background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
+            _srow.add_widget(_save_btn)
+            _srow.add_widget(close_btn)
+            content.add_widget(_srow)
+            # ⚠️ 数据**在闭包里捕获**, 不能等点击时再读 `self._hp_*` —— 那时可能已经被
+            #    下一局覆盖, 而翻历史那条路的数据根本不在 `self` 里。
+            _logp = list(_w)
+            _loge = dict(log_extra or {})
+            _save_btn.bind(on_release=lambda *_: self._on_save_power_click(
+                _save_btn, _logp, _loge))
+        else:
+            content.add_widget(close_btn)
         popup = self._popup(0.92, 400, title='', content=content,
                             auto_dismiss=True, separator_height=0)
         close_btn.bind(on_release=popup.dismiss)
         popup.open()
         self._popup_fit_content(popup, content)
+
+    def _on_save_power_click(self, btn, pw=None, extra=None):
+        """点「保存记录」: 落盘, 并把结果**当场写在按钮上**(绝不静默失败)。
+
+        ⚠️ 与逐帧日志那条同一个规矩: 把**真实结果**说出来(成功给到哪儿了 / 失败为什么),
+           而不是只说一句"已保存" —— 玩家下一步要拿着这个文件去找它。
+        """
+        try:
+            _ok, _msg = self._save_power_log(pw, extra)
+        except Exception as _e:
+            _ok, _msg = False, "保存失败: %r" % (_e,)
+        try:
+            btn.text = _msg[:30]
+            Clock.schedule_once(lambda _d: setattr(btn, 'text', '保存记录'), 3.0)
+        except Exception:
+            pass
+        return _ok
 
     def _show_hp_detail(self, r):
         """某一条 CPU 高压记录的**详细成绩 + CPU 平均频率**。"""
@@ -16698,7 +16873,15 @@ class RootWidget(BoxLayout):
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
                 _pw2, dt=_dt2, title='CPU高压测试的功率曲线',
                 unit='W', unit_name='采样', value_decimals=2, flat_min_range=1.0,
-                axis_unit='W'))
+                axis_unit='W', save_log=True,
+                # ⚠️ 老记录里**没有**原始电流/电压序列(那是 v0.8.32 才开始留内存的),
+                #    所以这三项**显式传空** —— 让 txt 里那几列印 nan, 而不是退回
+                #    `self._hp_*`(上一局的残值)。游程那两行只用 W 序列, 照样算得出来。
+                log_extra={"pt": [], "raw": [], "mv": [],
+                           "meta": {"dt": r.get('power_dt') or 0.2,
+                                    "src": r.get('power_src'), "unit": r.get('power_unit'),
+                                    "stats": r.get('power_stats')},
+                           "panel": r, "head": r.get('device')}))
             _btnrow.add_widget(power_btn)
         close_btn = Button(text='关闭', font_size='14sp', bold=True,
                            background_normal='',
