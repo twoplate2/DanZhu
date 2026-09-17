@@ -5605,6 +5605,8 @@ RIM_H = FLOOR_Y - RIM_Y    # 杯口在 h 坐标里的高度(=324)
 #   从 design y=61 抬到 41 —— 正好顶到杯口, 再高就不是这个模型能给的了。
 OVERFLOW_MAX = 0.0         # design px, 允许堆顶超杯口多少(0=不溢出, 老行为)
 K2 = 0.20                  # 斜投影纵剪: 与碗/杯口椭圆 b/a≈0.20 同源(俯视约 12 度)
+PILE_SHADE_RANGE = 0.22    # 球堆明暗的**绝对刻度**幅度(2026-09-17): shade 从杯口的 1.0
+                           # 线性降到杯底的 1-本值。见 project_pile 处的长注释。
 PACK_PHI = 0.907           # 三角格盘面密度(pi/2sqrt3): 体积方程与格点枚举自洽
 TAPER = 1.43               # 圆肩: 底半径/堆高(对应休止角 ~35 度)
 
@@ -5966,12 +5968,22 @@ def project_pile(beads):
     span = (zmax - min(zs)) or 1.0
     out = []
     for idx, b in enumerate(beads):
-        t = (zmax - b["z"]) / span                     # 0=最远 1=最近
+        # 明暗 = **绝对刻度**(2026-09-17 改)。
+        # ⚠️ 原来是 `0.62 + 0.38 * (zmax - z) / span` —— 拿**这一堆自己的** z 跨度做 min-max,
+        #    于是每一堆的亮度跨度恒为 1.61:1, 与真实深度差无关。实测 x2 的两颗球深度只差
+        #    23.8px(屏幕上 4.8px)却差 38% 亮度 ⇒ 读起来像**两种材质**(玩家报的"明暗关系有问题")。
+        #    现在改成按**离地高度 h** 的绝对刻度(杯高 RIM_H 为尺度): 同一层的球亮度一致,
+        #    越高的球越亮 —— 方向与玻璃的左上来光一致。
+        # ⚠️ 杯底只压到 1-PILE_SHADE_RANGE(=0.78)而不是 0.62: 55% 的中奖画面是 2 颗球(单层),
+        #    压到 0.62 会把最常见的画面整体调暗 16%, 是净亏。
+        # 成本不变: 仍在建缓存时算一次(_pile_projected 按 (count, seed) 缓存), 运行期零新增。
+        _k = (RIM_H - b["h"]) / RIM_H
+        _k = 0.0 if _k < 0.0 else (1.0 if _k > 1.0 else _k)
         out.append({"i": idx,
                     "sx": CX + b["x"],
                     "sy": FLOOR_Y - b["h"] - K2 * b["z"],
                     "r": b["r"],
-                    "shade": 0.62 + 0.38 * t,
+                    "shade": 1.0 - PILE_SHADE_RANGE * _k,
                     "z": b["z"]})
     out.sort(key=lambda p: -p["z"])                    # 远先画, 近后画 -> 画家算法遮挡
     return out
