@@ -912,6 +912,14 @@ HP_SAMPLE_SEC = 10.0
 # ⚠️ 切片只做**一处**(`_run_hp_test` 里存 `_hp_power_*` 时)—— 统计 / 曲线 / 每瓦跑分 /
 #   导出 txt 全都吃那一条, 所以一处切就全都跟上了。
 HP_PWR_SKIP_SEC = 5.0
+# 功率曲线的**两个粒度**(玩家 2026-09-17 定的按钮)。⚠️ 名字同时用作**按钮文案**与**配置值**。
+POWER_GRAINS = ("每帧", "每5秒")
+POWER_GRAIN_DEFAULT = "每帧"
+# 每个粒度对应的"多少格合成一个点"。
+# ⚠️ 为什么「每5秒」是 25 格而不是 15 格(3 秒): 实测那两根挨着的峰合起来是
+#    **10 格连续高值(2 秒)** —— 3 秒一组(15 格)它占 2/3 ⇒ 均值 5.71 / 中位 5.94, **峰还在**;
+#    5 秒一组(25 格)它只占 40% ⇒ 中位数被平台拉回来(max **7.60 → 3.81**, 一个不剩)。
+POWER_GRAIN_K = {"每帧": 1, "每5秒": 25}
 
 # ⚠️ **高压测试的 CPU 频率/电池温度采样窗口**(玩家 2026-09-16:
 #    「只对第1秒到第359秒生效, 掐头去尾」)。
@@ -11515,6 +11523,12 @@ class RootWidget(BoxLayout):
         self.sound_mode = "on"
         # 用户档位会与屏幕/系统允许的刷新率共同决定实际目标上限。
         self.fps_cap_setting = FPS_CAP_DEFAULT
+        # 功率曲线的**粒度**(2026-09-17 玩家: 「每5秒和每帧的选择**是保存的**, 他**应该影响**
+        #   **电池功率的输出界面的数值范围**」)。
+        # ⚠️ 这条与"曲线滤波、统计用原始"那个故意的口径分离**相反** —— 玩家要的是**一致**:
+        #    切到「每5秒」之后, 面板那行的 平均/最低/最高 也要走平滑后的序列,
+        #    否则会出现"曲线最高 3.81、面板写着 7.60"的自相矛盾。
+        self.power_grain = POWER_GRAIN_DEFAULT
         self.max_plays = 50            # 每轮次数上限
         self.round_plays = 0           # 本轮已玩次数
         self.round_history = []        # 最近完成的轮次记录
@@ -12724,7 +12738,13 @@ class RootWidget(BoxLayout):
         #    拿它回答不了"那个尖峰是不是采样毛刺"这种问题)。
         self._hp_power_raw = list(_pwr["raw"])[_sk:]
         self._hp_power_mv = list(_pwr["mv"])[_sk:]
-        _pwr_ok = [x for x in self._hp_power_series if x is not None]
+        # ⚠️ 面板那三个数**跟着当前粒度走**(玩家 2026-09-17: 「他**应该影响**电池功率的
+        #    输出界面的数值范围」) —— 否则会出现"曲线最高 3.81、面板写着 7.60"的自相矛盾。
+        #    ⚠️ 但 `wh` **不跟着**(见它自己那行的注释): 能量守恒要的是"均值 × 时长"。
+        _gk = POWER_GRAIN_K.get(self.power_grain, 1)
+        _gseq = (_med5(self._hp_power_series, _gk) if _gk > 1 else self._hp_power_series)
+        _pwr_ok = [x for x in _gseq if x is not None]
+        _raw_ok = [x for x in self._hp_power_series if x is not None]
         _mv_ok = [x for x in _pwr["mv"] if x is not None]
         _i_ok = [abs(float(x)) * (0.001 if _pwr["unit"] == "ma" else 1e-6)
                  for x in _pwr["raw"] if x]
@@ -12780,7 +12800,14 @@ class RootWidget(BoxLayout):
             "amp_max": (round(max(_i_ok), 2) if _i_ok else None),
             # 总耗电 = Σ(P × dt) —— 功率是 5Hz **定长网格**, 所以 dt 就是格宽,
             # 缺失格(None)已经在 `_pwr_ok` 里滤掉, 不会把缺口算成 0 瓦。
-            "wh": (round(sum(_pwr_ok) * _pwr["dt"] / 3600.0, 3) if _pwr_ok else None),
+            # ⚠️ `wh` **始终用原始序列 + 按有效格外推** —— 两个理由:
+            #    ① 能量守恒要的是"**均值** × 时长", 换粒度会让它偏(中位数不是均值);
+            #    ② 顺带补上原来的**缺格偏差**: 旧式 `sum(有效格) × dt` 等价于"把缺格记成
+            #       0 瓦" —— 实测那份 Redmi K90 缺 40/1775 ⇒ wh 偏低 **2.25%**,
+            #       比整根尖峰的影响(0.15%)大 **6.6 倍**。现在按 平均功率 × 总时长 外推。
+            "wh": (round((sum(_raw_ok) / len(_raw_ok))
+                         * (len(_pwr["w"]) * _pwr["dt"]) / 3600.0, 3)
+                   if _raw_ok else None),
             # ---- 每瓦跑分(2026-09-17, 玩家: 「压力测试需要后面新增一个每瓦跑分功能」) ----
             # 口径 = **全程平均步/秒 ÷ 全程平均功率**。
             # ⚠️ 用**全程平均**而不是首窗峰值 —— 压力测试关心的是"持续能效", 首窗那几秒
@@ -13267,11 +13294,13 @@ class RootWidget(BoxLayout):
             #           「每5秒」= 每 25 格取中位数 ⇒ 那些 2 秒宽的峰被平台拉回来(max 7.60→3.81)。
             # ⚠️ 实测「每3秒」**去不掉**: 两根挨着的峰合起来 10 格, 3 秒一组占 2/3。
             # ⚠️ 导出那份**始终是原始值**(`log_extra` 不动), 与看哪一档无关。
-            _v1 = {"每帧": (list(_pw1), "采样"), "每5秒": (_med5(_pw1, 25), "5秒段")}
+            _v1 = {"每帧": (list(_pw1), "采样"),
+                   "每5秒": (_med5(_pw1, POWER_GRAIN_K["每5秒"]), "5秒段")}
+            _ck1 = self.power_grain          # 打开时**用上次选的那一档**(粒度是保存的)
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _v1["每帧"][0], dt=_dt1, title="CPU高压测试的功率曲线",
+                _v1[_ck1][0], dt=_dt1, title="CPU高压测试的功率曲线",
                 unit="W", unit_name="采样", value_decimals=2, flat_min_range=1.0,
-                axis_unit="W", save_log=True, variants=_v1, cur_key="每帧",
+                axis_unit="W", save_log=True, variants=_v1, cur_key=_ck1,
                 log_extra={"pt": list(getattr(self, "_hp_power_times", None) or []),
                            "raw": list(getattr(self, "_hp_power_raw", None) or []),
                            "mv": list(getattr(self, "_hp_power_mv", None) or []),
@@ -16856,7 +16885,36 @@ class RootWidget(BoxLayout):
             _w2 = variants[key][0]
         except Exception:
             return
+        # ⚠️ 粒度**是保存的**(玩家点名), 而且要**当场**生效 —— 写进状态 + 存盘 +
+        #    **立刻重算面板那三个数**, 否则要等下一次跑完测试才看到新口径。
+        self.power_grain = key
+        try:
+            self._save_config()
+        except Exception:
+            pass
+        self._recalc_power_stats()
         self._show_hp_curve(_w2, cur_key=key, **kw)
+
+    def _recalc_power_stats(self):
+        """按**当前粒度**重算面板那三个数(`_hp_battery` 的 power_*)。
+
+        ⚠️ 只动**现场**那一份(`_hp_battery`) —— 历史记录是只读的, 翻历史切粒度只影响曲线,
+           面板(历史详情)仍按记录里的原始值显示。
+        ⚠️ `power_n` 也跟着变(平滑后点数少了) —— 它现在表示"这一档有多少个点", 与曲线一致。
+        """
+        _s = list(getattr(self, "_hp_power_series", None) or [])
+        _b = getattr(self, "_hp_battery", None)
+        if not _s or not isinstance(_b, dict):
+            return
+        _gk = POWER_GRAIN_K.get(self.power_grain, 1)
+        _g = (_med5(_s, _gk) if _gk > 1 else _s)
+        _o = [x for x in _g if x is not None]
+        if not _o:
+            return
+        _b["power_mean"] = round(sum(_o) / len(_o), 2)
+        _b["power_min"] = min(_o)
+        _b["power_max"] = max(_o)
+        _b["power_n"] = len(_o)
 
     def _on_save_power_click(self, btn, pw=None, extra=None):
         """点「保存记录」: 落盘, 并把结果**当场写在按钮上**(绝不静默失败)。
@@ -16955,11 +17013,13 @@ class RootWidget(BoxLayout):
             power_btn = Button(text='功率曲线', font_size='14sp', bold=True,
                                background_normal='', background_color=hex_rgb(COL_SOC) + (1,))
             # ⚠️ 与现场那条**同一套**(两个粒度 + 导出原始值), 数据从记录里取。
-            _v2 = {"每帧": (list(_pw2), "采样"), "每5秒": (_med5(_pw2, 25), "5秒段")}
+            _v2 = {"每帧": (list(_pw2), "采样"),
+                   "每5秒": (_med5(_pw2, POWER_GRAIN_K["每5秒"]), "5秒段")}
+            _ck2 = self.power_grain
             power_btn.bind(on_release=lambda *_: self._show_hp_curve(
-                _v2["每帧"][0], dt=_dt2, title='CPU高压测试的功率曲线',
+                _v2[_ck2][0], dt=_dt2, title='CPU高压测试的功率曲线',
                 unit='W', unit_name='采样', value_decimals=2, flat_min_range=1.0,
-                axis_unit='W', save_log=True, variants=_v2, cur_key='每帧',
+                axis_unit='W', save_log=True, variants=_v2, cur_key=_ck2,
                 # ⚠️ 老记录里**没有**原始电流/电压序列(那是 v0.8.32 才开始留内存的),
                 #    所以这三项**显式传空** —— 让 txt 里那几列印 nan, 而不是退回
                 #    `self._hp_*`(上一局的残值)。游程那两行只用 W 序列, 照样算得出来。
@@ -18189,6 +18249,10 @@ class RootWidget(BoxLayout):
                 if (isinstance(cfg.get("fps_cap_setting"), int)
                         and cfg["fps_cap_setting"] in FPS_CAP_OPTIONS):
                     self.fps_cap_setting = cfg["fps_cap_setting"]
+                # ⚠️ 白名单走 `POWER_GRAINS`(**派生, 不手抄**) —— 与上面 rtp 那条同一个规矩:
+                #    手抄一份粒度清单, 将来加档位时漏改一处就静默读不回来。
+                if cfg.get("power_grain") in POWER_GRAINS:
+                    self.power_grain = cfg["power_grain"]
         except Exception:
             pass
         # (原来这里按读回的 sound_mode 决定是否 set_enabled(False); 现在不读档, 恒为 on, 删)
@@ -18207,6 +18271,7 @@ class RootWidget(BoxLayout):
                 "plays": self.plays,
                 "hits": self.hits,
                 "fps_cap_setting": int(self.fps_cap_setting),
+                "power_grain": self.power_grain,
             }
             path = self._config_path()          # 路径在主线程算好(App 不能从工作线程问)
             if _cfg_post(cfg, path):
