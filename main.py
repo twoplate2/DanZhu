@@ -8817,10 +8817,37 @@ _GUARD_Q = None                  # 守卫工作队列(None = 还没建, False = 
 _GUARD_LOCK = threading.Lock()
 
 
+_BENCH_ORIENT_LOCK = [False]
+"""跑分黑屏期间是否**锁死屏幕方向**。
+
+玩家 2026-09-17: 「黑屏 2 种跑分的时候, 这个时候应该**禁止屏幕旋转**, 否则很容易出问题
+(现在会出现很诡异的问题, 包括横屏转竖屏什么的)」。
+
+⚠️ 用**单元素 list** 而不是裸 bool —— 守卫(`_guard_orient_now`)跑在**工作线程**上, 而这个文件里
+   `_SYSUI_MODE` / `_FPS_INFO` 那一批跨线程标志**全是单元素 list** 的写法。统一口径, 免得
+   以后有人改成裸变量 + `global` 语句时漏掉一处(那会变成"设了没生效"这种最难查的毛病)。
+"""
+
+
 def _guard_orient_now():
-    """方向守卫的**真身**(只在工作线程上跑)。逻辑与原来一字不差。"""
+    """方向守卫的**真身**(只在工作线程上跑)。
+
+    ⚠️⚠️ 2026-09-17 加了**跑分期间锁死方向**(玩家报的 bug, 见 `_BENCH_ORIENT_LOCK`)。
+       病根: 原来宽屏设备**只在横置(rot 1/3)时才重申**, **竖置时什么都不设** ⇒ 平板竖着
+       跑分时方向完全敞开。而跑分是 **360 秒**的长过程, 中途一转: `LandLayer` 要重排整棵树、
+       `_veq()` 跟着变、黑屏矩形/白字的位置全要重算 —— 全发生在跑分线程满载的时候,
+       玩家看到的"横屏转竖屏"那类诡异现象就是这么来的。
+    ⚠️ `LOCKED`(14, API 18+) = 锁定**当前**方向、不随传感器变 ⇒ 跑分期间画面钉死。
+       **别用 `NOSENSOR`(5)**: 那个的语义是"用 manifest 声明的方向"(平板横竖都可能),
+       不是"锁在当前方向"。minapi 是 21 ⇒ 14 可用。
+    ⚠️ 锁只覆盖**黑屏那一段**(开关在 `_show_bench_dim` / `_hide_bench_dim`), 平时照旧分流 ——
+       宽屏用户平时是想能转就转的(那正是 `FULL_SENSOR` 的用意)。
+    """
     from jnius import autoclass
     act = autoclass("org.kivy.android.PythonActivity").mActivity
+    if _BENCH_ORIENT_LOCK[0]:
+        act.setRequestedOrientation(14)
+        return
     if _device_is_wide():
         rot = act.getWindowManager().getDefaultDisplay().getRotation()
         if rot in (1, 3):
@@ -8849,6 +8876,26 @@ def _set_system_ui(immersive):
         ok = _guard_post("immerse")
         if not ok:
             _guard_immersive_now()
+    except Exception:
+        pass
+
+
+def _set_orient_lock(on):
+    """**跑分黑屏期间锁死屏幕方向**(玩家 2026-09-17, 见 `_BENCH_ORIENT_LOCK` 的说明)。
+
+    ⚠️ 与 `_set_system_ui` **逐字同款**: 改标志 + **立刻投一次**。
+       不能只改标志、等下一个 2.5 秒的周期重申 —— 那 2.5 秒里玩家转一下屏幕就出事:
+       黑屏矩形是 `_relayout_bench_dim` 算好的, 旋转会让 GameArea 重排而矩形不一定跟上,
+       玩家报的「**会出现非黑屏画面, 甚至有原有的弹珠屏幕**」就是这么来的。
+    ⚠️ 非安卓只改标志位(桌面没有方向可锁), 与那两处的分支一致。
+    """
+    _BENCH_ORIENT_LOCK[0] = bool(on)
+    if platform != "android":
+        return
+    try:
+        ok = _guard_post("orient")
+        if not ok:
+            _guard_orient_now()
     except Exception:
         pass
 
@@ -11746,6 +11793,10 @@ class RootWidget(BoxLayout):
 
     def _show_bench_dim(self):
         self._bench_dim_shown = True
+        # ⚠️ 2026-09-17: **黑屏期间锁死屏幕方向**(玩家: 「黑屏 2 种跑分的时候, 这个时候应该
+        #    禁止屏幕旋转, 否则很容易出问题…会出现非黑屏画面, 甚至有原有的弹珠屏幕」)。
+        #    放在最前面: 后面那几步(重排矩形/切系统栏)都依赖"方向不会在它们之间变"。
+        _set_orient_lock(True)
         # ⚠️ 2026-09-15: 0.72 → **1.0**(玩家: 「你直接黑屏就行」)。原来 0.72 是为了"盖住但
         #    还看得见板面", 现在要的是**纯黑** —— 跑分期间没什么可看的, 少画就是少抢 CPU。
         self._bench_dim_col.rgba = (0.05, 0.06, 0.09, 1.0)
@@ -11779,24 +11830,35 @@ class RootWidget(BoxLayout):
 
     def _relayout_bench_dim(self, *_):
         if getattr(self, "_bench_dim_shown", False):
-            # 盖满等效竖屏窗口(RootWidget 在 anchor 居中, self.size 只是内容列);
-            # 矩形画在 RootWidget.canvas.after, 随 LandLayer 一起旋转
-            _vp = self._veq()
-            self._bench_dim_rect.pos = (-self.x, -self.y)
-            self._bench_dim_rect.size = _vp
-            # 白字摆在**视口中心**(不是在 self 的坐标系里) —— 与黑屏矩形同一套算法。
+            # ⚠️⚠️ **视口必须读 `self.parent`(App.build 里那个 AnchorLayout), 不能按 `self.x`
+            #    反推**(2026-09-17 玩家报的 bug: 「高压测试的时候 在 Y700 黑屏不均匀,
+            #    **右侧的不是黑色**」)。
+            #    病根: 上一版写的是 `pos = (-self.x, -self.y)` + `size = self._veq()` ——
+            #    作者的意图是"RootWidget 在 anchor 里居中, 把原点挪到视口原点", **但 Kivy 的
+            #    canvas 指令本来就是绝对(窗口)坐标, 父级不做平移**(这条在 CLAUDE.md 里写着) ⇒
+            #    那个 `-self.x` 反而把矩形推到了**负坐标**, 于是右边露出一条 `self.x` 宽的缝。
+            #    **只有 `self.x != 0` 的机器才看得见**: 手机上内容列正好铺满(`self.x = 0`)永远正常;
+            #    平板(Y700 等效竖屏 792dp, 内容列 780dp)居中后 `self.x ≈ 6dp` ⇒ 右边露约 16px。
+            #    ⇒ 改成和 `_relayout_hud_dim`(2026-09-11 踩过**同一个坑**、已修)逐字同款:
+            #      直接用父容器那个矩形 —— 它就是"等效视口", 横屏反旋转时铺满整块物理屏。
+            vp = self.parent
+            if vp is None or vp.width <= 1.0 or vp.height <= 1.0:
+                vp = self                       # 未挂父/尺寸未定: 退回自身(探针夹具走这条)
+            self._bench_dim_rect.pos = (vp.x, vp.y)
+            self._bench_dim_rect.size = (vp.width, vp.height)
+            # 白字摆在**视口中心** —— 与黑屏矩形同一套坐标(`vp`), 别再混 `-self.x`。
             # ⚠️ 居中靠 `texture_size / 2`, 不能用固定尺寸: 文字长度会变(`物理跑分 3/5`)。
             try:
                 _ts = self._bench_msg_lbl.texture.size
-                _mx = -self.x + (_vp[0] - _ts[0]) / 2.0
-                _my = -self.y + (_vp[1] - _ts[1]) / 2.0
-                self._bench_msg_rect.pos = (_mx, _my)
+                self._bench_msg_rect.pos = (vp.x + (vp.width - _ts[0]) / 2.0,
+                                            vp.y + (vp.height - _ts[1]) / 2.0)
                 self._bench_msg_rect.size = _ts
             except Exception:
                 pass
 
     def _hide_bench_dim(self):
         self._bench_dim_shown = False
+        _set_orient_lock(False)      # 与 `_show_bench_dim` 那一对, 见那边的说明
         self._bench_dim_col.rgba = (0, 0, 0, 0)
         self._bench_dim_rect.size = (0, 0)
         # ⚠️⚠️ **黑屏撤掉 ⇒ 系统栏切回"非沉浸"**(与 `_show_bench_dim` 那一对, 见那边说明)。
