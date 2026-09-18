@@ -3277,9 +3277,15 @@ class _SoundPoolOut:
         # ⚠️ K5(增量探针)的缓存: **已经亲眼确认过"能播"的 sid 集合**。
         #    它让每轮不必重扫已确认的那批(真机实测: 那是 820ms 里 ~130ms 的纯浪费)。
         #    ⚠️⚠️ 它必须与两张 id 表**同生命周期** ⇒ 就在这个函数里清, 不另开一处。
-        #    ⚠️ 键是 **sid 的值**(不是名字): `_rebuild` 换池后 sid 全变 ⇒ 新 id 天然不在
-        #       集合里 —— 于是"这里漏清"的最坏后果只是多探一轮, 而不是把没解码完的
-        #       当成已就绪(假绿)。这是评审点名的本项目头号失效形状, 所以加这层保险。
+        #    ⚠️ 键是 **(池序号, sid)**, **必须带池序号**:
+        #       ⚠️⚠️ 两个 SoundPool 实例的 sampleId 是**各自从 1 开始编号**的(池 1 是 1~40、
+        #          池 2 是 1~61)。2026-09-18 真机日志抓到的假绿就在这儿: 只用纯 sid 当键时,
+        #          池 2 前 40 个的 sid 撞上了池 1 已确认过的 ⇒ 被当成"已确认"直接跳过 ⇒
+        #          那 40 个样本**从没被验证过就被放行**(正是本项目头号失效形状:
+        #          「闸门放行、后端其实还没就绪 ⇒ 静默不响」)。证据: 日志里第 2 轮
+        #          `真扫 61 = 池1 的 40 + 池2 的 21`, 正好少 40。
+        #    ⚠️ `_rebuild` 换池后 sid 全变 ⇒ 新 (池, sid) 天然不在集合里 —— 于是"这里漏清"
+        #       的最坏后果只是多探一轮, 而不是假绿。
         self._ok_sids = set()
 
     def _rebuild(self):
@@ -3331,10 +3337,12 @@ class _SoundPoolOut:
         #    这正是启动日志要量清楚的那件事: 每轮多贵、要几轮才过。
         # ⚠️ 2026-09-18: 两个池**各自串行**探 —— 每个池里"同时最多一条流"这个前提因此
         #    仍然成立, 而 bug B1 的补试逻辑正是靠它排除"拿不到流"这个原因。
-        _pairs = [(self._sp, list(self._ids.items()))]
+        # ⚠️ 每项带**池序号**(0/1) —— 确认集的键要用它(见 `_reset_pools` 里的说明:
+        #    两个池的 sampleId 各自从 1 编号, 只用 sid 做键会跨池互相冒充)。
+        _pairs = [(0, self._sp, list(self._ids.items()))]
         if self._sp2 is not None:
-            _pairs.append((self._sp2, list(self._ids2.items())))
-        if not _pairs[0][1] and (len(_pairs) < 2 or not _pairs[1][1]):
+            _pairs.append((1, self._sp2, list(self._ids2.items())))
+        if not _pairs[0][2] and (len(_pairs) < 2 or not _pairs[1][2]):
             self._probe_scan = 0
             self._probe_played = 0
             self._probe_stuck = ""
@@ -3343,7 +3351,7 @@ class _SoundPoolOut:
         _seq = 0        # 从队首起**连续就绪**的个数(自动判定读它, 语义与加 K5 之前一致)
         _stuck = ""
         try:
-            for _pool, _tab in _pairs:
+            for _pi, _pool, _tab in _pairs:
               for name, sid in _tab:
                 # ⚠️ 2026-09-18 (K5): **已经亲眼确认过能播的, 不再重扫**。
                 #    真机日志实测: 热启动两轮共 play 128 次、每次约 5.1ms ⇒ 探针自己花掉
@@ -3351,7 +3359,7 @@ class _SoundPoolOut:
                 #    而每轮从头重扫已确认的那批, 对结果零信息、对成本满贡献。
                 #    依据: `_ids` **只增不减**(唯一写入点是 prime), 启动窗口内没有任何地方
                 #    release 单个 sample ⇒ "刚才能播" ⇒ "现在还能播"成立(评审逐行核实过)。
-                if sid in self._ok_sids:
+                if (_pi, sid) in self._ok_sids:
                     _seq += 1                # 它仍然算"连续就绪"的一段
                     continue
                 _n += 1
@@ -3376,7 +3384,7 @@ class _SoundPoolOut:
                     _pool.stop(st)           # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
-                self._ok_sids.add(sid)       # 亲眼确认过 ⇒ 以后不必再扫它(K5)
+                self._ok_sids.add((_pi, sid))   # 亲眼确认过 ⇒ 以后不必再扫它(K5)
                 _seq += 1
               if _stuck:
                 break
