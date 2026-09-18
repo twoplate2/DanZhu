@@ -3548,17 +3548,29 @@ class _SoundPoolOut:
                 return True
         return False
 
+    def _each_pool(self, _fn):
+        """对**每一个**池做同一件事(切后台/静音/退出都要管全, 见下面的教训)。
+        ⚠️ 池可能只有一个(SFX_POOL_SPLIT 关了 / 第二个池构造失败) ⇒ `_sp2 is None` 要跳过;
+        每个池各自 try —— 一个池出事不能拖累另一个。"""
+        for _p in (self._sp, getattr(self, "_sp2", None)):
+            if _p is None:
+                continue
+            try:
+                _fn(_p)
+            except Exception:
+                pass
+
     def pause(self):
-        try:
-            self._sp.autoPause()            # 切后台/静音: 暂停所有流
-        except Exception:
-            pass
+        """切后台 / 静音: 暂停**所有池**的流。
+
+        ⚠️ 2026-09-18 修(评审挖出, 已逐行核实): 原来只 `self._sp.autoPause()`,
+        而 `_sp2`(语音那个池)**从来没被暂停过** ⇒ 按静音/切后台时,
+        正在念的那句语音会**继续念完**(别的音都停了) —— 而语音恰恰是最长的那批(1~3 秒)。"""
+        self._each_pool(lambda _p: _p.autoPause())
 
     def resume(self):
-        try:
-            self._sp.autoResume()
-        except Exception:
-            pass
+        """切后台回来: 恢复**所有池**(与 pause 对称 —— 只暂停不恢复会留下一半没声的池)。"""
+        self._each_pool(lambda _p: _p.autoResume())
 
     def close(self):
         try:
@@ -3568,10 +3580,10 @@ class _SoundPoolOut:
                 PythonActivity.mActivity.unregisterReceiver(self._receiver)
         except Exception:
             pass
-        try:
-            self._sp.release()
-        except Exception:
-            pass
+        # ⚠️ 2026-09-18 同上: 原来只 release 了 `_sp` ⇒ **语音池一直漏着**。
+        #    ⚠️ **不把字段置 None** —— `play_named` / `probe_all` 都在判 `is not None`,
+        #    置 None 会把"释放后的旧引用"变成"路径分岔"。
+        self._each_pool(lambda _p: _p.release())
 
 class _KivySoundOut:
     """桌面后备: Kivy SoundLoader(SDL2)。能同时响, 但延迟/叠加不如 winmm/SoundPool。"""
