@@ -2101,6 +2101,67 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #   门禁: fx_probe 330 条(+3)。
 #   验证: --selftest OK · fx_probe 330 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
 #
+# 【v0.8.61 「音效就绪」可行性实验包 —— 换成 Java 层的加载完成回调(闸门)】
+#
+#   要解决什么: 老机器(骁龙 8+ Gen 1 / Android 13)每次启动「音效等待」2.9~3.6 秒。
+#   实测那 3 秒里 **96% 是"逐个试播 101 个样本"这件事本身**(29~33 ms/次), 不是解码慢
+#   (同机热启动的解码等待≈0; 纯 CPU 的烘焙三台机器只差 1.57 倍)。
+#
+#   根因(AOSP 已核): Android 11~14 的 `StreamManager.cpp` 里 `kPlayOnCallingThread = true`
+#   ⇒ `play()` **在调用线程上建并启动 AudioTrack**; 而 `Stream.cpp` 只对**同一个 soundID**
+#   复用 ⇒ 101 个不同样本 = 101 次建流。Android 15+ 该常量改成 false(所以新机器 2.99ms
+#   与老机器 33ms **不是同一把尺子**)。
+#
+#   做法: 用 `SoundPool.setOnLoadCompleteListener` 当就绪信号, 但它住在**纯 Java** 里
+#   (`java/com/plinko/SoundGate.java`, 经 `android.add_src` 进包), Python 只做下行查询。
+#   ⚠️ 当年否掉它的理由("PythonJavaClass 代理失灵/被 GC ⇒ 全库永久静音")否的是**那座桥**,
+#      不是这个接口。逐条核过 AOSP/SDL:
+#        · `setOnLoadCompleteListener` **自己**建 Handler: 优先**调用线程**的 Looper, 取不到
+#          用 main Looper; 该 Handler **强引用**监听器(android13 分支没有 WeakReference)
+#          ⇒ 监听器只要是 Java 对象就没有 GC 风险。
+#        · p4a/SDL2 里 `SDL_main`(Python/Kivy)跑在**独立的 SDLThread**, 不是安卓 UI 线程
+#          ⇒ 从 Python 线程 attach 拿到的是 main Looper, 而 UI 线程正常跑 `Looper.loop()`
+#          ⇒ 回调送得到。
+#      **唯一的实测确认点是回调线程名**(日志里那行 `就绪闸门 … 线程=`), 空 = 送不到。
+#
+#   ⚠️ **判据的这一处变化要记在账上**: 闸门证明的是"**已解码**", 不是"**建流播出成功**"。
+#      它仍是**逐个**确认(不是抽查), 但确认的是解码那一环 —— 玩家当年那条硬约束的原话是
+#      "每个样本必须被真正试播确认过至少一次"。**这一条需要所有者点头**, 而实验档 A(只跑
+#      老探针)会把"闸门自记的时刻"一起印出来, 两者一致就说明这一处变化是安全的。
+#
+#   兜底(本包的核心安全设计): 放行判据 = 「闸门打开」**或**「老探针说好」, 谁先到听谁的。
+#     · 闸门可用时才走闸门优先: 先等它 `SFX_GATE_FIRST_SEC=1.5` 秒, 到点不开 ⇒ 转老探针;
+#     · 闸门不可用(类取不到 / 无 jnius / 桌面) ⇒ 与 v0.8.60 **逐字相同**;
+#     · 6 秒硬超时、绝不软锁 —— 一个字没改。
+#     ⇒ **最坏情况 == 今天**, 唯一代价是"闸门挂着但打不开"时多等 1.5 秒。
+#
+#   四档实验(点「重放冷启动」往上换一档, 循环; 档位写在**后端**上, 不是 RootWidget):
+#     A `off`   只跑老探针 = v0.8.60 那条路(基线; 并且**同时**印出闸门自记的时刻)
+#     B `only`  只等闸门, 老探针一次都不跑(闸门的纯读数, 没有探针抢 CPU)
+#     C `first` 出货形态(闸门优先 + 1.5s 后老探针兜底)
+#     D `first` + 48k 对拍
+#   ⚠️ 「重放冷启动」现在会**把两个池整个换新**(`replay_reset`)再做冷烘焙 —— 不换的话
+#      `_ok_sids` 已记满(探针空转)、闸门已闩上(量不出它多快), 而且"冷启动"名不副实。
+#
+#   48k 对拍(第 4 档, 外部模型建议里唯一还有救的那条): 不改 APK 资产 —— 拿缓存里 10 个
+#   合成音在 Python 里当场重采样成 48k(线性插值)并与 22050 对拍 `play()` 单价, 交替跑 5 轮,
+#   报**中位数与最小值**(单价有 143ms 那种离群点)并把**字节比 2.18x** 一起印出来
+#   (否则"按字节定价"和"按采样率"分不开)。
+#
+#   ⚠️ 外部四份答案里被判死的两条(别再试):
+#     · 「自己用 MediaCodec 解一遍」—— SoundPool 有**自己的**解码线程与内存池, `play()` 查的是
+#       它自己的就绪标记; 在外面解一遍既不改它的状态、还得让它再解一遍 ⇒ 不可行。
+#     · 「冷路径做完 probe、热启动复用 SoundPool」—— 我们每次启动都是**全新进程**
+#       (`_await_ready` 每次 `_bake` 之后都跑, 而热启动日志里是满满 101 次点名) ⇒ 用不上。
+#     · 「自己写混音器 / 单条长驻 AudioTrack」—— 换掉整条播放路径, 风险最大, 本包不做。
+#
+#   回退(一行): `SFX_GATE = False` ⇒ 闸门永不挂载, 全链路等价于 v0.8.60。
+#
+#   未验实的(真机上要看的): ① Java 类能不能进包(`android.add_src`); ② 回调从哪个线程来
+#   (日志那行 `线程=`); ③ 实时是不是真如预期 —— 全在启动日志与重放详情弹窗里。
+#
+#   验证: py_compile OK · --selftest OK · --smoke OK · fx_probe 19 项 = 基线(逐条同名, 一条不新增)。
+#
 # 【v0.8.60 按对抗复核修 v0.8.59 的实验包 —— 含一条**致命**: 档位根本没传到后端】
 #
 #   ⚠️⚠️ **别用 0.8.59 做那四组对照**: 它把档位写在 RootWidget 上、读在 `_SoundPoolOut` 上
@@ -6250,7 +6311,7 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe 336 条(+6: 持久指令表四条 + 面板两档两条; 另更新了几条被取代的旧断言)。
 #   验证: --selftest OK · fx_probe 336 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
-version = 0.8.60
+version = 0.8.61
 # ⚠️ **版本号实际一直在用 `0.8.x`**(玩家 2026-09-17 定: 这次 bump 到 `0.8.21`)。
 #    下面这段"换成 `1.0`"的方案**已作废**, 留着只为解释历史, **别再照着改**:
 #    2026-09-16 14:47 的 `84b8a57` 曾把值改成 `1.0` 并写下这段注释, **11 分钟后**
@@ -6296,6 +6357,15 @@ android.manifest.orientation = fullSensor
 fullscreen = 0
 
 android.permissions = VIBRATE
+
+# v0.8.61: 给 APK 加一个**自己写的 Java 源目录**(`java/com/plinko/SoundGate.java`)。
+# ⚠️ 这是本项目第一次往包里塞自制 Java。已核 buildozer 1.5.0 的 `execute_build_package`:
+#    它读 `app.android.add_src` ⇒ 转成 p4a 的 `--add-source` ⇒ bootstrap 的 build.py 定义了这个
+#    选项并喂给 gradle。**类取不到不会崩**: `_attach_gates` 全包 try/except, 拿不到就静默退回
+#    老探针(日志里印「闸门 无(类取不到: …)」)。备选路是 `p4a/hook.py` 往 dist 里写文件。
+# ⚠️ 那个 .java **通篇只写 ASCII** —— CI 上 javac 的默认源编码不保证是 UTF-8, 注释里一个
+#    中文字节就可能把整个 APK 编崩。
+android.add_src = java
 
 # targetSdk=33(2026-08-17): 30 的兼容模式在 12L+ 大屏(sw>=600dp)会被塞固定比例
 # letterbox 盒(ZUI 近正方形半屏盒, 实测 fullSensor 四方向也躲不开, 像素取证确认)。
