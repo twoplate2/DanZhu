@@ -2472,7 +2472,6 @@ SFX_POOL_SPLIT = True
 #      ② 解码是不是**按加载顺序**推进的 —— 若是, "尾部哨兵"(只查最后一个)就成立,
 #         101 次 play 可以变成 1 次, 省 ~620ms。
 #    ⚠️ 代价: 前两轮扫满 ⇒ 诊断版的「音效等待」比正常版**长**, 别拿它当性能回归。
-PROBE_DIAG = False     # ⚠️ 已关(2026-09-18): 密采样之后不需要它了, 见 SFX_READY_POLL
 # ⚠️ 2026-09-18: 哨兵查尾(每轮先只看每个池的队尾, 2 次 play) —— 见 `probe_all` 里的说明。
 #    ⚠️ 这是**预检不是判据**: 尾部好了仍要全扫确认, 最坏只是白扫一次, 不会放行没就绪的。
 SENTINEL_TAIL = True
@@ -3200,7 +3199,6 @@ class _SoundPoolOut:
         #    `played` 是 K5 之后新增的 —— `scan` 会把"跳过已确认的"也算成就绪,
         #    所以它不再等于"探针这轮干了多少活"; 两个并排看才知道 K5 省了多少。
         self._probe_scan = 0        # 从队首起**连续**就绪的个数
-        self._probe_ready_n = 0     # **总共**好了几个(判顺序性要它跟上面那个比)
         self._probe_played = 0
         self._probe_stuck = ""
         self._probe_round = 0        # 探针跑到第几轮了(诊断只在最前两轮生效)
@@ -3402,9 +3400,6 @@ class _SoundPoolOut:
             return True
         self._probe_round += 1
         # ⚠️ 诊断模式: 前两轮扫完整个列表(不提前退出), 好把"就绪分布"记下来。
-        _diag = bool(PROBE_DIAG) and self._probe_round <= 2
-        _bad = []       # 诊断: 未就绪的名字(按扫描顺序)
-        _gap = False    # 诊断: 见过第一个未就绪之后, 后面的成功不再计入"连续前缀"
         # ⚠️ 2026-09-18: **哨兵预检** —— 先只看每个池的**队尾**(2 次 play)。
         #    依据: 解码是队列式的(先 load 的先解, AOSP 的 SoundDecoder 队列), 所以
         #    "队尾好了"很大概率意味着前面也好了。
@@ -3417,8 +3412,7 @@ class _SoundPoolOut:
         #       「连续就绪个数」(判顺序性的唯一来源)在哨兵轮次算不出来。
         _tail = ""
         _tail_n = 0
-        if (SENTINEL_TAIL and (self._probe_round % SENTINEL_SCAN_EVERY) != 1
-                and not (PROBE_DIAG and self._probe_round <= 2)):
+        if (SENTINEL_TAIL and (self._probe_round % SENTINEL_SCAN_EVERY) != 1):
             for _pi, _pool, _tab in _pairs:
                 if not _tab:
                     continue
@@ -3441,7 +3435,6 @@ class _SoundPoolOut:
                 self._probe_scan = 0
                 self._probe_played = _tail_n
                 self._probe_stuck = _tail
-                self._probe_ready_n = 0
                 return False
         _n = 0          # 这一轮**真的**调用了几次 play(诊断: 它反映"探针自己多贵")
         _seq = 0        # 从队首起**连续就绪**的个数(自动判定读它, 语义与加 K5 之前一致)
@@ -3475,19 +3468,14 @@ class _SoundPoolOut:
                         st = 0
                     if not st:
                         if not _stuck:
-                            _stuck = name      # 第一个未就绪的**总是**记下来(返回值靠它)
-                        if _diag:
-                            _bad.append(name)  # 诊断: 记下来接着扫
-                            _gap = True
-                            continue
-                        break                  # 正常: 撞到第一个就停(原行为, 逐字不变)
+                            _stuck = name      # 第一个未就绪的记下来(返回值靠它)
+                        break                  # 撞到第一个就停
                 try:
                     _pool.stop(st)           # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
                 self._ok_sids.add((_pi, sid))   # 亲眼确认过 ⇒ 以后不必再扫它(K5)
-                if not _gap:
-                    _seq += 1          # 诊断模式下, 第一个未就绪之后的成功不算"连续前缀"
+                _seq += 1
               if _stuck:
                 break
         except Exception:
@@ -3498,26 +3486,6 @@ class _SoundPoolOut:
         self._probe_scan = _seq
         self._probe_played = _n
         self._probe_stuck = _stuck
-        # ⚠️ 全扫那几轮顺带记「**总共**好了几个」—— 判顺序性要它跟 `_seq`(队首连续好了几个)比:
-        #    两者相等 ⇒ 好的全挤在队首 ⇒ 顺序; 总共 > 连续 ⇒ 有跳着好的 ⇒ 乱序。
-        #    (2026-09-18: v0.8.44 那三个点 0→24→101 **证明不了**顺序性 —— 连续前缀按定义
-        #     就单调, 好了的不会变回没好, 所以它涨不代表"后面都没好"。)
-        self._probe_ready_n = max(0, _n - len(_bad)) if _diag else _seq
-        if _diag:
-            # 诊断: 把"就绪分布"印出来。判顺序性看这里 ——
-            #   未就绪**全挤在尾部** ⇒ 按加载顺序推进 ⇒ 尾部哨兵可行;
-            #   **零散分布** ⇒ 乱序 ⇒ 哨兵会卡在永远不卡的索引上, 不可行。
-            try:
-                _tot = _n
-                _okn = _tot - len(_bad)
-                _first = _bad[0] if _bad else "-"
-                _idx = list(_bad)
-                _show = ", ".join(_idx[:8]) + (" ..." if len(_idx) > 8 else "")
-                _boot_log("probe", "诊断轮 %d: 全扫 %d 个 / 就绪 %d / 连续前缀 %d / "
-                                   "未就绪 %d 个, 首个=%s, 分布=[%s]"
-                          % (self._probe_round, _tot, _okn, _seq, len(_bad), _first, _show))
-            except Exception:
-                pass
         return not _stuck
 
     def play_named(self, name, gain01):
@@ -5366,10 +5334,9 @@ class Sfx:
                     pass
                 # ⚠️ `扫 N 个` = 从队首起连续就绪的个数(K5 之后它会把"跳过复扫的"也算进去),
                 #    `真扫 M 个` = 这一轮实际掏了几个样本(补试不重复计) —— 两个并排看才知道 K5 省了多少。
-                _boot_log("probe", "第 %d 轮(t+%.0f ms): 探针自身 %.1f ms, 就绪 %s(连续 %s) 个, "
+                _boot_log("probe", "第 %d 轮(t+%.0f ms): 探针自身 %.1f ms, 连续就绪 %s 个, "
                                    "真扫 %s 个, 本轮间隔 %.0f ms, %s"
                           % (_rnd, (time.time() - t0) * 1000.0, _pdt,
-                             getattr(self.out, "_probe_ready_n", "?"),
                              getattr(self.out, "_probe_scan", "?"),
                              getattr(self.out, "_probe_played", "?"),
                              _poll * 1000.0,
@@ -5453,7 +5420,15 @@ class Sfx:
             #    PCM 后端(_bake_pcm)不写磁盘缓存 ⇒ `cached` 恒为 False ⇒ PC 上永远显示「冷启动」。
             #    那是**事实**, 不是标签错。(原先为了回避"冷启动在 PC 上恒真"而印成「合成耗时 …」,
             #    玩家要的是两边同一个口径, 所以统一。)
-            mode_row = "启动方式　%s启动　%.0f ms" % ("热" if self.cached else "冷", self.bake_ms)
+            # ⚠️ 2026-09-18(玩家): 老写法「启动方式　热启动　17 ms」把方式和耗时用全角空格
+            #    隔开、读起来像两个字段 ⇒ 改成自然语序。
+            #    ⚠️ 数值也改了: 以前是纯 `bake_ms`(烘焙), 而 `bake_ms` **不包含**
+            #       `_await_ready()` 那段等待(它在 `bake_ms` 结算**之后**才调)。
+            #       玩家 2026-09-18 问明白后要求改成「启动**总**耗时」
+            #       ⇒ 两段相加; 后面紧跟的「音效等待」是它的**明细**(不重复,
+            #       它本来就是总耗时里的一段)。
+            mode_row = "%s启动，启动总耗时 %.0f ms" % (
+                "热" if self.cached else "冷", self.bake_ms + self.ready_ms)
             n_rc = getattr(out, "rebuild_count", 0)
 
             # ⚠️ PCM 后端(PC 的 winmm / Kivy-SoundLoader): 下面三项对它**结构上就不适用**
@@ -5469,7 +5444,7 @@ class Sfx:
                 #    现在并成一行、用「，」分隔。这里以前写着"**绝不并成一行**" —— 那前提已经
                 #    变了: `_mk_lbl` 现在是自适应撑高的(折行只会让弹窗长高, 不会再被定高标签
                 #    裁掉尾巴), 所以合并是安全的, 而且省行数(那块面板的行数有硬预算)。
-                _live0 = "音效等待：0 ms"
+                _loads = ""       # **加载进度**那一行(玩家 2026-09-18: 时间一行、进度一行)
                 # ⚠️ 2026-09-16 玩家(PC 截图): 「之前有音频和语音加载数量统计, 你怎么给删了,
                 #    这次需要恢复了」。
                 #    **核实结论: PC 上从来没有过这两个数** —— 它们原先只长在下面的 named 分支
@@ -5497,9 +5472,15 @@ class Sfx:
                     _vf = _voice_files()
                     _nv_load = sum(1 for _n in _vf if _n in self.bank)
                     _nb_load = max(0, len(self.bank) - _nv_load)
-                    _live0 += "，音效加载 %d/%d，语音加载 %d/%d" % (
+                    _loads = "音效加载 %d/%d，语音加载 %d/%d" % (
                         _nb_load, self._n_bank or _nb_load, _nv_load, len(_vf))
-                rows = ["音频后端　%s" % bname, mode_row, _live0]
+                # ⚠️ 2026-09-18(玩家): **时间一行、加载进度一行**。
+                # ⚠️ 2026-09-18(玩家): 音效等待那个数**从变量来**(以前在 PC 分支里写死了 0)。
+                #    PC 上 `ready_ms` 本来就是 0(winmm 没有探针), 但**两边同一口径**才对得上。
+                rows = ["音频后端　%s" % bname,
+                        mode_row + "（音效等待 %.0f ms）" % self.ready_ms]
+                if _loads:
+                    rows.append(_loads)
                 if n_rc:
                     rows.append("后端重建　%d 次" % n_rc)
                 return rows
@@ -5531,15 +5512,23 @@ class Sfx:
             #       它们只在异常时出现, 正是这块面板存在的理由。
             #    ⚠️ "音效等待"那段原来在最下面, 这里**提前算**才并得进来; 三种分支的文案
             #       原样保留(有探针/无探针/未等待), 一个字没改。
+            # ⚠️ 2026-09-18(玩家): 三处改动 ——
+            #    ① 去掉「（上限 6000）」(项目内部的红线值, 对玩家没信息量);
+            #    ② 去掉「音效等待：」这个前缀 —— 它现在被括号包着,
+            #      括号里再带冒号很别扭;
+            #    ③ 整体改成「启动总耗时 610 ms（音效等待 593 ms）」
+            #      —— 括号明确告诉玩家"它是总数里的一部分"。
             if self.ready_ms > 0:
-                _wait = ("音效等待：%.0f ms（上限 %.0f）"
-                         % (self.ready_ms, self.SFX_READY_TIMEOUT * 1000.0))
+                _wait = "音效等待 %.0f ms" % self.ready_ms
             elif getattr(out, "probe_all", None) is None:
-                _wait = ("音效等待：无法确认能播（本后端无探针）"
-                         if platform == "android" else "音效等待：0 ms")
+                _wait = ("音效等待 无法确认能播（本后端无探针）"
+                         if platform == "android" else "音效等待 0 ms")
             else:
-                _wait = "音效等待：0 ms（未等待）"
-            rows = ["音效就绪：%s，语音就绪：%d/%d，%s" % (ready, _n_voice, _n_voice_all, _wait),
+                _wait = "音效等待 0 ms（未等待）"
+            # ⚠️ 2026-09-18(玩家): 「把时间放一起, 把加载进度放一起」⇒
+            #    时间(启动方式/启动耗时/音效等待)一行, 加载进度(音效就绪/语音就绪)一行。
+            rows = [mode_row + "（" + _wait + "）",
+                    "音效就绪：%s，语音就绪：%d/%d" % (ready, _n_voice, _n_voice_all),
                     "音频后端　%s" % bname]
             # ⚠️ 期望值**单独占一行**, 不并进上一行: 并进去会让那行超宽折行 —— 而折行是这里
             #    最容易出事的地方(v0.6.12 就栽在被定高标签裁掉了尾巴; 2026-09-11 在手机密度的
@@ -5551,7 +5540,8 @@ class Sfx:
                     # 把 SoundPool 构造失败的**原文**摆出来 —— 没有它就只能知道"降级了",
                     # 不知道"为什么降级", 而这正是这块面板当初存在的理由。
                     rows.append("　　　　　%s" % _err[:64])
-            rows.append(mode_row)
+            # ⚠️ 2026-09-18: 这里原来 append 一行「启动方式…」; 现在它并进第一行的
+            #    "时间"里了 —— 留着会把同一件事印两遍。
 
             # ⚠️ 这里原来有一行「输出采样率　48000 Hz」(v0.6.24 加的), **玩家 2026-09-11 定稿删除**:
             #    原话「去掉音频输出中的 输出采样率 这个其实是个固定数值」。
@@ -14005,7 +13995,9 @@ class RootWidget(BoxLayout):
         hph_btn = Button(text='高压测试历史', font_size='17sp', bold=True,
                          background_normal='', background_color=hex_rgb(COL_SOC) + (1,),
                          size_hint_y=None, height=dp(52))
-        info_btn = Button(text='启动信息', font_size='17sp', bold=True,
+        # ⚠️ 2026-09-18: 玩家要求「启动信息」-> **「游戏信息」**(只改界面文案;
+        #    源码注释里那些「启动信息」是给维护者看的行话, 不动)。
+        info_btn = Button(text='游戏信息', font_size='17sp', bold=True,
                           background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                           size_hint_y=None, height=dp(52))
         cap_btn = Button(text='帧率上限设定', font_size='17sp', bold=True,
@@ -14128,25 +14120,22 @@ class RootWidget(BoxLayout):
         # 「重放冷启动」: 不丢存档地按需复现"初次安装那种局"(见 _replay_cold_start)。
         # 玩家 2026-09-11 提的 —— 那个 bug 一年犯一次、"关掉重开"就自愈, 想抓现场只能卸载重装,
         # 而卸载会清掉余额/轮次。它不新建 Sfx 对象, 所以不碰任何接线, 也不动游戏状态。
-        # 「保存加载日志」: 玩家 2026-09-18 要求 —— 把从进程启动到摘页的**全过程**导成 txt。
-        # ⚠️ 它**不违反**这个弹窗的铁律(见方法 docstring: 不许放会动音频栈或游戏状态的按钮):
-        #    这个按钮**只写文件** —— 不碰 Sfx、不碰音频栈、不碰游戏状态, 连读都只读一次快照。
-        #    弹窗本身仍然保持"打开它不会改变任何东西"。
-        log_btn = Button(text='保存加载日志', font_size='17sp', bold=True,
-                         background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
-                         size_hint_y=None, height=dp(52))
+        # ⚠️ 2026-09-18: 「保存加载日志」那个按钮**已按玩家要求删除**。
+        #    服务端的 `_startup_log_text()` / `_save_startup_log()` **仍然保留** ——
+        #    它们不挂在任何按钮上就不会被调用; 留着是为了"想把日志导出来时把按钮加回来即可"
+        #    (那套导出降级链是现成的, 别当死代码清掉)。
         replay_btn = Button(text='重放冷启动', font_size='17sp', bold=True,
                             background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                             size_hint_y=None, height=dp(52))
         # ⚠️ 顺序 = 屏幕上的上下顺序(纵向 BoxLayout)。玩家 2026-09-11: 「把确定按钮放在重放冷启动
         #    下面」⇒ **重放冷启动在上、确定在下**。别按"添加顺序像主次"去调, 它就是几何顺序。
-        content.add_widget(log_btn)
         content.add_widget(replay_btn)
         content.add_widget(ok_btn)
         # ⚠️ 高度必须**按内容算**: 实测弹窗内容区 = 弹窗高 − 44px(Kivy 标题栏, 即使 title='' 也吃),
         #    每行 38px(行高 26 + spacing 12)。写死高度的话加一行就会被裁掉尾巴 —— v0.6.12 踩过。
         n_lbl = 1 + (1 if _info else 0) + len(rows) + _n_extra    # ⚠️ 那块面板有硬预算
-        n_btn = 3
+        n_btn = 2          # ⚠️ 2026-09-18: 删掉「保存加载日志」后从 3 改回 2 ——
+                           #    高度是按它算的, 不改会多留一块空白
         need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(32)
                 + dp(12) * (n_lbl + n_btn - 1))
         popup = self._popup(0.84, need + dp(64), title='', content=content,
@@ -14171,20 +14160,8 @@ class RootWidget(BoxLayout):
             popup.bind(on_dismiss=_stop_live)
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
         replay_btn.bind(on_release=lambda *_: (popup.dismiss(), self._replay_cold_start()))
-        # ⚠️ 提示**不弹新弹窗**(这里已经在弹窗里了, 叠一个必然出岔子): 照抄 `_save_power_log`
-        #    调用方那套 —— 把结果写进按钮文字, 3 秒后复原(见 17152 附近)。
-        def _on_save_log(*_a):
-            try:
-                _ok, _msg = self._save_startup_log()
-            except Exception as _e:
-                _ok, _msg = False, "保存失败: %r" % (_e,)
-            try:
-                log_btn.text = str(_msg)[:30]
-                Clock.schedule_once(lambda _d: setattr(log_btn, 'text', '保存加载日志'), 3.0)
-            except Exception:
-                pass
-            return _ok
-        log_btn.bind(on_release=_on_save_log)
+        # ⚠️ 2026-09-18: 原来这里还有「保存加载日志」按钮的回调(把保存结果写进按钮文字、
+        #    3 秒后复原)。按钮删了, 这段一并删掉。
         popup.open()
 
         # 上面那个高度是**按单行估的**; 一旦有行折了(设备越窄越容易折), 内容就比弹窗高。
