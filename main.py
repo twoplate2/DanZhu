@@ -2473,6 +2473,12 @@ SFX_POOL_SPLIT = True
 #         101 次 play 可以变成 1 次, 省 ~620ms。
 #    ⚠️ 代价: 前两轮扫满 ⇒ 诊断版的「音效等待」比正常版**长**, 别拿它当性能回归。
 PROBE_DIAG = False     # ⚠️ 已关(2026-09-18): 密采样之后不需要它了, 见 SFX_READY_POLL
+# ⚠️ 2026-09-18: 哨兵查尾(每轮先只看每个池的队尾, 2 次 play) —— 见 `probe_all` 里的说明。
+#    ⚠️ 这是**预检不是判据**: 尾部好了仍要全扫确认, 最坏只是白扫一次, 不会放行没就绪的。
+SENTINEL_TAIL = True
+# ⚠️ 每几轮保留一次**全扫** —— 否则「连续就绪个数」(判顺序性的唯一来源)就没了,
+#    因为哨兵命中时那个数算不出来。4 轮是拍的: 够密到能看见中间态, 又不至于太贵。
+SENTINEL_SCAN_EVERY = 4
 SFX_MASTER = 1.0             # 总音量 (0~1), 手机喇叭需要满幅
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
 SFX_RESULT_LEAD = 0.18       # 结果音(中奖/未中)前置静音: 让入袋声先落地 + 放大揭晓前定格
@@ -3193,7 +3199,8 @@ class _SoundPoolOut:
         #    从队首起连续就绪了几个(`scan`)、这一轮真的 play 了几次(`played`)、卡在谁。
         #    `played` 是 K5 之后新增的 —— `scan` 会把"跳过已确认的"也算成就绪,
         #    所以它不再等于"探针这轮干了多少活"; 两个并排看才知道 K5 省了多少。
-        self._probe_scan = 0
+        self._probe_scan = 0        # 从队首起**连续**就绪的个数
+        self._probe_ready_n = 0     # **总共**好了几个(判顺序性要它跟上面那个比)
         self._probe_played = 0
         self._probe_stuck = ""
         self._probe_round = 0        # 探针跑到第几轮了(诊断只在最前两轮生效)
@@ -3398,6 +3405,44 @@ class _SoundPoolOut:
         _diag = bool(PROBE_DIAG) and self._probe_round <= 2
         _bad = []       # 诊断: 未就绪的名字(按扫描顺序)
         _gap = False    # 诊断: 见过第一个未就绪之后, 后面的成功不再计入"连续前缀"
+        # ⚠️ 2026-09-18: **哨兵预检** —— 先只看每个池的**队尾**(2 次 play)。
+        #    依据: 解码是队列式的(先 load 的先解, AOSP 的 SoundDecoder 队列), 所以
+        #    "队尾好了"很大概率意味着前面也好了。
+        #    ⚠️⚠️ **但这是预检, 不是判据** —— 尾部好了**仍然要往下走全扫确认**。
+        #       所以即使某次乱序(尾部先好、中间还差一个), 最坏也只是**白扫一次**
+        #       (多花百来毫秒), **绝不会放行没就绪的样本**。护栏一个字没动。
+        #    ⚠️ 为什么**两个池各查各的尾**: 两个 SoundPool 实例是**并行解码**的,
+        #       池 2 的尾巴好了**不代表**池 1 都好 —— 只查一个尾是错的。
+        #    ⚠️ 每 `SENTINEL_SCAN_EVERY` 轮**跳过哨兵、直接全扫** —— 否则
+        #       「连续就绪个数」(判顺序性的唯一来源)在哨兵轮次算不出来。
+        _tail = ""
+        _tail_n = 0
+        if (SENTINEL_TAIL and (self._probe_round % SENTINEL_SCAN_EVERY) != 1
+                and not (PROBE_DIAG and self._probe_round <= 2)):
+            for _pi, _pool, _tab in _pairs:
+                if not _tab:
+                    continue
+                _nm, _sid = _tab[-1]
+                _tp = 0
+                try:
+                    _tail_n += 1          # ⚠️ 记**实际**次数: 一个池 1 次、两个池最多 2 次
+                    _tp = _pool.play(_sid, 0.0, 0.0, 1, 0, 1.0)
+                except Exception:
+                    _tp = 0
+                if not _tp:
+                    _tail = _nm
+                    break
+                try:
+                    _pool.stop(_tp)
+                except Exception:
+                    pass
+            if _tail:
+                # 队尾还没好 ⇒ 直接说没好, **不必扫中间**(这正是省下来的那几十次 play)
+                self._probe_scan = 0
+                self._probe_played = _tail_n
+                self._probe_stuck = _tail
+                self._probe_ready_n = 0
+                return False
         _n = 0          # 这一轮**真的**调用了几次 play(诊断: 它反映"探针自己多贵")
         _seq = 0        # 从队首起**连续就绪**的个数(自动判定读它, 语义与加 K5 之前一致)
         _stuck = ""
@@ -3453,6 +3498,11 @@ class _SoundPoolOut:
         self._probe_scan = _seq
         self._probe_played = _n
         self._probe_stuck = _stuck
+        # ⚠️ 全扫那几轮顺带记「**总共**好了几个」—— 判顺序性要它跟 `_seq`(队首连续好了几个)比:
+        #    两者相等 ⇒ 好的全挤在队首 ⇒ 顺序; 总共 > 连续 ⇒ 有跳着好的 ⇒ 乱序。
+        #    (2026-09-18: v0.8.44 那三个点 0→24→101 **证明不了**顺序性 —— 连续前缀按定义
+        #     就单调, 好了的不会变回没好, 所以它涨不代表"后面都没好"。)
+        self._probe_ready_n = max(0, _n - len(_bad)) if _diag else _seq
         if _diag:
             # 诊断: 把"就绪分布"印出来。判顺序性看这里 ——
             #   未就绪**全挤在尾部** ⇒ 按加载顺序推进 ⇒ 尾部哨兵可行;
@@ -5237,7 +5287,10 @@ class Sfx:
 
     # ---- 冷启动"真的能播了吗"的护栏(首次安装必然没声音的正面修复) -------------
     SFX_READY_TIMEOUT = 6.0             # 最多等这么久, 到点无条件放行(绝不软锁 —— 项目红线)
-    SFX_READY_POLL = 0.15               # 探测间隔(秒) —— **起手值**, 之后由速率自适应接管
+    SFX_READY_POLL = 0.03               # 探测间隔(秒) —— **起手值**, 之后由速率自适应接管
+    #   ⚠️ 2026-09-18: 0.15 -> 0.03。**这一版才敢压它**: 有了哨兵查尾, 每轮只要 2 次 play
+    #      (原来要扫到第一个未就绪, 实测 25 次), 所以"轮数多 ⇒ 总开销爆炸"那个老问题
+    #      不存在了(评审当年回退 v0.6.44 就是因为那个)。自适应仍然会按实测速率调整。
     #   ⚠️ 2026-09-18: 改过两轮, 最后定在"**按速率自适应**"(见 `_await_ready` 里的算法):
     #      · 固定 0.15: 发现得晚(真机日志显示解码在 16~180ms 之间就完了, 而探针等到 t+150
     #        才看第二眼);
@@ -5313,9 +5366,10 @@ class Sfx:
                     pass
                 # ⚠️ `扫 N 个` = 从队首起连续就绪的个数(K5 之后它会把"跳过复扫的"也算进去),
                 #    `真扫 M 个` = 这一轮实际掏了几个样本(补试不重复计) —— 两个并排看才知道 K5 省了多少。
-                _boot_log("probe", "第 %d 轮(t+%.0f ms): 探针自身 %.1f ms, 连续就绪 %s 个, "
-                                   "真扫 %s 个, 下轮间隔 %.0f ms, %s"
+                _boot_log("probe", "第 %d 轮(t+%.0f ms): 探针自身 %.1f ms, 就绪 %s(连续 %s) 个, "
+                                   "真扫 %s 个, 本轮间隔 %.0f ms, %s"
                           % (_rnd, (time.time() - t0) * 1000.0, _pdt,
+                             getattr(self.out, "_probe_ready_n", "?"),
                              getattr(self.out, "_probe_scan", "?"),
                              getattr(self.out, "_probe_played", "?"),
                              _poll * 1000.0,
