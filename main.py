@@ -3144,9 +3144,12 @@ class _SoundPoolOut:
         #    (定成"唯一的一处"就必须**形式上**也只有一处: 以后 grep `self._ids = {}`
         #     只该在 `_reset_pools` 里看到它 —— 靠"记得两处都改"迟早脱钩。)
         self._reset_pools()
-        # ⚠️ 这两个只给**启动日志**用(见 _startup_log_text), 没有任何逻辑读它们做判断:
-        #    探针每轮扫了几个、卡在谁 —— 它是"1000ms 里探针占多少"唯一的直接证据。
+        # ⚠️ 这三个只给**启动日志**用(见 _startup_log_text), 没有任何逻辑读它们做判断:
+        #    从队首起连续就绪了几个(`scan`)、这一轮真的 play 了几次(`played`)、卡在谁。
+        #    `played` 是 K5 之后新增的 —— `scan` 会把"跳过已确认的"也算成就绪,
+        #    所以它不再等于"探针这轮干了多少活"; 两个并排看才知道 K5 省了多少。
         self._probe_scan = 0
+        self._probe_played = 0
         self._probe_stuck = ""
         # ⚠️ **只增不减**(连 _rebuild 都不清) —— 启动日志用它判定「闸门活口」在真机上
         #    到底发生过几次。不能用 Sfx._failed: 那个在 _retry_failed 第一行就被搬空,
@@ -3271,6 +3274,13 @@ class _SoundPoolOut:
         """
         self._ids = {}
         self._ids2 = {}
+        # ⚠️ K5(增量探针)的缓存: **已经亲眼确认过"能播"的 sid 集合**。
+        #    它让每轮不必重扫已确认的那批(真机实测: 那是 820ms 里 ~130ms 的纯浪费)。
+        #    ⚠️⚠️ 它必须与两张 id 表**同生命周期** ⇒ 就在这个函数里清, 不另开一处。
+        #    ⚠️ 键是 **sid 的值**(不是名字): `_rebuild` 换池后 sid 全变 ⇒ 新 id 天然不在
+        #       集合里 —— 于是"这里漏清"的最坏后果只是多探一轮, 而不是把没解码完的
+        #       当成已就绪(假绿)。这是评审点名的本项目头号失效形状, 所以加这层保险。
+        self._ok_sids = set()
 
     def _rebuild(self):
         """路由变了(插/拔耳机)后重建: release 旧的, 建新池, 把**应到清单**全部重新 load。
@@ -3326,13 +3336,24 @@ class _SoundPoolOut:
             _pairs.append((self._sp2, list(self._ids2.items())))
         if not _pairs[0][1] and (len(_pairs) < 2 or not _pairs[1][1]):
             self._probe_scan = 0
+            self._probe_played = 0
             self._probe_stuck = ""
             return True
-        _n = 0
+        _n = 0          # 这一轮**真的**调用了几次 play(诊断: 它反映"探针自己多贵")
+        _seq = 0        # 从队首起**连续就绪**的个数(自动判定读它, 语义与加 K5 之前一致)
         _stuck = ""
         try:
             for _pool, _tab in _pairs:
               for name, sid in _tab:
+                # ⚠️ 2026-09-18 (K5): **已经亲眼确认过能播的, 不再重扫**。
+                #    真机日志实测: 热启动两轮共 play 128 次、每次约 5.1ms ⇒ 探针自己花掉
+                #    660ms, 而真正的解码只有 ~300ms —— 探针才是"音效等待 820ms"的大头。
+                #    而每轮从头重扫已确认的那批, 对结果零信息、对成本满贡献。
+                #    依据: `_ids` **只增不减**(唯一写入点是 prime), 启动窗口内没有任何地方
+                #    release 单个 sample ⇒ "刚才能播" ⇒ "现在还能播"成立(评审逐行核实过)。
+                if sid in self._ok_sids:
+                    _seq += 1                # 它仍然算"连续就绪"的一段
+                    continue
                 _n += 1
                 st = _pool.play(sid, 0.0, 0.0, 1, 0, 1.0)   # 0 增益 → 听不见
                 if not st:
@@ -3355,13 +3376,17 @@ class _SoundPoolOut:
                     _pool.stop(st)           # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
+                self._ok_sids.add(sid)       # 亲眼确认过 ⇒ 以后不必再扫它(K5)
+                _seq += 1
               if _stuck:
                 break
         except Exception:
-            self._probe_scan = _n
+            self._probe_scan = _seq
+            self._probe_played = _n
             self._probe_stuck = ""
             return True
-        self._probe_scan = _n
+        self._probe_scan = _seq
+        self._probe_played = _n
         self._probe_stuck = _stuck
         return not _stuck
 
@@ -5177,9 +5202,13 @@ class Sfx:
                                          bool(_ok)))
                 except Exception:
                     pass
-                _boot_log("probe", "第 %d 轮(t+%.0f ms): 探针自身 %.1f ms, 扫 %s 个, %s"
+                # ⚠️ `扫 N 个` = 从队首起连续就绪的个数(K5 之后它会把"跳过复扫的"也算进去),
+                #    `真扫 M 个` = 这一轮实际掏了几个样本(补试不重复计) —— 两个并排看才知道 K5 省了多少。
+                _boot_log("probe", "第 %d 轮(t+%.0f ms): 探针自身 %.1f ms, 连续就绪 %s 个, "
+                                   "真扫 %s 个, %s"
                           % (_rnd, (time.time() - t0) * 1000.0, _pdt,
                              getattr(self.out, "_probe_scan", "?"),
+                             getattr(self.out, "_probe_played", "?"),
                              ("全部就绪" if _ok else
                               ("卡在 " + (getattr(self.out, "_probe_stuck", "") or "?")))))
                 if _ok:
@@ -14118,19 +14147,31 @@ class RootWidget(BoxLayout):
     def _replay_cost_text(self):
         """重放冷启动的耗时, 一行文本(玩家 2026-09-18 要求)。
 
-        ⚠️ 起点是**玩家点下去那一刻**(`_replay_t0`), 不是烘焙线程启动那一刻 ——
-           玩家感知的是"我点完到看见结果", 中间建页/清缓存/起线程都算在内。
-        ⚠️ 终点是"音效真的能播"(`audio_ready()` 为真, 调用点在 `_frame`), 不是"烘焙线程
-           结束" —— 后者早了约 800ms, 而玩家等的正是前者。这也正是这次要量出来的那个数。
-        ⚠️ 拿不到起点就返回空串, 调用方按"没有第二行"处理 —— 绝不因为一个提示崩掉。
+        ⚠️ 2026-09-18 修(玩家报的): 原来算的是 `_replay_t0`(点下去那一刻)到"音效真的能播"
+           那一刻的差值 —— 真机上它显示成 **41ms**, 而面板上明明写着「烘焙 2587ms +
+           音效等待 617ms」, 两者自相矛盾(玩家原话: 「应该显示的耗时是 2571+617=xxxx 的
+           这个 xxxx, 而不是 41ms」)。那个差值为什么变成 41ms 这一轮没查到根因。
+        ⚠️ 但**没必要依赖那个时序**: `bake_ms`(这次烘焙花了多久) 与 `ready_ms`(等"真的能播"
+           花了多久) 本来就是"这次冷启动花了多久"的两个组成部分, 而且它们与「启动信息」
+           面板读的是**同一份真源** ⇒ 直接相加, **结构上不可能再和面板打架**。
+        ⚠️ `_replay_t0` 仍然记进启动日志(仅供以后追那个 41ms), 但**不参与显示**。
+        ⚠️ 拿不到数就返回空串, 调用方按"没有第二行"处理 —— 绝不因为一个提示崩掉。
         """
-        t0 = getattr(self, "_replay_t0", 0.0)
-        if not t0:
-            return ""
+        _t0 = getattr(self, "_replay_t0", 0.0)
+        if _t0:
+            try:
+                _boot_log("frame", "重放: 从点下去到此刻 %.0f ms (仅诊断, 不参与显示)"
+                          % ((time.perf_counter() - _t0) * 1000.0))
+            except Exception:
+                pass
         try:
-            return "耗时 %.0f 毫秒" % ((time.perf_counter() - t0) * 1000.0)
+            _ms = (float(getattr(self.sfx, "bake_ms", 0.0) or 0.0)
+                   + float(getattr(self.sfx, "ready_ms", 0.0) or 0.0))
         except Exception:
             return ""
+        if _ms <= 0:
+            return ""
+        return "耗时 %.0f 毫秒" % _ms
 
     def _replay_summary(self):
         """重放结束后摆在加载页上的结论。
