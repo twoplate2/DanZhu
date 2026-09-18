@@ -54,6 +54,9 @@ def _boot_log(tag, msg):
 # 探针逐轮的进度采样: [(t_ms, 连续就绪个数, 本轮是否全过)] —— 只给导出时的自动判定用。
 # ⚠️ 它**不参与任何判据**(没有任何逻辑读它做判断), 只被 `_startup_log_text` 读一次。
 _PROBE_TRACE = []
+# 点名的**自身成本**累计: [探针自己花掉的 ms, 真扫次数] —— 只给启动日志算「单价」用。
+# ⚠️ 与 `_PROBE_TRACE` 一样, **不参与任何判据**(没有任何逻辑读它做判断)。
+_PROBE_COST = [0.0, 0]
 # 两段各自提交的字节数(合成音 / 语音) —— 自动判定要用它算"每 MB 多少 ms"。
 _LOAD_BYTES = {"bank": 0, "voice": 0}
 
@@ -64,6 +67,45 @@ def _safe_size(path):
         return os.path.getsize(path)
     except Exception:
         return 0
+
+
+def _cpu_shape():
+    """CPU 的**簇结构** + 各簇频率, 给启动日志用: 返回 `("1+3+4", "4x2016M + 3x2745M + 1x3187M 当前 ...")`。
+
+    做法: 读 /sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_max_freq(kHz), **按值分组** ——
+    同频的一批核就是一个簇(big.LITTLE 与新一代的 2+6 都成立), 不需要 root。
+    ⚠️ 为什么值得单写一行: 2026-09-18 那周卡住我们的正是"CPU 是什么形状" —— 老机(Y700 二代)
+       是 1+3+4、最慢的核 2.0GHz; 新机(骁龙 8 Elite Gen 5)是 2+6、最慢的核 3.62GHz。
+       同一个 play() 的单价差 26 倍, 而光写"8 核"这两种机器长得一模一样。
+    读不到(PC / 权限 / 核离线)就返回空串, 调用方据此整行不出现 —— **绝不编数**。"""
+    try:
+        _n = os.cpu_count() or 0
+        _byf = {}
+        for _i in range(_n):
+            try:
+                with open("/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq" % _i, "r") as _f:
+                    _v = int(_f.read().strip())
+            except Exception:
+                continue
+            if _v > 0:
+                _byf.setdefault(_v, []).append(_i)
+        if not _byf:
+            return "", ""
+        _grp = sorted(_byf.items(), reverse=True)          # 从最快的簇排起
+        _shape = "+".join(str(len(_v)) for _k, _v in _grp)
+        _mhz = " + ".join("%dx%dM" % (len(_v), int(_k) // 1000) for _k, _v in _grp)
+        _cur = []
+        for _k, _v in _grp:                                 # 每个簇抽一个核看**当前**频率
+            try:
+                with open("/sys/devices/system/cpu/cpu%d/cpufreq/scaling_cur_freq" % _v[0], "r") as _f:
+                    _cur.append(int(_f.read().strip()) // 1000)
+            except Exception:
+                pass
+        if len(_cur) == len(_grp):
+            _mhz += "　当前 " + " / ".join("%dM" % _c for _c in _cur)
+        return _shape, _mhz
+    except Exception:
+        return "", ""
 
 
 _boot_log("boot", "模块开始加载")
@@ -5336,6 +5378,13 @@ class Sfx:
                     _PROBE_TRACE.append(((time.time() - t0) * 1000.0,
                                          int(getattr(self.out, "_probe_scan", 0) or 0),
                                          bool(_ok)))
+                except Exception:
+                    pass
+                # ⚠️ 2026-09-18: 累计"点名自己多贵"—— 启动日志靠它算单价
+                #    (不参与任何判据, 与 `_PROBE_TRACE` 同一类)。
+                try:
+                    _PROBE_COST[0] += _pdt
+                    _PROBE_COST[1] += int(getattr(self.out, "_probe_played", 0) or 0)
                 except Exception:
                     pass
                 # ⚠️ `扫 N 个` = 从队首起连续就绪的个数(K5 之后它会把"跳过复扫的"也算进去),
@@ -14143,22 +14192,26 @@ class RootWidget(BoxLayout):
         # 「重放冷启动」: 不丢存档地按需复现"初次安装那种局"(见 _replay_cold_start)。
         # 玩家 2026-09-11 提的 —— 那个 bug 一年犯一次、"关掉重开"就自愈, 想抓现场只能卸载重装,
         # 而卸载会清掉余额/轮次。它不新建 Sfx 对象, 所以不碰任何接线, 也不动游戏状态。
-        # ⚠️ 2026-09-18: 「保存加载日志」那个按钮**已按玩家要求删除**。
-        #    服务端的 `_startup_log_text()` / `_save_startup_log()` **仍然保留** ——
-        #    它们不挂在任何按钮上就不会被调用; 留着是为了"想把日志导出来时把按钮加回来即可"
-        #    (那套导出降级链是现成的, 别当死代码清掉)。
+        # 「保存加载日志」: 玩家 2026-09-18 要求 —— 把从进程启动到摘页的**全过程**导成 txt。
+        # ⚠️ v0.8.48 按玩家要求删过一次, **v0.8.56 已恢复**(v0.8.55 那周要查"点名单价"而手上只有一份旧日志 ⇒ 玩家: 「这次要恢复那个保存记录按钮了」)。
+        # ⚠️ 它**不违反**这个弹窗的铁律(见方法 docstring: 不许放会动音频栈或游戏状态的按钮):
+        #    这个按钮**只写文件** —— 不碰 Sfx、不碰音频栈、不碰游戏状态, 连读都只读一次快照。
+        log_btn = Button(text='保存加载日志', font_size='17sp', bold=True,
+                         background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                         size_hint_y=None, height=dp(52))
         replay_btn = Button(text='重放冷启动', font_size='17sp', bold=True,
                             background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                             size_hint_y=None, height=dp(52))
         # ⚠️ 顺序 = 屏幕上的上下顺序(纵向 BoxLayout)。玩家 2026-09-11: 「把确定按钮放在重放冷启动
         #    下面」⇒ **重放冷启动在上、确定在下**。别按"添加顺序像主次"去调, 它就是几何顺序。
+        content.add_widget(log_btn)
         content.add_widget(replay_btn)
         content.add_widget(ok_btn)
         # ⚠️ 高度必须**按内容算**: 实测弹窗内容区 = 弹窗高 − 44px(Kivy 标题栏, 即使 title='' 也吃),
         #    每行 38px(行高 26 + spacing 12)。写死高度的话加一行就会被裁掉尾巴 —— v0.6.12 踩过。
         n_lbl = 1 + (1 if _info else 0) + len(rows) + _n_extra    # ⚠️ 那块面板有硬预算
-        n_btn = 2          # ⚠️ 2026-09-18: 删掉「保存加载日志」后从 3 改回 2 ——
-                           #    高度是按它算的, 不改会多留一块空白
+        n_btn = 3          # ⚠️ v0.8.56: 恢复「保存加载日志」后回到 3
+                           #    (高度公式里 n_btn 是变量, 不用改公式)
         need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(24)
                 + dp(8) * (n_lbl + n_btn - 1))      # ⚠️ dp(24)=2×padding、dp(8)=spacing,
                                                     #    与上面那行 BoxLayout **必须成对改**
@@ -14184,6 +14237,20 @@ class RootWidget(BoxLayout):
             popup.bind(on_dismiss=_stop_live)
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
         replay_btn.bind(on_release=lambda *_: (popup.dismiss(), self._replay_cold_start()))
+        # ⚠️ 提示**不弹新弹窗**(这里已经在弹窗里了, 叠一个必然出岔子): 照抄 `_save_power_log`
+        #    调用方那套 —— 把结果写进按钮文字, 3 秒后复原。
+        def _on_save_log(*_a):
+            try:
+                _ok, _msg = self._save_startup_log()
+            except Exception as _e:
+                _ok, _msg = False, "保存失败: %r" % (_e,)
+            try:
+                log_btn.text = str(_msg)[:30]
+                Clock.schedule_once(lambda _d: setattr(log_btn, 'text', '保存加载日志'), 3.0)
+            except Exception:
+                pass
+            return _ok
+        log_btn.bind(on_release=_on_save_log)
         # ⚠️ 2026-09-18: 原来这里还有「保存加载日志」按钮的回调(把保存结果写进按钮文字、
         #    3 秒后复原)。按钮删了, 这段一并删掉。
         popup.open()
@@ -16663,7 +16730,35 @@ class RootWidget(BoxLayout):
             except Exception:
                 L.append("设备      (非安卓)")
             try:
-                L.append("CPU       %s 核" % (os.cpu_count(),))
+                _n_cpu = os.cpu_count()
+                _shape, _freq = _cpu_shape()     # (簇结构, 各簇频率); 读不到就是两个空串
+                L.append("CPU       %s 核%s%s"
+                         % (_n_cpu, ("  " + _shape) if _shape else "",
+                            ("  " + _freq) if _freq else ""))
+            except Exception:
+                pass
+            # ⚠️ 2026-09-18 新增: **SoC 型号** —— "几核"看不出 1+3+4 与 2+6 的区别,
+            #    而那正是这周 26 倍单价差的来源。Android 12+ 直接给
+            #    `Build.SOC_MODEL` / `SOC_MANUFACTURER`, 老版本退回 `Build.HARDWARE`(厂商串);
+            #    取不到就整行不出现 —— 不编数。
+            try:
+                from jnius import autoclass
+                _B3 = autoclass("android.os.Build")
+                _soc = []
+                for _a in ("SOC_MANUFACTURER", "SOC_MODEL"):
+                    try:
+                        _v = getattr(_B3, _a)
+                        if _v:
+                            _soc.append(str(_v))
+                    except Exception:
+                        pass
+                if not _soc:
+                    try:
+                        _soc.append(str(_B3.HARDWARE))
+                    except Exception:
+                        pass
+                if _soc:
+                    L.append("SoC       %s" % " ".join(_soc))
             except Exception:
                 pass
             L.append("音频后端  %s" % getattr(sfx.out, "name", "静音"))
@@ -16672,6 +16767,15 @@ class RootWidget(BoxLayout):
             L.append("音效等待  %.0f ms（上限 %.0f）"
                      % (sfx.ready_ms, sfx.SFX_READY_TIMEOUT * 1000.0))
             L.append("轮询间隔  %.3f s" % sfx.SFX_READY_POLL)
+            # ⚠️ 2026-09-18 新增: **点名单价** —— 这周所有讨论都围着它转
+            #    (它就是"这台机器一次 play() 有多贵"), 以前只能从逐轮日志里手算。
+            #    现在 `Σ探针自身 ÷ Σ真扫` 直接印 —— 换任何设备一眼就能分档。
+            try:
+                if _PROBE_COST[1] > 0:
+                    L.append("点名单价  %.2f ms/次（探针自身共 %.0f ms ÷ 真扫 %d 次）"
+                             % (_PROBE_COST[0] / _PROBE_COST[1], _PROBE_COST[0], _PROBE_COST[1]))
+            except Exception:
+                pass
             try:
                 L.append("满编      合成音 %d + 语音 %d = %d"
                          % (sfx._n_bank, max(0, sfx._expected - sfx._n_bank), sfx._expected))
