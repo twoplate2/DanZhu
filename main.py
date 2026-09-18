@@ -2420,7 +2420,14 @@ SR = 22050                   # 采样率
 #    而文档还记着满了的行为是"把还在响的流当场掐断", 那本来是 16 想避免的、现在由队列兜着。
 #    也就是说: 16 相对 8 **没有任何已证实的收益**, 只有"更多 AudioTrack 同时活着"这一项开销。
 #    ⚠️ 这是一条"把无收益的改动退回去"的**低风险**改动, 不是新优化 —— 没有观感变化。
-SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数)
+SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数) —— **每个池**的上限
+# ⚠️ 2026-09-18: 开第二个 SoundPool 池, 只装语音(名字以 voice_ 开头)。
+#    为什么: AOSP 每个 SoundPool 实例的解码线程数是**硬编码 2**
+#    (`kDecoderThreads = hardware_concurrency() >= 4 ? 2 : 1`, 见 SoundManager.cpp) ——
+#    4 核以上的机器也只有 2 条解码线程, 101 个样本全在排这 2 条队。
+#    再开一个池就是 4 条 ⇒ 理论上腰斩(实测账: 101 × ~16ms ÷ 2 ≈ 808ms ≈ 热启动观测值)。
+#    置 False 即退回单池, 行为与加这个开关之前逐字相同(出问题时的回退路径)。
+SFX_POOL_SPLIT = True
 SFX_MASTER = 1.0             # 总音量 (0~1), 手机喇叭需要满幅
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
 SFX_RESULT_LEAD = 0.18       # 结果音(中奖/未中)前置静音: 让入袋声先落地 + 放大揭晓前定格
@@ -3133,7 +3140,10 @@ class _SoundPoolOut:
 
     def __init__(self, voices=SFX_VOICES):
         self._voices = voices
-        self._ids = {}
+        # ⚠️ 两张 id 表都从这里建 —— **唯一的一处**(见 `_reset_pools` 的说明)。
+        #    (定成"唯一的一处"就必须**形式上**也只有一处: 以后 grep `self._ids = {}`
+        #     只该在 `_reset_pools` 里看到它 —— 靠"记得两处都改"迟早脱钩。)
+        self._reset_pools()
         # ⚠️ 这两个只给**启动日志**用(见 _startup_log_text), 没有任何逻辑读它们做判断:
         #    探针每轮扫了几个、卡在谁 —— 它是"1000ms 里探针占多少"唯一的直接证据。
         self._probe_scan = 0
@@ -3146,8 +3156,13 @@ class _SoundPoolOut:
         self.rebuild_count = 0        # 重建次数(隐藏菜单的诊断行要显示; 正常局应当恒为 0)
         _t0 = time.perf_counter()
         self._sp = self._build_sp()
-        _boot_log("sfx", "SoundPool 构造 %.1f ms (maxStreams=%d)"
-                  % ((time.perf_counter() - _t0) * 1000.0, self._voices))
+        # ⚠️ 第二个池(见 SFX_POOL_SPLIT 那段): 语音走它 ⇒ 两条池各有 2 条解码线程,
+        #    并行度从 2 变 4。实测账: 101 × ~16ms ÷ 2 ≈ 808ms ≈ 热启动观测 ~800ms;
+        #    61 条语音 × 16 ÷ 2 ≈ 482ms, 正好落在冷启动那个"最后一批后 500ms 内就绪"的窗口里。
+        self._sp2 = self._build_sp() if SFX_POOL_SPLIT else None
+        _boot_log("sfx", "SoundPool 构造 %.1f ms (maxStreams=%d × %d 池)"
+                  % ((time.perf_counter() - _t0) * 1000.0, self._voices,
+                     2 if self._sp2 is not None else 1))
         self._receiver = None
         self._register_noisy_receiver()
 
@@ -3234,11 +3249,28 @@ class _SoundPoolOut:
 
     def prime(self, name, path):
         self._paths[name] = path             # ⚠️ 先记"应到", 再 load
-        sid = self._sp.load(path, 1)         # (写在 load 之后的话, load 失败的名字永远进不了
+        # ⚠️ **分池规则只有这一处**: 语音(voice_*)走第二个池, 其余走第一个。
+        #    按名字前缀判, 不引入第二份清单 —— 这是本项目踩过最多次的坑的形状。
+        _use2 = (self._sp2 is not None) and name.startswith("voice_")
+        _pool = self._sp2 if _use2 else self._sp
+        sid = _pool.load(path, 1)            # (写在 load 之后的话, load 失败的名字永远进不了
         if not sid:                          #   _paths, 后面任何一次重建都救不回它)
             self._load_failed_total += 1     # 只增不减, 只给启动日志看(见 __init__)
             raise RuntimeError("SoundPool.load failed: " + path)
-        self._ids[name] = sid
+        if _use2:
+            self._ids2[name] = sid
+        else:
+            self._ids[name] = sid
+
+    def _reset_pools(self):
+        """清空**两张** id 表 —— **唯一的一处**。
+
+        ⚠️⚠️ `_ids` 与 `_ids2` 必须在同一行代码里一起清。本项目头号杀手就是
+           「同一份清单出现在两处, 改一处忘另一处 ⇒ 静默脱钩」(v0.6.47 闪退即此)。
+           **任何地方都不许单独写 `self._ids = {}`** —— 一律调这里。
+        """
+        self._ids = {}
+        self._ids2 = {}
 
     def _rebuild(self):
         """路由变了(插/拔耳机)后重建: release 旧的, 建新池, 把**应到清单**全部重新 load。
@@ -3252,13 +3284,16 @@ class _SoundPoolOut:
         所以这里只做"重建 + 一轮对账", 不做等待。"""
         try:
             self.rebuild_count += 1
-            old = self._sp
-            self._ids = {}
+            _old_sp, _old_sp2 = self._sp, self._sp2
+            self._reset_pools()          # ⚠️ 两张表一起清 —— 唯一的一处(见 _reset_pools)
             self._sp = self._build_sp()
-            try:
-                old.release()
-            except Exception:
-                pass
+            self._sp2 = self._build_sp() if SFX_POOL_SPLIT else None
+            for _p in (_old_sp, _old_sp2):
+                try:
+                    if _p is not None:
+                        _p.release()
+                except Exception:
+                    pass
             for name, path in list(self._paths.items()):
                 try:
                     self.prime(name, path)
@@ -3270,7 +3305,7 @@ class _SoundPoolOut:
     def loaded_count(self):
         """后端**真的**握着几个能播的 sampleId(隐藏菜单的诊断行要用)。
         ⚠️ 不能拿 Sfx.named 冒充它 —— 病灶正是"闸门满、后端缺"。"""
-        return len(self._ids)
+        return len(self._ids) + len(self._ids2)
 
     def probe_all(self):
         """所有已加载的 sample 是不是**真的能播**了(0 增益试播当探针)。
@@ -3284,17 +3319,22 @@ class _SoundPoolOut:
         # ⚠️ 2026-09-18: 遍历改成 items() 并记下"扫了几个、卡在谁" —— 启动日志要用它。
         #    除此之外**行为逐字不变**(仍是每轮从头扫、撞到第一个未就绪就提前退出);
         #    这正是启动日志要量清楚的那件事: 每轮多贵、要几轮才过。
-        ids = list(self._ids.items())        # (name, sid) 快照: 烘焙线程可能正在往里加
-        if not ids:
+        # ⚠️ 2026-09-18: 两个池**各自串行**探 —— 每个池里"同时最多一条流"这个前提因此
+        #    仍然成立, 而 bug B1 的补试逻辑正是靠它排除"拿不到流"这个原因。
+        _pairs = [(self._sp, list(self._ids.items()))]
+        if self._sp2 is not None:
+            _pairs.append((self._sp2, list(self._ids2.items())))
+        if not _pairs[0][1] and (len(_pairs) < 2 or not _pairs[1][1]):
             self._probe_scan = 0
             self._probe_stuck = ""
             return True
         _n = 0
         _stuck = ""
         try:
-            for name, sid in ids:
+            for _pool, _tab in _pairs:
+              for name, sid in _tab:
                 _n += 1
-                st = self._sp.play(sid, 0.0, 0.0, 1, 0, 1.0)   # 0 增益 → 听不见
+                st = _pool.play(sid, 0.0, 0.0, 1, 0, 1.0)   # 0 增益 → 听不见
                 if not st:
                     # ⚠️⚠️ 2026-09-18 修(B1): `play()` 返回 0 **不只有"没解码完"一个含义**。
                     #    官方 javadoc 写明另一个独立原因是「新流的优先级低于所有在播流 /
@@ -3305,16 +3345,18 @@ class _SoundPoolOut:
                     #      "拿不到流"这个原因被排除 —— 再返回 0 就真的是"还没解码完"。
                     #    ⚠️ 放行判据**一个字没变**: 仍然是"每个 id 都得有一次 play 返回非 0"。
                     try:
-                        st = self._sp.play(sid, 0.0, 0.0, 1, 0, 1.0)
+                        st = _pool.play(sid, 0.0, 0.0, 1, 0, 1.0)
                     except Exception:
                         st = 0
                     if not st:
                         _stuck = name
                         break
                 try:
-                    self._sp.stop(st)        # 立刻收流, 别占满 maxStreams
+                    _pool.stop(st)           # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
+              if _stuck:
+                break
         except Exception:
             self._probe_scan = _n
             self._probe_stuck = ""
@@ -3325,10 +3367,15 @@ class _SoundPoolOut:
 
     def play_named(self, name, gain01):
         sid = self._ids.get(name)
-        if sid is None:
-            return False
-        self._sp.play(sid, gain01, gain01, 1, 0, 1.0)
-        return True
+        if sid is not None:
+            self._sp.play(sid, gain01, gain01, 1, 0, 1.0)
+            return True
+        if self._sp2 is not None:            # 语音在第二个池里(见 prime 的分池规则)
+            sid2 = self._ids2.get(name)
+            if sid2 is not None:
+                self._sp2.play(sid2, gain01, gain01, 1, 0, 1.0)
+                return True
+        return False
 
     def pause(self):
         try:
@@ -19374,7 +19421,8 @@ class RootWidget(BoxLayout):
                     try:
                         _o = self.sfx.out
                         _nm = len(self.sfx.named)
-                        _ids = len(getattr(_o, "_ids", {}))
+                        _ids = (len(getattr(_o, "_ids", {}))
+                                + len(getattr(_o, "_ids2", {})))
                         _pth = len(getattr(_o, "_paths", {}))
                         _warn = ("  ⚠️闸门比后端多 %d" % (_nm - _ids)) if _nm > _ids else ""
                         _boot_log("frame", "摘页快照: 重建 %s 次 / 应到 %d / 已到 %d / 闸门 %d / "
