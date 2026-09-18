@@ -5411,7 +5411,11 @@ class Sfx:
                 #    「音效等待」在 PC 上是**真的 0 ms**, 不是"测不到": winmm 后端没有 probe_all
                 #    (`_await_ready` 见到就立刻放行), 根本不存在"等解码"这件事。
                 #    PC 的耗时全在上一行的「冷启动 XXXX ms」里。
-                rows = ["音频后端　%s" % bname, mode_row, "音效等待　0 ms"]
+                # ⚠️ 2026-09-18(玩家要求): 原来这里是三行(音效等待 / 音效加载 / 语音加载),
+                #    现在并成一行、用「，」分隔。这里以前写着"**绝不并成一行**" —— 那前提已经
+                #    变了: `_mk_lbl` 现在是自适应撑高的(折行只会让弹窗长高, 不会再被定高标签
+                #    裁掉尾巴), 所以合并是安全的, 而且省行数(那块面板的行数有硬预算)。
+                _live0 = "音效等待：0 ms"
                 # ⚠️ 2026-09-16 玩家(PC 截图): 「之前有音频和语音加载数量统计, 你怎么给删了,
                 #    这次需要恢复了」。
                 #    **核实结论: PC 上从来没有过这两个数** —— 它们原先只长在下面的 named 分支
@@ -5439,8 +5443,9 @@ class Sfx:
                     _vf = _voice_files()
                     _nv_load = sum(1 for _n in _vf if _n in self.bank)
                     _nb_load = max(0, len(self.bank) - _nv_load)
-                    rows.append("音效加载　%d / %d" % (_nb_load, self._n_bank or _nb_load))
-                    rows.append("语音加载　%d / %d" % (_nv_load, len(_vf)))
+                    _live0 += "，音效加载 %d/%d，语音加载 %d/%d" % (
+                        _nb_load, self._n_bank or _nb_load, _nv_load, len(_vf))
+                rows = ["音频后端　%s" % bname, mode_row, _live0]
                 if n_rc:
                     rows.append("后端重建　%d 次" % n_rc)
                 return rows
@@ -5465,8 +5470,22 @@ class Sfx:
             #    「音效就绪 97 / 97」它是隐形的(那个数含语音)。
             _n_voice = sum(1 for _n in self.named if _n.startswith("voice_"))
             _n_voice_all = max(0, self._expected - self._n_bank)
-            rows = ["音效就绪　%s" % ready,
-                    "语音就绪：%d / %d" % (_n_voice, _n_voice_all),
+            # ⚠️ 2026-09-18(玩家要求, 与 PC 两边同一口径): 「音效就绪 / 语音就绪 / 音效等待」
+            #    并成一行, 用「，」分隔 —— 省两行。这里以前写着"绝不并成一行", 但那条的前提
+            #    (折行会被定高标签裁掉) 随着 `_mk_lbl` 改成自适应撑高已经不成立了。
+            #    ⚠️ `ready` 里那些「后端缺 N / 满编 N」的偏离提示**一个都不能丢** ——
+            #       它们只在异常时出现, 正是这块面板存在的理由。
+            #    ⚠️ "音效等待"那段原来在最下面, 这里**提前算**才并得进来; 三种分支的文案
+            #       原样保留(有探针/无探针/未等待), 一个字没改。
+            if self.ready_ms > 0:
+                _wait = ("音效等待：%.0f ms（上限 %.0f）"
+                         % (self.ready_ms, self.SFX_READY_TIMEOUT * 1000.0))
+            elif getattr(out, "probe_all", None) is None:
+                _wait = ("音效等待：无法确认能播（本后端无探针）"
+                         if platform == "android" else "音效等待：0 ms")
+            else:
+                _wait = "音效等待：0 ms（未等待）"
+            rows = ["音效就绪：%s，语音就绪：%d/%d，%s" % (ready, _n_voice, _n_voice_all, _wait),
                     "音频后端　%s" % bname]
             # ⚠️ 期望值**单独占一行**, 不并进上一行: 并进去会让那行超宽折行 —— 而折行是这里
             #    最容易出事的地方(v0.6.12 就栽在被定高标签裁掉了尾巴; 2026-09-11 在手机密度的
@@ -5487,16 +5506,9 @@ class Sfx:
             #    "永远不变的那一行", 而这块面板的成文规则是: **有唯一预期值的, 只在偏离时才有信息**
             #    (同 "后端重建" 只在非 0 时出现)。真要偏离(22050/44100)再把它加回来也不迟。
 
-            # 3) 音效等待 —— 等"真的能播"花了多久。⚠️ 安卓上"没有探针"是**护栏缺失**
-            #    (那 6 秒形同虚设, 而这正是那个 bug 的成因), 不能写成中性的"不适用"。
-            if self.ready_ms > 0:
-                rows.append("音效等待　%.0f ms（上限 %.0f）"
-                            % (self.ready_ms, self.SFX_READY_TIMEOUT * 1000.0))
-            elif getattr(out, "probe_all", None) is None:
-                rows.append("音效等待　无法确认能播（本后端无探针）"
-                            if platform == "android" else "音效等待　0 ms")
-            else:
-                rows.append("音效等待　0 ms（未等待）")
+            # 3) 「音效等待」**已经并进上面第一行了**(玩家 2026-09-18: 三行并一行) ——
+            #    文案与三种分支一个字都没改, 只是算的位置提到了 rows 构建之前。
+            #    ⚠️ 别把它改回独立一行: 那块面板的行数有硬预算, 并进来正好省两行。
 
             # ⚠️ 这里原来是最后一行「加载失败　%d 个　·　语音 %d / %d」—— 已按玩家 2026-09-11
             #    的要求拆掉: 语音那半挪到「音效就绪」后面成了「语音就绪：XX / YY」(见上面),
