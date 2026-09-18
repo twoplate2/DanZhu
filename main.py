@@ -19,6 +19,7 @@ from kivy.config import Config
 Config.set("graphics", "maxfps", "120")
 Config.set("graphics", "vsync", "1")
 
+import colorsys
 import math
 import random
 import array
@@ -337,7 +338,7 @@ STALL_RETRY_SEC = 1.2        # 卡死重掷阈值: 位置不动超过此值就�
                              # 比"定住 4s 再凭空结算"体验好: 玩家看到的是球卡了一下重来一次。
 STALL_MAX_RETRY = 10          # 向下踢的次数上限; 还是不落才退回 240 步的强制结算(防死循环)
 LAND_HOLD = 0.60             # 落袋后球停留展示时长(秒), 短暂展示即快速回准备区
-# (盘面倍率表见 roll_multipliers 上方的 VALUE_SHAPE / K_DIST / MAX_REROLL / PITY_RATIO)
+# (盘面倍率表见 roll_multipliers 上方的 VALUE_SHAPE / K_DIST / MAX_REROLL / _is_bad_board)
 
 # ------------------- 碰撞事件位(物理层 -> GUI 音效层) ----------------------
 EV_PEG = 1                   # 撞钉
@@ -365,7 +366,32 @@ COL_BTN_OFF = "#26324f"
 #    被涂成和旁边没选的一模一样, "我押的是哪一档"从画面上消失(玩家报的"置灰逻辑混乱")。
 # ⚠️ **别把 `COL_BTN_OFF` 本身改掉** —— 它还给约 20 处弹窗(取消/返回/关闭/未选中档)当底色。
 COL_BTN_LOCK = "#4a5a6a"       # 重置键按下态(原先硬编码在 `reset_btn` 的 bind 里)
-COL_MUTE_OFF = "#3d3828"       # 音效"已关"的身份色(原先硬编码在 `_refresh_mute_btn` 里)
+BTN_LINE_UP = 1.75             # 「重置」的描边 = **跟着它自己的底色派生**(玩家 2026-09-18:
+BTN_LINE_DOWN = 0.50           #   「不用统一使用一个颜色, 使用按钮自己的颜色接近?」),
+                               # 规则见 `_line_color()`: 同色相, **暗底提亮 / 亮底压暗**。
+                               # ⚠️ **只有「重置」有描边**(玩家 2026-09-18 定案:
+                               #   「除了重置按钮 所有按钮都去掉描边」)。曾经铺到
+                               #   音效开关 + 每轮N次, 被收回 —— 描边是为了解决
+                               #   "重置跟没选中的档位同色、读起来像禁用"这一个具体问题,
+                               #   顶栏那两个没有这个问题, 铺开只是让它们更花。
+                               # ⚠️ 为什么派生要分两路: 亮底(绿 #39d98a, 明度 0.85)
+                               #   再提亮就成白边 —— 与"半透明白"踩的是同一个坑
+                               #   (白边压在暖底上混成浑灰, 玩家说「有点奇怪」)。
+COL_MUTE_OFF = "#4a2e28"       # 音效"已关"的身份色(玩家 2026-09-18 从 20 个候选里选的
+                               # 6 号「暗棕红」; 原先硬编码在 `_refresh_mute_btn` 里,
+                               # 昨天那版是暖橄榄 #3d3828)。
+                               # 选它的理由: 色相 10 度, 离「开」那个绿(152 度)**最远**,
+                               # 区分度最大; 而且"红 = 静音"是通用语言。
+                               # ⚠️ 底色**不变灰、不变绿**两条都是玩家定的;
+                               #   候选与推导见 `android/mute_ab.html`。
+                               # ⚠️ **别改成 `COL_BTN_OFF`** —— 2026-09-18 试过并被玩家打回
+                               # (「更差了」): 那样「音效已关」和「重置」**一模一样**, 而
+                               # 重置是"次要动作"、开关的"关"却是**还能按**的状态 ——
+                               # 暗蓝灰 + 描边读起来是"禁用", 一个灰死键 + 旁边一个亮绿键,
+                               # 比原来还糟。橄榄用**色相**说"关", 不用"变灰"说"禁用"。
+                               # ⚠️ 描边色是不透明的 `COL_BTN_LINE` —— 半透明白压在这上面会
+                               # 混成浑灰(实测 边(83,79,66) vs 底(61,56,40) 只差 22/23/26),
+                               # 玩家说过「有点奇怪」。别改回半透明。
 BTN_OFF_DIM = 0.55             # "不可用"时**保留**多少对比度; 取值区间实测 [0.45, 0.72]
 COL_FIRE = "#e0533b"
 COL_DARKRED = "#8f3a2e"        # 暗砖红(安卓隐藏档弹窗的"确定"按钮): 深蓝紫底上够沉, 白字够清
@@ -2126,11 +2152,12 @@ def _pick(dist):
     return max(dist)          # 浮点误差兜底: 落在最后一段
 
 # 盘面生成 = 掷 k 个奖格填倍率, 坏盘必重抽(最多 MAX_REROLL 次):
-#   坏盘 = (x2 占比 >= PITY_RATIO, 即"几乎全 x2") 或 (>=2 个高倍率 >=x5)
+#   坏盘 = (x2 占比 >= 80%, 即"几乎全 x2") 或 (>=2 个高倍率 >=x5)
+#   ⚠️ 判据只有一处真源: `_is_bad_board()`(下面)。以前这里叫 `PITY_RATIO`,
+#      但那个常量**全文件从没被读过**(玩家 2026-09-18 点名的假旋钮), 已删。
 # 坏盘重抽会改变 RTP(保底超发 / 封顶少发), 故 x2 权重由 _effective_rtp 闭式反解,
 # 把重抽对 RTP 的影响一并配平, 使有效 RTP 精确 = 档位。
 MAX_REROLL = 2            # 坏盘最多重抽次数(共生成 MAX_REROLL+1 盘, 最后一盘无论好坏都收)
-PITY_RATIO = 0.8          # 保底阈值: x2 占比 >= 0.8 即"几乎全 x2"
 CEIL_THRESHOLD = 5        # 高倍率起点: >=x5 即 x5/x10/x20/x50/x100 都算"高"
 
 VALUE_SHAPE = {   # 非 x2 部分的形状(条件分布, 和=1)。低档无 x50/x100, 高档含。
@@ -2202,9 +2229,35 @@ def _shape_of(rtp):
     tot = float(sum(sh.values()))
     return {v: w / tot for v, w in sh.items()} if tot else sh
 
+def _line_color(fill_hex):
+    """**「重置」的描边色 = 从它自己的底色推出来**: 同色相, 暗底提亮 / 亮底压暗。
+
+    · 暗底(V<0.5): 提亮 `BTN_LINE_UP` 倍 —— 一道受光的棱
+    · 亮底(V>=0.5): 压暗 `BTN_LINE_DOWN` 倍 —— 一圈压边
+    ⚠️ 必须分两路: 只提亮的话, 亮底(绿 #39d98a 的明度 0.85)会变成白边,
+       那就退回"半透明白"那个坑了(会跟底色混成浑灰, 玩家说「有点奇怪」)。
+    """
+    _r, _g, _b = hex_rgb(fill_hex)
+    _h, _sat, _v = colorsys.rgb_to_hsv(_r, _g, _b)
+    _v2 = _v * (BTN_LINE_UP if _v < 0.5 else BTN_LINE_DOWN)
+    _o = colorsys.hsv_to_rgb(_h, _sat, min(1.0, max(0.0, _v2)))
+    return "#%02x%02x%02x" % tuple(int(round(max(0.0, min(1.0, x)) * 255)) for x in _o)
+
+
+def _is_bad_board(k, n2, nh):
+    """坏盘判据 —— `_effective_rtp`(解析期望) 与 `roll_multipliers`(实际重抽)**共用这一个**。
+
+    坏盘 = x2 占比 >= 80%(几乎全 x2, 观感上"白中") 或 高倍率(>=x5) >= 2 个(观感上"超发")。
+    ⚠️ 以前是两处各写一遍的**互补**写法(`c2*5 >= k*4 or ch >= 2` / `n2*5 < k*4 and nh < 2`)——
+       改一处忘另一处, 解析值和实测值就分家, 而 RTP 正是靠这两者对齐才成立的。
+    阈值 0.8 只以整数形式 `* 4 / 5` 出现在这一行(不引入浮点比较)。
+    """
+    return n2 * 5 >= k * 4 or nh >= 2
+
+
 def _effective_rtp(p2, rtp):
     """给定 x2 权重 p2, 闭式算出含坏盘重抽后的 RTP(= E[盘面倍率和]/9)。
-    坏盘 = (x2 占比 >= PITY_RATIO) 或 (>=2 个高倍率); 坏盘必重抽, 最多 MAX_REROLL 次。
+    坏盘 = `_is_bad_board()`(x2 占比 >= 80% 或 >=2 个高倍率); 坏盘必重抽, 最多 MAX_REROLL 次。
     E[盘和'] = E + (P + P^2 + ... + P^R) * (E - E[坏盘]), P = 坏盘概率, R = MAX_REROLL。"""
     shape, kd = _shape_of(rtp), K_DIST[rtp]
     w3 = shape.get(3, 0.0)
@@ -2224,7 +2277,7 @@ def _effective_rtp(p2, rtp):
                 prob = (math.comb(k, c2) * math.comb(k - c2, ch)) * (p2 ** c2) * (ph ** ch) * (p3 ** c3)
                 s = 2 * c2 + 3 * c3 + ch * eh
                 e_sum += pk * prob * s
-                if (c2 * 5 >= k * 4) or (ch >= 2):   # 坏盘: x2 占比>=0.8 或 >=2 个高倍率
+                if _is_bad_board(k, c2, ch):        # 坏盘: 判据只此一处(见 `_is_bad_board`)
                     p_bad += pk * prob
                     e_bad += pk * prob * s
     e_bad_cond = e_bad / p_bad if p_bad > 0 else e_sum
@@ -2257,17 +2310,45 @@ for _rtp in (0.80, 1.20, 2.00, 3.60, 10.0, 20.0, 50.0):
     assert abs(sum(VALUE_DIST[_rtp].values()) - 1) < 1e-12, "配平失败: %.2f" % _rtp
     assert abs(_effective_rtp(_p2, _rtp) - _rtp) < 1e-9, "RTP 漂移: %.4f" % _rtp
 
+
+def _reroll_dead(rtp):
+    """这个档的坏盘判据是不是**恒真**(⇒ 重抽纯属空转)。
+
+    ⚠️ 三个隐藏档(1000/2000/5000%)就是: `K_DIST = {9: 1.0}` 且 `VALUE_SHAPE` 里除 x2 外
+       全部 >= x5 ⇒ 9 格里"x2 占比 >= 80%"与"高倍率 >= 2 个"必有一真 ⇒ 每盘都判坏 ⇒
+       永远走到最后一盘(第 3 盘无条件收)。**那等于白掷两遍**(三次独立抽样取最后一个
+       与只掷一次分布逐位相同)。
+    玩家 2026-09-18 点名(「坏盘重抽是死代码, 每盘白掷 3 遍取第 3 遍」) ⇒ 直接跳过。
+    ⚠️ RTP 一分钱不变 —— 模块顶层的 assert 会兜底验这件事。
+    """
+    _shape = _shape_of(rtp)
+    _w3 = _shape.get(3, 0.0)
+    for _k in K_DIST[rtp]:
+        for _c2 in range(_k + 1):
+            for _ch in range(_k + 1 - _c2):
+                if (_k - _c2 - _ch) > 0 and _w3 <= 0:
+                    continue                  # x3 抽不出来, 这种组合根本不存在
+                if not _is_bad_board(_k, _c2, _ch):
+                    return False
+    return True
+
+
+REROLL_DEAD = set(_r for _r in VALUE_DIST if _reroll_dead(_r))
+
+
 def roll_multipliers(rtp=0.80):
     """掷 k 格填倍率; 坏盘(几乎全 x2 或 >=2 个高倍率)必重抽, 最多 MAX_REROLL 次。
     有效 RTP 精确 = 档位(见上方 _effective_rtp 断言)。"""
     kd = K_DIST.get(rtp, K_DIST[0.80])
     dist = VALUE_DIST.get(rtp, VALUE_DIST[0.80])
-    for _ in range(MAX_REROLL + 1):                # 最多 3 盘
+    # ⚠️ 判据恒真的档(三个隐藏档)**只掷一遍** —— 见 `_reroll_dead` 的说明。
+    _n = 1 if rtp in REROLL_DEAD else MAX_REROLL + 1
+    for _ in range(_n):                            # 一般最多 3 盘
         k = _pick(kd)
         vals = [_pick(dist) for _ in range(k)]
         n2 = sum(1 for v in vals if v == 2)
         nh = sum(1 for v in vals if v >= CEIL_THRESHOLD)
-        if n2 * 5 < k * 4 and nh < 2:              # 不是坏盘: 收下
+        if not _is_bad_board(k, n2, nh):           # 不是坏盘: 收下
             break
     mult = [0] * NUM_SLOTS
     for i, v in zip(random.sample(range(NUM_SLOTS), k), vals):
@@ -5431,7 +5512,8 @@ class Sfx:
             self.pause_out()
 
 def selftest(n=40000):
-    """验证: (1) 各档 RTP 精确=档位; (2) 引导飞行落点=预定槽、不卡死;
+    """验证: (1) 各档 RTP 精确=档位; (1b) 每档中奖率/返还倍率合理、无空军;
+    (2) 引导飞行落点=预定槽、不卡死;
     (3) 碰撞事件覆盖率(音效触发源); (4) 音效库体检。
 
     n 必须够大: 单发赔付方差很大(取值 0/2/3/5/10/20/50/100, 实测 σ=1.96/2.29/6.92/9.25)。
@@ -5454,6 +5536,79 @@ def selftest(n=40000):
         good = abs(realized - rtp) < tol
         ok = ok and good
         print("  档位 %.2f -> 实测 RTP %.3f  %s" % (rtp, realized, "OK" if good else "偏差!"))
+
+    # (1b) 每档的 中奖率 / 返还倍率 是否合理 —— 玩家 2026-09-18:
+    #      「新增测试 看看每个档次下中奖率和返还倍率是否合理」。
+    # ⚠️ **中奖率不能用 E[K]/9 估**: 坏盘重抽会连带改变"有奖格数 k"的分布, 名义 `K_DIST`
+    #    算出来的 E[K]/9 与真实值对不上(3.60 档: 名义 78.89% vs 实测 78.52%)。
+    #    所以跟 (1) 一样跑 MC —— 但**对整块盘面求期望**(9 格全算, 不是随机挑一格):
+    #    盘和的方差远小于单格, 同样 n 下精度高一个量级, 顺带把"空军率"也量出来。
+    # ⚠️ `_ref` 里写的是**每档应该等于多少**, 这是**回归门禁**不是推导。**改 K_DIST 就要
+    #    同步改这里的参考值**, 红了正是它存在的意义 —— 2026-09-10 300%->360% 那次只改了
+    #    档位名、没动有奖格数, 中奖率一动不动(停在 65.6%), 玩家察觉不到换了档。
+    # 门禁口径: 返还倍率 |MC − 档位| < **4σ**(σ 由本次样本实时估出 ⇒ 改 n 不用改门禁,
+    #           且 4σ 的双侧假失败率约 6e-5, 七个档合起来也不会偶发报警);
+    #           中奖率 **±1.5pp**(实测 σ≈0.1pp, 余量十几倍, 但足以抓住"换档没换格子"
+    #           那种结构性错误 —— 那次的差距是 13pp)。
+    print("== 每档 中奖率 / 返还倍率 ==")
+    _ref = {0.80: 24.15, 1.20: 35.67, 2.00: 43.37, 3.60: 78.52,
+            10.0: 100.00, 20.0: 100.00, 50.0: 100.00}
+    _refv = dict((round(k, 6), v) for k, v in _ref.items())
+    # 档位名单**从 VALUE_DIST 派生**, 标签从界面那份 `RTP_TIERS`/`RTP_HIDDEN` 取 ——
+    # ⚠️ 本文件因为"第三份手抄档位清单"闪退过一次(v0.6.47), 这里不再手抄第四份。
+    _app = globals().get("PlinkoApp")
+    _lab = {}
+    if _app is not None:
+        for _l, _v in tuple(getattr(_app, "RTP_TIERS", ())) + \
+                tuple(getattr(_app, "RTP_HIDDEN", ())):
+            _lab[round(float(_v), 6)] = _l
+    _tiers = sorted(VALUE_DIST)
+    _lack = [t for t in _tiers if round(t, 6) not in _refv]
+    if _lack:
+        ok = False
+        print("  !! 这些档位没有参考值, 请补进 _ref: %s" % _lack)
+    _n1b = 20000                       # 整盘求期望, 精度足够; 不用 n=40000 那档
+    _hit_prev = None                   # 第一档没有"上一档", 不参加单调判据
+    for _rtp in _tiers:
+        _tk = 0                        # Σ 有奖格数
+        _ts = 0.0                      # Σ 盘面倍率和
+        _sq = 0.0                      # Σ 盘和²(估 σ 用)
+        _zero = 0                      # 空军盘数
+        for _ in range(_n1b):
+            _k = 0
+            _ssum = 0
+            for _v in roll_multipliers(_rtp):
+                if _v:
+                    _k += 1
+                    _ssum += _v
+            _tk += _k
+            _ts += _ssum
+            _sq += _ssum * _ssum
+            if not _k:
+                _zero += 1
+        _hit = 100.0 * _tk / (_n1b * NUM_SLOTS)
+        _real = _ts / float(_n1b * NUM_SLOTS)
+        _mean = _ts / float(_n1b)
+        _sd = math.sqrt(max(0.0, _sq / _n1b - _mean * _mean))
+        _tol = max(4.0 * _sd / math.sqrt(_n1b) / NUM_SLOTS, 1e-4)
+        _lab_t = _lab.get(round(_rtp, 6), "%.0f%%" % (_rtp * 100.0))
+        _want = _refv.get(round(_rtp, 6))
+        _bad = []
+        if abs(_real - _rtp) >= _tol:
+            _bad.append("返还倍率 %.4f 偏离档位 %.4f 超过 %.4f" % (_real, _rtp, _tol))
+        if not _zero == 0:
+            _bad.append("出现空军 %d 盘" % _zero)
+        if _want is not None and abs(_hit - _want) >= 1.5:
+            _bad.append("中奖率 %.2f%% 偏离参考 %.2f%%" % (_hit, _want))
+        if _hit_prev is not None and _hit + 1e-9 < _hit_prev:
+            _bad.append("中奖率比低档还低(上一档 %.2f%%)" % _hit_prev)
+        ok = ok and not _bad
+        print("  %-6s 中奖率 %6.2f%%   返还倍率 %7.4f (档位 %6.4f, 允差 ±%.4f)   "
+              "空军 %d 盘   %s"
+              % (_lab_t, _hit, _real, _rtp, _tol, _zero, "OK" if not _bad else "!!"))
+        for _b in _bad:
+            print("         !! %s" % _b)
+        _hit_prev = _hit
 
     # (2) 被动飞行: 升过通道顶(apex) -> 越入场区 -> 落袋, 且不卡死
     print("== 被动飞行(升到顶->越顶入场->落袋 & 不卡死) ==")
@@ -12138,6 +12293,7 @@ class RootWidget(BoxLayout):
         self._rtp_popup = None         # 隐藏档弹窗的引用: 防重入闸门 + 探针查"还开着吗"
         self._rtp_hold_start = 0.0
         self._rtp_hold_fired = False
+        self._charge_uid = None      # 按下发射键那根手指的 uid(见 `_on_title_touch_up`)
         for label, val in self.RTP_TIERS:   # 常驻档; 隐藏档靠长按解锁, 见 _unlock_rtp
             self._add_rtp_button(label, val)
         self.add_widget(rtp)
@@ -12196,6 +12352,7 @@ class RootWidget(BoxLayout):
                          padding=[dp(6), dp(4), dp(12), dp(4)], spacing=dp(6))
         self._row_bottom = fire
         self.reset_btn = self._mk_button("重置", lambda _b: self.reset_balance(), bg=COL_BTN_OFF)
+        self._outline_btn(self.reset_btn)   # 加描边(底色不动) —— 见 `_outline_btn`
         self.reset_btn.size_hint_x = None
         self.reset_btn.width = dp(96)
         # ⚠️ 按下态是"这个键被按住了", 与输入锁无关; 松手**必须回到取值口**而不是写死一个色 ——
@@ -12226,6 +12383,48 @@ class RootWidget(BoxLayout):
         self._refresh_stats()
 
     # ------------------------------ 控件状态 ------------------------------
+    def _outline_btn(self, btn):
+        """给按钮**加一圈描边**(`COL_BTN_LINE`)。**底色不动**。
+
+        玩家 2026-09-18。「重置」原来只用 `COL_BTN_OFF` —— 那**同时也是**「没选中的
+        档位/投注」的色, 于是"没选中"这个**状态**和"点我"这个**动作**长得一样,
+        重置读起来像"禁用中"。
+
+        ⚠️ **换底色解决不了**, 两轮 A/B 截图都试过(`temp/_reset_ab.py` /
+           `temp/_reset_fill_ab.py`): 暖橄榄(#3d3828)成了全屏唯一的暖色、比原来更跳;
+           灰蓝/更暗的要么更像正常按钮、要么糊进背景; 纯描边(透明底)是个"空框",
+           玩家当场回「底色也需要改改」。⇒ 底色保持原来的 1.43(**像个按钮**),
+           靠**描边**做区分: 未选中的档是**纯实心、无描边**, 两者形状语言不同。
+
+        ⚠️ 底色(`background_color`)**不在这里写** —— 它归 `_restyle_buttons`(唯一取值口);
+           这里只把描边挂上去, 描边色同样由 `_restyle_buttons` 跟着输入锁一起 dim。
+        ⚠️ Kivy 的 `Line` **不能写 `.color`** —— 颜色要一条独立的 `Color` 指令, 且必须
+           排在 `Line` **前面**(本文件所有画线的地方都是这个写法)。
+        ⚠️ 颜色是**不透明**的 `COL_BTN_LINE` —— 别改成半透明白(会在暖底上混成浑灰),
+           详见常量的注释。
+        ⚠️ `width` 是**半宽**且 `rectangle` 模式不走"真 1 像素"那条老路 —— 实测 1.0 与
+           0.5 画出来都是 2 个像素行(逐行采样验过), 取 0.5 让它在高分屏上细一点。
+        """
+        with btn.canvas.after:
+            gl_c = Color(*(hex_rgb(COL_BTN_OFF) + (1,)))   # 占位, 真值由 _restyle_buttons 写
+            gl_l = Line(rectangle=(btn.x, btn.y, btn.width, btn.height), width=0.5)
+        btn._line_col = gl_c
+        btn._line_ln = gl_l
+
+        def _sync(_b, _v):
+            gl_l.rectangle = (_b.x, _b.y, _b.width, _b.height)
+        btn.bind(pos=_sync, size=_sync)
+
+    def _sync_outline(self, btn, fill_hex, keep):
+        """按**这个按钮当前的底色**重算描边, 并按输入锁调暗。
+
+        ⚠️ 描边色**每次都要重算**(`_line_color(底色)`), 不能在 `_outline_btn` 里定死 ——
+           底色的唯一取值口是 `_restyle_buttons` 自己, 两处各存一份必然漂移。
+        """
+        _gc = getattr(btn, "_line_col", None)
+        if _gc is not None:
+            _gc.rgba = dim_rgb(_line_color(fill_hex), keep) + (1,)
+
     def _restyle_buttons(self):
         """**按钮底色的唯一取值口**。三个输入: 输入锁 / 选中档 / 音效档。
 
@@ -12247,6 +12446,7 @@ class RootWidget(BoxLayout):
         _rb = getattr(self, "reset_btn", None)
         if _rb is not None:
             _rb.background_color = _bg(COL_BTN_OFF)
+            self._sync_outline(_rb, COL_BTN_OFF, _keep)
         _ob = getattr(self, "round_btn", None)
         if _ob is not None:
             _ob.background_color = _bg(COL_GREEN)
@@ -12317,6 +12517,22 @@ class RootWidget(BoxLayout):
         """
         if not getattr(self, "_controls_enabled", True):
             return True
+        # ⚠️ **认出"按下发射键的那根手指"**(2026-09-18 修): 记下它的 `uid`, 给
+        #    `_on_title_touch_up` 用 —— 蓄力期**别的**手指抬手不该把球打出去。
+        # ⚠️ 用**显式命中判定**, **不要**改成靠 Kivy 的 `touch.grab_current`:
+        #    实测验过(2026-09-18), `ButtonBehavior.on_touch_down` 里那句 `touch.grab(self)`
+        #    在这个 Kivy + 触摸来源上**读不到** —— 派发走完 `grab_current` 仍是 `None`,
+        #    照它判定会**静默失效**(探针里 `_charge_uid` 一直是 None)。
+        # ⚠️ 坐标沿用 `_on_title_touch_down` 那一套(`_to_eq` 先逆旋转), 不要新开一种算法。
+        # ⚠️ 记 `uid` 而不是比对象: Kivy 的 Touch 是**池化复用**的。
+        _pos = touch.pos
+        _lay = _land_layer()
+        if _lay is not None:
+            _pos = _lay._to_eq(*_pos)
+        _fb = getattr(self, "fire_btn", None)
+        if (getattr(self, "state", "") == "ready" and _fb is not None
+                and _fb.collide_point(*_pos)):
+            self._charge_uid = touch.uid
         return super().on_touch_down(touch)
 
     def _show_bench_status(self, text):
@@ -12399,8 +12615,14 @@ class RootWidget(BoxLayout):
     def _on_title_touch_up(self, win, touch):
         self._bench_start = 0.0
         self._rtp_hold_start = 0.0        # 抬手即取消长按(还没到 RTP_UNLOCK_HOLD 就不算)
-        if self.state == "charging":
-            self.launch()   # 发射保底: 松手时若仍在蓄力(如滑出按钮致 on_release 未触发), 补发
+        # 发射保底: 松手时若仍在蓄力(如滑出按钮致 on_release 未触发), 补发。
+        # ⚠️⚠️ **必须限定是"按下发射键的那根手指"**(玩家 2026-09-18 修的 bug): 这里是
+        #   **Window 级**观察者, 屏幕上**每一次**抬手都会进来 —— 裸判 `state == "charging"`
+        #   的话, 蓄力期间另一根手指蹭一下再抬起, 球就当场飞出去了(力度作废; 若还不到
+        #   `MISFIRE_POWER` 更是直接哑火)。uid 由 `on_touch_down` 在发射键 grab 时记下。
+        if self.state == "charging" and touch.uid == getattr(self, "_charge_uid", None):
+            self._charge_uid = None
+            self.launch()
 
     def _show_bench_dim(self):
         self._bench_dim_shown = True
@@ -17603,6 +17825,11 @@ class RootWidget(BoxLayout):
         档位文字**从 RTP_HIDDEN 取**, 不写死 —— 这里写死过一次(5000%), 隐藏档改定稿时
         漏改, 弹窗一直显示上一版的数字(玩家 2026-09-11 截图报的就是这个)。
         """
+        # ⚠️ **非 ready 不弹**(2026-09-18 修): 弹窗是 Window 的直接子控件, 输入锁拦不住
+        #    它上面的按钮 ⇒ 装杯等待期(landed)长按也能开、也能点「确定」, 而那时盘面换不动
+        #    ⇒ 又是"切一半"。干脆不给开 —— 玩家的意图等回到 ready 再满足。
+        if self.state != "ready":
+            return
         if self._rtp_popup is not None:
             # 防重入: `_on_title_touch_down` 是 **Window 级触摸观察者**, 模态弹窗拦不住它
             # (它只看坐标) —— 弹窗开着时再长按会叠出第二个。闸门开在"建弹窗"这一端。
@@ -17682,6 +17909,20 @@ class RootWidget(BoxLayout):
         self._popup_fit_content(popup, content)
 
     def set_rtp(self, t, silent=False):
+        """切档。**只有 `state == "ready"` 才真的切**(玩家 2026-09-18 修)。
+
+        ⚠️⚠️ 非 ready 时**直接不动** —— 盘面(`self.multipliers`)只有在 ready 才换得动,
+           而"换一半"是最坏的结果: 档位高亮跳到新档、9 个倍率槽还是旧档的, 这一发按
+           **旧档**赔付, 要等下一发 `park_ball` 重掷才同步。而档位按钮是"我在玩哪一档"
+           的**唯一**指示(那行标签只写「期望返还比例：」不带数字)。
+        ⚠️ 守卫必须放在**最前面**(连 `rtp_target` 都不能先写) —— 先写 `rtp_target` 就
+           已经"切了一半"了, `_restyle_buttons` 会照着它上高亮。
+        ⚠️ 入口侧还有两道(这里只是兜底): `start_charge` 上输入锁挡住蓄力期点档位;
+           `_ask_unlock_rtp` 挡住装杯等待期长按 —— 那个弹窗是 **Window 子控件**,
+           输入锁拦不住它的按钮。
+        """
+        if self.state != "ready":
+            return
         self.rtp_target = t
         self._restyle_buttons()
         self.sfx.play("click", throttle=0.08)
@@ -17740,6 +17981,12 @@ class RootWidget(BoxLayout):
             return
         self.state = "charging"
         self.power = 0.0
+        # ⚠️ **蓄力期立刻上输入锁**(2026-09-18 修): 不上锁的话这一窗口里档位/投注按钮
+        #    都能点 —— 点档位 = "切一半"(高亮走了、盘面没走, 见 `set_rtp` 的说明),
+        #    点投注 = 余额可能被扣成负数(CLAUDE.md 里记过的那条)。
+        # ⚠️ 上锁**不影响发射**: 锁只挡 `on_touch_down`(见 `on_touch_down` 的说明),
+        #    而发射走的是**已经按住的那根手指**的 `on_touch_up` —— 那条路照常。
+        self._set_controls_enabled(False)
         self._charge_start = time.time()     # 蓄力起始时刻(3秒兜底自动发射)
         self._last_charge_sound = 0.0        # 立刻响第一声棘轮
         self._charge_topped = False
@@ -18858,11 +19105,23 @@ class RootWidget(BoxLayout):
                 # 判据必须用位移而非速度/碰撞事件: 卡死球的
                 # 速度数值和微碰撞(被推向障碍)从未停过, 但位置被碰撞钉死 —— 位置不说谎。
             if landed is not None:
-                if b.x > FIELD_R:                          # 球落回竖井(发射槽) — 罕见彩蛋
-                    self._easter_egg = True
                 i = max(0, min(NUM_SLOTS - 1,              # 物理落格结算(球落到哪算哪)
                                int((b.x - FIELD_L) / SLOT_W)))
-                self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
+                if b.x > FIELD_R:                          # 球落回竖井(发射槽) — 罕见彩蛋
+                    self._easter_egg = True
+                    # ⚠️⚠️ 彩蛋那发的落定目标**不能**用槽中心(2026-09-18 修): 竖井在场区
+                    #   **右边**、隔着一道墙(`FIELD_R`=459 ~ `LANE_L`=466), 而按 x 算出来的
+                    #   槽号(竖井里会被夹到第 8 格)其中心 434.2 在墙的**左边** —— 下面
+                    #   landing 循环里那句 LAND_K 弹簧会把球**往左拽、拽穿隔墙**(那个循环
+                    #   只有弹簧/重力/地板, **没有墙体碰撞**), 0.5s 超时兜底一到球就
+                    #   **嵌在墙里定格**, 而且整个装杯演出 + 等玩家点「确定」期间一直那样。
+                    #   (玩家 2026-09-18 报的「球落在井底弹簧旁 → 自己往左平移、压在隔墙上」。)
+                    #   ⇒ 彩蛋的目标是**发射槽本身**(与弹窗文案「已回到发射槽」一致):
+                    #     球落点 477~498、目标 `PLUNGER_X`=487, 整段移动都在竖井(466~508)
+                    #     之内, 永不跨墙。
+                    self.land_target_x = PLUNGER_X
+                else:
+                    self.land_target_x = FIELD_L + (i + 0.5) * SLOT_W
                 self._settle_slot = i
                 self.landed_at = time.time()
                 self.state = "landing"
