@@ -5369,6 +5369,15 @@ class Sfx:
                 self._audio_ready = True
                 return
             t0 = time.time()
+            # ⚠️ 2026-09-18 加: 探针**起手**时各簇的当前频率。
+            #    日志头部那个「当前」是**导出日志那一刻**读的(机器闲着),
+            #    对判断"探针期间有没有被降频/丢到小核"没用。
+            try:
+                _sh, _fr = _cpu_shape()
+                if _sh:
+                    _boot_log("probe", "探针起手时 CPU: %s %s" % (_sh, _fr))
+            except Exception:
+                pass
             _rnd = 0
             # ⚠️ 自适应轮询: 起手用 SFX_READY_POLL, 之后按**实测速率**算"还要等多久"。
             #    速率 = 本轮新增的连续就绪数 / 距上轮的间隔; 间隔 = 剩余/速率 × 0.3。
@@ -5426,6 +5435,14 @@ class Sfx:
                     pass
                 time.sleep(_poll)
             self.ready_ms = (time.time() - t0) * 1000.0   # 等"真的能播"花了多久(诊断要显示)
+            # ⚠️ 2026-09-18 加: 收工时再读一次(与起手那一条成对) ——
+            #    两条一对, 就能看出探针这几秒里 CPU 到底在什么状态。
+            try:
+                _sh2, _fr2 = _cpu_shape()
+                if _sh2:
+                    _boot_log("probe", "探针收工时 CPU: %s %s" % (_sh2, _fr2))
+            except Exception:
+                pass
             _boot_log("probe", "音效等待结束: %.0f ms, 共 %d 轮" % (self.ready_ms, _rnd))
         except Exception as _e:
             # ⚠️ 2026-09-18 修(B3): 这里原来是裸 `pass` —— 循环里任何异常都会让 ready_ms 保持
@@ -8653,11 +8670,16 @@ class WinPileFX(Widget):
             except Exception:
                 pass
             _boot_log("prebake", "玻璃贴图 %.1f ms" % ((time.perf_counter() - _g0) * 1000.0))
+            _g1 = time.perf_counter()
             try:
                 # 远侧环独立层一起烘(1600x920 的 PNG, 现场解码是一记长帧)。
                 _glass_over()
             except Exception:
                 pass
+            # ⚠️ 2026-09-18 加(查那个 2.6 秒空洞): 这一段以前**完全没被计量**,
+            #    而真机日志里「玻璃贴图 X ms」之后到下一条 prebake 之间,
+            #    **两台机器都有一段 ~2.6 秒的空洞**(小米 446->3166, 二代 856->3552.9)。
+            _boot_log("prebake", "远侧环层 %.1f ms" % ((time.perf_counter() - _g1) * 1000.0))
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         # ---- 字体预热(2026-09-13 补) --------------------------------------------------
@@ -8676,16 +8698,22 @@ class WinPileFX(Widget):
         #    记在 Kivy 自己的按字号字体缓存里, 不在 `_FIT_PX` 里。
         if not self._vib_prebaked:
             self._vib_prebaked = True
+            _v0 = time.perf_counter()
             try:
                 _vib_warm()
             except Exception:
                 pass
+            _v1 = time.perf_counter()
             try:
                 # 守卫工作线程 + 沉浸 Runnable 一起焐热(理由同震动: 别在采样窗口里现建线程)。
                 # ⚠️ Runnable **必须在主线程上建**(它要注册 Java 代理)。
                 _guard_warm()
             except Exception:
                 pass
+            # ⚠️ 2026-09-18 加: 这一段以前**一行日志都没有** ⇒ 真机时间轴上
+            #    它看起来像"玻璃贴图之后空了 2.7 秒"(实际只是静默)。
+            _boot_log("prebake", "震动预热 %.1f ms + 守卫预热 %.1f ms"
+                      % ((_v1 - _v0) * 1000.0, (time.perf_counter() - _v1) * 1000.0))
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         _FRAME_PROBE[2] += 1      # 本帧跑了预热(供跑分面板把"启动慢"与"玩起来卡"分开)
@@ -8700,10 +8728,16 @@ class WinPileFX(Widget):
             _tw_i = getattr(self, "_texwarm_i", 0)
             if _tw_i < len(self._texwarm_list):
                 self._texwarm_i = _tw_i + 1
+                _tw_t0 = time.perf_counter()
                 try:
                     _warm_one(self._texwarm_list[_tw_i])
                 except Exception:
                     pass
+                # ⚠️ 2026-09-18 加: 同上 —— 这 ~N 步以前也是静默的,
+                #    而它正是那 2.7 秒里的主要部分(每步 0.05s 的自链)。
+                _boot_log("prebake", "文字纹理 %d/%d %.1f ms"
+                          % (self._texwarm_i, len(self._texwarm_list),
+                             (time.perf_counter() - _tw_t0) * 1000.0))
                 Clock.schedule_once(self.prebake_step, 0.05)
                 return
             self._texwarm_done = True
@@ -12771,6 +12805,8 @@ class RootWidget(BoxLayout):
         self._rtp_hold_fired = False
         self._charge_uid = None      # 按下发射键那根手指的 uid(见 `_on_title_touch_up`)
         self._replay_t0 = 0.0        # 「重放冷启动」的计时起点(见 `_replay_cost_text`)
+        self._hb_t = 0.0             # 主线程心跳(只在启动窗口内记, 见 `_frame`)
+        self._hb_n = 0
         for label, val in self.RTP_TIERS:   # 常驻档; 隐藏档靠长按解锁, 见 _unlock_rtp
             self._add_rtp_button(label, val)
         self.add_widget(rtp)
@@ -19781,6 +19817,26 @@ class RootWidget(BoxLayout):
         if not getattr(self, "_first_frame_logged", False):
             self._first_frame_logged = True
             _boot_log("frame", "第一帧(画面第一次真的画出来)")
+        # ⚠️ 2026-09-18 加(查那个 2.6 秒空洞): **主线程心跳**。
+        #    探针跑在另一条线程上, 而真机日志显示"探针那 3 秒里
+        #    预热链一行都没动" —— 到底是主线程被卡住了、
+        #    还是预热自己停了, **只有心跳能分开**(预热是主线程驱动的)。
+        #    ⚠️ 只在**启动窗口**内记(咨询期间或模块加载后 12 秒内) ——
+        #      `_boot_log` 是只增不减的列表, 游戏期一直记会把它撑爆。
+        try:
+            _hb = time.perf_counter()
+            if self._hb_t <= 0.0:
+                self._hb_t = _hb
+                self._hb_n = 0
+            elif (self._load_veil is not None) or ((_hb - _BOOT_T0) < 12.0):
+                self._hb_n += 1
+                if _hb - self._hb_t >= 0.5:
+                    _boot_log("frame", "心跳 %.1f 帧/秒(窗口 %.0f ms)"
+                              % (self._hb_n / (_hb - self._hb_t), (_hb - self._hb_t) * 1000.0))
+                    self._hb_t = _hb
+                    self._hb_n = 0
+        except Exception:
+            pass
         self._check_title_hold()
         # 冷启动加载页收尾: 音效库**真的能播**了就摘掉(见 _LoadVeil / Sfx.audio_ready)。
         # ⚠️ 判据是"烘完 **且** 探到真能播(或硬超时)", 不是"烘完就摘" —— `SoundPool.load()`
