@@ -121,7 +121,9 @@ def _probe_boost_thread():
         pass
     try:
         from jnius import autoclass
-        autoclass("android.os.Process").setThreadPriority(-16)   # THREAD_PRIORITY_URGENT_AUDIO
+        # ⚠️ 对抗复核纠正: AOSP 里 **THREAD_PRIORITY_AUDIO = -16**,
+        #    THREAD_PRIORITY_URGENT_AUDIO = -19(原注释写错了)。
+        autoclass("android.os.Process").setThreadPriority(-16)   # THREAD_PRIORITY_AUDIO
     except Exception:
         pass
 
@@ -3304,6 +3306,10 @@ class _SoundPoolOut:
         self._probe_scan = 0        # 从队首起**连续**就绪的个数
         self._probe_played = 0
         self._probe_stuck = ""
+        # ⚠️ 2026-09-18: 池的**代次** —— `_reset_pools` 每重建一次 +1。
+        #    并行探针的 worker 回写 `_ok_sids` 前对一下它, 免得把旧池
+        #    (sampleId 也从 1 编号)的结果当成新池的 ⇒ 假绿。
+        self._probe_gen = 0
         # ⚠️ **只增不减**(连 _rebuild 都不清) —— 启动日志用它判定「闸门活口」在真机上
         #    到底发生过几次。不能用 Sfx._failed: 那个在 _retry_failed 第一行就被搬空,
         #    面板那行「加载失败」结构性印不出来, 去看它等于什么都没看。
@@ -3446,6 +3452,7 @@ class _SoundPoolOut:
         #    ⚠️ `_rebuild` 换池后 sid 全变 ⇒ 新 (池, sid) 天然不在集合里 —— 于是"这里漏清"
         #       的最坏后果只是多探一轮, 而不是假绿。
         self._ok_sids = set()
+        self._probe_gen = getattr(self, "_probe_gen", 0) + 1   # 代次 +1(worker 回写前会对它)
 
     def _rebuild(self):
         """路由变了(插/拔耳机)后重建: release 旧的, 建新池, 把**应到清单**全部重新 load。
@@ -3492,9 +3499,14 @@ class _SoundPoolOut:
            `_probe_played` = 这一轮真的 play 了几次, `_probe_stuck` = 声明顺序里第一个没就绪的。
         """
         _mode, _boost = self._probe_cfg()
-        if _mode[0] <= 1 and _mode[1] <= 1 and not _boost:
+        if _boost:
+            # ⚠️ 2026-09-18 对抗复核: **必须在分派之前**设 —— 否则 ((1,1), True) 会因为
+            #    "有 boost 就不走串行"而变成"两池各一条线程 + boost"(**同时改两个变量**),
+            #    那一档就再也隔离不出"CPU 状态"这一份了。
+            _probe_boost_thread()
+        if _mode[0] <= 1 and _mode[1] <= 1:
             return self._probe_serial()
-        return self._probe_parallel(_mode, _boost)
+        return self._probe_parallel(_mode)
 
     def _probe_cfg(self):
         """这一轮怎么探: `((池 0 线程数, 池 1 线程数), 钉核提优先)`。
@@ -3504,7 +3516,9 @@ class _SoundPoolOut:
         ⇒ 四组对照能在同一台机器、同一版包上跑齐。"""
         try:
             _m = getattr(self, "_probe_mode", None) or (1, 1)
-            return ((max(1, int(_m[0])), max(1, int(_m[1]))),
+            # ⚠️ 上界 4: 线程数超过池的 maxStreams 就拿不到流, 补试也拿不到
+            #    ⇒ 全员被判未就绪直到 6 秒, 而那会被读成"解码慢"的**假阴性**。
+            return ((min(4, max(1, int(_m[0]))), min(4, max(1, int(_m[1])))),
                     bool(getattr(self, "_probe_boost", False)))
         except Exception:
             return ((1, 1), False)
@@ -3600,7 +3614,7 @@ class _SoundPoolOut:
         self._probe_stuck = _stuck
         return not _stuck
 
-    def _probe_parallel(self, _mode, _boost):
+    def _probe_parallel(self, _mode):
         """并行探针(v0.8.59 实验): **每个池派 `_mode[池]` 条线程**, 各扫自己池里**下标连续**的一段。
 
         ⚠️ 判据一个字没变: 仍然是"每个 (池, sid) 都得有一次 play 返回非 0"。
@@ -3620,29 +3634,48 @@ class _SoundPoolOut:
             self._probe_played = 0
             self._probe_stuck = ""
             return True
-        if _boost:
-            _probe_boost_thread()
-        _res = {}                       # 池序号 -> [(下标, 名字, 就绪?, 真 play 过?)]
+        _res = {}                       # 池序号 -> {分块号: [(下标,名字,就绪?,真play过?)] | None}
         _lk = threading.Lock()
         _threads = []
+        _err = []                       # 分块里抛异常 ⇒ 记一笔(合并层按串行约定放行)
+        _gen = getattr(self, "_probe_gen", 0)   # 拔耳机重建过 ⇒ 这批结果作废
         try:
             for _pi, _pool, _tab in _pairs:
                 _k = max(1, int(_mode[_pi])) if _pi < len(_mode) else 1
                 _todo = [(idx, nm, sd) for idx, (nm, sd) in enumerate(_tab)]
                 _step = max(1, (len(_todo) + _k - 1) // _k)
+                # ⚠️ 槽位字典**必须先注册再起线程**: chunk 是 `_res.setdefault(_pi, {})[_t] = ...`
+                #    写回来的, 若主线程在起完线程之后才 `_res[_pi] = _slots`, 那个赋值会把
+                #    chunk 已经写好的结果**整个覆盖掉**(实测非确定性: k=1 常常侥幸, k>1 基本必现)
+                #    ⇒ 合并层看到全是 None ⇒ 反而判"这段没验过"。
+                #    (这条是门禁自己抓出来的 —— 假池 + 真代码, 见 temp/_probe_parallel059.py。)
+                _slots = {}
+                _res[_pi] = _slots
                 for _t in range(_k):
                     _chunk = _todo[_t * _step:(_t + 1) * _step]
                     if not _chunk:
                         continue
+                    # ⚠️ 先登记槽位(None = "这条线程没起来"): 合并层靠它认出
+                    #    「这一段**从没验过**」—— 否则起不来的那段会静默地不进任何判据,
+                    #    而 `return not _stuck` 就会**声称全部就绪**。
+                    _slots[_t] = None
                     _th = threading.Thread(target=self._probe_chunk,
-                                           args=(_pi, _pool, _chunk, _res, _lk), daemon=True)
+                                           args=(_pi, _t, _pool, _chunk, _res, _lk, _err, _gen),
+                                           daemon=True)
+                    try:
+                        _th.start()      # ⚠️ try 必须在**内层**: 一条起不来不许带崩其余
+                    except Exception:
+                        continue         # 槽位留 None ⇒ 合并层把这段判成"没验过"
                     _threads.append(_th)
-                    _th.start()
         except Exception:
-            pass                    # 起不出线程 ⇒ 已经起来的那几条照常 join, 缺的部分下一轮补
+            pass
+        # ⚠️ join **必须有上限**: 6 秒护栏的判据在调探针**之前**, 一旦某条 worker
+        #    卡在原生 play() 里, 无限等就等于拖页不摘。后面"槽位还是 None ⇒ 不放行"
+        #    恰好接住这条。
+        _join_by = time.time() + 3.0
         for _th in _threads:
             try:
-                _th.join()
+                _th.join(max(0.05, _join_by - time.time()))
             except Exception:
                 pass
         # ---- 合并: 完全按串行版的口径, 按下标顺序回放 ----
@@ -3650,23 +3683,43 @@ class _SoundPoolOut:
         _seq = 0
         _seq_open = True
         _stuck = ""
+        _unverified = False   # 有分块根本没起来/没回来 ⇒ 那一段一个样本都没验过
         for _pi, _pool, _tab in _pairs:
-            for _idx, _nm, _ok, _played in sorted(_res.get(_pi, [])):
-                if _played:
-                    _n += 1
-                if _ok:
-                    if _seq_open:
-                        _seq += 1
-                else:
-                    if not _stuck:
-                        _stuck = _nm
+            _sl = _res.get(_pi) or {}
+            for _t in sorted(_sl):
+                _rows = _sl[_t]
+                if _rows is None:
+                    # ⚠️⚠️ 对抗复核抓到的致命漏洞: 这条线程没起来 ⇒ 它负责的那一段
+                    #    **一个样本都没验过**, 绝不能当"没问题"放行 —— 那正好把这个
+                    #    探针存在的理由反过来打穿(一个样本没验就摘加载页 = 玩家报过的
+                    #    「初次安装必然没有声音」)。
+                    _unverified = True
                     _seq_open = False
+                    continue
+                for _idx, _nm, _ok, _played in _rows:
+                    if _played:
+                        _n += 1
+                    if _ok:
+                        if _seq_open:
+                            _seq += 1
+                    else:
+                        if not _stuck:
+                            _stuck = _nm
+                        _seq_open = False
+        if _err:
+            # ⚠️ 与串行版**同一条约定**: 探针自己出错一律当"能播"(它只是护栏,
+            #    不许反过来把玩家锁在加载页)。串行版是异常冒到外层 except 就 return True。
+            #    (原来并行把异常折成 `_st = 0` 判"没好" ⇒ 老机上白等 6 秒。)
+            self._probe_scan = _n
+            self._probe_played = _n
+            self._probe_stuck = ""
+            return True
         self._probe_scan = _seq
         self._probe_played = _n
         self._probe_stuck = _stuck
-        return not _stuck
+        return (not _stuck) and (not _unverified)
 
-    def _probe_chunk(self, _pi, _pool, _chunk, _res, _lk):
+    def _probe_chunk(self, _pi, _t, _pool, _chunk, _res, _lk, _err, _gen):
         """一条线程负责一段(**下标连续**)的样本; 撞到第一个未就绪的**只停自己这一段**。
 
         段内顺序 = 本池声明顺序的一段 ⇒ 同一个池里别的线程照跑, 这正是并行的收益所在
@@ -3678,13 +3731,14 @@ class _SoundPoolOut:
                 if (_pi, _sd) in self._ok_sids:      # K5: 已确认的不重扫(仍算"连续就绪"一段)
                     _out.append((_idx, _nm, True, False))
                     continue
-                _st = 0
-                try:
-                    _st = _pool.play(_sd, 0.0, 0.0, 1, 0, 1.0)
-                    if not _st:
-                        _st = _pool.play(_sd, 0.0, 0.0, 1, 0, 1.0)   # B1: 补试一次
-                except Exception:
-                    _st = 0
+                # ⚠️ 2026-09-18 对抗复核: `play()` **抛异常**与**返回 0** 必须分开 ——
+                #    返回 0 = "还没解码完"; 抛异常 = "探针自己出事"。
+                #    串行版对后者的行为是**整轮放行**(异常冒到外层 except)。原来并行
+                #    把它折成 `_st = 0` 判"没好" ⇒ 一路重试到 6 秒硬超时。
+                #    现在: 抛异常直接出去 ⇒ 外层记 `_err` ⇒ 合并层照串行约定放行。
+                _st = _pool.play(_sd, 0.0, 0.0, 1, 0, 1.0)
+                if not _st:
+                    _st = _pool.play(_sd, 0.0, 0.0, 1, 0, 1.0)   # B1: 补试一次
                 if not _st:
                     _out.append((_idx, _nm, False, True))
                     break
@@ -3692,13 +3746,20 @@ class _SoundPoolOut:
                     _pool.stop(_st)                  # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
-                self._ok_sids.add((_pi, _sd))        # 亲眼确认过 ⇒ 以后不必再扫它(K5)
+                # ⚠️ 代次守卫: 拔耳机会 `_reset_pools()` 清空确认集, 而新池的 sampleId
+                #    又从 1 重新编号 ⇒ 旧池的 (池,sid) 回写会碰上"新池同号但没验过"的样本
+                #    = 假绿(本项目头号失效形状)。窗口很窄, 但值得堵。
+                if _gen == getattr(self, "_probe_gen", 0):
+                    self._ok_sids.add((_pi, _sd))    # 亲眼确认过 ⇒ 以后不必再扫它(K5)
                 _out.append((_idx, _nm, True, True))
         except Exception:
-            pass
+            try:
+                _err.append(1)           # 与串行版同一条约定: 探针出错 ⇒ 放行
+            except Exception:
+                pass
         try:
             with _lk:
-                _res.setdefault(_pi, []).extend(_out)
+                _res.setdefault(_pi, {})[_t] = _out
         except Exception:
             pass
 
@@ -14567,6 +14628,12 @@ class RootWidget(BoxLayout):
             if self.state != "ready":
                 self.game_area.center_toast("先等这一发落定")
                 return
+            # ⚠️ 2026-09-18 对抗复核加: **in-flight 闸门**。重放全程不碰 `state`
+            #    (所以上面那道拦不住第二次点击), 而两次重放叠着跑会让两轮 probe_all
+            #    互相覆盖 `_probe_scan/_probe_played/_probe_stuck` ⇒ 日志与单价读到中间值。
+            if getattr(self, "_replay_busy", False):
+                self.game_area.center_toast("正在重放中")
+                return
             sfx = self.sfx
             # ① **先把结果页建起来再动音频状态**。顺序是要紧的: 建页失败就直接返回, 绝不能先把
             #    named 清掉 —— 那会留下一个"闸门是空的、也不会重烘"的静默状态, 而这正是这块
@@ -14577,6 +14644,7 @@ class RootWidget(BoxLayout):
                 return
             # ⚠️ 耗时**起点取在这里**(玩家点下去那一刻), 不是线程启动那一刻 ——
             #    玩家感知的是"我点完到看见结果", 建页/清缓存/起线程都算在内。
+            self._replay_busy = True
             self._replay_t0 = time.perf_counter()
             veil = _LoadVeil(text="正在重放冷启动…", size_hint=(1, 1))
             host.add_widget(veil)
@@ -14602,7 +14670,17 @@ class RootWidget(BoxLayout):
             try:
                 _li = int(getattr(self, "_probe_ladder_i", 0))
                 _mp, _bp = PROBE_LADDER[_li % len(PROBE_LADDER)]
-                self._probe_mode = _mp
+                # ⚠️⚠️ 2026-09-18 对抗复核抓到的**致命错**: 这两个字段原来写在
+                #    **RootWidget** 上, 而读它们的是 **`_SoundPoolOut`** —— 两个对象!
+                #    ⇒ 四档全都走的是 A(串行), 日志却写着「档位 4/4」⇒
+                #    四组一模一样的数据会被当成实验结论。
+                #    (为什么门禁没抓到: 夹具是**直接往后端塞属性**的 ——
+                #     「复制品只会测它自己」, 本项目踩过这个形状。)
+                _bo = getattr(getattr(self, "sfx", None), "out", None)
+                if _bo is not None:
+                    _bo._probe_mode = _mp
+                    _bo._probe_boost = _bp
+                self._probe_mode = _mp       # RootWidget 上也留一份(只给日志/排查看)
                 self._probe_boost = _bp
                 self._probe_ladder_i = _li + 1
                 _boot_log("probe", "探针实验档 %d/%d: 每池线程 %s%s"
@@ -14748,6 +14826,7 @@ class RootWidget(BoxLayout):
         那样关掉弹窗会露出一个已经没用的加载页)。"""
         v = getattr(self, "_replay_veil", None)
         self._replay_veil = None
+        self._replay_busy = False
         self._load_veil = None
         if v is not None:
             v.drop()
