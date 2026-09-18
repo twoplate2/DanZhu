@@ -59,20 +59,25 @@ _PROBE_TRACE = []
 _PROBE_COST = [0.0, 0]
 # ---- v0.8.61(实验包): 「音效就绪」四档实验 ----------------------------------
 #   每次「重放冷启动」往上换一档, 走到尾循环回第一档。
-#   ⚠️ 档位写在**后端对象**上(`out._gate_mode` / `out._ab48k`)—— v0.8.60 那次致命错
+#   ⚠️ 档位写在**后端对象**上(`out._gate_mode` / `out._arm_extra`)—— v0.8.60 那次致命错
 #      就是"写在 RootWidget、读在后端"两个对象, 四档跑出来一模一样。
 #   ⚠️ 探针并行那四档(v0.8.59)已退役: 那件事已有定论(四档对照 52.2/49.3/49/45.8 ms,
 #      无实质收益), 档位让给这一包。`_probe_parallel` 保留但不再被选到
 #      (`_probe_cfg` 的默认就是串行)。
 GATE_MODE_OFF = "off"       # A 只跑老探针 = v0.8.60 那条路(基线)
-GATE_MODE_ONLY = "only"     # B 只等闸门, 老探针一次都不跑
+GATE_MODE_ONLY = "only"     # 只等闸门, 老探针一次都不跑 —— v0.8.62 **退休**(见 ARM_LADDER 下方注释)
 GATE_MODE_FIRST = "first"   # C 闸门优先, 到点不开才转老探针 = **出货默认**
 ARM_LADDER = (
-    (GATE_MODE_OFF, False),      # A 基线: 老探针独跑(探针多久 + 闸门自记多久, 一次全拿到)
-    (GATE_MODE_ONLY, False),     # B 纯闸门读数(没有探针在抢 CPU)
-    (GATE_MODE_FIRST, False),    # C 出货形态
-    (GATE_MODE_FIRST, True),     # D C + 48k 对拍
+    (GATE_MODE_FIRST, ""),        # A 出货形态(闸门优先, 1.5 秒不开就转老探针)
+    (GATE_MODE_OFF, ""),          # B 老探针对照(复现优化前那条路, 附带闸门自记的数)
+    (GATE_MODE_FIRST, "pools"),   # C 池数对拍(v0.8.62 新: 2 池 vs 4 池, 临时池, 不碰出货路径)
 )
+# ⚠️ 退休档(代码全保留, 想复活就加回上面那个元组):
+#   · `("first", "48k")` —— 48k 对拍。**结论已得**(老机器实测 22050 中位 56.3ms vs 48000 55.7ms,
+#     字节比 2.16x ⇒ **采样率不是杠杆**, 定价按样本数)。留着 `_arm48_bench` / `_wav_pcm_read` /
+#     `_resample16` / `_wav_write_sr` 与下面那个 `"48k"` 分支。
+#   · `(GATE_MODE_ONLY, "")` —— 只等闸门、老探针一次都不跑。它与 FIRST 只差"闸门不开时"那一段,
+#     而那正是 FIRST 的兜底该管的 ⇒ 已无信息量(`_g_fallback` 那一支保留)。
 # 总开关: 置 False ⇒ 闸门永不挂载, 全链路等价于 v0.8.60(连日志都只多一行「闸门未启用」)。
 SFX_GATE = True
 
@@ -246,6 +251,107 @@ def _arm48_bench(paths, n=10, rounds=5):
         except Exception:
             pass
     return rows
+def _arm_pools_bench(paths, plan=((2, "生产分法"), (4, "两组各自对半"),
+                                  (2, "生产分法"), (4, "两组各自对半"))):
+    """v0.8.62 C 档: 同一批样本装进 **2 个池 vs 4 个池**, 解码各要多久?
+
+    ⚠️ 生产分池是"合成音一池 / 语音一池"(2 池 × 2 条解码线程 = 4 条)。4 池 = 这两组**各自对半**
+       (= 8 条解码线程) —— 那才是"真改成 4 池"的样子, 不是随便轮转。
+    ⚠️ **交替 2→4→2→4**: 跨时段不可比(同一台机器的冷启动一天内从 6461 变 8620)。
+    ⚠️ 时钟用 **Python 侧墙钟**(第一个 load 之前 → 所有闸门都开): 跨池可比。
+       每池闸门自记的 readyMs 只是"该池自己的纯解码", 各池起点不同, **不能横向比**。
+    ⚠️ **全程不 play()** ⇒ 不建 AudioTrack ⇒ 不碰 `kMaxTracksPerUid`(那是 track 的上限)。
+    ⚠️ 上一组的池必须**先 release 再建下一组**, 否则它们会抢解码线程/内存, 把读数搅浑。
+    ⚠️ 拿不到闸门类时**不做假数**, 直接返回一行说明。
+    """
+    rows = []
+    try:
+        from jnius import autoclass
+        _G = autoclass("com.plinko.SoundGate")
+    except Exception as _e:
+        return ["池数对拍　跳过: 拿不到闸门类(%s)" % (repr(_e)[:40],)]
+    _bank = [(n, p) for n, p in paths if not n.startswith("voice_")]
+    _voice = [(n, p) for n, p in paths if n.startswith("voice_")]
+    if not _bank or not _voice:
+        return ["池数对拍　跳过: 两类样本不齐(合成 %d / 语音 %d)" % (len(_bank), len(_voice))]
+
+    def _buckets(npool):
+        if npool == 2:
+            return [_bank, _voice]
+        _hb = max(1, len(_bank) // 2)
+        _hv = max(1, len(_voice) // 2)
+        return [_bank[:_hb], _bank[_hb:], _voice[:_hv], _voice[_hv:]]
+
+    for npool, tag in plan:
+        pools, gates = [], []
+        try:
+            _t0 = time.perf_counter()
+            for _ in range(npool):
+                pools.append(_mk_soundpool(SFX_VOICES))
+            _build_ms = (time.perf_counter() - _t0) * 1000.0
+            for _p in pools:
+                try:
+                    gates.append(_G(_p))       # 必须在任何 load 之前挂上
+                except Exception:
+                    gates.append(None)
+            _t1 = time.perf_counter()
+            _n = 0
+            for _gi, _items in enumerate(_buckets(npool)):
+                if _gi >= len(pools):
+                    break
+                for _nm, _pp in _items:
+                    try:
+                        _sid = pools[_gi].load(_pp, 1)
+                    except Exception:
+                        continue
+                    if _sid and gates[_gi] is not None:
+                        try:
+                            gates[_gi].expect(_sid)
+                        except Exception:
+                            pass
+                        _n += 1
+            _load_ms = (time.perf_counter() - _t1) * 1000.0
+            _ok = False
+            while time.perf_counter() - _t1 < 15.0:
+                _all = True
+                for _g in gates:
+                    if _g is None:
+                        _all = False
+                        break
+                    try:
+                        if not bool(_g.allReady()):
+                            _all = False
+                            break
+                    except Exception:
+                        _all = False
+                        break
+                if _all:
+                    _ok = True
+                    break
+                time.sleep(0.02)
+            _wall = (time.perf_counter() - _t1) * 1000.0
+            _per = []
+            for _g in gates:
+                try:
+                    _per.append(float(_g.readyMs()))
+                except Exception:
+                    _per.append(-1.0)
+            rows.append("池数对拍　%d 池(%s): 全部解码完 %s(load 提交 %d 个 %.0f ms, 建池 %.0f ms)"
+                        % (npool, tag, ("%.0f ms" % _wall) if _ok else "**没等到**(15 秒上限)",
+                           _n, _load_ms, _build_ms))
+            rows.append("池数对拍　%d 池逐池满编: %s"
+                        % (npool, " / ".join(("%.0f" % _v) if _v >= 0 else "?" for _v in _per)))
+        except Exception as _e:
+            rows.append("池数对拍　%d 池出错: %r" % (npool, _e))
+        finally:
+            for _p in pools:
+                try:
+                    _p.release()
+                except Exception:
+                    pass
+    return rows
+
+
 # 两段各自提交的字节数(合成音 / 语音) —— 自动判定要用它算"每 MB 多少 ms"。
 _LOAD_BYTES = {"bank": 0, "voice": 0}
 
@@ -3712,8 +3818,12 @@ class _SoundPoolOut:
         ⚠️ 遍历必须用**快照**: 冷路径下烘焙线程正在往 `_paths` 里塞东西, 直接迭代它会在"字典
         在迭代中被改"时抛 `RuntimeError`, 被外层 `except` 吞掉 → 循环当场中断、`_ids` 停在
         半路 —— 而 `Sfx.named` 早已被烘焙线程填满 ⇒ **闸门放行、后端没有 sid ⇒ 整局静默**。
-        ⚠️ 收尾还要对账: 中断点之后那批名字在 `_paths` 里有、`_ids` 里没有, 在这里补一次;
-        仍补不上的交给 Sfx 的 _retry_failed 去重试。
+        ⚠️ 收尾还要对账: 中断点之后那批名字在 `_paths` 里有、`_ids` 里没有, 在这里补一次。
+        ⚠️⚠️ v0.8.62 更正: 这里以前写着"仍补不上的交给 Sfx 的 _retry_failed 去重试" ——
+           **那是假的**: 全文件往 `Sfx._failed` 里 append 的只有两处(冷路径合成循环、语音循环),
+           这个补账循环的 except 是裸 `pass`。也就是说**插拔耳机之后某个样本重载失败,
+           没有任何人有第二次机会, 也没有痕迹**。现在至少留痕(下面那行日志);
+           真要让它们进重试队列, 需要"后端 → Sfx"的新接线, 单独立项。
         ⚠️ 注意 _rebuild 跑在 Android **主线程**(onReceive 默认线程): 持锁/长循环会卡 UI,
         所以这里只做"重建 + 一轮对账", 不做等待。"""
         try:
@@ -3731,11 +3841,16 @@ class _SoundPoolOut:
                         _p.release()
                 except Exception:
                     pass
+            _reload_failed = 0
             for name, path in list(self._paths.items()):
                 try:
                     self.prime(name, path)
                 except Exception:
-                    pass
+                    _reload_failed += 1
+            if _reload_failed:
+                # ⚠️ 只留痕, 不假装有人会重试(见本方法 docstring 里 v0.8.62 那条更正)
+                _boot_log("sfx", "重建后重新 load 失败 %d 个 —— 没有任何人会重试它们"
+                          % _reload_failed)
         except Exception:
             pass
 
@@ -3841,6 +3956,32 @@ class _SoundPoolOut:
         if any(_x < 0 for _x in _v):
             return -1.0
         return max(_v)
+
+    def gate_first_missing(self):
+        """差的是哪一个 —— 返回 `(池序号, 名字)`, 全就绪或查不到时返回 None。
+
+        ⚠️ 闸门是"差一个就打不开", 而在此之前 Python 只知道「100/101」—— **不知道是谁**。
+        ⚠️ 必须**带池序号**反查: 两个池的 sampleId 各自从 1 编号(项目头号失效形状)。
+        ⚠️ 只报**第一个**(Java 侧是 HashSet 迭代序 ⇒ 缺多个时给的是其中之一) —— 诊断够用。
+        """
+        for _pi, _g, _tab in ((0, getattr(self, "_gate", None), getattr(self, "_ids", None)),
+                              (1, getattr(self, "_gate2", None), getattr(self, "_ids2", None))):
+            if _g is None or not _tab:
+                continue
+            try:
+                _sid = int(_g.firstMissing())
+            except Exception:
+                continue
+            if _sid <= 0:
+                continue
+            for _nm, _v in _tab.items():
+                try:
+                    if int(_v) == _sid:
+                        return (_pi, _nm)
+                except Exception:
+                    continue
+            return (_pi, "sid=%d" % _sid)
+        return None
 
     def gate_info(self):
         """一行诊断: 类在不在 / 本进程第几次建闸门 / 回调从哪个线程来 / 两池就绪 a/b。
@@ -5825,6 +5966,10 @@ class Sfx:
         # v0.8.61(实验包): 「谁先到」的诊断真源 —— 只给启动日志/面板看, **不参与任何判据**
         self._ready_winner = ""     # "闸门" / "探针" / "超时" / ""(还没等过)
         self._arm_rows = []         # v0.8.61 实验档的结论行(只给重放详情弹窗看)
+        self._arm_busy = False      # v0.8.62: 实验档正在跑 ⇒ 重放那一页先别急着报"完成"
+        # v0.8.62 修复阶梯的两笔账
+        self._gate_missing_name = ""    # 点名结果(哪个样本卡住了) —— 只给日志/面板看
+        self._gate_rebuilt_once = False  # "重建池"每进程只许一次(重放会复位)
         self._gate_open_ms = 0.0    # 闸门打开的时刻(相对这一次等待的 t0)
         self._probe_open_ms = 0.0   # 老探针说"全部就绪"的时刻
         self.n_attempt = 0          # 过了全部闸门、真的向后端要过声音的次数
@@ -5970,6 +6115,69 @@ class Sfx:
         """加载页什么时候可以摘: 音效关了(没什么可等) 或 烘完且探到真能播。"""
         return (not self.enabled) or self._audio_ready
 
+    def _gate_repair(self, _desc=""):
+        """闸门到点没开: **点名 → 重 load → (必要时)重建池**。只做一轮, 绝不循环。
+
+        ⚠️ 为什么要修: 在这之前这条路**只会等**(等到 6 秒硬上限 → 照样放行 → 那个音照样不响),
+           既不修、也不说是哪一个。三种失败形态里「解码完但建不出流」以前**完全没人管**。
+        ⚠️ 代价只在这一支上付(闸门正常时一次都不跑), 但**每一项都有上限**:
+           · 点名 / 重 load 都是"扔给后台"(`_retry_failed` 自己会重试 N 轮), 不阻塞放行;
+           · 重建池**只在"一个都没就绪"时**做 —— 那说明回调那条路像死了, 而不是单纯慢;
+             且每进程只允许一次(`_gate_rebuilt_once`; 「重放冷启动」会复位它, 那本来就是重来一遍)。
+        ⚠️ **绝不重新合成资源**: 甲乙丙三种失败没有一种是"资源坏了", 而冷路径的合成**正是
+           "load 返回 0" 的原因**(2.2 秒纯 Python 抢解码线程) —— 失败后再合成 = 再制造一次争抢。
+           真正需要重生成的情况(缓存 WAV 损坏/截断)早就有专管: 启动时逐个核对指纹+字节数,
+           对不上就整目录清掉重烘(`_load_cached`), 而写盘是原子的(`_wav_write`)。
+        """
+        try:
+            _nm = ""
+            _got = None
+            _fn = getattr(self.out, "gate_first_missing", None)
+            if _fn is not None:
+                _got = _fn()
+            if _got:
+                _nm = str(_got[1])
+                try:
+                    self._gate_missing_name = _nm
+                except Exception:
+                    pass
+                _boot_log("probe", "闸门差件: %s(池%d) 还没就绪 —— 以前只知道「差 1 个」"
+                          % (_nm, int(_got[0])))
+            # ② 把它丢进重试队列(后台反复重 load, 成功就进 named)
+            try:
+                _paths = getattr(self.out, "_paths", {}) or {}
+                if _nm and _nm in _paths:
+                    self._failed.append((_nm, _paths[_nm]))
+                    self._retry_failed()
+                    _boot_log("probe", "已把 %s 丢进重试队列(%d 轮 × %.1f 秒)"
+                              % (_nm, int(getattr(self, "_retry_rounds", 0) or 0),
+                                 float(getattr(self, "_retry_wait", 0.0) or 0.0)))
+            except Exception as _e:
+                _boot_log("probe", "重试入队失败(不影响放行): %r" % (_e,))
+            # ③ 一个都没就绪 ⇒ 回调那条路像死的 ⇒ 重建两个池 + 全部重新 load(每进程一次)
+            _rdy = -1
+            try:
+                _rf = getattr(self.out, "gate_ready_count", None)
+                _rdy = int(_rf()) if _rf is not None else -1
+            except Exception:
+                _rdy = -1
+            if _rdy == 0 and not getattr(self, "_gate_rebuilt_once", False):
+                self._gate_rebuilt_once = True
+                _snap = dict(getattr(self.out, "_paths", {}) or {})
+                _t0 = time.perf_counter()
+                self.out.replay_reset()          # 换新池 + 挂新闸门 + 清应到清单
+                _n = 0
+                for _n2, _p2 in _snap.items():
+                    try:
+                        self.out.prime(_n2, _p2)
+                        _n += 1
+                    except Exception:
+                        pass
+                _boot_log("probe", "闸门 0 就绪 ⇒ 重建两个池并重新 load %d/%d 个 (%.0f ms)"
+                          % (_n, len(_snap), (time.perf_counter() - _t0) * 1000.0))
+        except Exception as _e:
+            _boot_log("probe", "修复阶梯自己出错(不影响放行): %r" % (_e,))
+
     def _await_ready(self):
         """等"真的能播"再放行 —— 这是冷启动加载页的摘页判据。
 
@@ -5994,6 +6202,7 @@ class Sfx:
             _g_ok = getattr(self.out, "gate_all_ready", None)
             _g_deadline = 0.0
             _g_desc = ""
+            _g_repaired = False        # v0.8.62: 修复阶梯**每个进程只跑一轮**
             _g_fallback = True          # 闸门到点没开时, 要不要落回老探针
             self._ready_winner = ""
             self._gate_open_ms = 0.0
@@ -6014,6 +6223,11 @@ class Sfx:
                               % (_g_mode, _g_desc,
                                  " ⇒ 先等它 %.1f 秒, 不开就走老探针" % self.SFX_GATE_FIRST_SEC
                                  if _g_fallback else " ⇒ 只等闸门, 老探针一次都不跑"))
+                elif _g_mode == GATE_MODE_OFF:
+                    # ⚠️ v0.8.62 修误报: 原来这一档也印「闸门不可用」, 而它其实**好好的**,
+                    #    只是这一档选择不用它 —— 看日志的人会以为闸门挂了。
+                    _boot_log("probe", "实验档=off: 闸门在位但**本档不使用**(%s) ⇒ 走老探针"
+                              % (_g_desc or "没登记到样本",))
                 else:
                     _boot_log("probe", "实验档=%s: 闸门不可用(%s) ⇒ 走老探针"
                               % (_g_mode, _g_desc or "没登记到样本"))
@@ -6069,6 +6283,12 @@ class Sfx:
                     if not _g_fallback:
                         time.sleep(0.02)     # "only" 档: 等到 6 秒硬上限为止, 不跑探针
                         continue
+                    # ---- v0.8.62: 先"修", 再谈兜底 ----
+                    #   ⚠️ 只跑一轮(`_g_repaired`): 点名/重 load 是扔给后台, 重建池自带
+                    #      `_gate_rebuilt_once` —— 两处都不许循环(项目红线: 绝不软锁)。
+                    if not _g_repaired:
+                        _g_repaired = True
+                        self._gate_repair(_g_desc)
                     _g_use = False
                     _boot_log("probe", "闸门 %.0f ms 仍未开(%s) ⇒ 这一轮起走老探针兜底"
                               % (self.SFX_GATE_FIRST_SEC * 1000.0, _g_desc or "?"))
@@ -6149,19 +6369,36 @@ class Sfx:
             except Exception:
                 pass
             _boot_log("probe", "音效等待结束: %.0f ms, 共 %d 轮" % (self.ready_ms, _rnd))
-            # ---- v0.8.61 D 档: 48k 对拍(跑在"等待结束之后", 不污染上面那几个数) ----
+            # ---- v0.8.61/62 实验档: 48k 对拍(跑在"等待结束之后", 不污染上面那几个数) ----
             #   ⚠️ 它必须等冷烘焙把 22050 的 wav 写回缓存之后才跑 —— 重放会先清掉整个缓存目录,
             #      所以这一档只能挂在这里(不能在 `_replay_cold_start` 里起)。
-            if bool(getattr(self.out, "_ab48k", False)):
+            #   ⚠️ `_arm_busy` 是给「重放冷启动」那一页看的: 实验跑在 `_audio_ready = True`
+            #      之前, 而 veil 的"完成"判据看的是更早的 `sfx.baked` ⇒ 不挂这个标志的话,
+            #      玩家手快就会点开一个**还没有实验结果**的详情弹窗(v0.8.62 修)。
+            _arm_x = str(getattr(self.out, "_arm_extra", "") or "")
+            if _arm_x:
                 try:
-                    self.out._ab48k = False
-                    _paths48 = [(n, p) for n, p in list(getattr(self.out, "_paths", {}).items())
-                                if not n.startswith("voice_")]
-                    self._arm_rows = _arm48_bench(_paths48)
-                    for _r in self._arm_rows:
-                        _boot_log("probe", _r)
+                    self.out._arm_extra = ""          # 用完复位(下一条命回到出货默认)
+                except Exception:
+                    pass
+                self._arm_busy = True
+                try:
+                    if _arm_x == "48k":
+                        # 退休档(见 ARM_LADDER 下方注释): 保留可复活
+                        _paths48 = [(n, p) for n, p in list(getattr(self.out, "_paths", {}).items())
+                                    if not n.startswith("voice_")]
+                        self._arm_rows = _arm48_bench(_paths48)
+                        for _r in self._arm_rows:
+                            _boot_log("probe", _r)
+                    elif _arm_x == "pools":
+                        self._arm_rows = _arm_pools_bench(
+                            list(getattr(self.out, "_paths", {}).items()))
+                        for _r in self._arm_rows:
+                            _boot_log("probe", _r)
                 except Exception as _e:
-                    self._arm_rows = ["48k 对拍　出错: %r" % (_e,)]
+                    self._arm_rows = ["%s 实验　出错: %r" % (_arm_x, _e)]
+                finally:
+                    self._arm_busy = False
         except Exception as _e:
             # ⚠️ 2026-09-18 修(B3): 这里原来是裸 `pass` —— 循环里任何异常都会让 ready_ms 保持
             #    初值 0、启动日志**一行不留**, 然后照常硬放行。症状就是玩家报过的
@@ -6347,7 +6584,11 @@ class Sfx:
                                    float(getattr(self, "_probe_open_ms", 0.0) or 0.0)))
                 _gi = getattr(out, "gate_info", None)
                 if _gi is not None:
-                    rows.append("就绪闸门　%s" % _gi())
+                    # ⚠️ v0.8.62: "差的是哪一个"**折进这一行**, 绝不新开一行 —— 这块面板有
+                    #    成文硬预算(内容区 376px ÷ 每行 38px), 而 `_popup_fit_content` 在装不下时
+                    #    会按比例压标签高度把尾巴裁掉(它的原话: 宁可少显示两行, 也不飘出去)。
+                    _gm = str(getattr(self, "_gate_missing_name", "") or "")
+                    rows.append("就绪闸门　%s%s" % (_gi(), ("　差 " + _gm) if _gm else ""))
             except Exception:
                 pass
             # v0.8.61: 实验档的结论行(只有重放跑过才有; 正常局这里是空的)
@@ -15099,7 +15340,10 @@ class RootWidget(BoxLayout):
             def _refit(*_):
                 try:
                     _vw, _vh = self._veq()
-                    popup.height = min(content.minimum_height + dp(64), _vh * 0.92)
+                    # ⚠️ v0.8.62: 这里原来是 `_vh * 0.92`, 而 `_popup_fit_content` 已经用 0.96,
+                    #    且本函数在 0.06 秒后跑、会**覆盖**它的结果 ⇒ 同一块弹窗被更矮的封顶管着。
+                    #    实验档的结论正是塞进这块弹窗(行会变多) ⇒ 统一到 0.96。
+                    popup.height = min(content.minimum_height + dp(64), _vh * 0.96)
                 except Exception:
                     pass
             Clock.schedule_once(_refit, 0.06)
@@ -15163,7 +15407,7 @@ class RootWidget(BoxLayout):
             # ③ 后台重烘(先把「实验档」换到下一档, 并把两个池整个换新)
             try:
                 _li = int(getattr(self, "_probe_ladder_i", 0))
-                _mode, _ab48 = ARM_LADDER[_li % len(ARM_LADDER)]
+                _mode, _extra = ARM_LADDER[_li % len(ARM_LADDER)]
                 # ⚠️⚠️ 2026-09-18 对抗复核抓到的**致命错**: 档位曾经写在 **RootWidget** 上,
                 #    而读它们的是 **`_SoundPoolOut`** —— 两个对象! ⇒ 四档全走同一档, 日志却
                 #    写着「档位 4/4」⇒ 四组一模一样的数据会被当成结论。
@@ -15171,11 +15415,11 @@ class RootWidget(BoxLayout):
                 _bo = getattr(getattr(self, "sfx", None), "out", None)
                 if _bo is not None:
                     _bo._gate_mode = _mode
-                    _bo._ab48k = bool(_ab48)
+                    _bo._arm_extra = str(_extra)      # v0.8.62: 字符串(以前是 bool _ab48k)
                 self._probe_ladder_i = _li + 1
                 _boot_log("probe", "重放实验档 %d/%d: %s%s"
                           % (_li % len(ARM_LADDER) + 1, len(ARM_LADDER), _mode,
-                             " + 48k 对拍" if _ab48 else ""))
+                             (" + " + _extra) if _extra else ""))
             except Exception:
                 pass
             # ⚠️ 诊断累加器**每一档都从头起**: `_PROBE_TRACE`/`_PROBE_COST` 是模块级、
@@ -15191,6 +15435,8 @@ class RootWidget(BoxLayout):
             #    必须在 `sfx._bake` 之前: 冷烘焙会 prime 全部 101 个样本, 那一步才是"重建"。
             try:
                 sfx._arm_rows = []
+                sfx._gate_missing_name = ""       # 点名结果每一档重来
+                sfx._gate_rebuilt_once = False    # "重建池"的一次性闸门: 重放本来就是重来一遍
                 sfx.out.replay_reset()
             except Exception:
                 pass
@@ -17607,6 +17853,13 @@ class RootWidget(BoxLayout):
                             float(getattr(sfx, "_gate_open_ms", 0.0) or 0.0),
                             float(getattr(sfx, "_probe_open_ms", 0.0) or 0.0)))
             L.append("轮询间隔  %.3f s" % sfx.SFX_READY_POLL)
+            # v0.8.62: 修复阶梯的点名结果(只在真的卡住时才是非空)
+            try:
+                _gmiss = str(getattr(sfx, "_gate_missing_name", "") or "")
+                if _gmiss:
+                    L.append("闸门差件  %s（已点名 + 已丢进重试队列）" % _gmiss)
+            except Exception:
+                pass
             # ⚠️ 2026-09-18 新增: **点名单价** —— 这周所有讨论都围着它转
             #    (它就是"这台机器一次 play() 有多贵"), 以前只能从逐轮日志里手算。
             #    现在 `Σ探针自身 ÷ Σ真扫` 直接印 —— 换任何设备一眼就能分档。
@@ -17632,6 +17885,15 @@ class RootWidget(BoxLayout):
                 _gi = getattr(sfx.out, "gate_info", None)
                 if _gi is not None:
                     L.append("就绪闸门  %s" % _gi())
+            except Exception:
+                pass
+            # v0.8.62: 「后端没播成」也进日志 —— 运行期静默不响**唯一的探照灯**,
+            #   以前只在面板上(而面板要玩家主动点开)。**0 也要印**: 它是"全程一声没漏"的正面证据。
+            try:
+                _ms = int(getattr(sfx.out, "_play_missed", 0) or 0)
+                L.append("后端没播成  %d 次%s"
+                         % (_ms, ("（最后一次 %s）"
+                                  % (getattr(sfx.out, "_play_missed_last", "") or "?")) if _ms else ""))
             except Exception:
                 pass
             try:
@@ -20664,7 +20926,12 @@ class RootWidget(BoxLayout):
                     #    而能不能点取决于 `_hold` —— 万一烘焙线程永远不回来, 玩家就被锁在启动页
                     #    (项目红线: 绝不软锁)。正常路上它一次都用不到。
                     _waited = time.perf_counter() - float(getattr(self, "_replay_t0", 0.0) or 0.0)
-                    if not _veil._hold and (self.sfx.baked or _waited > REPLAY_BAKE_MAX_SEC):
+                    # ⚠️ v0.8.62: 还要等**实验档**跑完(`_arm_busy`)。它挂在 `_await_ready` 里、
+                    #    在 `_audio_ready = True` 之前, 而 `sfx.baked` 比那更早 ⇒ 少了这一条,
+                    #    玩家手快就会点开一个还没有实验结果的详情弹窗。
+                    #    `REPLAY_BAKE_MAX_SEC` 那道防软锁兜底原样保留。
+                    if (not _veil._hold and not getattr(self.sfx, "_arm_busy", False)
+                            and (self.sfx.baked or _waited > REPLAY_BAKE_MAX_SEC)):
                         # 「重放冷启动」完成: **不自动摘页** —— 摆出结果等玩家点一下。
                         # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙
                         # 1.2 秒、探针一过就摘, 那几行数字等于闪一下。

@@ -171,6 +171,28 @@ public class SoundGate {
         synchronized (lock) { return failed; }
     }
 
+    /**
+     * The first registered sampleId that has NOT reported ready yet, or 0 when
+     * every expected sample is ready (0 is never a valid sampleId).
+     *
+     * Diagnostic, and it exists because of one concrete blind spot: without it the
+     * Python side only knows "100 of 101 are ready" -- it cannot say WHICH sample is
+     * holding the gate shut, so a stuck sample is invisible.
+     *
+     * When several are missing this returns whichever the set happens to yield
+     * first (HashSet order); one name is enough to act on.
+     */
+    public int firstMissing() {
+        synchronized (lock) {
+            for (Integer id : expect) {
+                if (!ready.contains(id)) {
+                    return id.intValue();
+                }
+            }
+            return 0;
+        }
+    }
+
     /** 1 for the first gate built in this process, 2 for the next, ... */
     public int initSeq() {
         return initSeq;
