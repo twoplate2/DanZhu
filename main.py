@@ -6016,6 +6016,9 @@ class Sfx:
         self.bank = {}
         self.named = set()          # named 后端里已经可播的音效名
         self.baked = False          # 整库烘焙是否收工(UI 的冷启动加载页按它收尾, 见 _LoadVeil)
+        # v0.8.67: 收工时刻(启动时钟, 秒)与"无音频加载累计耗时"(ms, 摘页那刻算出来)
+        self._baked_at = 0.0
+        self._no_audio_ms = 0.0
         self._audio_ready = False   # 烘完 + **探到真的能播** 才为真(见 _await_ready)。默认 False:
                                     # 但 !enabled / 后端探测不可用时一律放行 —— 绝不软锁
         self.ready_ms = 0.0         # 等"真的能播"花了多久(0 = 不适用/没探针)
@@ -6126,6 +6129,7 @@ class Sfx:
         self.bake_ms = (time.perf_counter() - t0) * 1000.0
         _boot_log("bake", "烘焙线程结束: %.0f ms" % self.bake_ms)
         self.baked = True               # ⚠️ 放在 except 之后: 烘失败了也要放行, 否则加载页永不消失(软锁)
+        self._baked_at = time.perf_counter()   # v0.8.67: 收工时刻(见 `_no_audio_ms`)
         self._await_ready()             # 再等"真的能播"(带硬超时), 见该方法的注释
 
     # ---- 冷启动"真的能播了吗"的护栏(首次安装必然没声音的正面修复) -------------
@@ -6539,7 +6543,9 @@ class Sfx:
             #    ⚠️ 2026-09-18 再简一步(玩家): 「启动总耗时」-> **「总耗时」**。
             # ⚠️ 2026-09-18 再去一个字(玩家): 「冷启动，总耗时」-> **「冷启动总耗时」**
             #    —— 就是删掉中间那个逗号(那一行在窄机器上会换行, 省一个全角字宽; 再窄就得连空格一起省, 见 v0.8.54 的 changelog)。
-            mode_row = "%s启动总耗时 %.0fms" % (
+            # ⚠️ v0.8.67(玩家): **连空格一起省** —— 上面 6540 行那句预测("再窄就得连空格
+            #    一起省, 见 v0.8.54")到这一版兑现。省的是标签与数值之间那半个字宽。
+            mode_row = "%s启动总耗时%.0fms" % (
                 "热" if self.cached else "冷", self.bake_ms + self.ready_ms)
             n_rc = getattr(out, "rebuild_count", 0)
 
@@ -6631,21 +6637,26 @@ class Sfx:
             #    ③ 整体改成「启动总耗时 610 ms（音效等待 593 ms）」
             #      —— 括号明确告诉玩家"它是总数里的一部分"。
             if self.ready_ms > 0:
-                _wait = "音效加载 %.0fms" % self.ready_ms
+                _wait = "音效加载%.0fms" % self.ready_ms     # v0.8.67: 同上, 连空格一起省
             elif getattr(out, "probe_all", None) is None:
                 _wait = ("音效加载 无法确认能播(本后端无探针)"
                          if platform == "android" else "音效加载 0ms")
             else:
-                _wait = "音效加载 0ms(未等待)"
+                _wait = "音效加载0ms(未等待)"
             # ⚠️ 2026-09-18(玩家): 「把时间放一起, 把加载进度放一起」⇒
             #    时间(启动方式/启动耗时/音效等待)一行, 加载进度(音效就绪/语音就绪)一行。
-            # ⚠️ v0.8.66(玩家): 「非音效加载累计耗时」放在**音效就绪前面**。
-            #    值 = `bake_ms`, 而 `mode_row` 里的总耗时是 `bake_ms + ready_ms` ⇒
-            #    面板上这三个数是**自洽相加**的: 总耗时 = 非音效加载 + 音效等待。
-            #    ⚠️ 冷启动那行会是 2 秒上下 —— 那是**现场合成音效**(不算"等音频就绪",
-            #       但确实是跟音效有关的那一段)。
+            # ⚠️ v0.8.67(玩家命名 + 纠错): 「**无音频加载累计耗时**」放在**音效就绪前面**。
+            #    含义 = **不必等音频就绪的话, 最早什么时候能进游戏**
+            #          = max(烘焙收工, 加载页首帧 + `VEIL_TITLE_MIN_SEC`)  ← 摘页那刻算好存进字段
+            #    ⚠️ v0.8.66 这一行印的是 `bake_ms`(烘焙线程自己的时长) —— **那是错的**:
+            #       加载页那 220ms 的最短停留是与音频无关的地板, 它才是"无音频时的下限"。
+            #       (冷启动那行 ≈ 烘焙收工, 因为合成这一步躲不掉。)
+            #    ⚠️ 取不到(理论上摘页时一定算得出; 拿不到就退回 `bake_ms`, 至少不是 0)时兜底。
+            _noa = float(getattr(self, "_no_audio_ms", 0.0) or 0.0)
+            if _noa <= 0.0:
+                _noa = float(getattr(self, "bake_ms", 0.0) or 0.0)
             rows = [mode_row + "(" + _wait + ")",
-                    "非音效加载累计耗时：%.0f ms" % float(getattr(self, "bake_ms", 0.0) or 0.0),
+                    "无音频加载累计耗时：%.0fms" % _noa,
                     "音效就绪：%s，语音就绪：%d/%d" % (ready, _n_voice, _n_voice_all),
                     "音频后端　%s" % bname]
             # ⚠️ v0.8.64: 「先到者」与「就绪闸门」两行**已从面板撤下**(玩家点名)。
@@ -15223,6 +15234,50 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
 
+    def _calc_no_audio_ms(self, _veil):
+        """「无音频加载累计耗时」= **不必等音频就绪的话, 最早什么时候能进游戏**(ms)。
+
+        = `max(加载页"演完"的实测时刻, 烘焙收工时刻)`
+
+        ⚠️ **两边的每一项都是实测的, 不是拿常量算的**(玩家 2026-09-18 点名两次):
+           · 加载页那一项 = `_LoadVeil._done_at_boot`(第一次 `t >= VEIL_TITLE_MIN_SEC` 的那一帧盖的章)
+             —— `VEIL_TITLE_MIN_SEC`(220ms)本身**是常量**, 但那一刻实际落在什么时候是
+             "220ms **向上取整到下一帧**", 而帧长随设备/负载变(冷启动时主线程还在建界面+跑预热)
+             ⇒ **每局都不一样**。拿常量算会系统性偏小。
+             (真取不到 `_done_at_boot` 时才退回"首帧 + 常量"当兜底。)
+        ⚠️ 两项都躲不掉, 所以取 max:
+           · **加载页地板** —— 那行标题要"完整淡入", 与音频无关;
+           · **烘焙收工** —— 冷启动必须先把音效现场合成出来(热启动则是读缓存, 很早)。
+           热启动 ≈ 地板(≈244ms); 冷启动 ≈ 烘焙收工(2~3 秒)。
+        ⚠️ **别**跟"总耗时 − 音效加载"混: 那个是 `bake_ms`(烘焙线程自己的时长), 不含地板,
+           v0.8.66 我就是这么印错的, 玩家当场抓到。
+        出任何意外返回 0 —— 调用方会退回 `bake_ms`。
+        """
+        try:
+            # ⚠️ **优先用实测**(加载页自己说的"我演完了"); 拿不到才退回"首帧 + 常量"。
+            #    玩家 2026-09-18 点名: 那个 220ms 不是恒定值 —— 实际是"220ms 向上取整到
+            #    下一帧", 帧长随设备/负载变 ⇒ 必须实测(拿常量算会系统性偏小)。
+            _vf = float(getattr(_veil, "_done_at_boot", 0.0) or 0.0)
+            if _vf <= 0.0:
+                _t0b = float(getattr(_veil, "_t0_boot", 0.0) or 0.0)
+                if _t0b <= 0.0:
+                    # ⚠️ 连"首帧"都没有 ⇒ **老实说不知道**(返回 0, 调用方会退回 `bake_ms`),
+                    #    不许拿常量凑一个数出来 —— 那是编数。
+                    return 0.0
+                _vf = _t0b + VEIL_TITLE_MIN_SEC
+            _bk = float(getattr(self.sfx, "_baked_at", 0.0) or 0.0) - _BOOT_T0
+            _v = max(_vf, _bk) * 1000.0
+            # ⚠️ 这行**把对账也印出来**: 实际总耗时 − 本值 = **音频让它多等了多久**。
+            #    (玩家 2026-09-18 给这个数定的意思: "如果不必等音频, 大概多久能进界面"。)
+            _tot = (float(getattr(self.sfx, "bake_ms", 0.0) or 0.0)
+                    + float(getattr(self.sfx, "ready_ms", 0.0) or 0.0))
+            _boot_log("frame", "无音频加载累计耗时 %.0f ms（加载页演完 %.0f / 烘焙收工 %.0f）"
+                               " ⇒ 实际总耗时 %.0f ms, 音频让它多等 %.0f ms"
+                      % (_v, _vf * 1000.0, _bk * 1000.0, _tot, _tot - _v))
+            return _v
+        except Exception:
+            return 0.0
+
     def _show_startup_info(self):
         """「启动信息」弹窗: 版本/制作日期 + 音频体检。
 
@@ -21053,6 +21108,16 @@ class RootWidget(BoxLayout):
                     self._load_veil = None
                     _veil.drop()
                     _boot_log("frame", "加载页摘除")
+                    # v0.8.67: **「无音频加载累计耗时」= 不必等音频就绪的话, 最早什么时候能进游戏**
+                    #   = max(烘焙收工时刻, 加载页首帧 + `VEIL_TITLE_MIN_SEC`)
+                    #   ⚠️ 两项都躲不掉: 冷启动必须先把音效合成出来(烘焙), 而加载页那 220ms 是
+                    #      "标题完整淡入"的地板(与音频无关)。
+                    #   ⚠️ **别**把它当成"总耗时 − 音效加载" —— 那只是烘焙线程自己的时长
+                    #      (`bake_ms`), 和这个地板不是一个东西(v0.8.66 我印错成那个, 玩家当场抓到)。
+                    try:
+                        self.sfx._no_audio_ms = self._calc_no_audio_ms(_veil)
+                    except Exception:
+                        pass
                     # 摘页那一刻的四元快照 —— 一次同时判两件事:
                     #   · rebuild_count: K7「白重建」假设。预期恒为 0, 非 0 则假设复活。
                     #   · 「闸门 vs 已到」: `named` 比 `_ids` 多 = **闸门已放行而后端没有**,
@@ -21486,6 +21551,14 @@ class _LoadVeil(Widget):
         self._title_on = False
         self._title_box = (0.0, 0.0, 0.0, 0.0)   # 那一行字的外接框(x, y, w, h), 裁剪按它算
         self._title_fs = 0.0                     # 这一页当前的字号(圆点大小按它算)
+        # v0.8.67: 第一帧的**启动时钟**读数(秒, 相对 `_BOOT_T0`)—— 面板那行
+        # 「无音频加载累计耗时」要拿它 + `VEIL_TITLE_MIN_SEC` 算"加载页自己的地板"。
+        # ⚠️ `_t0` 用的是 `time.time()`(给动画算 t), 与启动时钟不是同一个源 ⇒ 必须另盖一个。
+        self._t0_boot = 0.0
+        # v0.8.67: **加载页"演完了"的那一刻**(启动时钟) —— 第一个满足 `t >= VEIL_TITLE_MIN_SEC`
+        # 的 tick 上盖章。⚠️ 为什么不直接拿常量算: 那是"220ms 向上取整到下一帧", 而帧长随
+        # 设备/负载变(冷启动时主线程还在建界面+跑预热)⇒ **实测值每局不同**(玩家点名)。
+        self._done_at_boot = 0.0
         self._t0 = 0.0            # 动画起点 —— **第一帧才盖章**: 构造时刻这一页还没上屏, 从那里
         #                           算会让动画"没开始就过半"(v0.6.26~28 的进场就是这么废的)
         # ⚠️ 这一页**没有任何图**了(玩家 2026-09-11 定稿: 「黑屏+汉字」「不用之前的背景图了」)。
@@ -21616,8 +21689,19 @@ class _LoadVeil(Widget):
             now = time.time()
             if self._t0 == 0.0:
                 self._t0 = now
+                try:
+                    self._t0_boot = time.perf_counter() - _BOOT_T0
+                except Exception:
+                    self._t0_boot = 0.0
             t = now - self._t0
             self._apply(t)
+            # v0.8.67: "这一页演完了"= 第一次 `t >= VEIL_TITLE_MIN_SEC` 的那一帧(**实测**)。
+            #   它是"无音频加载累计耗时"里的那个地板 —— 不能拿常量去算(见字段处注释)。
+            if self._done_at_boot == 0.0 and t >= VEIL_TITLE_MIN_SEC:
+                try:
+                    self._done_at_boot = time.perf_counter() - _BOOT_T0
+                except Exception:
+                    self._done_at_boot = 0.0
             if self._is_replay:
                 # 「重放冷启动」: **无限演下去**(扫完一轮再扫一轮), 就绪也不自己摘 ——
                 # 摘不摘由 `_frame` 按 `_hold` 决定(那一屏要停住等玩家点一下)。
