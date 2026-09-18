@@ -1853,7 +1853,10 @@ def _live_power_temp_line():
         _parts = []
         _t = _sn.get("temp")
         if _t is not None:
-            _parts.append("温度：%.1f 摄氏度" % _t)
+            # ⚠️ 2026-09-18(玩家报的**: 字库是子集体, 新加的中文会变豆腐块**):
+            #    「摄氏度」的「摄」「氏」两个字不在字库里 ⇒ 屏幕上是两个方框。
+            #    玩家定的解法: **避开新字**, 不动字库 —— 用「度」(常用字, 字库里有)。
+            _parts.append("温度：%.1f 度" % _t)
         _mv = _sn.get("mv")
         if _mv:
             _raw, _src = _battery_current_raw()
@@ -1861,7 +1864,8 @@ def _live_power_temp_line():
                 _unit = "ma" if abs(_raw) < 20000 else "ua"
                 _w = _power_from(_raw, _mv, _unit)
                 if _w is not None:
-                    _parts.append("功耗：%.2f 瓦" % _w)
+                    # ⚠️ 同上: 「瓦」也不在字库里 ⇒ 用 **W**(半角, 不受字库影响)。
+                    _parts.append("功耗：%.2f W" % _w)
         if not _parts:
             return ""
         return "　".join(_parts)
