@@ -19619,20 +19619,31 @@ class RootWidget(BoxLayout):
             # ⚠️ 就绪判据现在由 `_LoadVeil.tick()` 给 —— 它还要负责开场动画、最短停留和整页淡出,
             #    所以这里只问"能摘了吗", 不再自己看 `audio_ready()`。它自己不持有 Clock, 由这里驱动。
             if _veil.tick(self.sfx.audio_ready()):
-                # ⚠️⚠️ 2026-09-18 修(玩家报「第1次显示18ms, 第2次起才是真值」):
-                #    多一个 `self.sfx.baked` 条件。原因: `audio_ready()` 在**音效关掉时恒为真**
-                #    (`not self.enabled or ...`), 于是烘焙还没跑完就进了这一支 ⇒
-                #    `_replay_cost_text()` 读到的是**上一次的 `bake_ms`** 配上刚被清零的
-                #    `ready_ms` ⇒ 第 1 次报出一个偏小的假数。
-                if (_veil is getattr(self, "_replay_veil", None) and not _veil._hold
-                        and self.sfx.baked):
-                    # 「重放冷启动」完成: **不自动摘页** —— 摆出结果等玩家点一下。
-                    # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙 1.2 秒、
-                    # 探针一过就摘, 那几行数字等于闪一下。
-                    _veil._hold = True
-                    # 只在最下面亮「测试已经完成」(+ 耗时那行; 详细统计去点击后的弹窗)
-                    _veil.set_done(self._replay_cost_text())
-                    _veil._on_tap = self._finish_replay_veil
+                # ⚠️ **先按「这一页是不是重放结果页」分岔** —— 重放页**绝不落进下面那条自动摘页**。
+                #    2026-09-18 踩的坑(v0.8.52): 给重放那一支加了 `self.sfx.baked` 条件, 而条件
+                #    不成立时会**掉进 `elif` 那条自动摘页**。偏偏 `audio_ready()` 在**音效关掉时
+                #    恒为真**(`not self.enabled or ...`) ⇒「音效已关 + 点重放」在**第一帧**就把整页
+                #    摘掉, 玩家点下去看到的是**画面没有任何反馈**(集成探针实测: 0.25s 后页就没了,
+                #    而烘焙照样在后台跑了 2.8 秒 ⇒ 见 `temp/_replay_probe.py off`)。
+                #    ⇒ 形状定死: 重放页的出口**只有玩家点击**(`_LoadVeil.on_touch_down`)。
+                if _veil is getattr(self, "_replay_veil", None):
+                    # ⚠️ 必须等**这一次重放自己的烘焙收工**才报结果: `audio_ready()` 在音效关掉时
+                    #    恒为真, 于是烘焙还没跑完就报数 ⇒ `_replay_cost_text()` 读到的是**上一次的
+                    #    `bake_ms`** 配上刚被清零的 `ready_ms` ⇒ 报出一个偏小的假数(玩家报的
+                    #    「第1次显示18毫秒, 第2次超过3000毫秒」)。
+                    # ⚠️ 下面时间那一道是**防软锁**兜底: 这一页吞掉所有触摸、出口只有「玩家点击」,
+                    #    而能不能点取决于 `_hold` —— 万一烘焙线程永远不回来, 玩家就被锁在启动页
+                    #    (项目红线: 绝不软锁)。正常路上它一次都用不到。
+                    _waited = time.perf_counter() - float(getattr(self, "_replay_t0", 0.0) or 0.0)
+                    if not _veil._hold and (self.sfx.baked or _waited > REPLAY_BAKE_MAX_SEC):
+                        # 「重放冷启动」完成: **不自动摘页** —— 摆出结果等玩家点一下。
+                        # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙
+                        # 1.2 秒、探针一过就摘, 那几行数字等于闪一下。
+                        _veil._hold = True
+                        # 只在最下面亮「测试已经完成」(+ 耗时那行; 详细统计去点击后的弹窗)
+                        _veil.set_done(self._replay_cost_text())
+                        _veil._on_tap = self._finish_replay_veil
+
                 elif not _veil._hold:
                     self._load_veil = None
                     _veil.drop()
@@ -20017,6 +20028,13 @@ def _veil_title_state(t):
     p = 0.0 if p <= 0.0 else (1.0 if p >= 1.0 else p)
     p = p * p * (3.0 - 2.0 * p)                          # smoothstep
     return lit, p, k, rl
+
+# 「重放冷启动」那一页的**防软锁**上限(秒)。那一页吞掉所有触摸、出口只有「玩家点击」, 而
+#   能不能点取决于 `_hold` —— 它要等**这一次重放自己的烘焙**收工才置真。万一烘焙线程永远
+#   不回来, 玩家就被锁在启动页(项目红线: 绝不软锁)。量级: 真机冷烘焙最慢实测 4.9s +
+#   探针硬超时 6s = 11s。
+#   ⚠️ 它**只在「烘焙没回来」那条不该发生的路上**才用得到, 正常路上一次都不会触发。
+REPLAY_BAKE_MAX_SEC = 15.0
 
 class _LoadVeil(Widget):
     """冷启动"音效库烘焙中"的加载页: 盖住整屏 + 吞掉所有触摸。
