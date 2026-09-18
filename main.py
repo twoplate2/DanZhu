@@ -2428,6 +2428,14 @@ SFX_VOICES = 8               # 并发声道数(可同时叠加的音效数) —�
 #    再开一个池就是 4 条 ⇒ 理论上腰斩(实测账: 101 × ~16ms ÷ 2 ≈ 808ms ≈ 热启动观测值)。
 #    置 False 即退回单池, 行为与加这个开关之前逐字相同(出问题时的回退路径)。
 SFX_POOL_SPLIT = True
+# ⚠️ **诊断开关**(2026-09-18, 定案后必须置 False 再出货):
+#    打开时探针**前两轮扫完整个列表**(不再"撞到第一个未就绪就停"), 并把"就绪分布"
+#    记进启动日志。目的是回答两件事:
+#      ① 解码真实多快(现在那个数被探针自己的成本盖住了);
+#      ② 解码是不是**按加载顺序**推进的 —— 若是, "尾部哨兵"(只查最后一个)就成立,
+#         101 次 play 可以变成 1 次, 省 ~620ms。
+#    ⚠️ 代价: 前两轮扫满 ⇒ 诊断版的「音效等待」比正常版**长**, 别拿它当性能回归。
+PROBE_DIAG = True
 SFX_MASTER = 1.0             # 总音量 (0~1), 手机喇叭需要满幅
 SFX_SEED = 20260727          # 合成用固定种子: 每次启动音色一致
 SFX_RESULT_LEAD = 0.18       # 结果音(中奖/未中)前置静音: 让入袋声先落地 + 放大揭晓前定格
@@ -3151,6 +3159,7 @@ class _SoundPoolOut:
         self._probe_scan = 0
         self._probe_played = 0
         self._probe_stuck = ""
+        self._probe_round = 0        # 探针跑到第几轮了(诊断只在最前两轮生效)
         # ⚠️ **只增不减**(连 _rebuild 都不清) —— 启动日志用它判定「闸门活口」在真机上
         #    到底发生过几次。不能用 Sfx._failed: 那个在 _retry_failed 第一行就被搬空,
         #    面板那行「加载失败」结构性印不出来, 去看它等于什么都没看。
@@ -3347,6 +3356,11 @@ class _SoundPoolOut:
             self._probe_played = 0
             self._probe_stuck = ""
             return True
+        self._probe_round += 1
+        # ⚠️ 诊断模式: 前两轮扫完整个列表(不提前退出), 好把"就绪分布"记下来。
+        _diag = bool(PROBE_DIAG) and self._probe_round <= 2
+        _bad = []       # 诊断: 未就绪的名字(按扫描顺序)
+        _gap = False    # 诊断: 见过第一个未就绪之后, 后面的成功不再计入"连续前缀"
         _n = 0          # 这一轮**真的**调用了几次 play(诊断: 它反映"探针自己多贵")
         _seq = 0        # 从队首起**连续就绪**的个数(自动判定读它, 语义与加 K5 之前一致)
         _stuck = ""
@@ -3378,14 +3392,20 @@ class _SoundPoolOut:
                     except Exception:
                         st = 0
                     if not st:
-                        _stuck = name
-                        break
+                        if not _stuck:
+                            _stuck = name      # 第一个未就绪的**总是**记下来(返回值靠它)
+                        if _diag:
+                            _bad.append(name)  # 诊断: 记下来接着扫
+                            _gap = True
+                            continue
+                        break                  # 正常: 撞到第一个就停(原行为, 逐字不变)
                 try:
                     _pool.stop(st)           # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
                 self._ok_sids.add((_pi, sid))   # 亲眼确认过 ⇒ 以后不必再扫它(K5)
-                _seq += 1
+                if not _gap:
+                    _seq += 1          # 诊断模式下, 第一个未就绪之后的成功不算"连续前缀"
               if _stuck:
                 break
         except Exception:
@@ -3396,6 +3416,21 @@ class _SoundPoolOut:
         self._probe_scan = _seq
         self._probe_played = _n
         self._probe_stuck = _stuck
+        if _diag:
+            # 诊断: 把"就绪分布"印出来。判顺序性看这里 ——
+            #   未就绪**全挤在尾部** ⇒ 按加载顺序推进 ⇒ 尾部哨兵可行;
+            #   **零散分布** ⇒ 乱序 ⇒ 哨兵会卡在永远不卡的索引上, 不可行。
+            try:
+                _tot = _n
+                _okn = _tot - len(_bad)
+                _first = _bad[0] if _bad else "-"
+                _idx = list(_bad)
+                _show = ", ".join(_idx[:8]) + (" ..." if len(_idx) > 8 else "")
+                _boot_log("probe", "诊断轮 %d: 全扫 %d 个 / 就绪 %d / 连续前缀 %d / "
+                                   "未就绪 %d 个, 首个=%s, 分布=[%s]"
+                          % (self._probe_round, _tot, _okn, _seq, len(_bad), _first, _show))
+            except Exception:
+                pass
         return not _stuck
 
     def play_named(self, name, gain01):
