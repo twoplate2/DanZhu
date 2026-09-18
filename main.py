@@ -29,6 +29,45 @@ import tempfile
 import time
 import json
 
+# ---- 启动加载日志(玩家 2026-09-18 要求) ----------------------------------------
+# 为什么要有它: 「音效等待 1000 ms」是个**结果**, 而它背后的成因(探针每轮多贵、解码在哪一刻
+# 完成、启动预热抢了多少 CPU)在产物里**全不可见** —— 于是任何优化都只能靠猜。2026-09-18
+# 那次「1000ms ≈ 5 轮 × (探针 34~85ms + sleep 150ms)」的推算就是猜的, 而它与本文件里那条
+# 真机实测(`SoundPool.play` 单次可到 143.6ms, 见 _SoundPoolOut 的注释)相差 60 倍,
+# **没人判得了谁对**。记录器把**过程**留下来, 导出成 txt(见 _startup_log_text)。
+# ⚠️ t0 取在 **kivy import 之前** —— Kivy 的导入本身要几百毫秒, 那也是启动时间的一部分。
+# ⚠️ 它必须**极便宜**: 一次 append 几微秒, 全流程最多几百条, 对启动时间无可测影响。
+# ⚠️ 绝不让它影响启动: _boot_log 自己吞掉一切异常, 调用点不需要 try。
+# ⚠️ 它是**只写不改**的: 没有任何逻辑读它来做判断(读它的只有导出那一处)。
+_BOOT_T0 = time.perf_counter()
+_BOOT_LOG = []          # [(t_ms, tag, msg)]
+
+
+def _boot_log(tag, msg):
+    """记一条启动日志。tag 是分组(boot/sfx/bake/load/probe/prebake), 导出时按时间排序。"""
+    try:
+        _BOOT_LOG.append(((time.perf_counter() - _BOOT_T0) * 1000.0, tag, str(msg)))
+    except Exception:
+        pass
+
+
+# 探针逐轮的进度采样: [(t_ms, 连续就绪个数, 本轮是否全过)] —— 只给导出时的自动判定用。
+# ⚠️ 它**不参与任何判据**(没有任何逻辑读它做判断), 只被 `_startup_log_text` 读一次。
+_PROBE_TRACE = []
+# 两段各自提交的字节数(合成音 / 语音) —— 自动判定要用它算"每 MB 多少 ms"。
+_LOAD_BYTES = {"bank": 0, "voice": 0}
+
+
+def _safe_size(path):
+    """文件字节数; 拿不到就 0 —— 只给启动日志用, 绝不因为一次 stat 失败把加载搞崩。"""
+    try:
+        return os.path.getsize(path)
+    except Exception:
+        return 0
+
+
+_boot_log("boot", "模块开始加载")
+
 from kivy.app import App
 from kivy.clock import Clock
 from kivy.core.text import LabelBase, Label as CoreLabel
@@ -38,6 +77,8 @@ from kivy.graphics import (Color, Rectangle, Line, Ellipse, RoundedRectangle,
                             StencilPush, StencilPop, StencilUse, StencilUnUse)
 from kivy.graphics.texture import Texture
 from kivy.metrics import dp, sp
+
+_boot_log("boot", "Kivy 导入完成")
 from kivy.uix.anchorlayout import AnchorLayout
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -3093,9 +3134,20 @@ class _SoundPoolOut:
     def __init__(self, voices=SFX_VOICES):
         self._voices = voices
         self._ids = {}
+        # ⚠️ 这两个只给**启动日志**用(见 _startup_log_text), 没有任何逻辑读它们做判断:
+        #    探针每轮扫了几个、卡在谁 —— 它是"1000ms 里探针占多少"唯一的直接证据。
+        self._probe_scan = 0
+        self._probe_stuck = ""
+        # ⚠️ **只增不减**(连 _rebuild 都不清) —— 启动日志用它判定「闸门活口」在真机上
+        #    到底发生过几次。不能用 Sfx._failed: 那个在 _retry_failed 第一行就被搬空,
+        #    面板那行「加载失败」结构性印不出来, 去看它等于什么都没看。
+        self._load_failed_total = 0
         self._paths = {}              # name -> wav 路径(拔耳机后重建时重新 load 用)
         self.rebuild_count = 0        # 重建次数(隐藏菜单的诊断行要显示; 正常局应当恒为 0)
+        _t0 = time.perf_counter()
         self._sp = self._build_sp()
+        _boot_log("sfx", "SoundPool 构造 %.1f ms (maxStreams=%d)"
+                  % ((time.perf_counter() - _t0) * 1000.0, self._voices))
         self._receiver = None
         self._register_noisy_receiver()
 
@@ -3184,6 +3236,7 @@ class _SoundPoolOut:
         self._paths[name] = path             # ⚠️ 先记"应到", 再 load
         sid = self._sp.load(path, 1)         # (写在 load 之后的话, load 失败的名字永远进不了
         if not sid:                          #   _paths, 后面任何一次重建都救不回它)
+            self._load_failed_total += 1     # 只增不减, 只给启动日志看(见 __init__)
             raise RuntimeError("SoundPool.load failed: " + path)
         self._ids[name] = sid
 
@@ -3228,21 +3281,47 @@ class _SoundPoolOut:
         就是全库永久静音, 见 __init__ 的注释)。
         返回 True = 全部能播(或没东西可探)。
         ⚠️ 探针自己出错一律当"能播": 它只是个护栏, 绝不允许反过来把玩家锁在加载页。"""
-        ids = list(self._ids.values())       # 快照: 烘焙线程可能正在往里加
+        # ⚠️ 2026-09-18: 遍历改成 items() 并记下"扫了几个、卡在谁" —— 启动日志要用它。
+        #    除此之外**行为逐字不变**(仍是每轮从头扫、撞到第一个未就绪就提前退出);
+        #    这正是启动日志要量清楚的那件事: 每轮多贵、要几轮才过。
+        ids = list(self._ids.items())        # (name, sid) 快照: 烘焙线程可能正在往里加
         if not ids:
+            self._probe_scan = 0
+            self._probe_stuck = ""
             return True
+        _n = 0
+        _stuck = ""
         try:
-            for sid in ids:
+            for name, sid in ids:
+                _n += 1
                 st = self._sp.play(sid, 0.0, 0.0, 1, 0, 1.0)   # 0 增益 → 听不见
                 if not st:
-                    return False
+                    # ⚠️⚠️ 2026-09-18 修(B1): `play()` 返回 0 **不只有"没解码完"一个含义**。
+                    #    官方 javadoc 写明另一个独立原因是「新流的优先级低于所有在播流 /
+                    #    当前没有空闲流」。原来这里直接 break 并断定它没好 ⇒ 一个**其实已经
+                    #    就绪**的样本也会被判成未就绪 ⇒ 继续 sleep 重扫 ⇒ 最坏一路空转到
+                    #    SFX_READY_TIMEOUT(6 秒)硬超时, 玩家白等。
+                    #    ⇒ **单独补试一次**: 此刻前面所有流都已经 stop 掉、池是空的, 所以
+                    #      "拿不到流"这个原因被排除 —— 再返回 0 就真的是"还没解码完"。
+                    #    ⚠️ 放行判据**一个字没变**: 仍然是"每个 id 都得有一次 play 返回非 0"。
+                    try:
+                        st = self._sp.play(sid, 0.0, 0.0, 1, 0, 1.0)
+                    except Exception:
+                        st = 0
+                    if not st:
+                        _stuck = name
+                        break
                 try:
                     self._sp.stop(st)        # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
         except Exception:
+            self._probe_scan = _n
+            self._probe_stuck = ""
             return True
-        return True
+        self._probe_scan = _n
+        self._probe_stuck = _stuck
+        return not _stuck
 
     def play_named(self, name, gain01):
         sid = self._ids.get(name)
@@ -4991,6 +5070,7 @@ class Sfx:
 
     def _bake(self):
         t0 = time.perf_counter()
+        _boot_log("bake", "烘焙线程开始(后端 %s)" % getattr(self.out, "mode", "?"))
         try:
             if getattr(self.out, "mode", "pcm") == "pcm":
                 self._bake_pcm()
@@ -4999,6 +5079,7 @@ class Sfx:
         except Exception:
             pass
         self.bake_ms = (time.perf_counter() - t0) * 1000.0
+        _boot_log("bake", "烘焙线程结束: %.0f ms" % self.bake_ms)
         self.baked = True               # ⚠️ 放在 except 之后: 烘失败了也要放行, 否则加载页永不消失(软锁)
         self._await_ready()             # 再等"真的能播"(带硬超时), 见该方法的注释
 
@@ -5034,13 +5115,37 @@ class Sfx:
                 self._audio_ready = True
                 return
             t0 = time.time()
+            _rnd = 0
             while time.time() - t0 < self.SFX_READY_TIMEOUT:
-                if probe():
+                _rnd += 1
+                _p0 = time.perf_counter()
+                _ok = probe()
+                _pdt = (time.perf_counter() - _p0) * 1000.0
+                # ⚠️ **这一行是整份启动日志的核心**: 它把「探针自己多贵」与「真的在等解码」
+                #    当场分开 —— 在此之前没人能分辨这两者(见模块顶部 _BOOT_LOG 的说明)。
+                #    `扫 N 个` 是探针这一轮真的调用了几次 play(); `卡在 X` 是第一个没就绪的。
+                try:
+                    _PROBE_TRACE.append(((time.time() - t0) * 1000.0,
+                                         int(getattr(self.out, "_probe_scan", 0) or 0),
+                                         bool(_ok)))
+                except Exception:
+                    pass
+                _boot_log("probe", "第 %d 轮(t+%.0f ms): 探针自身 %.1f ms, 扫 %s 个, %s"
+                          % (_rnd, (time.time() - t0) * 1000.0, _pdt,
+                             getattr(self.out, "_probe_scan", "?"),
+                             ("全部就绪" if _ok else
+                              ("卡在 " + (getattr(self.out, "_probe_stuck", "") or "?")))))
+                if _ok:
                     break
                 time.sleep(self.SFX_READY_POLL)
             self.ready_ms = (time.time() - t0) * 1000.0   # 等"真的能播"花了多久(诊断要显示)
-        except Exception:
-            pass
+            _boot_log("probe", "音效等待结束: %.0f ms, 共 %d 轮" % (self.ready_ms, _rnd))
+        except Exception as _e:
+            # ⚠️ 2026-09-18 修(B3): 这里原来是裸 `pass` —— 循环里任何异常都会让 ready_ms 保持
+            #    初值 0、启动日志**一行不留**, 然后照常硬放行。症状就是玩家报过的
+            #    「初次安装必然没声音」**原样回来**, 而且查不到任何痕迹。
+            #    ⚠️ 仍然硬放行 ——「绝不软锁」是项目红线, 这里**只加记录, 不改行为**。
+            _boot_log("probe", "探针异常 ⇒ 直接放行: %r" % (_e,))
         self._audio_ready = True
 
     def backend_count(self):
@@ -5246,10 +5351,12 @@ class Sfx:
         stamp = os.path.join(d, "stamp")
         if self._load_cached(d, stamp, tag):
             self.cached = True
+            _boot_log("bake", "缓存命中 = 热启动")
             n_voice = self._prime_voice()
             self._expected = self._n_bank + n_voice     # 满编 = 合成音 + 语音(两个都是数据源)
             self._retry_failed()          # 缓存命中也可能有个别没加载上(语音是每次重载的)
             return
+        _boot_log("bake", "缓存未命中 = 冷启动(现场合成)")
         _wav_wipe(d)
         lines = []
         n_bank = 0
@@ -5316,14 +5423,21 @@ class Sfx:
         每次启动都重新加载, 语音文件更新即生效; play() 对未加载完的 sample 本来就返回 0。
         返回语音条数(满编数要用它 —— 它是数据源, 不是"加载成功几个")。"""
         n = 0
+        _boot_log("load", "开始 prime 语音 %d 条 (下方每条 ms 只量 load() 提交, "
+                          "load 是异步的、不代表解码完)" % len(_voice_files()))
         for name, path in _voice_files().items():
             n += 1
+            _l0 = time.perf_counter()
             try:
                 self.out.prime(name, path)
             except Exception:
                 self._failed.append((name, path))
                 continue
             self.named.add(name)
+            _sz = _safe_size(path)
+            _LOAD_BYTES["voice"] += _sz
+            _boot_log("load", "  语音   %-12s %6.1f ms %7d B"
+                      % (name, (time.perf_counter() - _l0) * 1000.0, _sz))
         return n
 
     def _load_cached(self, d, stamp, tag):
@@ -5352,11 +5466,32 @@ class Sfx:
         if not want:
             return False
         self._n_bank = len(want)      # 满编的合成音数(缓存路径也要记, 面板的"满编"靠它)
+        _boot_log("load", "开始 prime 合成音 %d 个 (下方每条 ms 只量 load() 提交, "
+                          "load 是异步的、不代表解码完)" % len(want))
         for name, path in want:
+            _l0 = time.perf_counter()
             try:
                 self.out.prime(name, path)
             except Exception:
-                return False          # 任一音效加载失败: 缓存视为无效, 触发重新烘焙自愈
+                # ⚠️⚠️ 2026-09-18 修(B2): 这里原来直接 `return False`, 而上层 `_bake_named`
+                #    见到 False 就走未命中分支 `_wav_wipe(d)` —— **把 40 个缓存 WAV 全删掉**
+                #    再整库重合成(3.7 秒)。一次**偶发**的 load 失败(解码器忙 / 内存紧)代价被
+                #    放大成"这一局从热启动变成冷启动"。
+                #    形状不对称得离谱: 同一条路上 `_prime_voice` 与冷路径的合成循环对失败都是
+                #    append 到 _failed + 后台重试, **只有这里是一个失败就全删**。
+                #    ⇒ 改成"**先原地重试一次**": 偶发的重试就过了、缓存保住; 两次都失败才判
+                #      缓存真坏了 —— 那正是原来那条自愈路径的职责(被截断的 WAV 就是这么被
+                #      发现的), 保住它。
+                _boot_log("bake", "缓存 prime 失败, 原地重试: %s" % name)
+                try:
+                    self.out.prime(name, path)
+                except Exception:
+                    _boot_log("bake", "重试仍失败 ⇒ 判缓存无效, 走重烘自愈: %s" % name)
+                    return False      # 两次都失败: 缓存视为无效, 触发重新烘焙自愈(原行为)
+            _sz = _safe_size(path)
+            _LOAD_BYTES["bank"] += _sz
+            _boot_log("load", "  合成音 %-12s %6.1f ms %7d B"
+                      % (name, (time.perf_counter() - _l0) * 1000.0, _sz))
             self.named.add(name)
         return True
 
@@ -8180,10 +8315,12 @@ class WinPileFX(Widget):
         """
         if not self._glass_prebaked:
             self._glass_prebaked = True
+            _g0 = time.perf_counter()
             try:
                 _glass_textures()
             except Exception:
                 pass
+            _boot_log("prebake", "玻璃贴图 %.1f ms" % ((time.perf_counter() - _g0) * 1000.0))
             try:
                 # 远侧环独立层一起烘(1600x920 的 PNG, 现场解码是一记长帧)。
                 _glass_over()
@@ -8403,7 +8540,11 @@ class WinPileFX(Widget):
                 #    `_FIT_PX`, 这一句就什么都不做 —— 而启动期 `_FIT_PX` 里很可能已经有它
                 #    (布局阶段量过)。实测: 不加 force 时, 冷字号榜上仍有一条 18.0 档 82.9ms。
                 _c0 = _FRAME_FIT[1]
+                _t0 = time.perf_counter()
                 text_px("未中", _fs, _bd, force=True)
+                _boot_log("prebake", "字体 %.0f%s %.1f ms"
+                          % (_fs, " bold" if _bd else "",
+                             (time.perf_counter() - _t0) * 1000.0))
                 # ⚠️ **只在真的量了才记 `_WARM_DID`**。原来是无条件 add ⇒ 日志那栏
                 #    「预热时量过=是」在"其实没烘"时也照样显示, **自证失效**(比没有更糟)。
                 #    判据用 `_FRAME_FIT[1]`(冷测量计数) —— 它 +1 就证明确实建了 CoreLabel。
@@ -8439,10 +8580,13 @@ class WinPileFX(Widget):
         order = [cur] + [b for b in (1, 10, 50, 100) if b != cur]
         todo = [b for b in order if b not in _CUP_BALL_TEX]
         if todo:
+            _b0 = time.perf_counter()
             try:
                 _ball_texture(todo[0])
             except Exception:
                 pass
+            _boot_log("prebake", "球纹理 投注%d %.1f ms"
+                      % (todo[0], (time.perf_counter() - _b0) * 1000.0))
             Clock.schedule_once(self.prebake_step, 0.05)
             return
         # ⚠️ 必须铺满**全部 _PILE_VARIANTS 个变体**, 不能只烘 seed=1:
@@ -12294,6 +12438,7 @@ class RootWidget(BoxLayout):
         self._rtp_hold_start = 0.0
         self._rtp_hold_fired = False
         self._charge_uid = None      # 按下发射键那根手指的 uid(见 `_on_title_touch_up`)
+        self._replay_t0 = 0.0        # 「重放冷启动」的计时起点(见 `_replay_cost_text`)
         for label, val in self.RTP_TIERS:   # 常驻档; 隐藏档靠长按解锁, 见 _unlock_rtp
             self._add_rtp_button(label, val)
         self.add_widget(rtp)
@@ -13703,23 +13848,45 @@ class RootWidget(BoxLayout):
         # 「重放冷启动」: 不丢存档地按需复现"初次安装那种局"(见 _replay_cold_start)。
         # 玩家 2026-09-11 提的 —— 那个 bug 一年犯一次、"关掉重开"就自愈, 想抓现场只能卸载重装,
         # 而卸载会清掉余额/轮次。它不新建 Sfx 对象, 所以不碰任何接线, 也不动游戏状态。
+        # 「保存加载日志」: 玩家 2026-09-18 要求 —— 把从进程启动到摘页的**全过程**导成 txt。
+        # ⚠️ 它**不违反**这个弹窗的铁律(见方法 docstring: 不许放会动音频栈或游戏状态的按钮):
+        #    这个按钮**只写文件** —— 不碰 Sfx、不碰音频栈、不碰游戏状态, 连读都只读一次快照。
+        #    弹窗本身仍然保持"打开它不会改变任何东西"。
+        log_btn = Button(text='保存加载日志', font_size='17sp', bold=True,
+                         background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
+                         size_hint_y=None, height=dp(52))
         replay_btn = Button(text='重放冷启动', font_size='17sp', bold=True,
                             background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                             size_hint_y=None, height=dp(52))
         # ⚠️ 顺序 = 屏幕上的上下顺序(纵向 BoxLayout)。玩家 2026-09-11: 「把确定按钮放在重放冷启动
         #    下面」⇒ **重放冷启动在上、确定在下**。别按"添加顺序像主次"去调, 它就是几何顺序。
+        content.add_widget(log_btn)
         content.add_widget(replay_btn)
         content.add_widget(ok_btn)
         # ⚠️ 高度必须**按内容算**: 实测弹窗内容区 = 弹窗高 − 44px(Kivy 标题栏, 即使 title='' 也吃),
         #    每行 38px(行高 26 + spacing 12)。写死高度的话加一行就会被裁掉尾巴 —— v0.6.12 踩过。
         n_lbl = 1 + (1 if _info else 0) + len(rows)
-        n_btn = 2
+        n_btn = 3
         need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(32)
                 + dp(12) * (n_lbl + n_btn - 1))
         popup = self._popup(0.84, need + dp(64), title='', content=content,
                             auto_dismiss=True, separator_height=0)
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
         replay_btn.bind(on_release=lambda *_: (popup.dismiss(), self._replay_cold_start()))
+        # ⚠️ 提示**不弹新弹窗**(这里已经在弹窗里了, 叠一个必然出岔子): 照抄 `_save_power_log`
+        #    调用方那套 —— 把结果写进按钮文字, 3 秒后复原(见 17152 附近)。
+        def _on_save_log(*_a):
+            try:
+                _ok, _msg = self._save_startup_log()
+            except Exception as _e:
+                _ok, _msg = False, "保存失败: %r" % (_e,)
+            try:
+                log_btn.text = str(_msg)[:30]
+                Clock.schedule_once(lambda _d: setattr(log_btn, 'text', '保存加载日志'), 3.0)
+            except Exception:
+                pass
+            return _ok
+        log_btn.bind(on_release=_on_save_log)
         popup.open()
 
         # 上面那个高度是**按单行估的**; 一旦有行折了(设备越窄越容易折), 内容就比弹窗高。
@@ -13798,6 +13965,9 @@ class RootWidget(BoxLayout):
             if host is None:
                 self.game_area.center_toast("重放失败：找不到挂载点")
                 return
+            # ⚠️ 耗时**起点取在这里**(玩家点下去那一刻), 不是线程启动那一刻 ——
+            #    玩家感知的是"我点完到看见结果", 建页/清缓存/起线程都算在内。
+            self._replay_t0 = time.perf_counter()
             veil = _LoadVeil(text="正在重放冷启动…", size_hint=(1, 1))
             host.add_widget(veil)
             self._load_veil = veil
@@ -13831,6 +14001,89 @@ class RootWidget(BoxLayout):
                 self.game_area.center_toast("重放失败：%s" % exc)
             except Exception:
                 pass
+
+    def _probe_verdict(self):
+        """从探针逐轮的进度采样里**自动判定**那个关键未知(每样本定价 or 按字节定价)。
+
+        为什么不用额外做对照实验: 探针按 `_ids` 的**插入顺序**扫(先 40 个合成音、再 61 条
+        语音), 所以每轮那个「扫 N 个」**就是"从队首起连续就绪的个数"** —— 配上轮次时刻,
+        这就是一条现成的到达曲线。两段的字节数比是 7.8 倍、样本数比只有 1.5 倍, 两种定价
+        给出的预测拉得很开, 判据干净。
+
+        ⚠️ 数据不足(<2 个可切分的点)**明说"不足以判定"** —— 绝不给假结论。
+        ⚠️ 纯读数: 不参与任何判据, 算不出来就返回空表。
+        """
+        out = []
+        try:
+            tr = list(_PROBE_TRACE)
+            if len(tr) < 2:
+                return ["探针只跑了 %d 轮, 不足以切段判定到达形状。" % len(tr)]
+            out.append("探针进度(轮→连续就绪个数@t): "
+                       + "  ".join("%d个@%.0fms" % (n, t) for t, n, _o in tr))
+            nb = int(getattr(self.sfx, "_n_bank", 0) or 0)
+            na = int(getattr(self.sfx, "_expected", 0) or 0)
+            if nb <= 0 or na <= nb:
+                out.append("满编数未知(合成音 %d / 总 %d), 不做判定。" % (nb, na))
+                return out
+            t_b = None
+            for t, n, _o in tr:
+                if n >= nb:
+                    t_b = t
+                    break
+            t_e, n_e = tr[-1][0], tr[-1][1]
+            if t_b is None:
+                out.append("合成音(%d 个)在本次采样窗内**从未**全部就绪 ⇒ 数据不够。" % nb)
+                return out
+            if t_b <= 0.0 or t_e <= t_b or n_e <= nb:
+                out.append("切分点退化(t_合成音段=%.0fms, t_末=%.0fms, 末轮就绪=%d) ⇒ 不足以判定。"
+                           % (t_b, t_e, n_e))
+                return out
+            bb = _LOAD_BYTES.get("bank", 0) / 1048576.0      # MB
+            bv = _LOAD_BYTES.get("voice", 0) / 1048576.0
+            nb_v = na - nb
+            per_s_bank = t_b / float(nb)                      # 合成音: ms/个
+            per_s_voice = (t_e - t_b) / float(nb_v)           # 语音:   ms/个
+            per_b_bank = (t_b / bb) if bb > 0 else 0.0        # 合成音: ms/MB
+            per_b_voice = ((t_e - t_b) / bv) if bv > 0 else 0.0
+            r_s = (per_s_voice / per_s_bank) if per_s_bank > 0 else 0.0
+            r_b = (per_b_voice / per_b_bank) if per_b_bank > 0 else 0.0
+            out.append("")
+            out.append("合成音段: %d 个 / %.2f MB / %.0f ms  ⇒ %.2f ms/个, %.0f ms/MB"
+                       % (nb, bb, t_b, per_s_bank, per_b_bank))
+            out.append("语音段:   %d 个 / %.2f MB / %.0f ms  ⇒ %.2f ms/个, %.0f ms/MB"
+                       % (nb_v, bv, t_e - t_b, per_s_voice, per_b_voice))
+            out.append("两段比值: 每样本 %.2fx   每MB %.2fx   (越接近 1 就越像那种定价)"
+                       % (r_s, r_b))
+            if not bb or not bv:
+                out.append("⇒ 缺字节数(缓存可能没走 prime), 只给数字不做判定。")
+            elif r_s <= 0 or r_b <= 0:
+                out.append("⇒ 数值退化, 不做判定。")
+            elif abs(r_b - 1.0) < abs(r_s - 1.0):
+                out.append("⇒ **更像「按字节」定价**(每MB 的比值更靠近 1) —— "
+                           "那么把数据做小(降采样/裁静音/换格式)是有意义的。")
+            else:
+                out.append("⇒ **更像「每样本」定价**(每样本耗时的比值更靠近 1) —— "
+                           "那么把数据做小基本没用, 杠杆在**样本数**上。")
+        except Exception as _e:
+            out.append("(自动判定失败: %r)" % (_e,))
+        return out
+
+    def _replay_cost_text(self):
+        """重放冷启动的耗时, 一行文本(玩家 2026-09-18 要求)。
+
+        ⚠️ 起点是**玩家点下去那一刻**(`_replay_t0`), 不是烘焙线程启动那一刻 ——
+           玩家感知的是"我点完到看见结果", 中间建页/清缓存/起线程都算在内。
+        ⚠️ 终点是"音效真的能播"(`audio_ready()` 为真, 调用点在 `_frame`), 不是"烘焙线程
+           结束" —— 后者早了约 800ms, 而玩家等的正是前者。这也正是这次要量出来的那个数。
+        ⚠️ 拿不到起点就返回空串, 调用方按"没有第二行"处理 —— 绝不因为一个提示崩掉。
+        """
+        t0 = getattr(self, "_replay_t0", 0.0)
+        if not t0:
+            return ""
+        try:
+            return "耗时 %.0f 毫秒" % ((time.perf_counter() - t0) * 1000.0)
+        except Exception:
+            return ""
 
     def _replay_summary(self):
         """重放结束后摆在加载页上的结论。
@@ -16053,6 +16306,96 @@ class RootWidget(BoxLayout):
                          "nan" if _v is None else _v,
                          "nan" if _p is None else ("%.2f" % _p)))
         return "\n".join(_L) + "\n"
+
+    def _startup_log_text(self):
+        """把**启动加载日志**拼成一份可导出的 txt(玩家 2026-09-18 要求)。
+
+        它回答的是**「启动信息」面板回答不了的问题**: 面板只报结果(音效等待 N ms),
+        而"这 N ms 花在哪"要看过程 —— 每轮探针自己多贵、扫了几个、卡在谁, 每条音效的
+        load 各花了多久, 启动预热在哪些时刻抢了 CPU。
+
+        ⚠️ **只读**: 不碰 Sfx 的任何状态、不碰音频栈、不碰游戏状态(这个弹窗的铁律)。
+        ⚠️ 整段 try/except: 拼不出来就给空串, 绝不把按钮带崩。
+        """
+        L = []
+        try:
+            sfx = self.sfx
+            L.append("=== 跳跳的弹珠机 · 启动加载日志 ===")
+            try:
+                L.append("版本      %s" % _app_version())
+            except Exception:
+                pass
+            try:
+                _bi = self._build_info()
+                if _bi:
+                    L.append("制作      %s" % _bi)
+            except Exception:
+                pass
+            # 设备/系统: 只在安卓上取得到; 桌面照实写, 不报错
+            try:
+                from jnius import autoclass
+                _B = autoclass("android.os.Build")
+                _V = autoclass("android.os.Build$VERSION")
+                L.append("设备      %s %s" % (_B.MANUFACTURER, _B.MODEL))
+                L.append("系统      Android %s (SDK %s)" % (_V.RELEASE, _V.SDK_INT))
+            except Exception:
+                L.append("设备      (非安卓)")
+            try:
+                L.append("CPU       %s 核" % (os.cpu_count(),))
+            except Exception:
+                pass
+            L.append("音频后端  %s" % getattr(sfx.out, "name", "静音"))
+            L.append("启动方式  %s启动   烘焙 %.0f ms"
+                     % ("热" if sfx.cached else "冷", sfx.bake_ms))
+            L.append("音效等待  %.0f ms（上限 %.0f）"
+                     % (sfx.ready_ms, sfx.SFX_READY_TIMEOUT * 1000.0))
+            L.append("轮询间隔  %.3f s" % sfx.SFX_READY_POLL)
+            try:
+                L.append("满编      合成音 %d + 语音 %d = %d"
+                         % (sfx._n_bank, max(0, sfx._expected - sfx._n_bank), sfx._expected))
+            except Exception:
+                pass
+            try:
+                L.append("就绪      闸门 %d / 后端 %s"
+                         % (len(sfx.named), sfx.backend_count()))
+            except Exception:
+                pass
+            try:
+                if sfx._failed:
+                    L.append("加载失败  %d 个: %s"
+                             % (len(sfx._failed), ", ".join(n for n, _p in sfx._failed[:8])))
+            except Exception:
+                pass
+            L.append("")
+            L.append("---- 自动判定(到达形状: 每样本定价 or 按字节定价) ----")
+            try:
+                L.extend(self._probe_verdict())
+            except Exception:
+                pass
+            L.append("")
+            L.append("     t(ms)  事件")
+            L.append("----------  ------------------------------------------------------------")
+            for _t, _tag, _msg in sorted(_BOOT_LOG):
+                L.append("%10.1f  [%s] %s" % (_t, _tag, _msg))
+            L.append("")
+            L.append("t 起算于 main.py 模块加载的第一行(比 Kivy 导入还早)。")
+            L.append("「探针自身」那一项 = 这一轮 probe_all 里所有 play() 的累计耗时;")
+            L.append("「扫 N 个」= 这一轮真的调用了几次 play();「卡在 X」= 第一个没就绪的。")
+        except Exception:
+            pass
+        return "\n".join(L)
+
+    def _save_startup_log(self):
+        """「保存加载日志」按钮的动作 —— 复用 `_bench_save_log` 那整条降级链
+        (MediaStore → 公共 Download / 外部私有 / 内部 / 剪贴板), 只换内容与文件名前缀。
+
+        ⚠️ 一个字都不新写: 那条链(含"每一级都把结果说出来")是现成的, 与保存功率记录同一套。
+        """
+        try:
+            _txt = self._startup_log_text()
+        except Exception:
+            _txt = ""
+        return self._bench_save_log(text=_txt, prefix="plinko_startup")
 
     def _save_power_log(self, pw=None, extra=None):
         """「保存记录」按钮的动作 —— 复用 `_bench_save_log` 那整条降级链
@@ -18997,6 +19340,9 @@ class RootWidget(BoxLayout):
             _SINCE_LAUNCH[0] += 1
 
     def _frame(self, dt):
+        if not getattr(self, "_first_frame_logged", False):
+            self._first_frame_logged = True
+            _boot_log("frame", "第一帧(画面第一次真的画出来)")
         self._check_title_hold()
         # 冷启动加载页收尾: 音效库**真的能播**了就摘掉(见 _LoadVeil / Sfx.audio_ready)。
         # ⚠️ 判据是"烘完 **且** 探到真能播(或硬超时)", 不是"烘完就摘" —— `SoundPool.load()`
@@ -19013,11 +19359,30 @@ class RootWidget(BoxLayout):
                     # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙 1.2 秒、
                     # 探针一过就摘, 那几行数字等于闪一下。
                     _veil._hold = True
-                    _veil.set_done()      # 只在最下面亮一行「测试已经完成」(统计去弹窗)
+                    # 只在最下面亮「测试已经完成」(+ 耗时那行; 详细统计去点击后的弹窗)
+                    _veil.set_done(self._replay_cost_text())
                     _veil._on_tap = self._finish_replay_veil
                 elif not _veil._hold:
                     self._load_veil = None
                     _veil.drop()
+                    _boot_log("frame", "加载页摘除")
+                    # 摘页那一刻的四元快照 —— 一次同时判两件事:
+                    #   · rebuild_count: K7「白重建」假设。预期恒为 0, 非 0 则假设复活。
+                    #   · 「闸门 vs 已到」: `named` 比 `_ids` 多 = **闸门已放行而后端没有**,
+                    #     那才是真正的静默故障(K3 的活口)。「应到 − 已到」非空只是"有样本
+                    #     加载失败", 那是已知且可接受的。
+                    try:
+                        _o = self.sfx.out
+                        _nm = len(self.sfx.named)
+                        _ids = len(getattr(_o, "_ids", {}))
+                        _pth = len(getattr(_o, "_paths", {}))
+                        _warn = ("  ⚠️闸门比后端多 %d" % (_nm - _ids)) if _nm > _ids else ""
+                        _boot_log("frame", "摘页快照: 重建 %s 次 / 应到 %d / 已到 %d / 闸门 %d / "
+                                           "累计加载失败 %s%s"
+                                  % (getattr(_o, "rebuild_count", "?"), _pth, _ids, _nm,
+                                     getattr(_o, "_load_failed_total", "?"), _warn))
+                    except Exception:
+                        pass
             # ⚠️ 这里原来有一段"实时诊断": 往加载页印第二行「已加载 42 / 97　·　已用 1.0 秒」。
             #    玩家 2026-09-11 定稿: 「我要的是只显示一个加载界面即可」—— 整段删除。
             #    (现在这一页印的是**游戏名那五个字**, 见 `_LoadVeil._build_title`; 诊断数一个都没丢:
@@ -19477,15 +19842,20 @@ class _LoadVeil(Widget):
         except Exception:
             self._title_on = False    # 纯装饰: 建不出来就退化成"只有底色", 绝不把启动带崩
 
-    def set_done(self):
-        """「重放冷启动」跑完了: 只在**最下面**亮出一行「测试已经完成」。
+    def set_done(self, extra=""):
+        """「重放冷启动」跑完了: 只在**最下面**亮出「测试已经完成」(+ 可选的第二行)。
 
         ⚠️ 玩家 2026-09-11 定稿: 「重放冷启动界面不应该显示各种文字, 只显示 跳跳的弹珠机 和
         最下面的 测试已经完成(**如果没有完成, 就不显示**)」—— 所以这一行只在完成时才出现,
         而那些统计数挪去了点击之后的弹窗(`RootWidget._show_replay_detail`)。
-        ⚠️ 没完成时这行是空的(构造时默认 `text=""`), 不需要额外的"隐藏"逻辑。"""
+        ⚠️ 没完成时这行是空的(构造时默认 `text=""`), 不需要额外的"隐藏"逻辑。
+        ⚠️ `extra` 是玩家 2026-09-18 追加的: 「之前只说了完成, 现在需要新增一个 耗时xxxx毫秒
+           字样。可以在原有信息后面加个回车再添加」—— 所以就是回车拼上去, 不另开一行控件。
+        ⚠️ 两行**不会被裁**: `_sub.text_size` 第二位是 None(自动换行)、高度按 `texture_size[1]`
+           现算(见 `_LoadVeil` 里那两处同步)。这与 v0.6.12 那个"定高标签把尾巴裁掉"的坑
+           不是一回事 —— 那里是写死 height, 这里跟着排版走。"""
         try:
-            self._sub.text = "测试已经完成"
+            self._sub.text = "测试已经完成" + (("\n" + extra) if extra else "")
             self._sub.font_size = sp(22)
         except Exception:
             pass
@@ -19599,6 +19969,9 @@ class _LoadVeil(Widget):
         #    排版只做上面那一段(字号/位置), 逐帧的颜色/缩放由 `tick() -> _apply()` 写。
 
     def on_touch_down(self, touch):
+        if not getattr(self, "_first_touch_logged", False):
+            self._first_touch_logged = True
+            _boot_log("frame", "玩家首次触摸")
         # 普通加载页: 吞掉所有触摸(不让玩家在音效没就绪时按发射)。
         # ⚠️ 但「重放冷启动完成」那一屏**必须能点掉** —— 它是个结果页, 不点掉就永远停在那儿,
         #    而"永远停着"正是项目红线(绝不软锁)最怕的形状。所以只在这一屏放行。
@@ -19641,6 +20014,7 @@ _brk_wrap(GameArea, "_update_slots", "槽面")
 
 class PlinkoApp(App):
     def build(self):
+        _boot_log("boot", "App.build 进入")
         Window.clearcolor = hex_rgb(COL_BG) + (1,)
         if platform != "android":
             # 桌面预览 9:16; 宽屏可最大化, 内容自适应居中。
@@ -19664,6 +20038,13 @@ class PlinkoApp(App):
         # 冷启动加载页: 音效库没烘完就盖住整屏(不盖的话首装前几秒是黑的, 而且能按发射出哑球)。
         # 后 add 的在上层, 所以它就是最上面那层。烘完由 RootWidget._frame 摘掉。
         self.veil = None
+        # ⚠️ 2026-09-18: 这一行是**总闸门**的判据。`Sfx(...)` 是 build 的**第一句**, 它后面
+        #    隔着整棵界面树的构建; 若走到这里音频**已经**就绪, 加载页根本不建 —— 那么「启动
+        #    信息」里那个「音效等待 1000ms」就跟玩家感知的等待**没有关系**(三轮评审里两位
+        #    独立提出这件事: "必有一个数在骗人")。有了这一行 + 下面的「第一帧 / 摘页」,
+        #    一次真机导出就能判死或放行整份优化清单。
+        _say = "音效已就绪 ⇒ **不建**加载页" if sfx.audio_ready() else "音效未就绪 ⇒ 建加载页"
+        _boot_log("boot", "建 UI 完成: " + _say)
         if not sfx.audio_ready():
             self.veil = _LoadVeil(size_hint=(1, 1))
             anchor.add_widget(self.veil)
