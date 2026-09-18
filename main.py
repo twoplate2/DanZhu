@@ -3666,6 +3666,9 @@ class _SoundPoolOut:
         #    现在面板只在非 0 时印它(见 audio_detail 末尾)。
         self._play_missed = 0
         self._play_missed_last = ""
+        # ⚠️ v0.8.64: 本次会话一共试了几次 play —— 只给"没播成"那条日志用。
+        #    它直接回答"失败的是不是**第一次** play"(玩家报每次启动必现 1 次 click)。
+        self._play_total = 0
         self._paths = {}              # name -> wav 路径(拔耳机后重建时重新 load 用)
         self.rebuild_count = 0        # 重建次数(隐藏菜单的诊断行要显示; 正常局应当恒为 0)
         _t0 = time.perf_counter()
@@ -4286,9 +4289,19 @@ class _SoundPoolOut:
 
     def _miss_play(self, name):
         """后端说"这一声没播成"(还没解码完 / 拿不到流) ⇒ 记一笔。
-        ⚠️ **只计数, 不改任何返回值** —— 见 `play_named` 的说明。"""
+        ⚠️ **只计数, 不改任何返回值** —— 见 `play_named` 的说明。
+        ⚠️ v0.8.64: 除了计数, 还往启动日志里写一条**带时间戳与序号**的。
+           为什么: 面板那行撤了之后, 这是它唯一的落点; 而"发生在启动后多久 +
+           是第几次 play 尝试"这两条正是定位它的钥匙(代码里 `play()` 返回 0 有
+           好几种原因, 分不开 —— 那就至少把**时刻**记下来)。"""
         self._play_missed += 1
         self._play_missed_last = name
+        try:
+            _boot_log("sfx", "没播成: %s（本次会话第 %d 次 play 尝试, t+%.0f ms）"
+                      % (name, int(getattr(self, "_play_total", 0) or 0),
+                         (time.perf_counter() - _BOOT_T0) * 1000.0))
+        except Exception:
+            pass
 
     def play_named(self, name, gain01):
         """⚠️ 返回值 = **"请求已受理"**, 不是"后端真的播成了" —— 这是有意的:
@@ -4297,6 +4310,7 @@ class _SoundPoolOut:
         ⚠️ 但"没播成"从此被记下来(`_play_missed`): 它以前彻底不可见,
         而那正是本模块(启动信息面板)存在的理由。
         """
+        self._play_total += 1        # v0.8.64: 只给"没播成"那条日志用(见 _miss_play)
         sid = self._ids.get(name)
         if sid is not None:
             if not self._sp.play(sid, gain01, gain01, 1, 0, 1.0):
@@ -6598,25 +6612,10 @@ class Sfx:
             rows = [mode_row + "(" + _wait + ")",
                     "音效就绪：%s，语音就绪：%d/%d" % (ready, _n_voice, _n_voice_all),
                     "音频后端　%s" % bname]
-            # ---- v0.8.61(实验包): 闸门那两行 ----
-            # ⚠️ 分成两行, 不并成一行(并起来会超宽折行; 见上面「逐行分栏」那条)。
-            # ⚠️ 面板高度是按 `len(rows)` 算出来的(`_show_startup_info` 的 `need`), 加行会
-            #    自己长高 —— 不需要手改任何常数。
-            try:
-                _w = str(getattr(self, "_ready_winner", "") or "")
-                if _w:
-                    rows.append("先到者　%s（闸门 %.0fms / 探针 %.0fms）"
-                                % (_w, float(getattr(self, "_gate_open_ms", 0.0) or 0.0),
-                                   float(getattr(self, "_probe_open_ms", 0.0) or 0.0)))
-                _gi = getattr(out, "gate_info", None)
-                if _gi is not None:
-                    # ⚠️ v0.8.62: "差的是哪一个"**折进这一行**, 绝不新开一行 —— 这块面板有
-                    #    成文硬预算(内容区 376px ÷ 每行 38px), 而 `_popup_fit_content` 在装不下时
-                    #    会按比例压标签高度把尾巴裁掉(它的原话: 宁可少显示两行, 也不飘出去)。
-                    _gm = str(getattr(self, "_gate_missing_name", "") or "")
-                    rows.append("就绪闸门　%s%s" % (_gi(), ("　差 " + _gm) if _gm else ""))
-            except Exception:
-                pass
+            # ⚠️ v0.8.64: 「先到者」与「就绪闸门」两行**已从面板撤下**(玩家点名)。
+            #    它们是 v0.8.61 实验包的输出, 实验已结束(闸门每次都先到) ⇒ 面板上不再印。
+            #    **信息没丢**: 这两行在「保存加载日志」里各有一份(同样内容), 要查就导出日志。
+            #    实现仍在(`_ready_winner` / `gate_info()`), 只是不往 rows 里塞了。
             # v0.8.61: 实验档的结论行(只有重放跑过才有; 正常局这里是空的)
             try:
                 for _r in list(getattr(self, "_arm_rows", []) or []):
@@ -6656,10 +6655,11 @@ class Sfx:
             #    ⚠️ 2026-09-18 新加: 这个数以前**从来没上过屏** (旧的 `n_missed` 只写不读,
             #    而且它只能在"名字压根不在池子里"时才加) —— 运行期真正的静默
             #    (装杯/撞钉那一声没响)在改之前是彻底不可见的。
-            _miss = int(getattr(out, "_play_missed", 0) or 0)
-            if _miss:
-                rows.append("后端没播成　%d 次(最后一次 %s)"
-                            % (_miss, getattr(out, "_play_missed_last", "") or "?"))
+            # ⚠️ v0.8.64: 「后端没播成 N 次」**已从面板撤下**(玩家点名)。
+            #    ⚠️ 这一行原本是"运行期某一声没响"**唯一**的面板级痕迹(检查管不到那一类:
+            #       play() 返回 0 也可能是"流被占满"), 撤下后它只剩两个去处:
+            #       启动日志里的同名一行(`_startup_log_text`)、以及后端字段 `_play_missed`。
+            #       ⇒ 以后排查"某个音效哑了", 第一件事是**导出启动日志**。
             if n_rc:
                 rows.append("后端重建　%d 次" % n_rc)
             return rows
