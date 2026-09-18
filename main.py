@@ -5427,7 +5427,8 @@ class Sfx:
             #       玩家 2026-09-18 问明白后要求改成「启动**总**耗时」
             #       ⇒ 两段相加; 后面紧跟的「音效等待」是它的**明细**(不重复,
             #       它本来就是总耗时里的一段)。
-            mode_row = "%s启动，启动总耗时 %.0f ms" % (
+            #    ⚠️ 2026-09-18 再简一步(玩家): 「启动总耗时」-> **「总耗时」**。
+            mode_row = "%s启动，总耗时 %.0f ms" % (
                 "热" if self.cached else "冷", self.bake_ms + self.ready_ms)
             n_rc = getattr(out, "rebuild_count", 0)
 
