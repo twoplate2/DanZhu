@@ -1836,7 +1836,7 @@ _GOLD_MK = COL_BALL.lstrip("#")      # markup 里的颜色写法不带 '#'
 
 
 def _live_power_temp_line():
-    """「启动信息」里那行实时「温度/功耗」; **读不到就返回空串**(调用方据此整行不出现)。
+    """「启动信息」里那行实时「温度 / 充放电功率」; **读不到就返回空串**(调用方据此整行不出现)。
 
     玩家 2026-09-18: 「新增一行, 内容是 温度：xx摄氏度，功耗xx.xx瓦, 并且每0.5秒刷新一次」
                   + 「如果是PC读不到信息，就不显示这行」。
@@ -1847,7 +1847,7 @@ def _live_power_temp_line():
        这里只有一次快照, 就用同一把尺子判一次(原始绝对值 < 20000 只可能是 mA)。
        两处用同一个数, 改了那边这边才不容易忘。
     ⚠️ 只印**读得到**的那部分: 两个都有才完整; 只有温度就只印温度; 都没有返回空串。
-       (不印「功耗：--」那种占位 —— 那既是噪音又会让宽度忽长忽短。)
+       (不印「耗电：--」那种占位 —— 那既是噪音又会让宽度忽长忽短。)
     """
     try:
         _sn = _battery_snapshot()
@@ -1868,7 +1868,18 @@ def _live_power_temp_line():
                 _w = _power_from(_raw, _mv, _unit)
                 if _w is not None:
                     # ⚠️ 同上: 「瓦」也不在字库里 ⇒ 用 **W**(半角, 不受字库影响)。
-                    _parts.append("功耗：[color=%s]%.2f[/color] W" % (_GOLD_MK, _w))
+                    # ⚠️ 2026-09-18(玩家报的): 充电时这行也叫「功耗」是错的 —— 玩家原话
+                    #    「那个功耗改为耗电更好吧」、「耗电 vs 充电」。
+                    #    ⚠️ 判据**不能用电流符号** —— `_power_from` 正因为符号不可信才一律
+                    #       `abs()`(厂商两极分化)。用 `_battery_snapshot()` 的 `plugged`
+                    #       (EXTRA_PLUGGED, 非 0 = 接着电源): 这是与厂商无关的权威来源, 而且
+                    #       **高压测试那边判“测试期间在充电”用的就是它**(`power_plugged`)。
+                    #       两处同口径 —— 不另写第二份判据(项目里“同一件事两份清单必然漂移”踩过多次)。
+                    #    ⚠️ 已知边界(不管): 接着纯数据线 / 供电不足时仍叫「充电」 —— 与高压测试同
+                    #       口径; 那种场景下电流本来就小, 而“真正的充放方向”需要厂商符号知识
+                    #       (高压测试里的 `inverted` 就是干这个的), 不在这一行里猜。
+                    _lb = "充电" if _sn.get("plugged") else "耗电"
+                    _parts.append("%s：[color=%s]%.2f[/color] W" % (_lb, _GOLD_MK, _w))
         if not _parts:
             return ""
         return "　".join(_parts)
@@ -5394,7 +5405,9 @@ class Sfx:
             #       ⇒ 两段相加; 后面紧跟的「音效等待」是它的**明细**(不重复,
             #       它本来就是总耗时里的一段)。
             #    ⚠️ 2026-09-18 再简一步(玩家): 「启动总耗时」-> **「总耗时」**。
-            mode_row = "%s启动，总耗时 %.0fms" % (
+            # ⚠️ 2026-09-18 再去一个字(玩家): 「冷启动，总耗时」-> **「冷启动总耗时」**
+            #    —— 就是删掉中间那个逗号(那一行在窄机器上会换行, 省一个全角字宽; 再窄就得连空格一起省, 见 v0.8.54 的 changelog)。
+            mode_row = "%s启动总耗时 %.0fms" % (
                 "热" if self.cached else "冷", self.bake_ms + self.ready_ms)
             n_rc = getattr(out, "rebuild_count", 0)
 
@@ -14162,7 +14175,11 @@ class RootWidget(BoxLayout):
                                         halign="center", valign="middle",
                                         size_hint_y=None, height=dp(34)), 19)
             content.add_widget(head)
-            body = Label(text=self._replay_summary(), font_size="16sp",
+            # ⚠️ 2026-09-18(玩家): 16sp -> **15sp** —— 顶着两个理由:
+            #    ① 与「启动信息」面板统一(那边是 `_mk_lbl` 的 15sp; 项目里本来就有
+            #      “这几个弹窗长得几乎一样, 就不该用几种字号”这条规矩);
+            #    ② 它顺带腾出 ~19px 宽度 —— 那一行在窄机器上会换行(见 v0.8.54 changelog)
+            body = Label(text=self._replay_summary(), font_size="15sp",
                          color=hex_rgb(COL_SUB) + (1,),
                          halign="left", valign="top", size_hint_y=None, height=dp(26))
             # ⚠️ 行高按**真实排版**撑开: 手机上可用宽度更窄, 同一串字会折行 ——
@@ -14174,7 +14191,11 @@ class RootWidget(BoxLayout):
                             background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                             size_hint_y=None, height=dp(52))
             content.add_widget(ok_btn)
-            popup = self._popup(0.86, 420, title='', content=content,
+            # ⚠️ 2026-09-18(玩家): 0.86 -> **0.94**。该弹窗正文那行(`冷启动总耗时 …(音效等待 …)`)在
+            #    窄机器上会换行 —— 实测它只有 245px 可用而整行要 289px(删逗号后)。
+            #    这个宽度跟字号一起把它压回一行(详见下面 body 那段注释与 v0.8.54 changelog)。
+            #    ⚠️ 0.98 在隐藏返还率弹窗里已经在用, 所以 0.94 不突破现有档位。
+            popup = self._popup(0.94, 420, title='', content=content,
                                 auto_dismiss=True, separator_height=0)
             ok_btn.bind(on_release=lambda *_: popup.dismiss())
             popup.open()
