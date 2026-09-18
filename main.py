@@ -6438,7 +6438,7 @@ class Sfx:
                     _boot_log("probe", "探针收工时 CPU: %s %s" % (_sh2, _fr2))
             except Exception:
                 pass
-            _boot_log("probe", "音效等待结束: %.0f ms, 共 %d 轮" % (self.ready_ms, _rnd))
+            _boot_log("probe", "音效加载结束: %.0f ms, 共 %d 轮" % (self.ready_ms, _rnd))
             # ---- v0.8.61/62 实验档: 48k 对拍(跑在"等待结束之后", 不污染上面那几个数) ----
             #   ⚠️ 它必须等冷烘焙把 22050 的 wav 写回缓存之后才跑 —— 重放会先清掉整个缓存目录,
             #      所以这一档只能挂在这里(不能在 `_replay_cold_start` 里起)。
@@ -6584,7 +6584,7 @@ class Sfx:
                     _vf = _voice_files()
                     _nv_load = sum(1 for _n in _vf if _n in self.bank)
                     _nb_load = max(0, len(self.bank) - _nv_load)
-                    _loads = "音效加载 %d/%d，语音加载 %d/%d" % (
+                    _loads = "音效就绪 %d/%d，语音就绪 %d/%d" % (
                         _nb_load, self._n_bank or _nb_load, _nv_load, len(_vf))
                 # ⚠️ 2026-09-18(玩家): **时间一行、加载进度一行**。
                 # ⚠️ 2026-09-18(玩家): 音效等待那个数**从变量来**(以前在 PC 分支里写死了 0)。
@@ -6631,15 +6631,21 @@ class Sfx:
             #    ③ 整体改成「启动总耗时 610 ms（音效等待 593 ms）」
             #      —— 括号明确告诉玩家"它是总数里的一部分"。
             if self.ready_ms > 0:
-                _wait = "音效等待 %.0fms" % self.ready_ms
+                _wait = "音效加载 %.0fms" % self.ready_ms
             elif getattr(out, "probe_all", None) is None:
-                _wait = ("音效等待 无法确认能播(本后端无探针)"
-                         if platform == "android" else "音效等待 0ms")
+                _wait = ("音效加载 无法确认能播(本后端无探针)"
+                         if platform == "android" else "音效加载 0ms")
             else:
-                _wait = "音效等待 0ms(未等待)"
+                _wait = "音效加载 0ms(未等待)"
             # ⚠️ 2026-09-18(玩家): 「把时间放一起, 把加载进度放一起」⇒
             #    时间(启动方式/启动耗时/音效等待)一行, 加载进度(音效就绪/语音就绪)一行。
+            # ⚠️ v0.8.66(玩家): 「非音效加载累计耗时」放在**音效就绪前面**。
+            #    值 = `bake_ms`, 而 `mode_row` 里的总耗时是 `bake_ms + ready_ms` ⇒
+            #    面板上这三个数是**自洽相加**的: 总耗时 = 非音效加载 + 音效等待。
+            #    ⚠️ 冷启动那行会是 2 秒上下 —— 那是**现场合成音效**(不算"等音频就绪",
+            #       但确实是跟音效有关的那一段)。
             rows = [mode_row + "(" + _wait + ")",
+                    "非音效加载累计耗时：%.0f ms" % float(getattr(self, "bake_ms", 0.0) or 0.0),
                     "音效就绪：%s，语音就绪：%d/%d" % (ready, _n_voice, _n_voice_all),
                     "音频后端　%s" % bname]
             # ⚠️ v0.8.64: 「先到者」与「就绪闸门」两行**已从面板撤下**(玩家点名)。
@@ -15303,7 +15309,11 @@ class RootWidget(BoxLayout):
         # 「重放冷启动」: 不丢存档地按需复现"初次安装那种局"(见 _replay_cold_start)。
         # 玩家 2026-09-11 提的 —— 那个 bug 一年犯一次、"关掉重开"就自愈, 想抓现场只能卸载重装,
         # 而卸载会清掉余额/轮次。它不新建 Sfx 对象, 所以不碰任何接线, 也不动游戏状态。
-        # 「保存加载日志」: 玩家 2026-09-18 要求 —— 把从进程启动到摘页的**全过程**导成 txt。
+        # 「保存加载日志」: **v0.8.66 起不上屏**(玩家: 「隐藏这个音频加载界面的保存加载日志按钮」)。
+        #    ⚠️ 代码全留着 —— 它是"导出启动日志"的唯一入口, 藏了之后所有诊断都得靠别的路子。
+        #    放回来: 在 `_btn_row` 那两行 add_widget 里加一句 `_btn_row.add_widget(log_btn)`,
+        #    并把上面的 `n_btn` 改成 2(它会单独占一行)。
+        # 玩家 2026-09-18 要求 —— 把从进程启动到摘页的**全过程**导成 txt。
         # ⚠️ v0.8.48 按玩家要求删过一次, **v0.8.56 已恢复**(v0.8.55 那周要查"点名单价"而手上只有一份旧日志 ⇒ 玩家: 「这次要恢复那个保存记录按钮了」)。
         # ⚠️ 它**不违反**这个弹窗的铁律(见方法 docstring: 不许放会动音频栈或游戏状态的按钮):
         #    这个按钮**只写文件** —— 不碰 Sfx、不碰音频栈、不碰游戏状态, 连读都只读一次快照。
@@ -15313,16 +15323,29 @@ class RootWidget(BoxLayout):
         replay_btn = Button(text='重放冷启动', font_size='17sp', bold=True,
                             background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                             size_hint_y=None, height=dp(52))
-        # ⚠️ 顺序 = 屏幕上的上下顺序(纵向 BoxLayout)。玩家 2026-09-11: 「把确定按钮放在重放冷启动
-        #    下面」⇒ **重放冷启动在上、确定在下**。别按"添加顺序像主次"去调, 它就是几何顺序。
-        content.add_widget(log_btn)
-        content.add_widget(replay_btn)
-        content.add_widget(ok_btn)
+        # ⚠️ **已被 v0.8.66 取代**: 原来这三个按钮是竖着三行, 顺序即上下顺序
+        #    (玩家 2026-09-11: 「把确定按钮放在重放冷启动下面」⇒ 重放在上、确定在下)。
+        #    现在改成**并排一行**, 左右顺序由 `_btn_row` 里的 add 顺序决定(重放左、确定右)。
+        #    别按"添加顺序像主次"去调, 它就是几何顺序 —— 这条没变。
+        # ⚠️ v0.8.66(玩家): 按钮区改成**并排一行**, 且「保存加载日志」**不再上屏**。
+        #    · 左 = 重放冷启动, 右 = 确定(玩家点名的左右顺序)。
+        #    · `log_btn` 的**对象与回调都留着**(一个字没删), 想放回来就把它 add 进
+        #      `_btn_row`(或 content) —— 见下面那段注释。
+        #    ⚠️ 代价要说清: 藏了之后**启动日志就导不出来了**(今天所有诊断都靠它)。
+        _btn_row = BoxLayout(orientation="horizontal", size_hint_y=None,
+                             height=dp(52), spacing=dp(8))
+        # ⚠️ 并排之后每个按钮只剩约半宽 ⇒ 接进单行自适应(窄屏/大字号下自动缩字,
+        #    而不是"盖到隔壁按钮上" —— Kivy 的 Button 不换行也不缩)。
+        self._install_fit(replay_btn, ok_btn)
+        _btn_row.add_widget(replay_btn)
+        _btn_row.add_widget(ok_btn)
+        content.add_widget(_btn_row)
         # ⚠️ 高度必须**按内容算**: 实测弹窗内容区 = 弹窗高 − 44px(Kivy 标题栏, 即使 title='' 也吃),
         #    每行 38px(行高 26 + spacing 12)。写死高度的话加一行就会被裁掉尾巴 —— v0.6.12 踩过。
         n_lbl = 1 + (1 if _info else 0) + len(rows) + _n_extra    # ⚠️ 那块面板有硬预算
-        n_btn = 3          # ⚠️ v0.8.56: 恢复「保存加载日志」后回到 3
-                           #    (高度公式里 n_btn 是变量, 不用改公式)
+        # ⚠️ v0.8.66: 3 → 1 —— `n_btn` 数的是**按钮行数**(不是按钮个数)。两个按钮现在并排
+        #    一行 ⇒ 一行。不改的话弹窗会多出两行(104px)的空白。
+        n_btn = 1          # ⚠️ 放回「保存加载日志」(它单独占一行)时它得跟着 +1
         need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(24)
                 + dp(8) * (n_lbl + n_btn - 1))      # ⚠️ dp(24)=2×padding、dp(8)=spacing,
                                                     #    与上面那行 BoxLayout **必须成对改**
@@ -17921,7 +17944,7 @@ class RootWidget(BoxLayout):
             L.append("音频后端  %s" % getattr(sfx.out, "name", "静音"))
             L.append("启动方式  %s启动   烘焙 %.0f ms"
                      % ("热" if sfx.cached else "冷", sfx.bake_ms))
-            L.append("音效等待  %.0f ms（上限 %.0f）"
+            L.append("音效加载  %.0f ms（上限 %.0f）"
                      % (sfx.ready_ms, sfx.SFX_READY_TIMEOUT * 1000.0))
             # v0.8.61: 闸门 vs 老探针**谁先到** —— 这一包的全部结论都从这一行读
             #   ⚠️ 只在**真等过**的时候印(桌面上 `_WaveOut` 没有探针, `_await_ready` 直接
