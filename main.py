@@ -3217,6 +3217,12 @@ class _SoundPoolOut:
         #    到底发生过几次。不能用 Sfx._failed: 那个在 _retry_failed 第一行就被搬空,
         #    面板那行「加载失败」结构性印不出来, 去看它等于什么都没看。
         self._load_failed_total = 0
+        # ⚠️ 2026-09-18(评审): "**后端没播成**"的正面计数 ——
+        #    `play()` 返回 0(没解码完 / 拿不到流)。以前这一笔在 `play_named` 里被丢掉,
+        #    而运行期发声全走 `_drain` 工作线程的异步路径 ⇒ 那一声没响**没人知道**。
+        #    现在面板只在非 0 时印它(见 audio_detail 末尾)。
+        self._play_missed = 0
+        self._play_missed_last = ""
         self._paths = {}              # name -> wav 路径(拔耳机后重建时重新 load 用)
         self.rebuild_count = 0        # 重建次数(隐藏菜单的诊断行要显示; 正常局应当恒为 0)
         _t0 = time.perf_counter()
@@ -3414,7 +3420,11 @@ class _SoundPoolOut:
         #    返回), 玩家核算后**已回退** —— 它和"直接全扫"打平(131 vs 103 次 play),
         #    还多一个"白扫"风险(尾部先好会提前触发全扫)。详细账见 buildozer.spec 的 v0.8.51。
         _n = 0          # 这一轮**真的**调用了几次 play(诊断: 它反映"探针自己多贵")
+        # ⚠️ 2026-09-18(评审挖出的): "连续就绪前缀"**一旦在某个池里断掉就到此为止**,
+        #    但后面的池照扫(只是不再计入 `_seq`)。没这个钩子的话, 去掉外层 break
+        #   会把"池 2 就绪了多少"也算进前缀里 —— 而它的语义是"从队首起连续就绪"。
         _seq = 0        # 从队首起**连续就绪**的个数(自动判定读它, 语义与加 K5 之前一致)
+        _seq_open = True   # 前缀还没断(见下面 `_seq_open = False` 那处)
         _stuck = ""
         try:
             for _pi, _pool, _tab in _pairs:
@@ -3426,7 +3436,8 @@ class _SoundPoolOut:
                 #    依据: `_ids` **只增不减**(唯一写入点是 prime), 启动窗口内没有任何地方
                 #    release 单个 sample ⇒ "刚才能播" ⇒ "现在还能播"成立(评审逐行核实过)。
                 if (_pi, sid) in self._ok_sids:
-                    _seq += 1                # 它仍然算"连续就绪"的一段
+                    if _seq_open:
+                        _seq += 1            # 它仍然算"连续就绪"的一段
                     continue
                 _n += 1
                 st = _pool.play(sid, 0.0, 0.0, 1, 0, 1.0)   # 0 增益 → 听不见
@@ -3446,15 +3457,19 @@ class _SoundPoolOut:
                     if not st:
                         if not _stuck:
                             _stuck = name      # 第一个未就绪的记下来(返回值靠它)
+                        # ⚠️ 2026-09-18(评审): 前缀到此为止, 但**只停本池** ——
+                        #    旧代码在这里 break 之后, 外层还有一层 `if _stuck: break`,
+                        #    于是池 1 卡住期间池 2 一轮都不被扫(假后端实测: play 次数 = 0)。
+                        #    两池各自卓行、"每池同时最多一条流"这个前提仍然成立(B1 补试靠它)。
+                        _seq_open = False
                         break                  # 撞到第一个就停
                 try:
                     _pool.stop(st)           # 立刻收流, 别占满 maxStreams
                 except Exception:
                     pass
                 self._ok_sids.add((_pi, sid))   # 亲眼确认过 ⇒ 以后不必再扫它(K5)
-                _seq += 1
-              if _stuck:
-                break
+                if _seq_open:
+                    _seq += 1
         except Exception:
             self._probe_scan = _seq
             self._probe_played = _n
@@ -3465,15 +3480,29 @@ class _SoundPoolOut:
         self._probe_stuck = _stuck
         return not _stuck
 
+    def _miss_play(self, name):
+        """后端说"这一声没播成"(还没解码完 / 拿不到流) ⇒ 记一笔。
+        ⚠️ **只计数, 不改任何返回值** —— 见 `play_named` 的说明。"""
+        self._play_missed += 1
+        self._play_missed_last = name
+
     def play_named(self, name, gain01):
+        """⚠️ 返回值 = **"请求已受理"**, 不是"后端真的播成了" —— 这是有意的:
+        它牵着装杯震动(`WinPileFX._bounce` 的 `if sfx.play(...)` → `_vibrate_tick`),
+        改成"后端说了算" 会让流一忙就**整段没震**(见 `Sfx.play` 里那段已成文的注释)。
+        ⚠️ 但"没播成"从此被记下来(`_play_missed`): 它以前彻底不可见,
+        而那正是本模块(启动信息面板)存在的理由。
+        """
         sid = self._ids.get(name)
         if sid is not None:
-            self._sp.play(sid, gain01, gain01, 1, 0, 1.0)
+            if not self._sp.play(sid, gain01, gain01, 1, 0, 1.0):
+                self._miss_play(name)
             return True
         if self._sp2 is not None:            # 语音在第二个池里(见 prime 的分池规则)
             sid2 = self._ids2.get(name)
             if sid2 is not None:
-                self._sp2.play(sid2, gain01, gain01, 1, 0, 1.0)
+                if not self._sp2.play(sid2, gain01, gain01, 1, 0, 1.0):
+                    self._miss_play(name)
                 return True
         return False
 
@@ -5539,7 +5568,14 @@ class Sfx:
             #    "加载失败几个"那半不再单列(它已经体现在语音就绪的分母上)。
             #    如果将来"某个音效没加载上"要单独看, `self._failed` 仍然躺在内存里, 随时能印。
 
-            # 5) 后端重建 —— **只在非 0 时出现**(唯一预期值是 0, 常态印它只是噪音)
+            # 6) 「后端没播成」 —— 同上, **只在非 0 时出现**(唯一预期值是 0)。
+            #    ⚠️ 2026-09-18 新加: 这个数以前**从来没上过屏** (旧的 `n_missed` 只写不读,
+            #    而且它只能在"名字压根不在池子里"时才加) —— 运行期真正的静默
+            #    (装杯/撞钉那一声没响)在改之前是彻底不可见的。
+            _miss = int(getattr(out, "_play_missed", 0) or 0)
+            if _miss:
+                rows.append("后端没播成　%d 次(最后一次 %s)"
+                            % (_miss, getattr(out, "_play_missed_last", "") or "?"))
             if n_rc:
                 rows.append("后端重建　%d 次" % n_rc)
             return rows
