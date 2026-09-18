@@ -57,6 +57,15 @@ _PROBE_TRACE = []
 # 点名的**自身成本**累计: [探针自己花掉的 ms, 真扫次数] —— 只给启动日志算「单价」用。
 # ⚠️ 与 `_PROBE_TRACE` 一样, **不参与任何判据**(没有任何逻辑读它做判断)。
 _PROBE_COST = [0.0, 0]
+# 「探针实验」阶梯(v0.8.59): **每次「重放冷启动」往上换一档**
+#   ⇒ 同一台机器、同一版包, 四组对照一次跑齐(读数全在启动日志里)。
+#   格式: (每池线程数, 要不要钉核/提优先)。走到尾就循环回第一档。
+PROBE_LADDER = (
+    ((1, 1), False),      # A 基线 = v0.8.58 那条串行路
+    ((1, 1), True),       # B 串行 + 钉核提优先(隔离出 CPU 状态这一份)
+    ((1, 2), False),      # C 两池并行(池 1 两条)
+    ((2, 3), False),      # D 按 40:61 配平(池 0 两条 + 池 1 三条)
+)
 # 两段各自提交的字节数(合成音 / 语音) —— 自动判定要用它算"每 MB 多少 ms"。
 _LOAD_BYTES = {"bank": 0, "voice": 0}
 
@@ -69,15 +78,14 @@ def _safe_size(path):
         return 0
 
 
-def _cpu_shape():
-    """CPU 的**簇结构** + 各簇频率, 给启动日志用: 返回 `("1+3+4", "4x2016M + 3x2745M + 1x3187M 当前 ...")`。
+def _cpu_groups():
+    """按 max_freq 分组的 CPU: `[(频率kHz, [下标...]), ...]`, **从快到慢**。读不到返回 []。
 
-    做法: 读 /sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_max_freq(kHz), **按值分组** ——
-    同频的一批核就是一个簇(big.LITTLE 与新一代的 2+6 都成立), 不需要 root。
-    ⚠️ 为什么值得单写一行: 2026-09-18 那周卡住我们的正是"CPU 是什么形状" —— 老机(Y700 二代)
-       是 1+3+4、最慢的核 2.0GHz; 新机(骁龙 8 Elite Gen 5)是 2+6、最慢的核 3.62GHz。
-       同一个 play() 的单价差 26 倍, 而光写"8 核"这两种机器长得一模一样。
-    读不到(PC / 权限 / 核离线)就返回空串, 调用方据此整行不出现 —— **绝不编数**。"""
+    二代 -> [(3187000, [0]), (2745000, [1, 2, 3]), (2016000, [4, 5, 6, 7])]
+    5 代 -> [(4608000, [0, 1]), (3628000, [2..7])]
+    ⚠️ `_cpu_shape()` 那串字就是用它拼的(同一份读数, 不许各读一遍);
+       探针实验的"钉大核"也用它选核(见 `_probe_boost_thread`)。
+    """
     try:
         _n = os.cpu_count() or 0
         _byf = {}
@@ -89,9 +97,50 @@ def _cpu_shape():
                 continue
             if _v > 0:
                 _byf.setdefault(_v, []).append(_i)
-        if not _byf:
+        return [(int(_k), list(_v)) for _k, _v in sorted(_byf.items(), reverse=True)]
+    except Exception:
+        return []
+
+
+def _probe_boost_thread():
+    """把**当前这条线程**钉到大核簇 + 提到"迟延敏感"优先级(探针实验用, 失败一律静默)。
+
+    ⚠️ 这一档只为把"CPU 状态"这个变量**钉死**。真机日志(v0.8.58)显示探针起手时三簇已经
+       顶到 2995/2745/1804(满频 3187/2745/2016) ⇒ 本来就没降频、也没被丢小核,
+       **别指望它有多大收益**; 它的用处是让"并行"的收益归因干净。
+    ⚠️ 只动当前线程: 主线程/渲染照旧(钉核的副作用正是"把别的活挤到小核")。
+       v0.8.58 的**心跳**埋点是这件的尺子 —— 若加载页动画变卡, 心跳会掉。
+    """
+    try:
+        _g = _cpu_groups()
+        if _g:
+            _mask = set(_g[0][1]) | (set(_g[1][1]) if len(_g) > 1 else set())
+            if _mask:
+                os.sched_setaffinity(0, _mask)
+    except Exception:
+        pass
+    try:
+        from jnius import autoclass
+        autoclass("android.os.Process").setThreadPriority(-16)   # THREAD_PRIORITY_URGENT_AUDIO
+    except Exception:
+        pass
+
+
+def _cpu_shape():
+    """CPU 的**簇结构** + 各簇频率, 给启动日志用: 返回 `("1+3+4", "4x2016M + 3x2745M + 1x3187M 当前 ...")`。
+
+    做法: 读 /sys/devices/system/cpu/cpuN/cpufreq/cpuinfo_max_freq(kHz), **按值分组** ——
+    同频的一批核就是一个簇(big.LITTLE 与新一代的 2+6 都成立), 不需要 root。
+    ⚠️ 为什么值得单写一行: 2026-09-18 那周卡住我们的正是"CPU 是什么形状" —— 老机(Y700 二代)
+       是 1+3+4、最慢的核 2.0GHz; 新机(骁龙 8 Elite Gen 5)是 2+6、最慢的核 3.62GHz。
+       同一个 play() 的单价差 26 倍, 而光写"8 核"这两种机器长得一模一样。
+    读不到(PC / 权限 / 核离线)就返回空串, 调用方据此整行不出现 —— **绝不编数**。"""
+    try:
+        # ⚠️ 2026-09-18: 读数那段抽成 `_cpu_groups()`
+        #    (探针实验的钉核也要用**同一份**读数)。
+        _grp = _cpu_groups()          # [(频率kHz, [下标...]), ...] 从快到慢
+        if not _grp:
             return "", ""
-        _grp = sorted(_byf.items(), reverse=True)          # 从最快的簇排起
         _shape = "+".join(str(len(_v)) for _k, _v in _grp)
         _mhz = " + ".join("%dx%dM" % (len(_v), int(_k) // 1000) for _k, _v in _grp)
         _cur = []
@@ -3434,7 +3483,36 @@ class _SoundPoolOut:
         return len(self._ids) + len(self._ids2)
 
     def probe_all(self):
-        """所有已加载的 sample 是不是**真的能播**了(0 增益试播当探针)。
+        """按**实验开关**分派: 默认走 `_probe_serial`(与 v0.8.58 逐字相同),
+        开关打开才走并行。
+
+        ⚠️ 分派这一层是**唯一的新增行为**; 关掉开关时走的是原样搬过去的老函数
+           —— 这是"实验出问题就回退"的唯一保险,别把两条路合并成一条。
+        ⚠️ 两条路的**对外读数同义**: `_probe_scan` = 从队首起连续就绪的个数,
+           `_probe_played` = 这一轮真的 play 了几次, `_probe_stuck` = 声明顺序里第一个没就绪的。
+        """
+        _mode, _boost = self._probe_cfg()
+        if _mode[0] <= 1 and _mode[1] <= 1 and not _boost:
+            return self._probe_serial()
+        return self._probe_parallel(_mode, _boost)
+
+    def _probe_cfg(self):
+        """这一轮怎么探: `((池 0 线程数, 池 1 线程数), 钉核提优先)`。
+
+        默认 `((1, 1), False)` = **今天那条串行路**(零风险);
+        「重放冷启动」会按 `PROBE_LADDER` 一档一档往上换
+        ⇒ 四组对照能在同一台机器、同一版包上跑齐。"""
+        try:
+            _m = getattr(self, "_probe_mode", None) or (1, 1)
+            return ((max(1, int(_m[0])), max(1, int(_m[1]))),
+                    bool(getattr(self, "_probe_boost", False)))
+        except Exception:
+            return ((1, 1), False)
+
+    def _probe_serial(self):
+        """⚠️ 这就是 v0.8.58 那条路, **逐字没动**(只是从 `probe_all` 改名过来)。
+
+        所有已加载的 sample 是不是**真的能播**了(0 增益试播当探针)。
 
         `SoundPool.load()` 返回了 sampleId **不等于**解码完了; 没解码完 `play()` 返回 0、
         静默什么都不做 —— 这就是"音效都在、就是不响"的形态。而 SDK 只给了这一个办法去问
@@ -3521,6 +3599,108 @@ class _SoundPoolOut:
         self._probe_played = _n
         self._probe_stuck = _stuck
         return not _stuck
+
+    def _probe_parallel(self, _mode, _boost):
+        """并行探针(v0.8.59 实验): **每个池派 `_mode[池]` 条线程**, 各扫自己池里**下标连续**的一段。
+
+        ⚠️ 判据一个字没变: 仍然是"每个 (池, sid) 都得有一次 play 返回非 0"。
+        ⚠️ 每项仍**补试一次**(B1)。k>1 时池里会同时有 k 条流, "拿不到流"这个原因不再被完全排除
+           —— 但**启动期没有别的声音在放**(每池 maxStreams=8, 我们最多占 3 条), 所以补试之后
+           仍返回 0 基本就是"真的还没解码完"。误判的代价也只是多等一轮(`_await_ready` 会重试,
+           6 秒护栏不变), **不会软锁**。
+        ⚠️ 分块按声明顺序**连续**切 ⇒ "池里第一个没就绪的"与"连续就绪前缀"这两个对外读数与
+           串行版**同义**(合并时按下标排序回放)。
+        ⚠️ 任何异常一律当"能播"(与 `probe_all` 的既有约定一致)。
+        """
+        _pairs = [(0, self._sp, list(self._ids.items()))]
+        if self._sp2 is not None:
+            _pairs.append((1, self._sp2, list(self._ids2.items())))
+        if not _pairs[0][2] and (len(_pairs) < 2 or not _pairs[1][2]):
+            self._probe_scan = 0
+            self._probe_played = 0
+            self._probe_stuck = ""
+            return True
+        if _boost:
+            _probe_boost_thread()
+        _res = {}                       # 池序号 -> [(下标, 名字, 就绪?, 真 play 过?)]
+        _lk = threading.Lock()
+        _threads = []
+        try:
+            for _pi, _pool, _tab in _pairs:
+                _k = max(1, int(_mode[_pi])) if _pi < len(_mode) else 1
+                _todo = [(idx, nm, sd) for idx, (nm, sd) in enumerate(_tab)]
+                _step = max(1, (len(_todo) + _k - 1) // _k)
+                for _t in range(_k):
+                    _chunk = _todo[_t * _step:(_t + 1) * _step]
+                    if not _chunk:
+                        continue
+                    _th = threading.Thread(target=self._probe_chunk,
+                                           args=(_pi, _pool, _chunk, _res, _lk), daemon=True)
+                    _threads.append(_th)
+                    _th.start()
+        except Exception:
+            pass                    # 起不出线程 ⇒ 已经起来的那几条照常 join, 缺的部分下一轮补
+        for _th in _threads:
+            try:
+                _th.join()
+            except Exception:
+                pass
+        # ---- 合并: 完全按串行版的口径, 按下标顺序回放 ----
+        _n = 0
+        _seq = 0
+        _seq_open = True
+        _stuck = ""
+        for _pi, _pool, _tab in _pairs:
+            for _idx, _nm, _ok, _played in sorted(_res.get(_pi, [])):
+                if _played:
+                    _n += 1
+                if _ok:
+                    if _seq_open:
+                        _seq += 1
+                else:
+                    if not _stuck:
+                        _stuck = _nm
+                    _seq_open = False
+        self._probe_scan = _seq
+        self._probe_played = _n
+        self._probe_stuck = _stuck
+        return not _stuck
+
+    def _probe_chunk(self, _pi, _pool, _chunk, _res, _lk):
+        """一条线程负责一段(**下标连续**)的样本; 撞到第一个未就绪的**只停自己这一段**。
+
+        段内顺序 = 本池声明顺序的一段 ⇒ 同一个池里别的线程照跑, 这正是并行的收益所在
+        (串行版是"撞到第一个就停**本池**")。
+        """
+        _out = []
+        try:
+            for _idx, _nm, _sd in _chunk:
+                if (_pi, _sd) in self._ok_sids:      # K5: 已确认的不重扫(仍算"连续就绪"一段)
+                    _out.append((_idx, _nm, True, False))
+                    continue
+                _st = 0
+                try:
+                    _st = _pool.play(_sd, 0.0, 0.0, 1, 0, 1.0)
+                    if not _st:
+                        _st = _pool.play(_sd, 0.0, 0.0, 1, 0, 1.0)   # B1: 补试一次
+                except Exception:
+                    _st = 0
+                if not _st:
+                    _out.append((_idx, _nm, False, True))
+                    break
+                try:
+                    _pool.stop(_st)                  # 立刻收流, 别占满 maxStreams
+                except Exception:
+                    pass
+                self._ok_sids.add((_pi, _sd))        # 亲眼确认过 ⇒ 以后不必再扫它(K5)
+                _out.append((_idx, _nm, True, True))
+        except Exception:
+            pass
+        try:
+            with _lk:
+                _res.setdefault(_pi, []).extend(_out)
+        except Exception:
+            pass
 
     def _miss_play(self, name):
         """后端说"这一声没播成"(还没解码完 / 拿不到流) ⇒ 记一笔。
@@ -5369,6 +5549,14 @@ class Sfx:
                 self._audio_ready = True
                 return
             t0 = time.time()
+            # ⚠️ v0.8.59: **先把这一次走的是哪一档写进日志** ——
+            #    没有这一行, "四组对照" 的数据就不知道哪组是哪组。
+            try:
+                _m0, _b0 = self._probe_cfg()
+                _boot_log("probe", "探针模式: 每池线程 %s%s"
+                          % (_m0, " + 钉核提优先" if _b0 else ""))
+            except Exception:
+                pass
             # ⚠️ 2026-09-18 加: 探针**起手**时各簇的当前频率。
             #    日志头部那个「当前」是**导出日志那一刻**读的(机器闲着),
             #    对判断"探针期间有没有被降频/丢到小核"没用。
@@ -14410,7 +14598,18 @@ class RootWidget(BoxLayout):
                 sfx._last.clear()
             except Exception:
                 pass
-            # ③ 后台重烘
+            # ③ 后台重烘(先把「探针实验档」换到下一档)
+            try:
+                _li = int(getattr(self, "_probe_ladder_i", 0))
+                _mp, _bp = PROBE_LADDER[_li % len(PROBE_LADDER)]
+                self._probe_mode = _mp
+                self._probe_boost = _bp
+                self._probe_ladder_i = _li + 1
+                _boot_log("probe", "探针实验档 %d/%d: 每池线程 %s%s"
+                          % (_li % len(PROBE_LADDER) + 1, len(PROBE_LADDER), _mp,
+                             " + 钉核提优先" if _bp else ""))
+            except Exception:
+                pass
             import threading
             threading.Thread(target=sfx._bake, daemon=True).start()
         except Exception as exc:
