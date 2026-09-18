@@ -70,7 +70,13 @@ GATE_MODE_FIRST = "first"   # C 闸门优先, 到点不开才转老探针 = **�
 ARM_LADDER = (
     (GATE_MODE_FIRST, ""),        # A 出货形态(闸门优先, 1.5 秒不开就转老探针)
     (GATE_MODE_OFF, ""),          # B 老探针对照(复现优化前那条路, 附带闸门自记的数)
-    (GATE_MODE_FIRST, "pools"),   # C 池数对拍(v0.8.62 新: 2 池 vs 4 池, 临时池, 不碰出货路径)
+    (GATE_MODE_FIRST, "pools"),   # C 池数对拍(2 池 vs 4 池, 临时池, 不碰出货路径)
+    #   ⚠️ 老机器上的结论**已得**(2026-09-18, 配对交替测量):
+    #      2 池 930 / 984 ms(逐池 合成音 546 / 语音 893)
+    #      4 池 741 / 747 ms(语音拆半后 691)  ⇒ **只快 21%, 不是腰斩**
+    #      ⇒ 瓶颈不在"灶的个数", 在每个音效都要跨进程找**共用的那个解码服务**要资源。
+    #      ⇒ **750ms 是这个平台的地板, 多开池这条路关闭**(生产分池一个字不改)。
+    #   ⚠️ 档位保留: 另两台机器还没跑过, 留着可以顺带量(零风险)。
 )
 # ⚠️ 退休档(代码全保留, 想复活就加回上面那个元组):
 #   · `("first", "48k")` —— 48k 对拍。**结论已得**(老机器实测 22050 中位 56.3ms vs 48000 55.7ms,
@@ -276,6 +282,12 @@ def _arm_pools_bench(paths, plan=((2, "生产分法"), (4, "两组各自对半")
         return ["池数对拍　跳过: 两类样本不齐(合成 %d / 语音 %d)" % (len(_bank), len(_voice))]
 
     def _buckets(npool):
+        # ⚠️⚠️ 每一档都必须**显式列出**。这里曾经是"2 池 / 否则=4 池"两分支, 那样传 1 会返回
+        #    4 个桶, 而下面 `for _gi, _items in enumerate(...)` 配着 `if _gi >= len(pools): break`
+        #    ⇒ **只 load 了第一个桶(20 个), 其余 81 个样本一次都没提交**, 闸门只等那 20 个
+        #    ⇒ 报出一个**漂亮得离谱的假数, 而且不报错**。(离线取证读代码时抓到的。)
+        if npool == 1:
+            return [list(_bank) + list(_voice)]
         if npool == 2:
             return [_bank, _voice]
         _hb = max(1, len(_bank) // 2)
@@ -6203,6 +6215,7 @@ class Sfx:
             _g_deadline = 0.0
             _g_desc = ""
             _g_repaired = False        # v0.8.62: 修复阶梯**每个进程只跑一轮**
+            _g_last_rdy = -2           # v0.8.63: 上一次看到的就绪数(用来判"还在不在进展")
             _g_fallback = True          # 闸门到点没开时, 要不要落回老探针
             self._ready_winner = ""
             self._gate_open_ms = 0.0
@@ -6277,6 +6290,19 @@ class Sfx:
                         _boot_log("probe", "闸门打开: t+%.0f ms(两池全部就绪) ⇒ 放行; "
                                            "这一次探针一次都没跑" % self._gate_open_ms)
                         break
+                    # ---- v0.8.63: **有进展就给闸门续命**, 别急着转老探针 ----
+                    #   ⚠️ 原来这里是"到 1.5 秒就转"的**定时**触发。若某台机器解码就是慢
+                    #      (1.6 秒), 玩家会**既等满 1.5 秒、又再付一遍老探针的 3~5 秒**
+                    #      —— 比"继续等闸门"更慢, 而闸门明明还在干活(回调一个接一个地在到)。
+                    #   ⚠️ 判据只看"就绪数有没有涨": 涨 ⇒ 续命; **卡住不动** ⇒ 才转兜底。
+                    #      6 秒硬上限仍在循环条件上 ⇒ 绝不软锁(项目红线)。
+                    try:
+                        _g_rdy = int(getattr(self.out, "gate_ready_count", lambda: -1)() or -1)
+                    except Exception:
+                        _g_rdy = -1
+                    if _g_rdy != _g_last_rdy:
+                        _g_last_rdy = _g_rdy
+                        _g_deadline = time.time() + self.SFX_GATE_FIRST_SEC
                     if time.time() < _g_deadline:
                         time.sleep(0.02)     # 闸门查询是纯内存(下行 JNI), 密一点无妨
                         continue
@@ -6290,8 +6316,8 @@ class Sfx:
                         _g_repaired = True
                         self._gate_repair(_g_desc)
                     _g_use = False
-                    _boot_log("probe", "闸门 %.0f ms 仍未开(%s) ⇒ 这一轮起走老探针兜底"
-                              % (self.SFX_GATE_FIRST_SEC * 1000.0, _g_desc or "?"))
+                    _boot_log("probe", "闸门停住不动(%.0f ms 没进展, 就绪 %s) ⇒ 起走老探针兜底"
+                              % (self.SFX_GATE_FIRST_SEC * 1000.0, _g_last_rdy))
                 _rnd += 1
                 _p0 = time.perf_counter()
                 _ok = probe()
