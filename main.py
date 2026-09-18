@@ -1832,6 +1832,43 @@ def _battery_snapshot():
         return None
 
 
+def _live_power_temp_line():
+    """「启动信息」里那行实时「温度/功耗」; **读不到就返回空串**(调用方据此整行不出现)。
+
+    玩家 2026-09-18: 「新增一行, 内容是 温度：xx摄氏度，功耗xx.xx瓦, 并且每0.5秒刷新一次」
+                  + 「如果是PC读不到信息，就不显示这行」。
+
+    ⚠️ 全部复用现成的读取器(`_battery_snapshot` / `_battery_current_raw` / `_power_from`),
+       **不新写一份** —— 高压测试那块已经把这套调好了, 两处各写一份必然漂移。
+    ⚠️ 单位判断沿用 `_pwr_guess_unit()` 的**同一个阈值**: 那个函数靠"全程分布"判,
+       这里只有一次快照, 就用同一把尺子判一次(原始绝对值 < 20000 只可能是 mA)。
+       两处用同一个数, 改了那边这边才不容易忘。
+    ⚠️ 只印**读得到**的那部分: 两个都有才完整; 只有温度就只印温度; 都没有返回空串。
+       (不印「功耗：--」那种占位 —— 那既是噪音又会让宽度忽长忽短。)
+    """
+    try:
+        _sn = _battery_snapshot()
+        if not _sn:
+            return ""                       # PC / 读不到 ⇒ 整行不出现
+        _parts = []
+        _t = _sn.get("temp")
+        if _t is not None:
+            _parts.append("温度：%.1f 摄氏度" % _t)
+        _mv = _sn.get("mv")
+        if _mv:
+            _raw, _src = _battery_current_raw()
+            if _raw is not None and abs(_raw) > 0:
+                _unit = "ma" if abs(_raw) < 20000 else "ua"
+                _w = _power_from(_raw, _mv, _unit)
+                if _w is not None:
+                    _parts.append("功耗：%.2f 瓦" % _w)
+        if not _parts:
+            return ""
+        return "　".join(_parts)
+    except Exception:
+        return ""
+
+
 def _pwr_sysfs_paths():
     """枚举 `/sys/class/power_supply/*/current_now` 候选路径(读不到就是空表)。"""
     _out = []
@@ -14004,6 +14041,21 @@ class RootWidget(BoxLayout):
             content.add_widget(_mk_lbl(_info, 'center'))
         for _ln in rows:                # 字段行一律左对齐(标签等宽 4 个汉字, 左对齐才排得成一列)
             content.add_widget(_mk_lbl(_ln, 'left'))
+        # ⚠️ 实时「温度/功耗」行(玩家 2026-09-18 要求, 每 0.5 秒刷新)。
+        #    **读不到就整行不出现** —— 与 `audio_detail()` 里"不适用的行直接不出现"同一条
+        #    规矩(印一行"不适用"既是噪音、又把真内容淹掉); PC 上 `_battery_snapshot()` 恒
+        #    返回 None ⇒ 自然满足。
+        _live = None
+        try:
+            _lt = _live_power_temp_line()
+        except Exception:
+            _lt = ""
+        if _lt:
+            _live = _mk_lbl(_lt, 'left')
+            content.add_widget(_live)
+            _n_extra = 1
+        else:
+            _n_extra = 0
         ok_btn = Button(text='确定', font_size='17sp', bold=True,
                         background_normal='', background_color=hex_rgb(COL_BTN) + (1,),
                         size_hint_y=None, height=dp(52))
@@ -14027,12 +14079,30 @@ class RootWidget(BoxLayout):
         content.add_widget(ok_btn)
         # ⚠️ 高度必须**按内容算**: 实测弹窗内容区 = 弹窗高 − 44px(Kivy 标题栏, 即使 title='' 也吃),
         #    每行 38px(行高 26 + spacing 12)。写死高度的话加一行就会被裁掉尾巴 —— v0.6.12 踩过。
-        n_lbl = 1 + (1 if _info else 0) + len(rows)
+        n_lbl = 1 + (1 if _info else 0) + len(rows) + _n_extra    # ⚠️ 那块面板有硬预算
         n_btn = 3
         need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(32)
                 + dp(12) * (n_lbl + n_btn - 1))
         popup = self._popup(0.84, need + dp(64), title='', content=content,
                             auto_dismiss=True, separator_height=0)
+        # ⚠️ 实时行的定时器: **弹窗一关就必须 unschedule** —— 否则它会一直跑下去
+        #    (每开一次面板再攒一个), 而它每 0.5 秒要 `registerReceiver` 一次。
+        if _live is not None:
+            def _tick_live(_dt):
+                try:
+                    _t2 = _live_power_temp_line()
+                    if _t2:
+                        _live.text = _t2
+                except Exception:
+                    pass
+            _live_ev = Clock.schedule_interval(_tick_live, 0.5)
+
+            def _stop_live(*_a):
+                try:
+                    Clock.unschedule(_live_ev)
+                except Exception:
+                    pass
+            popup.bind(on_dismiss=_stop_live)
         ok_btn.bind(on_release=lambda *_: popup.dismiss())
         replay_btn.bind(on_release=lambda *_: (popup.dismiss(), self._replay_cold_start()))
         # ⚠️ 提示**不弹新弹窗**(这里已经在弹窗里了, 叠一个必然出岔子): 照抄 `_save_power_log`
