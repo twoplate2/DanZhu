@@ -1832,6 +1832,9 @@ def _battery_snapshot():
         return None
 
 
+_GOLD_MK = COL_BALL.lstrip("#")      # markup 里的颜色写法不带 '#'
+
+
 def _live_power_temp_line():
     """「启动信息」里那行实时「温度/功耗」; **读不到就返回空串**(调用方据此整行不出现)。
 
@@ -1856,7 +1859,7 @@ def _live_power_temp_line():
             # ⚠️ 2026-09-18(玩家报的**: 字库是子集体, 新加的中文会变豆腐块**):
             #    「摄氏度」的「摄」「氏」两个字不在字库里 ⇒ 屏幕上是两个方框。
             #    玩家定的解法: **避开新字**, 不动字库 —— 用「度」(常用字, 字库里有)。
-            _parts.append("温度：%.1f 度" % _t)
+            _parts.append("温度：[color=%s]%.1f[/color] 度" % (_GOLD_MK, _t))
         _mv = _sn.get("mv")
         if _mv:
             _raw, _src = _battery_current_raw()
@@ -1865,7 +1868,7 @@ def _live_power_temp_line():
                 _w = _power_from(_raw, _mv, _unit)
                 if _w is not None:
                     # ⚠️ 同上: 「瓦」也不在字库里 ⇒ 用 **W**(半角, 不受字库影响)。
-                    _parts.append("功耗：%.2f W" % _w)
+                    _parts.append("功耗：[color=%s]%.2f[/color] W" % (_GOLD_MK, _w))
         if not _parts:
             return ""
         return "　".join(_parts)
@@ -5391,7 +5394,7 @@ class Sfx:
             #       ⇒ 两段相加; 后面紧跟的「音效等待」是它的**明细**(不重复,
             #       它本来就是总耗时里的一段)。
             #    ⚠️ 2026-09-18 再简一步(玩家): 「启动总耗时」-> **「总耗时」**。
-            mode_row = "%s启动，总耗时 %.0f ms" % (
+            mode_row = "%s启动，总耗时 %.0fms" % (
                 "热" if self.cached else "冷", self.bake_ms + self.ready_ms)
             n_rc = getattr(out, "rebuild_count", 0)
 
@@ -5442,7 +5445,7 @@ class Sfx:
                 # ⚠️ 2026-09-18(玩家): 音效等待那个数**从变量来**(以前在 PC 分支里写死了 0)。
                 #    PC 上 `ready_ms` 本来就是 0(winmm 没有探针), 但**两边同一口径**才对得上。
                 rows = ["音频后端　%s" % bname,
-                        mode_row + "（音效等待 %.0f ms）" % self.ready_ms]
+                        mode_row + "(音效等待 %.0fms)" % self.ready_ms]
                 if _loads:
                     rows.append(_loads)
                 if n_rc:
@@ -5483,15 +5486,15 @@ class Sfx:
             #    ③ 整体改成「启动总耗时 610 ms（音效等待 593 ms）」
             #      —— 括号明确告诉玩家"它是总数里的一部分"。
             if self.ready_ms > 0:
-                _wait = "音效等待 %.0f ms" % self.ready_ms
+                _wait = "音效等待 %.0fms" % self.ready_ms
             elif getattr(out, "probe_all", None) is None:
-                _wait = ("音效等待 无法确认能播（本后端无探针）"
-                         if platform == "android" else "音效等待 0 ms")
+                _wait = ("音效等待 无法确认能播(本后端无探针)"
+                         if platform == "android" else "音效等待 0ms")
             else:
-                _wait = "音效等待 0 ms（未等待）"
+                _wait = "音效等待 0ms(未等待)"
             # ⚠️ 2026-09-18(玩家): 「把时间放一起, 把加载进度放一起」⇒
             #    时间(启动方式/启动耗时/音效等待)一行, 加载进度(音效就绪/语音就绪)一行。
-            rows = [mode_row + "（" + _wait + "）",
+            rows = [mode_row + "(" + _wait + ")",
                     "音效就绪：%s，语音就绪：%d/%d" % (ready, _n_voice, _n_voice_all),
                     "音频后端　%s" % bname]
             # ⚠️ 期望值**单独占一行**, 不并进上一行: 并进去会让那行超宽折行 —— 而折行是这里
@@ -14018,7 +14021,13 @@ class RootWidget(BoxLayout):
         ⚠️ 逐行分栏, **绝不并成一行**: 实测合并后 658px > 内容区 422px, 会折行而被定高标签
         裁掉, 玩家看到的是一句缺尾巴的话(见 v0.6.12)。
         ⚠️ 纯只读 —— 这个弹窗**不许**放任何会动音频栈或游戏状态的按钮(那是"绝不软锁"的前提)。"""
-        content = BoxLayout(orientation='vertical', padding=dp(16), spacing=dp(12))
+        # ⚠️ 2026-09-18(玩家, 他有强迫症): 页边距收一档
+        #    `padding 16->12` / `spacing 12->8`。
+        #    ⚠⚠ **高度公式(`need`)必须同步改** —— 那里的 `dp(32)` 是
+        #       `2×padding`、`dp(12)` 是 `spacing`。只改布局不改公式, 弹窗
+        #       会短一截、把内容裁掉尾巴(v0.6.12 踩过)。
+        #    ⚠️ 只改**这一个**弹窗: 同样两个参数在跑分菜单 / 高压历史里也有, 那两处不动。
+        content = BoxLayout(orientation='vertical', padding=dp(12), spacing=dp(8))
         # 玩家 2026-09-11 定稿: 标题从「启动信息」改成 **跳跳的弹珠机v0.x.x**(见 _startup_title)。
         # 版本号全工程只在这里出现一次, 正文那行只剩制作时刻。
         title_lbl = self._fit_line(Label(text=_startup_title(), bold=True, halign='center',
@@ -14037,7 +14046,7 @@ class RootWidget(BoxLayout):
             _info = self._build_info()
         except Exception:
             _info = ""
-        def _mk_lbl(_text, _align, _size='15sp', _h0=26):
+        def _mk_lbl(_text, _align, _size='15sp', _h0=26, _markup=False):
             # ⚠️ 默认字号 16 -> 15: 与另外两个列表弹窗(跑分历史/每轮次数)统一到 15sp。
             #    这三个弹窗长得几乎一样, 却用了 17/16/15 三种字号 —— 玩家一眼就看出参差。
             """自动撑高的行标签 —— **折行不再等于裁切**。
@@ -14050,6 +14059,7 @@ class RootWidget(BoxLayout):
             绑 width → 先让 Kivy 按可用宽度算出真正的 text_size(text_size 第二位给 None 才自动换行),
             再把 texture_size[1](排版后的真实高度)写回 height。"""
             lb = Label(text=_text, font_size=_size, halign=_align, valign='middle',
+                       markup=_markup,          # ⚠️ 温度/功耗 那行要用 markup 给数字上金色
                        color=hex_rgb(COL_SUB) + (1,), size_hint_y=None, height=dp(_h0))
             lb.bind(width=lambda w, *_: setattr(w, 'text_size', (w.width, None)))
             lb.bind(texture_size=lambda w, ts: setattr(w, 'height', max(dp(_h0), ts[1] + dp(4))))
@@ -14073,7 +14083,7 @@ class RootWidget(BoxLayout):
         except Exception:
             _lt = ""
         if _lt:
-            _live = _mk_lbl(_lt, 'left')
+            _live = _mk_lbl(_lt, 'left', _markup=True)   # 数字是金色的
             content.add_widget(_live)
             _n_extra = 1
         else:
@@ -14100,8 +14110,9 @@ class RootWidget(BoxLayout):
         n_lbl = 1 + (1 if _info else 0) + len(rows) + _n_extra    # ⚠️ 那块面板有硬预算
         n_btn = 2          # ⚠️ 2026-09-18: 删掉「保存加载日志」后从 3 改回 2 ——
                            #    高度是按它算的, 不改会多留一块空白
-        need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(32)
-                + dp(12) * (n_lbl + n_btn - 1))
+        need = (dp(30) + dp(26) * (n_lbl - 1) + dp(52) * n_btn + dp(24)
+                + dp(8) * (n_lbl + n_btn - 1))      # ⚠️ dp(24)=2×padding、dp(8)=spacing,
+                                                    #    与上面那行 BoxLayout **必须成对改**
         popup = self._popup(0.84, need + dp(64), title='', content=content,
                             auto_dismiss=True, separator_height=0)
         # ⚠️ 实时行的定时器: **弹窗一关就必须 unschedule** —— 否则它会一直跑下去
@@ -14218,6 +14229,9 @@ class RootWidget(BoxLayout):
             sfx._audio_ready = False
             sfx.cached = False
             sfx.ready_ms = 0.0
+            # ⚠️ 2026-09-18: `bake_ms` **也要清** —— 它是"上次烘焙花了多久"的残值,
+            #    不清的话万一在烘焙完成前读到它, 报出来的就是上一次的数(玩家报的那个 bug)。
+            sfx.bake_ms = 0.0
             sfx.named.clear()
             sfx._failed = []
             try:
@@ -19605,7 +19619,13 @@ class RootWidget(BoxLayout):
             # ⚠️ 就绪判据现在由 `_LoadVeil.tick()` 给 —— 它还要负责开场动画、最短停留和整页淡出,
             #    所以这里只问"能摘了吗", 不再自己看 `audio_ready()`。它自己不持有 Clock, 由这里驱动。
             if _veil.tick(self.sfx.audio_ready()):
-                if _veil is getattr(self, "_replay_veil", None) and not _veil._hold:
+                # ⚠️⚠️ 2026-09-18 修(玩家报「第1次显示18ms, 第2次起才是真值」):
+                #    多一个 `self.sfx.baked` 条件。原因: `audio_ready()` 在**音效关掉时恒为真**
+                #    (`not self.enabled or ...`), 于是烘焙还没跑完就进了这一支 ⇒
+                #    `_replay_cost_text()` 读到的是**上一次的 `bake_ms`** 配上刚被清零的
+                #    `ready_ms` ⇒ 第 1 次报出一个偏小的假数。
+                if (_veil is getattr(self, "_replay_veil", None) and not _veil._hold
+                        and self.sfx.baked):
                     # 「重放冷启动」完成: **不自动摘页** —— 摆出结果等玩家点一下。
                     # 玩家反馈「成功之后没有暂停, 直接回去了, 我啥都没有看清」: PC 上烘焙 1.2 秒、
                     # 探针一过就摘, 那几行数字等于闪一下。
