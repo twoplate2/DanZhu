@@ -3669,6 +3669,9 @@ class _SoundPoolOut:
         # ⚠️ v0.8.64: 本次会话一共试了几次 play —— 只给"没播成"那条日志用。
         #    它直接回答"失败的是不是**第一次** play"(玩家报每次启动必现 1 次 click)。
         self._play_total = 0
+        # ⚠️ v0.8.65: "还在念的那一条流"的流号(语音池里)。给"新的语音来了就掐掉旧的"用。
+        #    流号是**池内**的 ⇒ 换池必须清零(见 `_reset_pools` / `close`)。
+        self._voice_stream = 0
         self._paths = {}              # name -> wav 路径(拔耳机后重建时重新 load 用)
         self.rebuild_count = 0        # 重建次数(隐藏菜单的诊断行要显示; 正常局应当恒为 0)
         _t0 = time.perf_counter()
@@ -3800,6 +3803,10 @@ class _SoundPoolOut:
         #       的最坏后果只是多探一轮, 而不是假绿。
         self._ok_sids = set()
         self._probe_gen = getattr(self, "_probe_gen", 0) + 1   # 代次 +1(worker 回写前会对它)
+        # ⚠️ v0.8.65: 流号是**池内**编号 ⇒ 换池必须清零。忘了清的后果是"拿旧池的流号去
+        #    stop 新池的一条流" —— 停掉一条不相干的音, 而且**不报错、不留痕**。
+        #    (⚠️ 这个字段属于"池相关状态", 所以它就该在这一处清 —— 与 `_ids` 同族。)
+        self._voice_stream = 0
 
     def replay_reset(self):
         """「重放冷启动」专用: 把两个池**整个换新**(连同闸门), 并清空应到清单。
@@ -4319,10 +4326,32 @@ class _SoundPoolOut:
         if self._sp2 is not None:            # 语音在第二个池里(见 prime 的分池规则)
             sid2 = self._ids2.get(name)
             if sid2 is not None:
-                if not self._sp2.play(sid2, gain01, gain01, 1, 0, 1.0):
+                _st2 = self._sp2.play(sid2, gain01, gain01, 1, 0, 1.0)
+                if not _st2:
                     self._miss_play(name)
+                elif name.startswith("voice_"):
+                    # ⚠️ v0.8.65: 记下"还在念的那一条流" —— 供"新的语音来了就掐掉旧的"
+                    #    (`stop_voice`) 用。**只在播成功时记**: 返回 0 说明那条流根本不存在。
+                    self._voice_stream = _st2
                 return True
         return False
+
+    def stop_voice(self):
+        """掐掉"还在念的那一句语音"。⚠️ **只动语音池里记下来的那一条流**。
+
+        ⚠️ 为什么要记流号: `play()` 的返回值**就是**流号, 而 `play_named` 以前把它丢了
+           (它对外返回的是"请求已受理", 与流号无关)。
+        ⚠️ 只掐语音那一条: 撞钉 / 装杯 / 中奖那些流还在响, 一个都不许动。
+        ⚠️ 拿不到流号(没播过 / 刚换过池)时**什么都不做** —— 不是错误。
+        """
+        _st = int(getattr(self, "_voice_stream", 0) or 0)
+        if not _st:
+            return
+        self._voice_stream = 0
+        try:
+            self._sp2.stop(_st)
+        except Exception:
+            pass
 
     def _each_pool(self, _fn):
         """对**每一个**池做同一件事(切后台/静音/退出都要管全, 见下面的教训)。
@@ -4359,6 +4388,7 @@ class _SoundPoolOut:
         # ⚠️ 2026-09-18 同上: 原来只 release 了 `_sp` ⇒ **语音池一直漏着**。
         #    ⚠️ **不把字段置 None** —— `play_named` / `probe_all` 都在判 `is not None`,
         #    置 None 会把"释放后的旧引用"变成"路径分岔"。
+        self._voice_stream = 0      # v0.8.65: 池要没了 ⇒ 流号必须作废(不然会去 stop 野句柄)
         self._each_pool(lambda _p: _p.release())
 
 class _KivySoundOut:
@@ -6863,17 +6893,35 @@ class Sfx:
         if lvl > 0 and key not in self._scaled:
             self._scaled[key] = pcm if lvl >= 10 else _scale_pcm(pcm, lvl / 10.0)
 
+    def _voice_cut(self):
+        """把还在念的那一句掐掉(新的语音要立刻念)。**后端不支持时静默跳过。**
+
+        ⚠️ 单独抽出来是为了让 `play` 那一支保持一行, 也为了把"后端可能没有这个方法"
+           (桌面 / 别的后端) 收在一处 —— 拿不到就什么都不做, 绝不抛。
+        """
+        try:
+            _fn = getattr(self.out, "stop_voice", None)
+            if _fn is not None:
+                _fn()
+        except Exception:
+            pass
+
     def play(self, name, gain=1.0, throttle=0.0):
         if not self.enabled:
             return False
         now = time.time()
-        # UI交互语音互斥: 上一句**还没播完**就不出新的; 结果/轮次语音不在此限。
+        # UI交互语音互斥: 同族语音**不许叠着念**(叠着谁都听不清); 结果/轮次语音不在此限。
         # ⚠️ 用上一句的**真实时长**判, 不能写死 3 秒 —— 写死的话连按音效开关时,
         # 第一句之后 3 秒内全被挡, 按钮颜色在切而完全没声音, 音画脱节
         # (实测连按 12 次只听到第 1 句; 而"关闭声音"本身只有 0.9 秒)。
+        # ⚠️⚠️ v0.8.65(玩家 2026-09-18): 撞上互斥时**掐掉旧的、念新的** —— 以前是
+        #    `return False`(**把新来的那句丢掉**)。玩家原话: 「先把档次设定为 200%,
+        #    在 1.5s 后选了 320%, 他就只播放第 1 个 200% 的声音」 —— 200% 那句约 2.5 秒,
+        #    所以 320% 连试都没试就被扔了。旧那句已经是**被玩家取消掉的旧信息**,
+        #    听完它反而让人以为新选择没生效 ⇒ 打断, 而不是排队等它念完。
         if name.startswith(("voice_rtp_", "voice_bet_", "voice_mode_")):
             if now - self._last_voice < self._last_voice_len:
-                return False
+                self._voice_cut()
             self._last_voice = now
             self._last_voice_len = self.voice_duration(name)
         pcm_mode = getattr(self.out, "mode", "pcm") == "pcm"
@@ -13249,8 +13297,13 @@ class RootWidget(BoxLayout):
         self._build_ui()
         if self._auto_reset_on_start:
             self.reset_balance(notify=False)  # 上轮打满被kill: UI就绪后静默重置
-        self.set_bet(self.bet, silent=True)
-        self.set_rtp(self.rtp_target, silent=True)
+        # ⚠️ v0.8.65: 这两行是"**恢复上次的状态**", 玩家没碰任何东西 ⇒ 一声都不许出。
+        #    `silent=True` 只挡语音(它有意保留 click, 见 `set_rtp` 里那段注释),
+        #    所以还要 `click=False` —— 否则启动时会发一声幽灵 click, 而那一刻音频
+        #    还没就绪 ⇒ 热启动**必然**记一次「后端没播成」(v0.8.64 的埋点抓到的:
+        #    `没播成: click（本次会话第 1 次 play 尝试, t+541 ms）`)。
+        self.set_bet(self.bet, silent=True, click=False)
+        self.set_rtp(self.rtp_target, silent=True, click=False)
         self.park_ball(reroll=False, silent=True)
         Window.bind(on_key_down=self._on_key_down, on_key_up=self._on_key_up)
         Window.bind(on_touch_down=self._on_title_touch_down,
@@ -19606,11 +19659,14 @@ class RootWidget(BoxLayout):
         _set_label_text(self.stats_lbl, "累计%d投%d中(%.0f%%)" % (
             self.plays, self.hits, rate))
 
-    def set_bet(self, v, silent=False):
+    def set_bet(self, v, silent=False, click=True):
         self.bet = v
         self._restyle_buttons()
         self._refresh_stats()
-        self.sfx.play("click", throttle=0.08)
+        # ⚠️ `click` 与 `silent` 是**两件事**: 前者管"按钮反馈那一声", 后者管语音播报。
+        #    启动时恢复档位/注额要**两个都关**(玩家没碰任何东西, 见 __init__ 的调用点)。
+        if click:
+            self.sfx.play("click", throttle=0.08)
         if not silent and self.sound_mode == "on" and time.time() >= self._result_until:
             self.sfx.play("voice_bet_%d" % v, throttle=0.6)
         self._save_config()
@@ -19813,7 +19869,7 @@ class RootWidget(BoxLayout):
         popup.open()
         self._popup_fit_content(popup, content)
 
-    def set_rtp(self, t, silent=False):
+    def set_rtp(self, t, silent=False, click=True):
         """切档。**只有 `state == "ready"` 才真的切**(玩家 2026-09-18 修)。
 
         ⚠️⚠️ 非 ready 时**直接不动** —— 盘面(`self.multipliers`)只有在 ready 才换得动,
@@ -19830,7 +19886,11 @@ class RootWidget(BoxLayout):
             return
         self.rtp_target = t
         self._restyle_buttons()
-        self.sfx.play("click", throttle=0.08)
+        # ⚠️ v0.8.65: `click` 独立于 `silent`(下面那段注释说的"click 不受 silent 影响"
+        #    在**关闭隐藏档**那条路上仍是设计意图 —— 那里必须保留按钮反馈)。
+        #    只有"启动时恢复状态"才两个都关。
+        if click:
+            self.sfx.play("click", throttle=0.08)
         if not silent and self.sound_mode == "on" and time.time() >= self._result_until:
             pct = int(t * 100)
             self.sfx.play("voice_rtp_%d" % pct, throttle=0.6)
