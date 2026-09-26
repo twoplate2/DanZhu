@@ -6588,7 +6588,14 @@ source.include_patterns = fonts/*.otf,voice/*.wav,assets/*.png
 #
 #   门禁: fx_probe 336 条(+6: 持久指令表四条 + 面板两档两条; 另更新了几条被取代的旧断言)。
 #   验证: --selftest OK · fx_probe 336 OK / 5 项已知(球与玻璃杯贴图, 预先存在)。
-version = 0.8.71
+version = 0.8.72
+# 0.8.72(2026-09-27): GC 回调 append 前去重(跑分/诊断路径, 玩家路径不经过)。
+#   起因: 六条「有风险」候选经两名专家 3 轮对抗压测, 只有 S8 一条两人一致判 yes/low —— 本版就做这条。
+#   危害实测: 同一条回调注册两次 ⇒ 一次 collect 被记 2 次 ⇒ 面板「内存回收 N 次」翻倍,
+#   而那正是给 GC 冻结那一记优化提供依据的读数。且 `list.remove` 一次只摘一个匹配,
+#   所以必须 while(不是"幂等")。改动 5 行, 自带 try。
+#   验证: temp/risk_s8_verify.py 9 项全 OK(含"注册两次→记 2 次"的危害复现) ·
+#         --selftest OK · fx_probe 18 FAIL / 369 OK 与基线逐条同名。
 # 0.8.71(2026-09-27): 预热尾批补仪表 + 5 处过期注释校正 + CLAUDE.md 作废横幅 + DEAD_CLAIMS.md。
 #   起因: 外部文档 low_fps_jiaojie.md(低帧优化建议)经 17 条主张重验 + 10 条候选对抗压测
 #   (46 个子代理), 只有「预热打点」一条被两名专家一致判 safe —— 本版就只做零风险那一层。

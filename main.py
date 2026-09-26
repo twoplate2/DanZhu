@@ -16022,7 +16022,17 @@ class RootWidget(BoxLayout):
         _CFG_STAT[2] = 0
         self._bench_wall0 = time.time()
         import gc
+        # ⚠️ 2026-09-27 加: append 之前先**删干净**。
+        #    病根: `gc.callbacks` 是**进程全局**的, append 不去重; 而唯一的 remove(见
+        #    `_bench_collect_diag`)只在**正常完成路径**上执行 —— 采样期(15~25 秒的活渲染)
+        #    里任何一处抛异常, 回调就留下来; 下一轮 _start_benchmark 再 append 就变成两条
+        #    ⇒ `_bench_gc_cb` 对**每个 GC 事件被调两次** ⇒ 面板「内存回收 N 次 / 累计 X 毫秒」
+        #    翻倍 —— 而那正是给 GC 冻结那一记优化提供依据的读数。静默、且每轮只摘一个留一个。
+        #    ⚠️ `list.remove` 在元素不存在时**抛 ValueError**("幂等"这个词对它是错的),
+        #    而且一次只摘**第一个**匹配(绑定方法按 == 匹配) ⇒ 必须 while; 整段自带 try。
         try:
+            while self._bench_gc_cb in gc.callbacks:
+                gc.callbacks.remove(self._bench_gc_cb)
             gc.callbacks.append(self._bench_gc_cb)
         except Exception:
             pass
