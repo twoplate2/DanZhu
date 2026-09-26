@@ -18,7 +18,7 @@ python main.py --landscape  # 桌面模拟横屏反旋转(1740x1000 横窗, 验�
 python main.py --nosound    # 静音启动
 python -m py_compile main.py
 python ../tools/fx_probe.py # 中奖玻璃杯自检(纹理/堆形/缓存/时长/曲线/揭晓投递语义/**隐藏档弹窗 [19]**/**等点击退场 [20]**)
-python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源同步
+python ../tools/build_android_main.py --check   # ⚠️ 已废弃: 恒为 STALE, **不是门禁**(见文末「已知陷阱」第一条)
 ```
 
 ⚠️ **出包必须 bump `buildozer.spec` 的 `version`**: 它是"装的是哪个包"的唯一肉眼证据
@@ -30,6 +30,12 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
 
 ## main.py 是生成物
 
+> ⚠️⚠️ **本节结论已作废 —— 先读文末「已知陷阱」第一条, 再读本节。**
+> `android/main.py` 已与 `tools/` 源彻底脱钩(2026-09-17 实测): 它现在 **22347 行**,
+> 而生成器重建出来的只有 **10991 行** ⇒ 跑一次会抹掉 **约 11356 行**只活在 `main.py` 里的代码。
+> **改 Android 侧一律直接改 `android/main.py`; 绝对不要跑生成器。**
+> 下面这段保留下来, 只为说明"当初是怎么拼的" —— **它不再是可以照做的流程**。
+
 `main.py` 由**父项目** `tools/build_android_main.py` 生成:
 - 常量/几何/物理/音效合成/selftest **原样抽取**自父项目 `plinko.py`
 - 中奖杯球堆 `tools/pile3d.py`(纯 stdlib) + 表现层 `tools/android_part_pile.py`
@@ -38,10 +44,14 @@ python ../tools/build_android_main.py --check   # 校验 main.py 与 tools/ 源�
 顺序: `[head, b1..b7, backends, pile3d, android_part_pile, ui]`(新两段插在 `ui` 之前,
 因为 GameArea/RootWidget 要用到它们)。**`tools/` 与 `../wingui/` 都不在 git 里**,
 仓库里只有生成物, 所以改完必须重跑生成器 —— 用 `--check` 兜底。
+⚠️ **上面这一句已作废**(见本节开头的横幅): 重跑生成器会毁掉一万多行; `--check` 恒为 STALE, 不是兜底。
 
 本仓库只含生成结果, **不含生成器和源文件**。因此:
-- **在父项目环境里**: 改源文件 → `python tools/build_android_main.py` → `python android/main.py --selftest` → 回本仓库 commit。**不要手改 main.py**。
+- ~~**在父项目环境里**: 改源文件 → `python tools/build_android_main.py` → `python android/main.py --selftest` → 回本仓库 commit。**不要手改 main.py**。~~
+  ⚠️ **这条已作废, 照做会毁代码。** 正确做法: 直接改 `android/main.py`。
 - **只有本仓库时**: 直接改 main.py 可行, 但父项目重新生成会覆盖。重大改动必须回父项目做。
+  ⚠️ **这后半句也已作废** —— "回父项目做"就等于跑生成器。现在两边是**双向分叉**
+  (`tools/android_part_pile.py` 已删的函数, `main.py` 里还在用), 没有"回父项目"这条路。
 
 ## main.py 内部结构
 
@@ -349,7 +359,8 @@ RTP≈档位±0.05、卡死=0、撞钉音>90%、哑火零泄漏、
 照样数出 5; 也别只比对 back/dim/front 三个下标: 夹具里不放球的话, 把压暗挪到"已落定球之后"
 (球沉进背景)照样全绿。这两个盲区都是专家用变异体打出来的。
 ⚠️ 文本断言一律读 **`android/main.py`**(出货那个文件), 不是 `tools/` 下的源 —— 生成器没重跑时
-查源会给出包假绿灯(`--check` 管同步, 是另一条命令)。
+查源会给出包假绿灯(⚠️ 原来这里写"`--check` 管同步, 是另一条命令" —— **那句已作废**:
+`--check` 恒为 STALE, 它管不了同步, 已经没有任何东西管同步了)。
 ⚠️ 这一节存在的理由和 `[10]` 一样: `[6]` 只测 `_layers()` 的**数值曲线**, 而上述三件事
 全在曲线之外 —— 曲线全绿, 画面照样是"板面黑了、两边还亮"或"杯内被玻璃提亮回去"。
 ⚠️ 写这类门禁要**做阴性对照**(把改动改回坏的, 确认它真的会红)。实测踩过:
@@ -375,7 +386,8 @@ GUI 真发验证: 落格==结算槽 0 穿帮(现已由上面的不变量门禁�
 
 - ⚠️⚠️ **`android/main.py` 已与 `tools/` 源彻底脱钩 —— 绝对不要运行 `tools/build_android_main.py`**
   （2026-09-17 实测）。它现在重建出来的全文只有 **10991 行**，而 `android/main.py` 是
-  **18929 行** —— 跑一次会**抹掉约 8000 行手写代码**（整个高压测试模块、`SpeedCurve`、
+  **22347 行**（2026-09-27 复测；这句原来写 18929，也过期了）—— 跑一次会**抹掉约 11356 行**
+  手写代码（整个高压测试模块、`SpeedCurve`、
   `_battery_temp_c` / `_battery_snapshot` 全都只活在 `main.py` 里，
   `tools/android_part_ui.py` 里搜 `高压` / `电池` / `SpeedCurve` 全是 0 命中）。
   `--check` 现在**本来就是 `STALE`**，它不是门禁，别拿它当同步依据。
