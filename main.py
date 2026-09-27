@@ -17,7 +17,16 @@ os.environ["KIVY_ORIENTATION"] = "Portrait PortraitUpsideDown Landscape Landscap
 # 会自然按其刷新率呈现；Android 则由下面的 Window/显示模式请求优先提升到 165Hz。
 from kivy.config import Config
 Config.set("graphics", "maxfps", "120")
-Config.set("graphics", "vsync", "1")
+# ⚠️ 2026-09-27 实验(1 → -1): **自适应 vsync**。
+#    Kivy 的语义(`kivy/config.py:264-269`): `0`=关, `1`=开, `-1`=**adaptive**,
+#    落到 SDL 上是 `SDL_GL_SetSwapInterval(-1)` —— 语义是「**late swaps happen immediately**」。
+#    靶子: 姊妹工程实测「慢帧每一根都落在 1.35~1.45 个刷新周期上」(刚好错过一格就多等
+#    一整格), 而等屏幕(swap 阻塞)占窗口 74~76%。adaptive 正是让**错过的那一格不再多等**。
+#    ⚠️ **收益未验证**(姊妹工程也没试过这条) —— 它只在真机上有意义, 桌面有合成器、测不出。
+#    ⚠️ 设不上会自动退回 `1`(`config.py:269` 原文), 所以最坏情况 = 保持现状, 不会更糟。
+#    ⚠️ **必须在导入 Window 之前**(本行位置); 运行期再设只改 config 值、改不了 SDL。
+#    ⚠️ `_apply_fps_cap` 里还有一处在同步这个值 —— 两处必须一致, 否则诊断面板读到假值。
+Config.set("graphics", "vsync", "-1")
 
 import colorsys
 import math
@@ -5918,7 +5927,10 @@ def _apply_fps_cap():
     try:
         Config.set("graphics", "maxfps", str(int(cap)))
         # 窗口创建前已设过；这里保留运行期状态供诊断，并防止配置被其他代码改回去。
-        Config.set("graphics", "vsync", "1")
+        # ⚠️ 2026-09-27: 跟着启动那处一起改成 `-1`(自适应 vsync) —— 这一处**改不了 SDL**
+        #    (Kivy 只在建窗口时读一次), 它只为"诊断面板读到的值"和"实际生效的值"保持一致;
+        #    两处不同步的话, 面板会印一个与实际不符的 vsync, 而那是排查这条实验的唯一读数。
+        Config.set("graphics", "vsync", "-1")
     except Exception:
         pass
     try:
