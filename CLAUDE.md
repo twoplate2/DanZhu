@@ -90,6 +90,14 @@ python ../tools/build_android_main.py --check   # ⚠️ 已废弃: 恒为 STALE
 4. **后端**: `_SoundPoolOut`(Android) > `_WaveOut`(winmm) > `_KivySoundOut` > 静音
 5. **Kivy UI**: `GameArea`(FloatLayout) + `RootWidget`(BoxLayout 6行)
    - 弹簧: Z字形, k=120/damp=3.2 阻尼振荡回弹, 视觉倍率45, 过冲clamp=-0.25
+     ⚠️⚠️ **`tick_draw` 里所有逐帧积分必须吃真实 `dt`, 不许硬编码 `FIXED_DT`**(v0.8.75 修)。
+     本函数是「每**渲染帧**走一次」(不在物理累加器循环里) ⇒ 硬编码会让动画速度被帧率乘一遍。
+     实测过两处: 弹簧回弹(185/60 = **3.08 倍**)与碰钉压扁恢复(×0.5 每帧, 2.75 倍)。
+     现在抽成 `_spring_step(sp, sv, dt)` / `_squash_step(sq, dt)` 两个模块级纯函数
+     (**为的是可测** —— `temp/_spring_probe.py` 直接调出货代码, 不写复制品);
+     `tick_draw(dt=None)` 由 `_frame` 喂真实间隔, `_redraw()` 末尾那处**故意不传**(它不是墙钟节拍)。
+     ⚠️ 弹簧用子步, 上限 `MAX_STEPS_PER_FRAME` —— 与 `_clamp_accum` **同口径**。
+     ⚠️ `dt == FIXED_DT` 时两条都**逐位等同改前** ⇒ 60Hz/桌面零回归。
    - 状态机: ready→charging→flying/misfire→landing→landed, 累加器驱动
    - 发射: frozen_power 保存力度, 音量分级(0.60→0.80), 震动(哑火8ms/正常14ms)
    - 落地: LAND_E=0.42, LAND_BOUNCE_MIN_VY=220, LAND_BOUNCE_MAX_VY=220(回弹vy上限), ±8%随机, 不瞬移

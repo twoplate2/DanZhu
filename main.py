@@ -612,6 +612,48 @@ def _clamp_accum(a):
     """
     _lim = MAX_STEPS_PER_FRAME * FIXED_DT
     return _lim if a > _lim else a
+
+
+def _spring_step(sp, sv, dt):
+    """弹簧阻尼振荡推进 `dt` **秒**, 返回 `(sp, sv)`。
+
+    ⚠️⚠️ **必须吃真实帧间隔 —— 这里原来硬编码 `FIXED_DT`, 而它在 `tick_draw` 里是
+       「每**渲染帧**走一步」(不在累加器循环里) ⇒ **帧率越高回弹越快**。
+       同一发球实测收尾时长: 60Hz 2.817s · 120Hz 1.408s · 165Hz 1.024s · 185Hz 0.914s
+       —— **185/60 = 3.08 倍**。而 `k=120 / damp=3.2` 是照 60Hz 调的手感
+       ⇒ 高刷机上玩家看到的不是"阻尼回弹", 是"闪一下"。
+       (2026-09-27 实测发现。全文件 `FIXED_DT` 的这类误用**只此一处** —— 其余
+        (物理步 / 累加器 / `_clamp_accum`) 用法都是对的。)
+    ⚠️ **子步上限取 `MAX_STEPS_PER_FRAME`** —— 与物理累加器的 `_clamp_accum` **同一口径**:
+       长停顿时两边一起丢掉同样的时间, 不会一个走一个等。
+    ⚠️ **`dt == FIXED_DT` 时 `n=1 / h=FIXED_DT` ⇒ 与改前逐位相同**(60Hz 零回归)。
+       探针: `temp/_spring_probe.py`(直接调本函数, 不复制实现)。
+    """
+    k, damp = 120.0, 3.2
+    n = int(dt * 60.0 + 0.5)
+    if n < 1:
+        n = 1
+    elif n > MAX_STEPS_PER_FRAME:
+        n = MAX_STEPS_PER_FRAME
+    h = dt / n
+    for _ in range(n):
+        sv += (-k * sp - damp * sv) * h
+        sp += sv * h
+    return sp, sv
+
+
+def _squash_step(sq, dt):
+    """碰钉压扁的恢复量(物理层沿法线缩/切向胀, 这里渐回正圆)。
+
+    ⚠️ **同一个病**: 原来是 `sq += (1-sq) * 0.5` —— **每帧固定系数** ⇒ 恢复速度同样
+       被帧率乘了一遍(165Hz 下只要 60Hz 的 1/2.75 那么久)。旁边那句注释写的
+       "2~3帧≈50ms" 就是按 60Hz 算的, 而它在高刷机上根本不成立。
+       改成按真实 dt 的指数衰减。**`dt == FIXED_DT` 时 `0.5**(dt*60)` 恰好 = 0.5
+       ⇒ 系数与改前逐位相同**(60Hz 零回归)。
+    """
+    return sq + (1.0 - sq) * (1.0 - 0.5 ** (dt * 60.0))
+
+
 JITTER = 6.0                 # 撞钉切向随机扰动(大幅降低: 防方向突变 + 防卡死)
 
 LAUNCH_MIN = 1077.0          # 最小发射(随 G=1000 回调, apex≈57 不撞顶)
@@ -12604,8 +12646,18 @@ class GameArea(FloatLayout):
             col.rgb = hex_rgb(COL_LAMP_OFF)
 
     # ------------------------------ 帧驱动 ------------------------------
-    def tick_draw(self):
-        """每帧只更新动态元素(ball/meter/plunger) + 特效, 不重排 canvas。"""
+    def tick_draw(self, dt=None):
+        """每帧只更新动态元素(ball/meter/plunger) + 特效, 不重排 canvas。
+
+        ⚠️ **`dt` 必须由调用方把真实帧间隔传进来**(2026-09-27 加)。这是本函数里
+           **所有"逐帧积分"的唯一时间源**: 早先这些积分硬编码 `FIXED_DT`, 而本函数是
+           「每**渲染帧**走一次」⇒ 它们的推进速度被帧率乘了一遍(165Hz 上快 2.75 倍)。
+           实测到的两处见 `_spring_step` 与 `_squash_step` 的 docstring。
+        ⚠️ 缺省 `None` ⇒ 退回 `FIXED_DT`, 且**子步数 = 1** ⇒ 与改前**逐位相同**。
+           `_redraw()` 末尾那次调用(尺寸/位置变才跑)就是走这条路, 它不该按墙钟推进。
+        """
+        if dt is None or dt <= 0.0:
+            dt = FIXED_DT
         # ⚠️ 必须放在下面的 _ball_e is None 早退**之前**: 否则画布还没建好的那几帧
         # (启动/尺寸未定)中奖演出不推进, 起播时间会被白白拖后。
         self.win_fx.tick()
@@ -12626,10 +12678,11 @@ class GameArea(FloatLayout):
         if b is not None:
             br = BALL_R * BALL_VIEW
             bs = 2 * br * self._s
-            # 受击压扁(借鉴经典版): 沿法线缩、切向胀, 渐回正圆(2~3帧≈50ms 硬钢感)
+            # 受击压扁(借鉴经典版): 沿法线缩、切向胀, 渐回正圆(≈50ms 硬钢感)
+            # ⚠️ 恢复量走 `_squash_step(…, dt)` 而不是"每帧 ×0.5" —— 后者同样被帧率乘过。
             sq = getattr(b, "squash", 1.0)
             if sq < 0.99:
-                b.squash += (1.0 - sq) * 0.5
+                b.squash = _squash_step(sq, dt)
                 if b.squash > 0.99:
                     b.squash = 1.0
                 sq = b.squash
@@ -12689,9 +12742,10 @@ class GameArea(FloatLayout):
             self._spring_power = g.power
             self._spring_vel = 0.0
         elif abs(self._spring_power) > 0.0005 or abs(self._spring_vel) > 0.005:
-            k, damp = 120.0, 3.2
-            self._spring_vel += (-k * self._spring_power - damp * self._spring_vel) * FIXED_DT
-            self._spring_power += self._spring_vel * FIXED_DT
+            # ⚠️ 走 `_spring_step(…, dt)` 而不是硬编码 `FIXED_DT`: 本函数每**渲染帧**
+            #    只调一次, 而回弹曲线是按 60Hz 调的 ⇒ 硬编码会让高刷机上快 2.75~3.08 倍。
+            self._spring_power, self._spring_vel = _spring_step(
+                self._spring_power, self._spring_vel, dt)
         else:
             self._spring_power = 0.0
             self._spring_vel = 0.0
@@ -21524,7 +21578,11 @@ class RootWidget(BoxLayout):
             print("REVEAL 兜底触发: %s" % (self._pending_win,))
             self._settle_cb()
         _set_label_text(self.balance_lbl, str(int(round(self.display_balance))))
-        self.game_area.tick_draw()
+        self.game_area.tick_draw(dt)
+        # ⚠️ **`dt` 必须传**(2026-09-27 加): 它是 `tick_draw` 里所有逐帧积分的唯一时间源,
+        #    不传就退回 `FIXED_DT` ⇒ 那些动画的速度又被帧率乘一遍(165Hz 上快 2.75 倍)。
+        #    另一处调用在 `_redraw()` 末尾, 那次**故意不传** —— 它由尺寸/位置变更触发,
+        #    不是墙钟节拍, 退回 `FIXED_DT` 才是对的。
         # 装杯期把整块界面(减去游戏区)压暗 —— 板面那块覆盖不到 GameArea 之外, 见 _build_hud_dim。
         # ⚠️ 位置: 必须在 `tick_draw()` **之后**。演出由 tick_draw -> win_fx.tick() ->
         #    _redraw() 推进, 而 `_redraw` 会把**本帧真正画上去的** a_dim 存进 `_a_dim_now`;
