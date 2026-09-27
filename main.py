@@ -1400,6 +1400,65 @@ HP_FREQ_TRIM_SEC = 1.0
 # 渲染采样窗口自动发几颗球(原来是 `self._target_launches = 5` 写死在跑分函数里, 提成常量)。
 BENCH_TARGET_LAUNCHES = 5
 
+# 「等最后一发飞完」的**兜底上限**(秒)。见 `_auto_launch_tick` 的结束判据。
+# ⚠️ 语义是**防软锁**, 不是"正常等待时长" —— 正常路径靠 `_last_ball_flew` 在落袋后关窗,
+#    这个值只在状态机没按预期走(状态名变了 / 异常 / 球永远不落地)时才生效。
+#    10 秒 ≈ 一次飞行的数倍, 既够它飞完, 又不会让玩家等太久。
+_LAST_BALL_MAX_WAIT = 10.0
+
+
+def _flight_segments(frames):
+    """把逐帧记录切成「每一发飞行」的段, 返回 `[(长度ms, 起帧号, 止帧号), ...]`。
+
+    长度 = 那一段里所有「飞行 + 落袋」帧的帧间隔之和(**装杯演出不算** —— 跑分用的固定
+    盘面每一发都中奖, 照"两次发射的间隔"切出来的段里面全是装杯, 能把每发从 ~0.5 秒撑到 6 秒)。
+
+    ⚠️⚠️ **2026-09-27 从姊妹工程 `new_danzhu/danzhu/ui/bench.py:_flight_segments` 原样搬来。**
+        搬它的理由: 那份实现把三种已被证伪的判据与两个窗口边界的坑全写在 docstring 里,
+        而 A 这边原来的内联版**一个都没避** ——
+          · `<=` 相等也算回落 ⇒ 窗口开头凭空多一段(姊妹工程 2026-09-20 玩家报过);
+          · 窗口开头那半截**残缺飞行**没丢掉 ⇒ 把均值拉低;
+          · 累加缺 `cur is not None` 守卫 ⇒ 姊妹工程 2026-09-20 真抛过 `None + float`。
+
+    ## 判据只有一个: `_SINCE_LAUNCH`(帧记录第 [8] 项)**严格回落**
+    `_SINCE_LAUNCH` 由 `_frame_timed` **每次调用** +1, 而记它的是 `_on_flip`(**每次呈现**)。
+    两者频率不同(调度档 185Hz / 呈现跟随面板) ⇒ **相邻两个呈现帧完全可能读到同一个值**。所以:
+
+        `== 0`   ✗ 发射那一帧记下来的可能是 **1 而不是 0**(清零与 `+= 1` 的先后不保证)
+                  ⇒ 整场只切出一段
+        `<=`     ✗ **相等也算回落** ⇒ 窗口开头凭空多一段
+        `<`      ✓ 一次真发射必然把计数从上千打到 0/1, 恒递减;
+                     而"相等"只可能出现在**同一发之内**, 那时不该切
+
+    ## 窗口两头的半截
+    · **开头**: 第一段**没有前锚**(窗口从上一次发射的**半空中**开始) ⇒ 那半截是**残缺的飞行**,
+      计进去会把均值拉低 ⇒ **整段丢掉**。
+      ⚠️ 这一条**必须配 `cur is not None` 的累加守卫** —— 少了它, `cur` 还是 `None` 时
+      第一个飞行帧就把 `None + float` 抛出去。
+    · **结尾**: 最后一段没有后锚, 但它多半是完整的(球飞完才进装杯/蓄力) ⇒ 保留。
+
+    ⚠️ 纯函数, 不改任何状态 —— 可以直接拿合成的 `_bench_frames` 序列测它。
+    """
+    segs = []
+    cur, prev, start, last = None, None, None, None
+    for _i, _f in enumerate(frames or ()):
+        if len(_f) < 9:
+            continue
+        _sl = _f[8]
+        if prev is not None and _sl < prev:        # 严格回落 = 新的一发
+            if cur is not None:
+                segs.append((cur, start, _i))
+            cur, start = 0.0, _i
+        _tag = _f[1] if len(_f) > 1 else ''
+        # ⚠️ `cur is not None` 这个守卫**不能省** —— 它就是"丢掉残缺首段"的机制。
+        if cur is not None and _tag in ('飞行', '落袋'):
+            cur += float(_f[0] or 0.0)
+        prev = _sl
+        last = _i
+    if cur is not None:
+        segs.append((cur, start, last))
+    return [s for s in segs if s[0] > 0]
+
 
 # 「频率采样门」(2026-09-15)。**唯一的写者是 `benchmark_trajectories`**(样本之间的
 # `sleep(gap_sec)` 期间关门); 唯一的读者是 `_freq_sampler_start` 起的那个采样线程。
@@ -16055,6 +16114,11 @@ class RootWidget(BoxLayout):
         Window.bind(on_flip=self._on_flip)
         self._launch_count = 0
         self._target_launches = BENCH_TARGET_LAUNCHES
+        # 「等最后一发飞完」的两个状态位(见 `_auto_launch_tick` 的结束判据)。
+        # ⚠️ **必须在这里初始化** —— 判据里读的是裸属性, 不初始化会在冷启动第一次跑分的
+        #    第一个 tick 抛 AttributeError, 而 Clock 回调外层没有 try。
+        self._last_ball_flew = False
+        self._last_wait_t0 = 0.0
         # 只在跑分期间轮询；0.1 秒把每局结束到下一发的空档从最多 0.5 秒缩到最多 0.1 秒。
         # 回调只读状态，发射后立即离开 ready，不会重复触发或改变游戏物理。
         self._auto_evt = Clock.schedule_interval(self._auto_launch_tick, 0.1)
@@ -16178,7 +16242,36 @@ class RootWidget(BoxLayout):
         #    就是一次 `perf_counter` + 一次字典累加, 比它包住的赋值贵不了多少, 不另加开关。
         _ta = time.perf_counter()
         if self._launch_count >= self._target_launches:
-            self._finish_render_sample(0)
+            # ⚠️⚠️ **必须等最后一发的「飞行」飞完才关窗口 —— 一到这里就关是错的。**
+            #    (2026-09-27 从姊妹工程 `new_danzhu/danzhu/ui/bench.py` 的 `_auto_launch_tick` 搬来)
+            #
+            #    【病象】跑分明明发了 5 发, 采样窗口里却只有 **4 发**的完整飞行,
+            #      而面板印的「每次飞行平均持续」就是拿这 4 发算的。
+            #    【根因】`_launch_count += 1` 是在 `start_charge()` 那一刻(球 0.1 秒后才真的
+            #      `launch()`), 所以第 5 发**还在蓄力**计数就到 5 ⇒ 下一个 tick 就关窗口。
+            #      ⚠️ **只把计数挪到 `launch()` 里是不够的**: 那样第 5 发的飞行会被**截一半**
+            #         就关窗, 而 `_flight_segments()` 会收尾段 ⇒ 一个残缺的段进了均值,
+            #         反而把均值**拉低**。⇒ 只有"等它飞完"才两条都对。
+            #    ⚠️ 判据取 `state` 离开 flying/landing/misfire: 蓄力期两边都不满足 ⇒ 继续等;
+            #      起飞后 `_last_ball_flew` 置真; 落袋结束后才真的关。
+            #    ⚠️ **`misfire` 也算"飞出去了"** —— 哑火也是真的发射过(球飞不出竖井),
+            #      不认它就会一直等下去。跑分固定 power=0.8 不该哑火, 但这是**别人的
+            #      状态机**, 不能靠"应该不会"来兜。
+            #    ⚠️⚠️ **兜底(绝不软锁)**: 万一状态机没按预期走(状态名变了 / 异常 /
+            #      球永远不落地), 最多等 `_LAST_BALL_MAX_WAIT` 秒就把窗口关掉 ——
+            #      **少一段总比卡死强**。跑分链上卡死 = 玩家点完跑分界面再也回不来,
+            #      这是本工程的红线。
+            _st = self.state
+            if _st in ("flying", "landing", "misfire"):
+                self._last_ball_flew = True          # 第 5 发真的飞出去了
+                return
+            if getattr(self, "_last_ball_flew", False):
+                self._finish_render_sample(0)
+                return
+            if self._last_wait_t0 <= 0.0:
+                self._last_wait_t0 = time.perf_counter()
+            elif time.perf_counter() - self._last_wait_t0 > _LAST_BALL_MAX_WAIT:
+                self._finish_render_sample(0)
             return
         if self.state == "ready":
             # ⚠️ **跑分: 把这一发的盘面钉死**(见 `BENCH_BOARD` 处说明)。
@@ -16223,48 +16316,19 @@ class RootWidget(BoxLayout):
         if len(flips) >= 2:
             gaps = [flips[i + 1] - flips[i] for i in range(len(flips) - 1)]
             self._render_gaps_ms = [gap * 1000.0 for gap in gaps]
-            # ⚠️ **每发球的实测飞行时长**(2026-09-16 玩家: 「飞行那个是
-            #    **五次平均用时**」)。**不新埋点** —— 用 `_bench_frames` 里那对
-            #    现成的逐帧数据切段: [0] = 本帧间隔(ms), [8] = `_SINCE_LAUNCH`
-            #    (该帧距本发发射过了几帧, **发射那帧为 0**)。
-            #    每次归零就是新的一发 ⇒ 按它切段、段内帧间隔求和。
+            # ⚠️ **每发球的实测飞行时长**(2026-09-16 玩家: 「飞行那个是**五次平均用时**」)。
+            #    **不新埋点** —— 用 `_bench_frames` 里那对现成的逐帧数据切段:
+            #    [0] = 本帧间隔(ms), [1] = 阶段标签, [8] = `_SINCE_LAUNCH`。
             #    ⚠️ 不能拿"两次 launch 的间隔"代替: 那个里面还包含下一发的
             #       蓄力延时(0.1 秒)与 tick 节拍(0.1 秒), 会系统性地多算 ~0.15 秒。
-            # ⚠⚠ 判据是"计数器**回落**"而**不是**"等于 0"。
-            #    2026-09-16 玩家发现 `飞行用时` 印出来像**五次之和**:
-            #    根因就在这里 —— `_SINCE_LAUNCH[0] = 0` 写在 `launch()` 里,
-            #    而 `_SINCE_LAUNCH[0] += 1` 在**另一处**(`_on_flip` 之外), 两者与
-            #    `_bench_frames.append` 的先后不保证 ⇒ 发射那帧被记下来时
-            #    计数器**很可能已经是 1 而不是 0** ⇒ `== 0` 一次都不成立
-            #    ⇒ **整场只切出一段**(那一段 = 整个采样窗口)。
-            #    改成"当前值 <= 上一个值"就开新段: 0 跟 1 都能认出来,
-            #    而飞行中计数器只增不减 ⇒ 不会误切。
-            _fl_ms = []
-            _seg = None
-            _prev_sl = None
-            for _f in (getattr(self, "_bench_frames", None) or []):
-                if len(_f) < 9:
-                    continue
-                _sl = _f[8]
-                if _prev_sl is None or _sl <= _prev_sl:   # 回落 = 新的一发
-                    if _seg is not None:
-                        _fl_ms.append(_seg)
-                    _seg = 0.0
-                # ⚠️⚠️ **只累加"球真的在动"的帧**(飞行 + 落袋), **把装杯演出排除掉**。
-                #    2026-09-16 玩家: 「这个每次飞行所需时间**是不包含落珠动画**的时间」。
-                #    ⚠️ 这一条**必须过滤**: 跑分用的固定盘面(`BENCH_BOARD`)每一发都中奖
-                #       ⇒ **每一发都会演装杯**, 而下一发要等 `state == ready` 才发
-                #       ⇒ 按"两次发射的间隔"切出来的段**里面全是装杯时间**(实测能把
-                #          每发时长从 ~0.5 秒撑到 6 秒以上, 玩家一眼就看出不对)。
-                #    ⚠️ 标签取 `_f[1]`(`_bench_tag()`): 装杯 / 飞行 / 落袋 / 哑火 / 蓄力 / 待机。
-                #       「落袋」是飞行的尾巴(球还在动), 「装杯」才是玩家说的那个演出。
-                _tag = _f[1] if len(_f) > 1 else ''
-                if _tag in ('飞行', '落袋'):
-                    _seg += float(_f[0] or 0.0)
-                _prev_sl = _sl
-            if _seg is not None:
-                _fl_ms.append(_seg)
-            self._render_flight_ms = [x for x in _fl_ms if x > 0]
+            # ⚠️⚠️ **切段逻辑只有一份真源: 模块级 `_flight_segments()`**(见它的 docstring)。
+            #    2026-09-27 从姊妹工程搬来。旧内联版有三个坑, 一个都没避:
+            #      · 判据用 `<=` ⇒ **相等也算回落** ⇒ 窗口开头凭空多一段
+            #        (原来这里写着"改成 <= 就对了" —— **那句是错的**, `<=` 本身就是 bug);
+            #      · 窗口开头那半截**残缺飞行**没丢掉 ⇒ 把均值拉低;
+            #      · 累加缺 `cur is not None` 守卫 ⇒ 姊妹工程真抛过 `None + float`。
+            self._render_flight_ms = [
+                _v for _v, _a, _b in _flight_segments(getattr(self, "_bench_frames", None))]
 
             s = sorted(gaps)
             # 真平均 = 总帧数 / 总耗时；旧版误把中位数标成“平均”，外部工具无法对照。
