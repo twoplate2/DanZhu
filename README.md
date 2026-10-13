@@ -84,8 +84,8 @@ x2 起中奖震动(45/75/110/150ms)、顶栏声音两态开关(音效已开=绿�
 |----|------|------|
 | manifest | `screenOrientation=fullSensor` + `resizeableActivity=true` | `p4a/hook.py` 注入 |
 | 版本标签 | `targetSdk 33` | `buildozer.spec`(`android.api`, 30 的兼容模式在大屏=半屏盒) |
-| **运行时方向守卫(关键解药)** | 启动/回前台/转屏瞬间/每 0.7s 按设备分流重申方向: 宽屏 `FULL_SENSOR`, 瘦长机 `SENSOR_PORTRAIT(7)` | `../tools/android_part_ui.py` `PlinkoApp._apply_orientation / _orient_guard / _device_is_wide` |
-| 横屏反旋转层 | 横窗时按"等效竖屏窗口"(短边×长边)布局, 以屏幕中心整体旋转 ±90° 铺满; 仅宽屏设备启用; 触摸逆变换; 弹窗挂层 | `../tools/android_part_ui.py` `LandLayer / RotPopup` |
+| **运行时方向守卫(关键解药)** | 启动/回前台/转屏瞬间/每 0.7s 按设备分流重申方向: 宽屏 `FULL_SENSOR`, 瘦长机 `SENSOR_PORTRAIT(7)` | `tools/android_part_ui.py` `PlinkoApp._apply_orientation / _orient_guard / _device_is_wide` |
+| 横屏反旋转层 | 横窗时按"等效竖屏窗口"(短边×长边)布局, 以屏幕中心整体旋转 ±90° 铺满; 仅宽屏设备启用; 触摸逆变换; 弹窗挂层 | `tools/android_part_ui.py` `LandLayer / RotPopup` |
 
 manifest 对两类设备统一声明 fullSensor(manifest 无法按比例分流), 运行时请求
 优先级更高, 由方向守卫按 `_device_is_wide()`(短边/长边 ≥ 9:16)分流覆盖。
@@ -97,7 +97,7 @@ manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而
 大屏上不是"屏幕不转"而是"被 letterbox 成小窗", 是死路, 不要再走。
 
 已知边界: 转屏瞬间有一帧级画面重排(系统真的把盒窗换成全屏窗, 无法完全无感);
-若某个横拿方向画面上下颠倒, 翻转 `../tools/android_part_ui.py` 里 `_land_angle()`
+若某个横拿方向画面上下颠倒, 翻转 `tools/android_part_ui.py` 里 `_land_angle()`
 的 90/-90 映射(一行)。
 
 ## 语音播报 (edge-tts 预录, voice/*.wav 61 个)
@@ -113,7 +113,7 @@ manifest 方向声明对 ZUI 无效, **它只认运行时方向请求**——而
 
 数字朗读: 0~9 / 十百千万 / 两(二/两规则), 共 22 个独立片段, 对标 Clac 项目方案。
 
-生成: `python ../tools/generate_voice.py`。61 个语音文件。
+生成: `python tools/generate_voice.py`。61 个语音文件。
 
 ## 构建 APK (GitHub Actions 云构建)
 
@@ -133,33 +133,76 @@ python main.py --landscape  # 桌面模拟横屏反旋转(1740×1000 横窗, 验
 python main.py --nosound    # 静音启动
 ```
 
-## main.py 是生成物, 不要直接编辑
+## ⚠️ main.py 现在**直接改**, 绝对不要跑生成器
 
-由 `../tools/build_android_main.py` 自动拼接生成:
+> **本节原来是"main.py 是生成物, 不要直接编辑"—— 那条已作废, 照做会毁代码。**
 
-| 要改什么 | 改哪里 |
-|------|------|
-| 物理/几何/盘面/落点预定/音效配方/自测 | `../plinko.py` |
-| Kivy 界面/控件/帧循环 | `../tools/android_part_ui.py` |
-| 音效后端(SoundPool/winmm/SoundLoader) | `../tools/android_part_backends.py` |
-| 入口/字体/参数解析 | `../tools/android_part_head.py` |
-| 语音文案/词条 | `../tools/generate_voice.py` |
+`main.py` 与 `tools/` 下的分片源**已彻底脱钩**(2026-09-17 实测, 见 `CLAUDE.md` 文末「已知陷阱」第一条):
 
-改完执行 `python ../tools/build_android_main.py` → `python main.py --selftest` 验证。
+- 生成器 `build_android_main.py` 现在重建出来的全文只有 **10991 行**,
+  而 `main.py` 是 **22455 行** ⇒ **跑一次会抹掉约 11356 行**只活在 `main.py` 里的代码
+  (整个高压测试模块、`SpeedCurve`、`_battery_temp_c` / `_battery_snapshot` 等)。
+- `tools/*.py` 里搜 `高压` / `电池` / `SpeedCurve` **全是 0 命中**。
+
+⇒ **改 Android 侧一律直接改 `main.py`。** `tools/` 下那几个分片现在只有两个用途:
+给 `tools/fx_probe.py` 当**文本断言的读取对象**(`android_part_ui.py` / `android_part_pile.py`),
+以及留作历史参考。`tools/build_android_main.py` **不在本目录**(它是旧父项目的文件),
+即使找到也不要跑。
+
+改完照跑: `python main.py --selftest` + `python tools/fx_probe.py`(出货侧门禁,
+基线 18 条红, 验收标准是**逐条同名、一条不新增**)。
 
 ## 文件说明
 
+**根目录只放出货面** —— 下面这些是 buildozer 打包时会用到的, 位置写死在 `buildozer.spec` 里
+(`source.dir = .` / `icon.filename` / `presplash.filename` / `source.include_patterns` /
+`p4a.hook` / `android.add_src`), **搬动任何一项都会打不出包**:
+
 ```
-main.py                       # Kivy 应用(生成物, 3200+行)
-buildozer.spec                # 打包配置(p4a v2024.01.21, VIBRATE, targetSdk 33)
-p4a/hook.py                   # 构建后 hook: manifest 注入 fullSensor + resizeable
-BUILD_APK.md                  # 云构建流程 + 移植弯路集
-how_to_desigin.html           # 多专家协作汇报页面
+main.py                       # Kivy 应用, 唯一的出货代码(≈22455 行)
+buildozer.spec                # 打包配置 + 全部版本的 changelog(590KB, 也是版本史)
 icon.png / presplash.png      # 图标 + 启动屏
 fonts/NotoSansSC-Medium.otf   # 中文字体
 voice/*.wav                   # 预录语音 61 个(edge-tts)
+assets/*.png                  # 中奖玻璃杯贴图(back/front/over + 整图)
+java/com/plinko/SoundGate.java  # 音频就绪闸门(Java 侧)
+p4a/hook.py                   # 构建后 hook: manifest 注入 fullSensor + resizeable
 .github/workflows/build-apk.yml  # 云构建流水线
+CLAUDE.md / README.md         # ⚠️ 必须留根: CLAUDE.md 只被自动加载"项目根"那一份,
+                              #    README.md 是 GitHub 仓库首页
 ```
+
+`docs/` 与 `tools/` 是**子目录** —— 按 `BUILD_APK.md` 记的口径,
+**子目录不会被自动打进 APK**(只有 `include_patterns` 里显式列出的才会),
+所以放这里的 `.py` 不会变成安装包里的死重量。
+
+```
+docs/                         # 给人读的文档
+  BUILD_APK.md                #   云构建流程 + 移植弯路集
+  CLAUDE.md 的补充与台账类:
+  DEAD_CLAIMS.md              #   已证伪/无价值方向的台账
+  qachecklist.md              #   改完要过的检查清单
+  jiaojie.md                  #   1% Low 后续优化交接
+  youhua.md / jin_xiumian.md  #   跑分波动、防息屏失效的排查记录
+  low_fps_jiaojie.md          #   外部 AI 写的低帧分析(要配合 DEAD_CLAIMS 一起读)
+  qingkuang.md                #   音频就绪耗时 3 秒的求助稿(含两条未验方案)
+  gengxin.html                #   给玩家看的更新日志页
+  how_to_desigin.html         #   多专家协作汇报页面
+
+tools/                        # 辅助脚本(不进 APK)
+  fx_probe.py                 #   ⭐ 出货侧门禁, 396 条检查(基线 18 条红)
+  android_part_ui.py          #   ┐ 只被 fx_probe 当**文本断言的读取对象**用;
+  android_part_pile.py        #   ┘ 不是"生成器的输入", 不要拿它们重建 main.py
+  generate_voice.py           #   edge-tts 语音再生成(联网)
+  sim_balance.py              #   盘面配平模拟(输出到 tools/output/)
+```
+
+### 不在本目录的东西(旧父项目里)
+
+`plinko.py`(PC/tkinter 版)、`wingui/`、`scratch/`、`build_android_main.py`(已废弃的生成器)
+**都不在这里** —— 它们在旧工程 `E:\AI_Tools\other\DanZhu\`。
+本文档里残存的 `../plinko.py` / `../wingui/` / `../scratch/` 之类引用,
+指的都是那个旧工程, **在本目录下解析不到**, 别以为是漏拷了。
 
 ## 音效实现
 

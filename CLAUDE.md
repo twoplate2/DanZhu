@@ -17,7 +17,7 @@ python main.py --smoke      # 自动冒烟 + 截图到 %TEMP%/plinko_smoke
 python main.py --landscape  # 桌面模拟横屏反旋转(1740x1000 横窗, 验证横屏布局用)
 python main.py --nosound    # 静音启动
 python -m py_compile main.py
-python ../tools/fx_probe.py # 中奖玻璃杯自检(纹理/堆形/缓存/时长/曲线/揭晓投递语义/**隐藏档弹窗 [19]**/**等点击退场 [20]**)
+python tools/fx_probe.py # 中奖玻璃杯自检(纹理/堆形/缓存/时长/曲线/揭晓投递语义/**隐藏档弹窗 [19]**/**等点击退场 [20]**)
 python ../tools/build_android_main.py --check   # ⚠️ 已废弃: 恒为 STALE, **不是门禁**(见文末「已知陷阱」第一条)
 ```
 
@@ -144,7 +144,7 @@ voice_lose 有意不接入(合成 lose 音更中性)。
 
 ## 隐藏返还率(长按解锁的彩蛋档)
 
-入口: 长按「期望返还比例」标签 **3 秒**(`RTP_UNLOCK_HOLD = 3.0`; 2026-09-12 从 5s 改的)
+入口: 长按「期望返还比例」标签 **2 秒**(`RTP_UNLOCK_HOLD = 2.0`; 2026-09-12 从 5s 改到 3s, 2026-10-13 再改到 2s)
 → 弹窗 → **四横排四选一 + 确认**。
 
 ```
@@ -401,7 +401,7 @@ GUI 真发验证: 落格==结算槽 0 穿帮(现已由上面的不变量门禁�
   `--check` 现在**本来就是 `STALE`**，它不是门禁，别拿它当同步依据。
   ⇒ 改 Android 侧一律**直接改 `android/main.py`**；本文档最上面那句「main.py 是生成物、
   勿手改」**已经作废**（那是 2026-09 上旬的情况，之后 main.py 被大改过，源没跟上）。
-- ⚠️ **出货侧门禁的基线不是全绿**：`PYTHONIOENCODING=utf-8 python ../tools/fx_probe.py`
+- ⚠️ **出货侧门禁的基线不是全绿**：`PYTHONIOENCODING=utf-8 python tools/fx_probe.py`
   现在的基线是 **18 条红**（玻璃图/球贴图 mipmap ×5、PC 成绩页措辞 ×6、音频后端行、
   `FpsCurve` 阶段标签等，**都与高压测试无关**）。验收标准是「**FAIL 清单逐条同名、一条不新增**」。
   ⚠️ v0.8.69 从 19 降到 18：少的那条不是被删了断言，而是**修好了一条空转门禁** ——

@@ -144,7 +144,7 @@ python main.py --selftest   # 物理/RTP/哑火/音效体检(抽自 plinko.py, �
 python main.py --smoke      # 自动蓄力/发射/必中盘/哑火/余额不足飘字 + 截图到 %TEMP%/plinko_smoke
 python main.py              # 手动玩(540×960 窗口, 16:9)
 python main.py --nosound    # 静音
-python ../tools/fx_probe.py # 中奖玻璃杯自检(纹理/堆形/缓存/Clock 回调签名/时长)
+python tools/fx_probe.py # 中奖玻璃杯自检(纹理/堆形/缓存/Clock 回调签名/时长)
 ```
 
 **测中奖要多切到 360% 档**: 默认 80% 档的盘面根本抽不出 x50/x100, 拿固定盘面测等于
